@@ -3,6 +3,22 @@
 Symphony turns project work into isolated, autonomous implementation runs, allowing teams to manage
 work instead of supervising coding agents.
 
+## Controlled Mac profile
+
+The local profile uses GitHub Issues, one bounded container builder followed by a
+fresh reviewer, and a host publication broker. New ledgers start paused; workspaces,
+budgets and review handoffs persist. Authenticated local controls manage execution.
+An approved documentation-only merge policy is available behind explicit host and
+issue gates; deployments require the user. Live workers remain disabled until their
+isolation, cancellation and pilot checks pass. Upstream demonstration workflows below
+do not define this profile's authorization policy.
+
+- [Architecture and code map](ARCHITECTURE.md)
+- [Events Concierge profile](profiles/events-concierge/profile.py)
+- [Local operator CLI and MCP client](tools/symphony_control.py)
+- [Mac service and recovery guide](profiles/events-concierge/README.md)
+- [Control configuration and API contract](SPEC.md#appendix-b-controlled-local-execution)
+
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](https://player.vimeo.com/video/1186371009?h=5626e4b899)
 
 _In this [demo video](https://player.vimeo.com/video/1186371009?h=5626e4b899), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise Codex; they can manage the work at a higher level._

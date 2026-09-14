@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, ControlLedger, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -33,6 +33,8 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      control: nil,
+      control_fault: nil,
       task_supervisor: SymphonyElixir.TaskSupervisor,
       running: %{},
       completed: MapSet.new(),
@@ -53,30 +55,35 @@ defmodule SymphonyElixir.Orchestrator do
 
   @impl true
   def init(opts) do
-    case Config.settings() do
-      {:ok, config} ->
-        now_ms = System.monotonic_time(:millisecond)
+    with {:ok, config} <- Config.settings(),
+         {:ok, control} <- initialize_control() do
+      now_ms = System.monotonic_time(:millisecond)
 
-        state = %State{
-          poll_interval_ms: config.polling.interval_ms,
-          max_concurrent_agents: config.agent.max_concurrent_agents,
-          next_poll_due_at_ms: now_ms,
-          poll_check_in_progress: false,
-          tick_timer_ref: nil,
-          tick_token: nil,
-          task_supervisor: Keyword.get(opts, :task_supervisor, SymphonyElixir.TaskSupervisor),
-          codex_totals: @empty_codex_totals,
-          codex_rate_limits: nil
-        }
+      state = %State{
+        poll_interval_ms: config.polling.interval_ms,
+        max_concurrent_agents: config.agent.max_concurrent_agents,
+        next_poll_due_at_ms: now_ms,
+        poll_check_in_progress: false,
+        task_supervisor: Keyword.get(opts, :task_supervisor, SymphonyElixir.TaskSupervisor),
+        control: control,
+        codex_totals: @empty_codex_totals
+      }
 
-        run_terminal_workspace_cleanup()
-        state = schedule_tick(state, 0)
-
-        {:ok, state}
-
-      {:error, reason} ->
-        {:stop, reason}
+      run_terminal_workspace_cleanup()
+      {:ok, schedule_tick(state, 0)}
+    else
+      {:error, reason} -> {:stop, reason}
     end
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    if state.control do
+      Enum.each(state.running, fn {_id, entry} -> stop_running_task(entry.pid, entry.ref, state.task_supervisor) end)
+      ControlLedger.close(state.control)
+    end
+
+    :ok
   end
 
   @impl true
@@ -147,43 +154,40 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  def handle_info({:worker_runtime_info, issue_id, runtime_info}, %{running: running} = state)
-      when is_binary(issue_id) and is_map(runtime_info) do
-    case Map.get(running, issue_id) do
-      nil ->
-        {:noreply, state}
+  def handle_info({:worker_runtime_info, issue_id, run_id, info}, state) do
+    if matching_run?(state, issue_id, run_id), do: apply_runtime_info(state, issue_id, info), else: {:noreply, state}
+  end
 
-      running_entry ->
-        updated_running_entry =
-          running_entry
-          |> maybe_put_runtime_value(:worker_host, runtime_info[:worker_host])
-          |> maybe_put_runtime_value(:workspace_path, runtime_info[:workspace_path])
+  def handle_info({:codex_worker_update, issue_id, run_id, update}, state) do
+    if matching_run?(state, issue_id, run_id), do: apply_worker_update(state, issue_id, update), else: {:noreply, state}
+  end
 
-        notify_dashboard()
-        {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
+  def handle_info({:worker_candidate_ready, issue_id, %{run_id: run_id} = metadata}, state) do
+    if matching_run?(state, issue_id, run_id) and state.control do
+      evidence = metadata |> Jason.encode!() |> Jason.decode!()
+      state = update_control(state, ControlLedger.finish(state.control, issue_id, run_id, "owner_review", evidence))
+      {:noreply, state}
+    else
+      {:noreply, state}
     end
   end
 
-  def handle_info(
-        {:codex_worker_update, issue_id, %{event: _, timestamp: _} = update},
-        %{running: running} = state
-      ) do
-    case Map.get(running, issue_id) do
-      nil ->
-        {:noreply, state}
-
-      running_entry ->
-        {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
-
-        state =
-          state
-          |> apply_codex_token_delta(token_delta)
-          |> apply_codex_rate_limits(update)
-
-        notify_dashboard()
-        {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
+  def handle_info({:control_deadline, issue_id, run_id}, state) do
+    if matching_run?(state, issue_id, run_id) do
+      state = control_hold(state, issue_id, "runtime_budget")
+      {:noreply, terminate_running_issue(state, issue_id, false)}
+    else
+      {:noreply, state}
     end
   end
+
+  def handle_info({port, {:exit_status, _status}}, %{control: %{lock: port}} = state) do
+    {:noreply, control_failure(state, :control_lock_lost)}
+  end
+
+  def handle_info({:worker_runtime_info, issue_id, info}, %{control: nil} = state), do: apply_runtime_info(state, issue_id, info)
+  def handle_info({:worker_runtime_info, _issue_id, _info}, state), do: {:noreply, state}
+  def handle_info({:codex_worker_update, issue_id, update}, %{control: nil} = state), do: apply_worker_update(state, issue_id, update)
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
 
@@ -204,6 +208,59 @@ defmodule SymphonyElixir.Orchestrator do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
   end
+
+  defp apply_runtime_info(%{running: running} = state, issue_id, runtime_info)
+       when is_binary(issue_id) and is_map(runtime_info) do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        updated_running_entry =
+          running_entry
+          |> maybe_put_runtime_value(:worker_host, runtime_info[:worker_host])
+          |> maybe_put_runtime_value(:workspace_path, runtime_info[:workspace_path])
+
+        notify_dashboard()
+        state = %{state | running: Map.put(running, issue_id, updated_running_entry)}
+        {:noreply, state}
+    end
+  end
+
+  defp apply_runtime_info(state, _issue_id, _info), do: {:noreply, state}
+
+  defp apply_worker_update(%{running: running} = state, issue_id, %{event: _, timestamp: _} = update) do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        running_entry = reset_control_thread_accounting(running_entry, update)
+        {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
+
+        state =
+          state
+          |> apply_codex_token_delta(token_delta)
+          |> apply_codex_rate_limits(update)
+
+        notify_dashboard()
+        state = %{state | running: Map.put(running, issue_id, updated_running_entry)}
+        state = persist_control_tokens(state, issue_id, updated_running_entry)
+        {:noreply, state}
+    end
+  end
+
+  defp apply_worker_update(state, _issue_id, _update), do: {:noreply, state}
+
+  defp reset_control_thread_accounting(%{run_id: run_id} = entry, %{event: :session_started, thread_id: thread_id}) when is_binary(run_id) and is_binary(thread_id) do
+    if Map.get(entry, :control_thread_id) == thread_id do
+      entry
+    else
+      Map.merge(entry, %{control_thread_id: thread_id, codex_last_reported_input_tokens: 0, codex_last_reported_output_tokens: 0, codex_last_reported_total_tokens: 0})
+    end
+  end
+
+  defp reset_control_thread_accounting(entry, _update), do: entry
 
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
     if input_required_blocker?(running_entry) do
@@ -259,7 +316,8 @@ defmodule SymphonyElixir.Orchestrator do
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
 
-    with :ok <- Config.validate!(),
+    with true <- control_running?(state),
+         :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_issues_by_states(Config.settings!().tracker.active_states),
          true <- available_slots(state) > 0 do
       choose_issues(issues, state)
@@ -755,6 +813,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp block_issue_from_entry(%State{} = state, issue_id, running_entry, error) do
+    state = control_hold(state, issue_id, "input_required")
+
     blocked_entry = %{
       issue_id: issue_id,
       identifier: Map.get(running_entry, :identifier, issue_id),
@@ -951,8 +1011,19 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+    case reserve_control(state, issue.id) do
+      {:ok, state, run_id, remaining_ms} ->
+        if run_id, do: Process.send_after(self(), {:control_deadline, issue.id, run_id}, remaining_ms)
+        spawn_reserved_issue(state, issue, attempt, recipient, worker_host, run_id, remaining_ms)
+
+      {:error, state} ->
+        release_issue_claim(state, issue.id)
+    end
+  end
+
+  defp spawn_reserved_issue(%State{} = state, issue, attempt, recipient, worker_host, run_id, remaining_ms) do
     case Task.Supervisor.start_child(state.task_supervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           run_reserved_issue(issue, recipient, attempt, worker_host, run_id, remaining_ms)
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
@@ -963,6 +1034,7 @@ defmodule SymphonyElixir.Orchestrator do
           Map.put(state.running, issue.id, %{
             pid: pid,
             ref: ref,
+            run_id: run_id,
             identifier: issue.identifier,
             issue: issue,
             worker_host: worker_host,
@@ -992,6 +1064,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
+        state = finish_control(state, issue.id, run_id, nil)
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
         schedule_issue_retry(state, issue.id, next_attempt, %{
@@ -1388,6 +1461,101 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  @spec control_snapshot(GenServer.server()) :: map() | {:error, term()}
+  def control_snapshot(server \\ __MODULE__), do: safe_control_call(server, :control_snapshot)
+
+  @spec control_command(map(), GenServer.server()) :: {:ok, map()} | {:error, term()}
+  def control_command(command, server \\ __MODULE__), do: safe_control_call(server, {:control_command, command})
+
+  defp safe_control_call(server, message) do
+    GenServer.call(server, message, 15_000)
+  catch
+    :exit, _ -> {:error, :unavailable}
+  end
+
+  defp run_reserved_issue(issue, recipient, attempt, worker_host, run_id, remaining_ms) do
+    timer = if is_integer(remaining_ms), do: elem(:timer.kill_after(remaining_ms), 1), else: nil
+
+    try do
+      AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host, run_id: run_id)
+    after
+      if timer, do: :timer.cancel(timer)
+    end
+  end
+
+  defp initialize_control do
+    settings = Config.control_settings()
+    if settings.enabled, do: ControlLedger.open(settings, Config.local_workspace_root()), else: {:ok, nil}
+  end
+
+  defp control_running?(%{control_fault: fault}) when not is_nil(fault), do: false
+  defp control_running?(%{control: nil}), do: not Config.control_settings().enabled
+
+  defp control_running?(%{control: ledger}) do
+    ledger.settings == Config.control_settings() and ledger.data["mode"] == "running"
+  end
+
+  defp reserve_control(%{control: nil} = state, _id) do
+    if control_running?(state), do: {:ok, state, nil, nil}, else: {:error, state}
+  end
+
+  defp reserve_control(state, id) do
+    if control_running?(state) do
+      case ControlLedger.reserve(state.control, id) do
+        {:ok, ledger, run_id, remaining} -> {:ok, %{state | control: ledger}, run_id, remaining}
+        {:error, :not_admitted} -> {:error, state}
+        {:error, reason} -> {:error, control_failure(state, reason)}
+      end
+    else
+      {:error, state}
+    end
+  end
+
+  defp matching_run?(%{control: ledger} = state, id, run_id) when is_binary(run_id) and not is_nil(ledger) do
+    match?(%{run_id: ^run_id}, state.running[id]) and get_in(ledger.data, ["issues", id, "active", "run_id"]) == run_id
+  end
+
+  defp matching_run?(_, _, _), do: false
+
+  defp persist_control_tokens(%{control: nil} = state, _id, _entry), do: state
+
+  defp persist_control_tokens(state, id, entry) do
+    state = update_control(state, ControlLedger.tokens(state.control, id, entry.run_id, entry.codex_total_tokens))
+
+    if is_nil(state.control_fault) and ControlLedger.exhausted?(state.control, id) do
+      state |> control_hold(id, "token_budget") |> terminate_running_issue(id, false)
+    else
+      state
+    end
+  end
+
+  defp finish_control(%{control_fault: fault} = state, _id, _run_id, _hold) when not is_nil(fault), do: state
+  defp finish_control(%{control: nil} = state, _id, _run_id, _hold), do: state
+  defp finish_control(state, id, run_id, hold), do: update_control(state, ControlLedger.finish(state.control, id, run_id, hold))
+  defp control_hold(%{control_fault: fault} = state, _id, _reason) when not is_nil(fault), do: state
+  defp control_hold(%{control: nil} = state, _id, _reason), do: state
+  defp control_hold(state, id, reason), do: update_control(state, ControlLedger.hold(state.control, id, reason))
+  defp update_control(state, {:ok, ledger}), do: %{state | control: ledger}
+  defp update_control(state, {:error, :stale_run}), do: state
+  defp update_control(state, {:error, reason}), do: control_failure(state, reason)
+
+  defp control_failure(%{control_fault: fault} = state, _reason) when not is_nil(fault), do: state
+
+  defp control_failure(state, reason) do
+    Logger.error("Control admission blocked reason=#{inspect(reason)}")
+    state = %{state | control_fault: inspect(reason)}
+    Enum.reduce(Map.keys(state.running), state, fn id, acc -> terminate_running_issue(acc, id, false) end)
+  end
+
+  defp apply_control_effect(state, %{"action" => "pause"}) do
+    Enum.reduce(Map.keys(state.running), state, fn id, acc -> terminate_running_issue(acc, id, false) end)
+  end
+
+  defp apply_control_effect(state, %{"action" => "cancel", "issue_id" => id}), do: terminate_running_issue(state, id, false)
+  defp apply_control_effect(state, %{"action" => "retry", "issue_id" => id}), do: state |> release_issue_claim(id) |> schedule_tick(0)
+  defp apply_control_effect(state, %{"action" => "resume"}), do: schedule_tick(state, 0)
+  defp apply_control_effect(state, _command), do: state
+
   @spec snapshot() :: map() | :timeout | :unavailable
   def snapshot, do: snapshot(__MODULE__, 15_000)
 
@@ -1402,6 +1570,31 @@ defmodule SymphonyElixir.Orchestrator do
       end
     else
       :unavailable
+    end
+  end
+
+  @impl true
+  def handle_call(:control_snapshot, _from, state) do
+    state = refresh_runtime_config(state)
+    payload = if state.control, do: ControlLedger.snapshot(state.control), else: %{"enabled" => false}
+    {:reply, Map.put(payload, "fault", state.control_fault), state}
+  end
+
+  def handle_call({:control_command, _command}, _from, %{control: nil} = state), do: {:reply, {:error, :control_disabled}, state}
+  def handle_call({:control_command, _command}, _from, %{control_fault: fault} = state) when not is_nil(fault), do: {:reply, {:error, :control_unavailable}, state}
+
+  def handle_call({:control_command, command}, _from, state) do
+    case ControlLedger.command(state.control, command) do
+      {:ok, ledger, result, replayed} ->
+        state = %{state | control: ledger}
+        state = if replayed, do: state, else: apply_control_effect(state, command)
+        {:reply, {:ok, Map.put(result, "replayed", replayed)}, state}
+
+      {:error, {:control_persistence, _} = reason} ->
+        {:reply, {:error, :control_unavailable}, control_failure(state, reason)}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
@@ -1624,19 +1817,18 @@ defmodule SymphonyElixir.Orchestrator do
         }
       )
 
-    %{state | codex_totals: codex_totals}
+    state = %{state | codex_totals: codex_totals}
+    if state.control, do: finish_control(state, running_entry.issue.id, Map.get(running_entry, :run_id), nil), else: state
   end
 
   defp record_session_completion_totals(state, _running_entry), do: state
 
   defp refresh_runtime_config(%State{} = state) do
     config = Config.settings!()
-
-    %{
-      state
-      | poll_interval_ms: config.polling.interval_ms,
-        max_concurrent_agents: config.agent.max_concurrent_agents
-    }
+    state = %{state | poll_interval_ms: config.polling.interval_ms, max_concurrent_agents: config.agent.max_concurrent_agents}
+    control = Config.control_settings()
+    changed? = if state.control, do: state.control.settings != control, else: control.enabled
+    if changed?, do: control_failure(state, :control_configuration_changed_restart_required), else: state
   end
 
   defp retry_candidate_issue?(%Issue{} = issue, terminal_states) do

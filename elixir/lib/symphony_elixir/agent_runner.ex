@@ -4,8 +4,8 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
+  alias SymphonyElixir.{CandidatePipeline, Config, PromptBuilder, Tracker, Workspace}
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, PromptBuilder, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
   @type worker_host :: String.t() | nil
@@ -29,6 +29,16 @@ defmodule SymphonyElixir.AgentRunner do
       :ok ->
         :ok
 
+      {:ok, candidate} ->
+        with {:ok, final_candidate} <- CandidatePipeline.read_candidate(candidate.workspace_path),
+             true <- Map.take(candidate, Map.keys(final_candidate)) == final_candidate,
+             :ok <- send_candidate(codex_update_recipient, issue, candidate) do
+          :ok
+        else
+          {:error, reason} -> raise RuntimeError, "Candidate handoff failed: #{inspect(reason)}"
+          false -> raise RuntimeError, "Candidate handoff changed after review"
+        end
+
       {:error, reason} ->
         Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
         raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
@@ -38,13 +48,22 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
-    case Workspace.create_for_issue(issue, worker_host) do
+    workspace_result =
+      if Config.control_settings().enabled and not is_nil(worker_host),
+        do: {:error, :controlled_workers_require_local_host},
+        else: Workspace.create_for_issue(issue, worker_host)
+
+    case workspace_result do
       {:ok, workspace} ->
-        send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
+        send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace, opts[:run_id])
 
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+            if Config.control_settings().enabled do
+              CandidatePipeline.run(workspace, issue, opts, codex_message_handler(codex_update_recipient, issue, opts[:run_id]))
+            else
+              run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+            end
           end
         after
           Workspace.run_after_run_hook(workspace, issue, worker_host)
@@ -55,35 +74,42 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp codex_message_handler(recipient, issue) do
+  defp codex_message_handler(recipient, issue, run_id \\ nil) do
     fn message ->
-      send_codex_update(recipient, issue, message)
+      send_codex_update(recipient, issue, message, run_id)
     end
   end
 
-  defp send_codex_update(recipient, %Issue{id: issue_id}, message)
+  defp send_codex_update(recipient, %Issue{id: issue_id}, message, run_id)
        when is_binary(issue_id) and is_pid(recipient) do
-    send(recipient, {:codex_worker_update, issue_id, message})
+    if run_id,
+      do: send(recipient, {:codex_worker_update, issue_id, run_id, message}),
+      else: send(recipient, {:codex_worker_update, issue_id, message})
+
     :ok
   end
 
-  defp send_codex_update(_recipient, _issue, _message), do: :ok
+  defp send_codex_update(_recipient, _issue, _message, _run_id), do: :ok
 
-  defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace)
+  defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace, run_id)
        when is_binary(issue_id) and is_pid(recipient) and is_binary(workspace) do
-    send(
-      recipient,
-      {:worker_runtime_info, issue_id,
-       %{
-         worker_host: worker_host,
-         workspace_path: workspace
-       }}
-    )
+    info = %{worker_host: worker_host, workspace_path: workspace}
+
+    if run_id,
+      do: send(recipient, {:worker_runtime_info, issue_id, run_id, info}),
+      else: send(recipient, {:worker_runtime_info, issue_id, info})
 
     :ok
   end
 
-  defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
+  defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace, _run_id), do: :ok
+
+  defp send_candidate(recipient, %Issue{id: issue_id}, candidate) when is_pid(recipient) do
+    send(recipient, {:worker_candidate_ready, issue_id, candidate})
+    :ok
+  end
+
+  defp send_candidate(_recipient, _issue, _candidate), do: {:error, :candidate_recipient_required}
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)

@@ -2310,3 +2310,120 @@ Extension config:
 - Cleanup and observability:
   - Operators need to know which host owns a run, where its workspace lives, and whether cleanup
     happened on the right machine.
+
+
+## Appendix B. Controlled Local Execution
+
+This repository's opt-in extension preserves upstream behavior when
+`control.enabled` is false. It adds a single-host admission and operator boundary;
+it is not a distributed workflow engine or a deployment controller.
+
+### B.1 Configuration
+
+`control` fields are startup-owned. The running instance MUST stop admission when
+these effective settings change and require restart. Unknown or corrupt durable
+state MUST fail startup; a write failure MUST block further admission.
+
+| Field | Default | Contract |
+| --- | --- | --- |
+| `enabled` | `false` | Enables this extension. |
+| `state_path` | none | Required when enabled; absolute/relative local path or `$ENV`; outside workspaces. |
+| `base_sha` | none | Trusted full lowercase Git commit SHA or `$ENV`; required by candidate execution. |
+| `initial_mode` | `paused` | `paused`, `draining` or `running`; used only for a new ledger. |
+| `max_attempts` | `2` | Total worker lifetimes per issue, including failed starts. |
+| `max_total_runtime_ms` | `3600000` | Total admitted execution time per issue, shared by builder and reviewer. |
+| `max_total_tokens` | `250000` | Total reported usage per issue across attempts and both roles. |
+
+Runtime files MUST remain outside worker-writable checkouts. The service MUST
+reserve an attempt before launching it and hold a local advisory lock for ledger
+ownership. Writes use an exclusive temporary file, file sync, atomic rename and
+parent-directory sync. Exact retry timer positions need not survive restart;
+operator holds and consumed budgets MUST survive.
+
+Live runtime accounting MUST use monotonic elapsed time. An interrupted active
+reservation from an unknown runtime epoch is conservatively charged its remaining
+reserved runtime. Token enforcement occurs on usage reports, so the final reporting
+increment may exceed the configured threshold. A separately scheduled worker
+termination deadline MUST not depend on completion of a tracker API poll.
+
+### B.2 Native control API
+
+`GET /api/v1/control` returns enabled state, mode, operator revision, issue budgets,
+active run identifiers, holds, candidate handoffs and any control fault.
+`POST /api/v1/control` accepts only:
+
+```json
+{"command_id":"unique-request-id","expected_revision":0,"action":"resume"}
+```
+
+`cancel` and `retry` additionally require `issue_id`. Supported actions:
+
+| Action | Effect |
+| --- | --- |
+| `pause` | Persist paused mode, interrupt active workers, preserve workspaces. |
+| `drain` | Stop new worker lifetimes and retries; allow currently admitted bounded execution to finish. |
+| `resume` | Enable eligible dispatch without clearing issue holds or budgets. |
+| `cancel` | Persist a per-issue hold, stop owned work and retain its workspace. |
+| `retry` | Clear an issue hold only within remaining budgets; never reset counters. |
+
+Both routes require `Authorization: Bearer $SYMPHONY_CONTROL_TOKEN`; the token MUST
+have at least 32 bytes. The Mac profile binds loopback, accepts only loopback Host
+values, and rejects Origin-bearing requests. Controlled `/api/v1/refresh` requests
+use the same authentication. No raw shell command, arbitrary REST proxy, merge or
+release operation is provided. MCP and CLI callers MUST use this native interface
+rather than create another scheduling authority.
+
+The service acknowledges commands only after durable persistence. An identical
+command ID and body replays its stored result; changed content with the same ID or
+a stale expected revision returns conflict. Replayed results identify the original
+revision, not necessarily the latest current revision. Operator revisions are
+separate from streaming worker updates. The command journal is bounded; when full,
+new commands fail closed rather than silently forgetting idempotency history.
+
+### B.3 Candidate handoff and recovery
+
+The builder and reviewer MUST use separate App Server threads. The reviewer MUST
+inspect an isolated checkout of the candidate SHA with read-only tools. Review
+results MUST name that SHA. A verdict is evidence only; it grants no publication,
+merge, infrastructure, migration or deployment authority.
+
+Worker events MUST carry the reserved run identifier and match both the in-memory
+worker and durable active reservation. A valid handoff persists candidate/review
+metadata and an `owner_review` hold before the worker exits. Later completion,
+usage or deadline events for that settled run MUST NOT replace the handoff.
+
+Every dispatch route, including queued retries and normal-exit continuations,
+MUST pass the same durable admission gate. Recovery MUST hold interrupted runs
+and pause dispatch; user retry remains subject to original budgets. A control
+fault MUST stop owned workers and prevent further ledger writes or dispatch.
+Workspace cleanup MUST retain unpublished work. Process-group cleanup MUST
+serialize with subsequent commands in the same workspace.
+
+### B.4 Container ownership and host publication
+
+The Mac profile runs coding App Servers in local Docker PID namespaces, using an
+immutable image ID, bounded resources, no host Docker socket and a read-only root
+filesystem. Only the assigned checkout and dedicated Codex state are mounted; the
+reviewer checkout MUST be read-only. Host GitHub, cloud and control credentials
+MUST remain outside the coding container. Tool permissions MUST separately protect
+mounted Codex authentication and session state; scoped mounts alone are insufficient.
+
+A host guardian MUST record an ownership intent before container creation and
+record container identity before starting the App Server. Creation and cleanup MUST
+use the same verified local Docker endpoint. Cleanup MUST verify ownership before
+removal and verify disappearance before clearing its marker. Interrupted creation
+without a confirmed outcome, unavailable Docker, mismatched identity or unverified
+removal MUST retain a marker that prevents subsequent use of that workspace. Native
+process-group cleanup alone is insufficient for Codex children that start new groups.
+Live launch MUST remain separately disabled until real cancellation, permission and
+bounded pilot checks establish the intended boundary.
+
+The publication broker runs on the trusted host as a separate process. It reads the
+native handoff, revalidates the run and exact SHA, uses its own lock and durable
+receipts, and publishes only to the approved repository and chosen integration
+branch. Workers MUST NOT inherit publication credentials or infer authority from a
+review verdict. An explicitly enabled automatic-merge policy additionally requires
+issue opt-in, an allowed small documentation diff, an approving independent review,
+verified branch protection and successful exact-SHA required checks from pinned
+GitHub Apps. Unknown or changed evidence MUST block the operation. Deployment and
+infrastructure changes still require separate user authorization.

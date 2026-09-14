@@ -215,7 +215,7 @@ defmodule SymphonyElixir.Config.Schema do
       )
       |> validate_required([:command])
       |> validate_change(:command, fn :command, command ->
-        if command != "" and String.trim(command) == "" do
+        if String.trim(command) == "" do
           [command: "can't be blank"]
         else
           []
@@ -270,6 +270,39 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Control do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+    @primary_key false
+
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:state_path, :string)
+      field(:base_sha, :string)
+      field(:initial_mode, :string, default: "paused")
+      field(:max_attempts, :integer, default: 2)
+      field(:max_total_runtime_ms, :integer, default: 3_600_000)
+      field(:max_total_tokens, :integer, default: 250_000)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      keys = [:enabled, :state_path, :base_sha, :initial_mode, :max_attempts, :max_total_runtime_ms, :max_total_tokens]
+
+      changeset =
+        schema
+        |> cast(attrs, keys, empty_values: [])
+        |> validate_format(:base_sha, ~r/\A(?:[0-9a-f]{40}|\$[A-Za-z_][A-Za-z0-9_]*)\z/)
+        |> validate_inclusion(:initial_mode, ["paused", "draining", "running"])
+        |> validate_number(:max_attempts, greater_than: 0)
+        |> validate_number(:max_total_runtime_ms, greater_than: 0)
+        |> validate_number(:max_total_tokens, greater_than: 0)
+
+      if get_field(changeset, :enabled), do: validate_required(changeset, [:state_path]), else: changeset
+    end
+  end
+
   defmodule Server do
     @moduledoc false
     use Ecto.Schema
@@ -298,6 +331,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:control, Control, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
   end
 
@@ -392,6 +426,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
+    |> cast_embed(:control, with: &Control.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
   end
 

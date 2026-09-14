@@ -42,6 +42,30 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec control_settings() :: map()
+  def control_settings do
+    settings = settings!().control |> Map.from_struct()
+
+    path =
+      case settings.state_path do
+        "$" <> name -> System.get_env(name)
+        value -> value
+      end
+
+    path = if is_binary(path) and String.trim(path) != "", do: Path.expand(path, Path.dirname(Workflow.workflow_file_path())), else: nil
+
+    base_sha =
+      case settings.base_sha do
+        "$" <> name -> System.get_env(name)
+        value -> value
+      end
+
+    settings |> Map.put(:state_path, path) |> Map.put(:base_sha, base_sha)
+  end
+
+  @spec control_token() :: String.t() | nil
+  def control_token, do: System.get_env("SYMPHONY_CONTROL_TOKEN")
+
   @spec max_concurrent_agents_for_state(term()) :: pos_integer()
   def max_concurrent_agents_for_state(state_name) when is_binary(state_name) do
     config = settings!()

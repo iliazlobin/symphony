@@ -1,5 +1,6 @@
 name: make-all
 
+# Keep this required check unfiltered: elixir/, tools/ and profiles/ share its gates.
 on:
   pull_request:
   push:
@@ -36,3 +37,13 @@ jobs:
 
       - name: Verify make all
         run: make all
+
+      - name: Install Python tooling dependencies
+        working-directory: .
+        run: |
+          python3 -m venv "$RUNNER_TEMP/symphony-tooling"
+          "$RUNNER_TEMP/symphony-tooling/bin/python" -m pip install --requirement tools/requirements.txt
+
+      - name: Verify Python tooling
+        working-directory: .
+        run: '"$RUNNER_TEMP/symphony-tooling/bin/python" -m unittest discover -s tools/tests -v'

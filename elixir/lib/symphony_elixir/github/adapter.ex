@@ -5,7 +5,8 @@ defmodule SymphonyElixir.GitHub.Adapter do
 
   @behaviour SymphonyElixir.Tracker
 
-  alias SymphonyElixir.GitHub.{AgentTool, Client}
+  alias SymphonyElixir.Config
+  alias SymphonyElixir.GitHub.{Admission, AgentTool, Client}
   alias SymphonyElixir.Tracker.Issue
 
   @active_states ["open"]
@@ -30,10 +31,14 @@ defmodule SymphonyElixir.GitHub.Adapter do
   end
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issues_by_states(states), do: client_module().fetch_issues_by_states(states)
+  def fetch_issues_by_states(states) do
+    client_module().fetch_issues_by_states(states) |> admit_dependencies()
+  end
 
   @spec fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issues_by_ids(issue_ids), do: client_module().fetch_issues_by_ids(issue_ids)
+  def fetch_issues_by_ids(issue_ids) do
+    client_module().fetch_issues_by_ids(issue_ids) |> admit_dependencies()
+  end
 
   @spec agent_tool_specs() :: [map()]
   def agent_tool_specs, do: AgentTool.tool_specs()
@@ -47,6 +52,17 @@ defmodule SymphonyElixir.GitHub.Adapter do
   defp client_module do
     Application.get_env(:symphony_elixir, :github_client_module, Client)
   end
+
+  defp admit_dependencies({:ok, issues} = result) do
+    if Config.control_settings().enabled do
+      client = client_module()
+      {:ok, Admission.evaluate(issues, &client.fetch_issues_by_ids/1)}
+    else
+      result
+    end
+  end
+
+  defp admit_dependencies(error), do: error
 
   defp validate_states(states, allowed_states, _missing_error) when is_list(states) do
     if Enum.all?(states, &(normalize_state(&1) in allowed_states)) do

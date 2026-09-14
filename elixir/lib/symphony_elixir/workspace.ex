@@ -4,11 +4,95 @@ defmodule SymphonyElixir.Workspace do
   """
 
   require Logger
-  alias SymphonyElixir.{Config, PathSafety, SSH}
+  alias SymphonyElixir.{Config, PathSafety, ProcessGroup, SSH}
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
 
+  # Runs inside ProcessGroup's ownership lock, after previous worker cleanup.
+  # Git configuration is parsed without includes from an unrelated cwd; neither
+  # config values nor parser errors are emitted to logs.
+  @git_guard ~S"""
+  import os, pathlib, re, stat, subprocess, sys
+  workspace, mode = sys.argv[1:3]
+  def reject():
+      print('Unsafe worker Git metadata; host execution refused', file=sys.stderr)
+      sys.exit(78)
+  if os.path.abspath(workspace) != os.path.realpath(workspace):
+      reject()
+  gitdir = pathlib.Path(workspace) / '.git'
+  env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+  env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_SYSTEM='/dev/null',
+             GIT_TERMINAL_PROMPT='0', GIT_NO_REPLACE_OBJECTS='1', GIT_ATTR_NOSYSTEM='1',
+             GIT_OPTIONAL_LOCKS='0', GIT_CEILING_DIRECTORIES=workspace)
+  if mode == 'after_create' and not os.path.lexists(gitdir):
+      pass
+  else:
+      try:
+          if not stat.S_ISDIR(gitdir.lstat().st_mode):
+              reject()
+          for base, directories, files in os.walk(gitdir, followlinks=False):
+              for name in directories + files:
+                  info = (pathlib.Path(base) / name).lstat()
+                  if not stat.S_ISDIR(info.st_mode) and not (stat.S_ISREG(info.st_mode) and info.st_nlink == 1):
+                      reject()
+          for relative in ('commondir', 'gitdir', 'config.worktree', 'objects/info/alternates',
+                           'objects/info/http-alternates', 'info/grafts'):
+              if os.path.lexists(gitdir / relative):
+                  reject()
+          config = gitdir / 'config'
+          if not stat.S_ISREG(config.lstat().st_mode) or config.stat().st_size > 65536:
+              reject()
+          result = subprocess.run(['git', '--git-dir=/dev/null', 'config', '--file', str(config),
+                                   '--no-includes', '--null', '--list'], cwd='/', env=env,
+                                  capture_output=True, timeout=10)
+          if result.returncode or len(result.stdout) > 131072:
+              reject()
+          allowed = re.compile(r'(core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|hookspath|fsmonitor)|user\.(name|email)|remote\.[^\n\0]+\.(url|fetch|pushurl)|branch\.[^\n\0]+\.(remote|merge|rebase))')
+          for entry in result.stdout.decode('utf-8').split('\0'):
+              if not entry:
+                  continue
+              key, _, value = entry.partition('\n')
+              if not allowed.fullmatch(key) and not (key == 'credential.helper' and value == ''):
+                  reject()
+          # Root status can inspect a submodule even with submodule.recurse=false.
+          # This profile supports ordinary standalone repositories only. Inspect
+          # index entries without checking out files or running conversion filters.
+          index = subprocess.run(['git', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
+                                  '-c', 'submodule.recurse=false', '-C', workspace,
+                                  'ls-files', '--stage', '-z'], cwd='/', env=env,
+                                 capture_output=True, timeout=10)
+          if index.returncode or len(index.stdout) > 16777216:
+              reject()
+          if any(entry.startswith(b'160000 ') for entry in index.stdout.split(b'\0')):
+              reject()
+          for base, directories, files in os.walk(workspace, followlinks=False):
+              if base == workspace:
+                  directories[:] = [name for name in directories if name.casefold() != '.git']
+              elif any(name.casefold() == '.git' for name in directories + files):
+                  reject()
+      except (OSError, ValueError, subprocess.SubprocessError):
+          reject()
+  # These overrides also protect Git invoked by the trusted profile hook.
+  overrides = [('core.fsmonitor', 'false'), ('core.hooksPath', '/dev/null'), ('submodule.recurse', 'false')]
+  env['GIT_CONFIG_COUNT'] = str(len(overrides))
+  for index, (key, value) in enumerate(overrides):
+      env['GIT_CONFIG_KEY_' + str(index)] = key
+      env['GIT_CONFIG_VALUE_' + str(index)] = value
+  os.chdir(workspace)
+  os.execvpe(sys.argv[3], sys.argv[3:], env)
+  """
+
   @type worker_host :: String.t() | nil
+
+  @doc false
+  @spec guarded_git_command(Path.t(), [String.t()]) :: String.t()
+  def guarded_git_command(workspace, args) do
+    guarded_command(workspace, "git", ["git", "--no-replace-objects" | args])
+  end
+
+  defp guarded_command(workspace, mode, command) do
+    Enum.map_join(["python3", "-I", "-c", @git_guard, workspace, mode | command], " ", &shell_escape/1)
+  end
 
   @spec create_for_issue(map() | String.t() | nil, worker_host()) ::
           {:ok, Path.t()} | {:error, term()}
@@ -43,8 +127,12 @@ defmodule SymphonyElixir.Workspace do
         {:ok, workspace, false}
 
       File.exists?(workspace) ->
-        File.rm_rf!(workspace)
-        create_workspace(workspace)
+        if Config.control_settings().enabled do
+          {:error, {:workspace_path_exists, workspace}}
+        else
+          File.rm_rf!(workspace)
+          create_workspace(workspace)
+        end
 
       true ->
         create_workspace(workspace)
@@ -85,7 +173,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp create_workspace(workspace) do
-    File.rm_rf!(workspace)
+    unless Config.control_settings().enabled, do: File.rm_rf!(workspace)
     File.mkdir_p!(workspace)
     {:ok, workspace, true}
   end
@@ -94,7 +182,16 @@ defmodule SymphonyElixir.Workspace do
   def remove(workspace), do: remove(workspace, nil)
 
   @spec remove(Path.t(), worker_host()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
-  def remove(workspace, nil) do
+  def remove(workspace, worker_host) do
+    if Config.control_settings().enabled do
+      Logger.info("Retaining controlled workspace workspace=#{workspace}")
+      {:ok, []}
+    else
+      do_remove(workspace, worker_host)
+    end
+  end
+
+  defp do_remove(workspace, nil) do
     case File.exists?(workspace) do
       true ->
         case validate_workspace_path(workspace, nil) do
@@ -110,7 +207,7 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  def remove(workspace, worker_host) when is_binary(worker_host) do
+  defp do_remove(workspace, worker_host) when is_binary(worker_host) do
     maybe_run_before_remove_hook(workspace, worker_host)
 
     script =
@@ -134,7 +231,15 @@ defmodule SymphonyElixir.Workspace do
 
   @doc false
   @spec remove_recorded(Path.t(), worker_host()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
-  def remove_recorded(workspace, nil) when is_binary(workspace) do
+  def remove_recorded(workspace, worker_host) do
+    if Config.control_settings().enabled do
+      {:ok, []}
+    else
+      do_remove_recorded(workspace, worker_host)
+    end
+  end
+
+  defp do_remove_recorded(workspace, nil) when is_binary(workspace) do
     if Path.type(workspace) == :absolute do
       case validate_recorded_workspace_path(workspace) do
         :ok ->
@@ -148,11 +253,11 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  def remove_recorded(workspace, worker_host) when is_binary(workspace) and is_binary(worker_host) do
+  defp do_remove_recorded(workspace, worker_host) when is_binary(workspace) and is_binary(worker_host) do
     remove(workspace, worker_host)
   end
 
-  def remove_recorded(workspace, _worker_host) do
+  defp do_remove_recorded(workspace, _worker_host) do
     {:error, {:workspace_path_unreadable, workspace, :invalid}, ""}
   end
 
@@ -306,7 +411,15 @@ defmodule SymphonyElixir.Workspace do
 
   defp cleanup_failed_new_workspace(_workspace, false, _worker_host), do: :ok
 
-  defp cleanup_failed_new_workspace(workspace, true, nil) do
+  defp cleanup_failed_new_workspace(workspace, true, worker_host) do
+    if Config.control_settings().enabled do
+      :ok
+    else
+      cleanup_unmanaged_workspace(workspace, worker_host)
+    end
+  end
+
+  defp cleanup_unmanaged_workspace(workspace, nil) do
     case File.rm_rf(workspace) do
       {:ok, _removed} ->
         :ok
@@ -316,7 +429,7 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp cleanup_failed_new_workspace(workspace, true, worker_host) when is_binary(worker_host) do
+  defp cleanup_unmanaged_workspace(workspace, worker_host) when is_binary(worker_host) do
     script = [remote_shell_assign("workspace", workspace), "rm -rf \"$workspace\""] |> Enum.join("\n")
 
     case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
@@ -395,6 +508,39 @@ defmodule SymphonyElixir.Workspace do
   defp ignore_hook_failure({:error, _reason}), do: :ok
 
   defp run_hook(command, workspace, issue_context, hook_name, nil) do
+    if Config.control_settings().enabled do
+      timeout_ms = Config.settings!().hooks.timeout_ms
+
+      guarded = guarded_command(workspace, hook_name, ["/bin/sh", "-c", command])
+
+      case ProcessGroup.run(guarded, cd: workspace, timeout_ms: timeout_ms) do
+        {:ok, result} -> handle_hook_command_result(result, workspace, issue_context, hook_name)
+        {:error, :command_timeout} -> {:error, {:workspace_hook_timeout, hook_name, timeout_ms}}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      run_unmanaged_hook(command, workspace, issue_context, hook_name)
+    end
+  end
+
+  defp run_hook(command, workspace, issue_context, hook_name, worker_host) when is_binary(worker_host) do
+    timeout_ms = Config.settings!().hooks.timeout_ms
+
+    Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
+
+    case run_remote_command(worker_host, "cd #{shell_escape(workspace)} && #{command}", timeout_ms) do
+      {:ok, cmd_result} ->
+        handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
+
+      {:error, {:workspace_hook_timeout, ^hook_name, _timeout_ms} = reason} ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp run_unmanaged_hook(command, workspace, issue_context, hook_name) do
     timeout_ms = Config.settings!().hooks.timeout_ms
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local")
@@ -414,23 +560,6 @@ defmodule SymphonyElixir.Workspace do
         Logger.warning("Workspace hook timed out hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local timeout_ms=#{timeout_ms}")
 
         {:error, {:workspace_hook_timeout, hook_name, timeout_ms}}
-    end
-  end
-
-  defp run_hook(command, workspace, issue_context, hook_name, worker_host) when is_binary(worker_host) do
-    timeout_ms = Config.settings!().hooks.timeout_ms
-
-    Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
-
-    case run_remote_command(worker_host, "cd #{shell_escape(workspace)} && #{command}", timeout_ms) do
-      {:ok, cmd_result} ->
-        handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
-
-      {:error, {:workspace_hook_timeout, ^hook_name, _timeout_ms} = reason} ->
-        {:error, reason}
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 

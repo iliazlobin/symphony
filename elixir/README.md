@@ -7,6 +7,24 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 > Symphony Elixir is prototype software intended for evaluation only and is presented as-is.
 > We recommend implementing your own hardened version based on `SPEC.md`.
 
+## Controlled local execution
+
+Set `control.enabled: true` to use the local builder/reviewer pipeline and durable
+operator controls. Configuration is documented in [SPEC Appendix B](../SPEC.md#appendix-b-controlled-local-execution);
+[Architecture](../ARCHITECTURE.md) maps its ownership and source files.
+
+Controlled execution retains workspaces, persists issue holds and budgets, and
+requires an authenticated local operator API. A local Docker builder and fresh
+reviewer produce a candidate handoff; a separate host broker validates publication
+and any approved documentation-only merge. Coding workers receive no raw tracker
+mutation tools. Live activation requires verified isolation, cancellation and a
+bounded pilot; it remains behind the profile's explicit host gate.
+
+Python 3 and a verified local Docker runtime are required by this profile, alongside
+Elixir/OTP. See the [Mac service and recovery guide](../profiles/events-concierge/README.md).
+The upstream cleanup, automatic continuation and in-memory-only behavior below
+applies when `control.enabled` is false.
+
 ## Screenshot
 
 ![Symphony Elixir screenshot](../.github/media/elixir-screenshot.png)

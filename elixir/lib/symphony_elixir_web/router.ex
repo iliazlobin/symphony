@@ -29,6 +29,9 @@ defmodule SymphonyElixirWeb.Router do
   end
 
   scope "/", SymphonyElixirWeb do
+    get("/api/v1/control", ControlApiController, :show)
+    post("/api/v1/control", ControlApiController, :update)
+    match(:*, "/api/v1/control", ObservabilityApiController, :method_not_allowed)
     get("/api/v1/state", ObservabilityApiController, :state)
 
     match(:*, "/", ObservabilityApiController, :method_not_allowed)

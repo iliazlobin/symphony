@@ -6,7 +6,8 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   use Phoenix.Controller, formats: [:json]
 
   alias Plug.Conn
-  alias SymphonyElixirWeb.{Endpoint, Presenter}
+  alias SymphonyElixir.Config
+  alias SymphonyElixirWeb.{ControlApiController, Endpoint, Presenter}
 
   @spec state(Conn.t(), map()) :: Conn.t()
   def state(conn, _params) do
@@ -26,6 +27,11 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
 
   @spec refresh(Conn.t(), map()) :: Conn.t()
   def refresh(conn, _params) do
+    conn = if Config.control_settings().enabled, do: ControlApiController.authorize(conn), else: conn
+    if conn.halted, do: conn, else: refresh_authorized(conn)
+  end
+
+  defp refresh_authorized(conn) do
     case Presenter.refresh_payload(orchestrator()) do
       {:ok, payload} ->
         conn
