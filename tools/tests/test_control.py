@@ -9,11 +9,13 @@ import sys
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import symphony_control as control
+import symphony_service as service
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -49,6 +51,18 @@ def server(response=(200, b'{"revision":4}', {})):
 
 
 class ControlTests(unittest.TestCase):
+    def test_stop_waits_for_launchd_to_remove_departing_job(self):
+        replies = [SimpleNamespace(returncode=0), SimpleNamespace(returncode=0), SimpleNamespace(returncode=113)]
+        with patch.object(service, "launchctl", side_effect=replies) as command, patch.object(service.time, "sleep") as pause:
+            service.wait_unloaded("gui/501", "fixture")
+            self.assertEqual(command.call_count, 3)
+            self.assertEqual(pause.call_count, 2)
+
+    def test_stop_does_not_claim_completion_when_launchd_keeps_job(self):
+        with patch.object(service, "launchctl", return_value=SimpleNamespace(returncode=0)), patch.object(service.time, "monotonic", side_effect=[0, 11]):
+            with self.assertRaisesRegex(control.ControlError, "has not finished unloading"):
+                service.wait_unloaded("gui/501", "fixture")
+
     def test_private_configuration_rejects_permissions_symlinks_and_remote_urls(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

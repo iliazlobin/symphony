@@ -8,6 +8,7 @@ from pathlib import Path
 import plistlib
 import subprocess
 import sys
+import time
 
 from symphony_control import ControlError, load_config, read_private
 
@@ -37,6 +38,16 @@ def launchctl(*args, check=True):
     return result
 
 
+def wait_unloaded(domain, label):
+    # bootout can return before launchd removes the job. A following start would
+    # otherwise mistake the departing job for an already-running service.
+    deadline = time.monotonic() + 10
+    while not launchctl("print", domain + "/" + label, check=False).returncode:
+        if time.monotonic() >= deadline:
+            raise ControlError("Service has not finished unloading: " + label)
+        time.sleep(0.1)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config")
@@ -55,6 +66,11 @@ def main():
                 result = launchctl("bootout", domain + "/" + label, check=False)
                 if result.returncode:
                     errors.append(label + ": " + result.stderr.strip()[:500])
+                    continue
+                try:
+                    wait_unloaded(domain, label)
+                except (ControlError, subprocess.TimeoutExpired) as exc:
+                    errors.append(str(exc))
                     continue
             print("Unloaded " + label)
         if errors:
