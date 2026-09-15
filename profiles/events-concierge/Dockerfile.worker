@@ -15,8 +15,8 @@ RUN apt-get update \
     && python --version && node --version && uv --version
 
 # npm checks package integrity; verify the reviewed top-level artifact explicitly.
-RUN test "$(npm view @openai/codex@0.144.6 dist.integrity)" = "sha512-wk+2CWiBNXiJLBoN2D08N9RceWkSBnlgk5g2K1a4CXrP/C0gdlHyRUG7RFzm9y41DCK/7tvCct233JVxyFmznw==" \
-    && npm install --global --ignore-scripts @openai/codex@0.144.6 \
+RUN test "$(npm view @openai/codex@0.153.4 dist.integrity)" = "sha512-wbHDmit7S/YvBGVX1DQmk13xtWblZ2cApeJ/pB7xDZ10Cna+DZc5ij7f0F4OxdsXN4FW1oLT48OpogUI1+8Y2w==" \
+    && npm install --global --ignore-scripts @openai/codex@0.153.4 \
     && npm cache clean --force \
     && codex --version
 

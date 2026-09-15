@@ -20,7 +20,7 @@ inputs enforced by the tool sandbox and Linux kernel respectively.
 ## Setup
 
 Use Elixir 1.19.5 / OTP 28 from `elixir/mise.toml`, Python 3.9+ with
-`tools/requirements.txt`, Git, GitHub CLI and Codex 0.144.6. Authenticate GitHub CLI as
+`tools/requirements.txt`, Git, GitHub CLI and Codex 0.153.4. Authenticate GitHub CLI as
 the repository owner. Install worker Codex authentication independently; do not copy
 the owner's existing Codex home, cloud credentials, application `.env` or MCP settings.
 
@@ -228,11 +228,14 @@ without model calls. `tools/probe_cancellation.py` exposes the native Mac proces
 limitation; native Codex can leave detached command children running. Live activation
 requires the dedicated container boundary and its real cancellation checks.
 
-The worker image matches the application's Python 3.12 / Node 22 toolchain:
+The worker image pins Codex 0.153.4 with the application's Python 3.12 / Node 22
+toolchain. [Codex 0.153.1 added Astra support](https://learn.chatgpt.com/docs/changelog);
+the pinned hotfix preserves the configured `gpt-6-astra` model. Rebuilds require fresh
+permission, cancellation and model-startup checks before updating the active image pin:
 
 ```sh
-docker build -f profiles/events-concierge/Dockerfile.worker -t symphony-codex:0.144.6 .
-docker image inspect symphony-codex:0.144.6 --format '{{.Id}}'
+docker build -f profiles/events-concierge/Dockerfile.worker -t symphony-codex:0.153.4 .
+docker image inspect symphony-codex:0.153.4 --format '{{.Id}}'
 python3 tools/probe_cancellation.py --container-image sha256:VERIFIED_IMAGE_ID
 ```
 
