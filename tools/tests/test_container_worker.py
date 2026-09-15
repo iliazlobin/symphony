@@ -31,6 +31,34 @@ class ContainerWorkerTests(unittest.TestCase):
                 (clean / "finished").write_text("done")
             self.assertFalse(clean.exists())
 
+    def test_fixed_canary_refuses_existing_state_and_links(self):
+        spec = importlib.util.spec_from_file_location("probe_cancellation", ROOT / "tools/probe_cancellation.py")
+        probe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(probe)
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            fixed = parent / "symphony-sandbox-canary"
+            fixed.mkdir()
+            original = fixed / "existing-evidence"
+            original.write_text("preserve")
+            with self.assertRaises(FileExistsError):
+                with probe.disposable_root(parent, fixed=True):
+                    self.fail("Existing fixture must not be reused")
+            self.assertEqual(original.read_text(), "preserve")
+            original.unlink()
+            fixed.rmdir()
+            target = parent / "outside"
+            target.mkdir()
+            fixed.symlink_to(target, target_is_directory=True)
+            with self.assertRaises(FileExistsError):
+                with probe.disposable_root(parent, fixed=True):
+                    self.fail("Fixture symlinks must not be followed")
+            self.assertTrue(target.is_dir())
+            fixed.unlink()
+            with probe.disposable_root(parent, fixed=True) as clean:
+                self.assertEqual(clean, fixed)
+            self.assertFalse(fixed.exists())
+
     def test_guardian_never_reaps_leader_before_group_signals(self):
         source = (ROOT / "elixir/lib/symphony_elixir/process_group.ex").read_text()
         guardian = textwrap.dedent(re.search(r'@guardian ~S"""\n(.*?)\n  """', source, re.S).group(1))

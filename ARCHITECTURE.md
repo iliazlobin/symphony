@@ -140,11 +140,12 @@ Mac process-group path cannot contain real Codex commands that detach into other
 groups; its fixture tests do not establish the container boundary. Implementation and
 local unit coverage do not imply accepted live operation.
 
-The Colima namespace/mount sandbox remains an activation blocker. Compatibility
-candidates are not an accepted live configuration until the container permission
-and cancellation canaries pass. Named role selection and command restrictions are
-verified against the installed Mac Codex; that does not establish the Linux container
-boundary. Dedicated worker authentication and a real issue-to-PR pilot are also required.
+Disposable Linux canaries verify named builder/reviewer permissions, protected-file
+and network restrictions, and cancellation of pipe, PTY and detached-child commands.
+They use an exact-path diagnostic AppArmor candidate; that policy was unloaded after
+testing and is not installed by the service. Saving an operational policy restricted
+to Symphony workspaces, wiring the launcher and accepting a real issue-to-PR pilot
+remain activation work. Dedicated worker sign-in is verified; no live task has run.
 
 The host publication broker can perform only the approved repository operations.
 Automatic merge requires explicit host enablement, issue opt-in, a clean review of

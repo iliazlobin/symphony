@@ -135,13 +135,25 @@ reviewer tools cannot, and both deny command network access and outside-file/`.e
 reads. `tools/probe_permissions.py` verifies those restrictions and named role selection
 on the installed Mac Codex without model calls.
 
-**Activation prerequisites:** Docker's AppArmor policy blocks Codex's inner sandbox
-mount operations. The disposable probe accepts `--apparmor-profile symphony-codex`
-only with the existing seccomp candidate; no worker AppArmor policy is installed or
-enabled by the service. Further scoped mount exceptions require explicit approval,
-then real container permission and cancellation canaries must pass. An authenticated
-dedicated worker and a successful issue-to-PR pilot are required; Mac checks do not establish
-the Linux boundary. Keep ordinary dispatch disabled while these gates are unresolved.
+`tools/probe_container_permissions.py` checks the pinned Linux worker without real
+credentials or model calls. It verifies builder permissions, reviewer permissions on
+both writable and read-only outer mounts, and reachable positive controls before
+checking file and network denial. Container cancellation probes require fresh parent/child
+heartbeats and container removal within 10 seconds, before their 60-second expiry.
+
+**Activation prerequisites:** Linux permission and cancellation canaries pass with an
+exact-path diagnostic AppArmor candidate. Docker's default policy still blocks Codex's
+inner sandbox mounts. The temporary profile was unloaded; no worker AppArmor policy is
+shipped, installed or selected by the service. The probes accept an explicitly reviewed
+`--apparmor-profile symphony-codex` only alongside the existing seccomp candidate;
+`--fixed-root` selects the cancellation probe's exact disposable fixture and refuses
+existing state. The permission probe uses that fixture automatically.
+
+Saving and installing a policy limited to the configured Symphony workspace root and
+finite runtime paths, then wiring the launcher, needs focused approval. Revalidate
+that operational configuration before a bounded issue-to-PR pilot. Dedicated worker
+sign-in is verified; the pilot has not run. Keep ordinary dispatch and automatic merge
+disabled while these gates are unresolved.
 
 Retain failed workspaces and GitHub records. Do not delete the ledger or lock to reset
 budgets or force ownership. Restart conservatively holds interrupted work. Resolve any
