@@ -147,6 +147,22 @@ input, select {
 .pull-request-heading a { overflow-wrap: anywhere; min-width: 0; }
 .pull-request-heading .evidence-badge { flex-shrink: 0; }
 .pull-request-checks { display: flex; flex-wrap: wrap; gap: 3px 10px; margin-top: 5px; font-size: 11px; color: var(--muted); }
+.pull-request-revision, .pull-request-metadata { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 7px; font-size: 11px; color: var(--muted); }
+.pull-request-revision code { overflow-wrap: anywhere; font: 11px/1.5 ui-monospace, monospace; }
+.pull-request-metadata a { color: var(--muted); }
+.diff-additions { color: var(--good); }
+.ci-details { margin-top: 9px; font-size: 11px; }
+.ci-details summary { color: var(--fg); }
+.ci-note { margin-top: 6px; font-size: 11px; color: var(--muted); }
+.ci-jobs { list-style: none; padding: 0; margin: 8px 0 0; }
+.ci-job { padding: 7px 0; border-top: 1px solid var(--line); }
+.ci-job-heading { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.ci-job-heading a, .ci-job-heading > span:last-child { overflow-wrap: anywhere; }
+.ci-indicator { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+.ci-indicator.success { background: var(--good); }
+.ci-indicator.failure { background: var(--warn); }
+.ci-job-status { display: flex; gap: 8px; margin: 3px 0 0 14px; color: var(--muted); }
+.ci-workflow { margin-top: 8px; color: var(--muted); overflow-wrap: anywhere; }
 .card-more-links { border: 0; padding: 4px 0; background: transparent; color: var(--accent); font-size: 11px; }
 .task-evidence { margin-top: 12px; font-size: 12px; }
 .task-reference-links { margin: 12px 0; }

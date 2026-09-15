@@ -460,14 +460,147 @@ defmodule SymphonyElixirWeb.DashboardLive do
         state: pr_state(pr),
         title: field(pr, :title),
         review: display(field(pr, :review)),
-        checks: display(field(pr, :checks))
+        checks: display(field(pr, :checks)),
+        head_ref: field(pr, :head_ref),
+        base_ref: field(pr, :base_ref),
+        author: field(pr, :author),
+        commit: pr_commit(pr),
+        changes: pr_changes(pr),
+        mergeability: pr_mergeability(pr),
+        jobs: pr_jobs(pr),
+        workflow_runs: workflow_runs(pr_jobs(pr)),
+        check_details_status: field(pr, :check_details_status),
+        ci_summary: ci_summary(pr)
       )
 
     ~H"""
     <div class={"pull-request-evidence #{if @compact, do: "compact", else: ""}"}>
       <div class="pull-request-heading"><a :if={@url} href={@url} target="_blank" rel="noopener noreferrer" title={@title}>{@label}<span :if={!@compact && is_binary(@title)}> · {@title}</span></a><strong :if={!@url}>{@label}</strong><span class="evidence-badge">{@state}</span></div>
-      <div class="pull-request-checks"><span>Review: {@review}</span><span>CI: {@checks}</span></div>
+      <div :if={@head_ref || @commit} class="pull-request-revision"><code :if={is_binary(@head_ref)}>{@head_ref}</code><span :if={!@compact && is_binary(@base_ref)}>→ <code>{@base_ref}</code></span><a :if={@commit} href={@commit.url} target="_blank" rel="noopener noreferrer" title={@commit.sha}>{String.slice(@commit.sha, 0, 7)}</a></div>
+      <div :if={@changes || (!@compact && @author)} class="pull-request-metadata"><span :if={!@compact && is_binary(@author)}>By {@author}</span><a :if={@changes && @url} href={@url <> "/files"} target="_blank" rel="noopener noreferrer">{@changes.files} {if @changes.files == 1, do: "file", else: "files"}<span class="diff-additions"> +{@changes.additions}</span><span> −{@changes.deletions}</span></a></div>
+      <div class="pull-request-checks"><span>GitHub review: {@review}</span><span>CI: {@checks}</span><span :if={!@compact && @mergeability}>{@mergeability}</span></div>
+      <details :if={@jobs != []} class="ci-details" open={!@compact}>
+        <summary>{@ci_summary}</summary>
+        <p :if={@check_details_status == "partial"} class="ci-note">Some check details are unavailable; this list is incomplete.</p>
+        <div :for={run <- @workflow_runs} class="ci-workflow"><a :if={run.url} href={run.url} target="_blank" rel="noopener noreferrer">{run.name || "Workflow"}<span :if={run.number}> #{run.number}</span> ↗</a><span :if={!run.url}>{run.name}</span><span :if={is_binary(run.event)}> · {String.replace(run.event, "_", " ")}</span></div>
+        <ul class="ci-jobs"><.check_job :for={job <- @jobs} job={job} /></ul>
+      </details>
+      <p :if={@jobs == [] && @ci_summary} class="ci-note">{@ci_summary}</p>
     </div>
+    """
+  end
+
+  defp pr_commit(pr) do
+    url = safe_url(field(pr, :url))
+    sha = field(pr, :head_sha)
+
+    if is_binary(url) && Regex.match?(~r{\Ahttps://github\.com/[^/]+/[^/]+/pull/[1-9][0-9]*\z}, url) &&
+         is_binary(sha) && Regex.match?(~r/\A[0-9a-f]{40}\z/, sha) do
+      %{sha: sha, url: Regex.replace(~r{/pull/[0-9]+\z}, url, "/commit/" <> sha)}
+    end
+  end
+
+  defp pr_changes(pr) do
+    values = Enum.map([:changed_files, :additions, :deletions], &field(pr, &1))
+
+    if Enum.all?(values, &(is_integer(&1) && &1 >= 0)) do
+      [files, additions, deletions] = values
+      %{files: files, additions: additions, deletions: deletions}
+    end
+  end
+
+  defp pr_mergeability(pr) do
+    case field(pr, :mergeable) do
+      "mergeable" -> "No merge conflicts"
+      "conflicting" -> "Merge conflicts"
+      _ -> nil
+    end
+  end
+
+  defp ci_summary(pr) do
+    jobs = pr_jobs(pr)
+    status = field(pr, :check_details_status)
+
+    cond do
+      status == "stale" -> "Check details belong to an older commit."
+      status == "unavailable" -> "Individual check details unavailable."
+      jobs != [] -> ci_counts(jobs, field(pr, :check_total), status)
+      status == "available" -> "No checks reported for this commit."
+      status == "partial" -> "Check details incomplete."
+      true -> nil
+    end
+  end
+
+  defp pr_jobs(pr) do
+    if field(pr, :check_details_status) in ["available", "partial"], do: records(field(pr, :check_runs)), else: []
+  end
+
+  defp workflow_runs(jobs) do
+    jobs
+    |> Enum.map(fn job ->
+      name = field(job, :workflow_name)
+      url = safe_url(field(job, :run_url))
+      %{name: name, url: url, number: field(job, :run_number), event: field(job, :run_event)}
+    end)
+    |> Enum.filter(&(&1.url || &1.name))
+    |> Enum.uniq_by(&{&1.url, &1.name, &1.number})
+  end
+
+  defp ci_counts(jobs, total, status) do
+    counts =
+      jobs
+      |> Enum.frequencies_by(&check_result/1)
+      |> Enum.sort_by(fn {result, _} -> {check_rank(result), result} end)
+      |> Enum.map_join(", ", fn {result, count} -> "#{count} #{check_count_label(result)}" end)
+
+    prefix = if status == "partial" && is_integer(total), do: "#{length(jobs)} of #{total} checks", else: "#{length(jobs)} checks"
+    prefix <> " · " <> counts
+  end
+
+  defp check_result(job) do
+    status = field(job, :status)
+    conclusion = field(job, :conclusion)
+    if status == "completed", do: conclusion || "unknown", else: status || "unknown"
+  end
+
+  defp check_count_label("success"), do: "passed"
+  defp check_count_label("failure"), do: "failed"
+  defp check_count_label("in_progress"), do: "running"
+  defp check_count_label(result), do: result |> display() |> String.downcase()
+  defp check_rank(result) when result in ["failure", "error", "timed_out", "action_required", "startup_failure"], do: 0
+  defp check_rank(result) when result in ["in_progress", "queued", "pending", "waiting", "requested"], do: 1
+  defp check_rank("success"), do: 3
+  defp check_rank(_), do: 2
+
+  defp job_duration(job) do
+    case field(job, :duration_ms) do
+      ms when is_integer(ms) and ms >= 0 ->
+        seconds = div(ms, 1_000)
+        if seconds < 60, do: "#{seconds}s", else: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
+
+      _ ->
+        nil
+    end
+  end
+
+  defp check_job(assigns) do
+    job = assigns.job
+    result = check_result(job)
+
+    assigns =
+      assign(assigns,
+        name: field(job, :name) || "Unnamed check",
+        url: safe_url(field(job, :url)),
+        result: display(result),
+        tone: if(result == "success", do: "success", else: if(check_rank(result) == 0, do: "failure", else: "pending")),
+        duration: job_duration(job)
+      )
+
+    ~H"""
+    <li class="ci-job">
+      <div class="ci-job-heading"><span class={"ci-indicator #{@tone}"} aria-hidden="true"></span><a :if={@url} href={@url} target="_blank" rel="noopener noreferrer">{@name}</a><span :if={!@url}>{@name}</span></div>
+      <div class="ci-job-status"><span>{@result}</span><span :if={@duration}>{@duration}</span></div>
+    </li>
     """
   end
 

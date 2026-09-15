@@ -483,6 +483,11 @@ Relative links remain text; open the source issue for repository-relative naviga
 Tracker issues, current runtime and durable holds own the displayed stages; stale sources
 are marked. A terminal issue does not verify a merge or deployment.
 
+GitHub cards show the PR branch, commit, changed-file counts and current-head CI summary.
+Expand checks on a card or open its popup for individual job results, durations and
+workflow/log links. Partial or stale check data stays explicit. Job durations are
+independent; passing CI and conflict-free branches do not establish merge approval.
+
 Local browser controls use a CSRF-protected operator-token login at
 `POST /operator/session` and logout at `POST /operator/session/logout`. Tokens are
 filtered from request logs and not stored in the session cookie; a signed

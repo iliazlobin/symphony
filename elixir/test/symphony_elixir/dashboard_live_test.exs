@@ -265,7 +265,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, card, "Review changes before retrying")
     assert has_element?(view, card <> " a[href='https://github.com/example/fixture/pull/12']", "PR #12")
     assert has_element?(view, card, "Draft")
-    assert has_element?(view, card, "Review: Changes requested")
+    assert has_element?(view, card, "GitHub review: Changes requested")
     assert has_element?(view, card, "CI: Failure")
     assert has_element?(view, card, "Merged")
     assert has_element?(view, card <> " .card-reference-links a[href='https://github.com/example/fixture']", "Repository")
@@ -285,7 +285,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     changed = update_task(ctx.board, "2", &Map.put(&1, :pull_requests, [%{number: 8, title: "Pending", url: "https://github.com/example/fixture/pull/8", state: "open"}]))
     :ok = GenServer.call(ctx.runtime, {:board, changed})
     {view, _} = board_view()
-    assert has_element?(view, ".pull-request-checks", "Review: Unknown")
+    assert has_element?(view, ".pull-request-checks", "GitHub review: Unknown")
     assert has_element?(view, ".pull-request-checks", "CI: Unknown")
     incomplete = Map.merge(changed, %{source_error: "GitHub rate limit", runtime_error: "Runtime endpoint unavailable", enrichment_error: "PR checks could not be read"})
     refresh(view, ctx.runtime, incomplete)
@@ -294,6 +294,87 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, ".board-warning", "PR checks could not be read")
     assert has_element?(view, "[data-task-id='github:example/fixture:2']", "Ready fixture")
     refute has_element?(view, ".board-runtime-state", "Paused")
+  end
+
+  test "GitHub cards show revision and CI summary with individual jobs in the popup", ctx do
+    sha = String.duplicate("c", 40)
+    run = "https://github.com/example/fixture/actions/runs/42"
+
+    job = %{
+      # Concurrent jobs share a workflow; their durations must not be summed.
+      name: "Unit tests",
+      status: "completed",
+      conclusion: "success",
+      duration_ms: 145_000,
+      url: run <> "/job/1",
+      workflow_name: "CI",
+      run_url: run,
+      run_number: 24,
+      run_event: "pull_request"
+    }
+
+    pending = %{job | name: "Browser checks", status: "in_progress", conclusion: "unknown", duration_ms: nil, url: run <> "/job/2"}
+
+    pr = %{
+      number: 7,
+      title: "Candidate",
+      url: "https://github.com/example/fixture/pull/7",
+      state: "open",
+      draft: true,
+      review: "no_decision",
+      checks: "pending",
+      head_sha: sha,
+      head_ref: "codex/task",
+      base_ref: "integration",
+      author: "builder",
+      additions: 3,
+      deletions: 0,
+      changed_files: 1,
+      mergeable: "mergeable",
+      check_details_status: "available",
+      check_total: 2,
+      check_runs: [job, pending]
+    }
+
+    :ok = GenServer.call(ctx.runtime, {:board, update_task(ctx.board, "2", &Map.put(&1, :pull_requests, [pr]))})
+    {view, _} = board_view()
+    card = "[data-task-id='github:example/fixture:2']"
+    assert has_element?(view, card <> " .pull-request-revision", "codex/task")
+    assert has_element?(view, card <> " a[href='https://github.com/example/fixture/commit/#{sha}']", "ccccccc")
+    assert has_element?(view, card <> " a[href='https://github.com/example/fixture/pull/7/files']", "1 file")
+    assert has_element?(view, card <> " .pull-request-checks", "GitHub review: No decision")
+    assert has_element?(view, card <> " .ci-details summary", "2 checks · 1 running, 1 passed")
+    refute has_element?(view, card <> " .ci-details[open]")
+
+    open_task(view, "2")
+    assert has_element?(view, "#board-dialog .ci-details[open]")
+    assert has_element?(view, "#board-dialog .pull-request-revision", "integration")
+    assert has_element?(view, "#board-dialog .pull-request-metadata", "By builder")
+    assert has_element?(view, "#board-dialog .pull-request-checks", "No merge conflicts")
+    assert has_element?(view, "#board-dialog .ci-job a[href='#{run}/job/1']", "Unit tests")
+    assert has_element?(view, "#board-dialog .ci-job-status", "2m 25s")
+    assert has_element?(view, "#board-dialog .ci-job-status", "In progress")
+    assert has_element?(view, "#board-dialog .ci-workflow a[href='#{run}']", "CI #24")
+    assert length(Floki.find(Floki.parse_document!(render(view)), "#board-dialog .ci-workflow")) == 1
+    refute render(view) =~ "Total duration"
+  end
+
+  test "partial, stale and unsafe CI details cannot imply complete passing checks", ctx do
+    job = %{name: "<script>bad</script>", status: "completed", conclusion: "failure", duration_ms: -1, url: "javascript:alert(1)", run_url: "data:text/html,bad"}
+    pr = %{number: 8, title: "Partial CI", url: "https://github.com/example/fixture/pull/8", check_details_status: "partial", check_total: 9, check_runs: [job]}
+    board = update_task(ctx.board, "2", &Map.put(&1, :pull_requests, [pr]))
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    {view, _} = board_view()
+    open_task(view, "2")
+    assert has_element?(view, "#board-dialog .ci-details summary", "1 of 9 checks · 1 failed")
+    assert has_element?(view, "#board-dialog .ci-note", "this list is incomplete")
+    assert has_element?(view, "#board-dialog .ci-job-heading", "<script>bad</script>")
+    refute has_element?(view, "#board-dialog script, #board-dialog .ci-job a, #board-dialog .ci-workflow a")
+
+    stale = %{pr | check_details_status: "stale"}
+    refresh(view, ctx.runtime, update_task(board, "2", &Map.put(&1, :pull_requests, [stale])))
+    assert has_element?(view, "#board-dialog .ci-note", "older commit")
+    refute has_element?(view, "#board-dialog .ci-job")
   end
 
   test "all supplied evidence links reject unsafe URLs and a bare candidate SHA creates no link", ctx do
