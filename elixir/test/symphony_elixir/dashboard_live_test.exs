@@ -168,17 +168,32 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert render(view) =~ "saving an issue alone does not start a worker"
   end
 
-  test "tracker titles and descriptions remain text and unsafe links are not clickable", ctx do
+  test "tracker titles remain text and descriptions cannot inject HTML or unsafe links", ctx do
     changed = update_task(ctx.board, "1", &%{&1 | title: "<script>window.bad=1</script>", description: "<img src=x onerror=alert(1)>", url: "javascript:alert(1)"})
     :ok = GenServer.call(ctx.runtime, {:board, changed})
     {view, _html} = board_view()
     open_task(view, "1")
     html = render(view)
     assert html =~ "&lt;script&gt;window.bad=1&lt;/script&gt;"
-    assert html =~ "&lt;img src=x onerror=alert(1)&gt;"
     refute has_element?(view, "#board-dialog script")
     refute has_element?(view, "a[href^='javascript:']")
     refute has_element?(view, "#board-dialog img")
+  end
+
+  test "task popup renders and refreshes Markdown acceptance and source links", ctx do
+    body = "## Outcome\n\n- **Verify** the change\n- Read `README.md`\n\n[Draft PR](https://github.com/example/fixture/pull/7)"
+    changed = update_task(ctx.board, "2", &%{&1 | description: body})
+    :ok = GenServer.call(ctx.runtime, {:board, changed})
+    {view, _} = board_view()
+    open_task(view, "2")
+    assert has_element?(view, "#board-dialog .markdown-content h2", "Outcome")
+    assert has_element?(view, "#board-dialog .markdown-content li strong", "Verify")
+    assert has_element?(view, "#board-dialog .markdown-content code", "README.md")
+    assert has_element?(view, "#board-dialog .markdown-content a[href='https://github.com/example/fixture/pull/7'][target='_blank']", "Draft PR")
+
+    refresh(view, ctx.runtime, update_task(changed, "2", &%{&1 | description: "## Updated acceptance"}))
+    assert has_element?(view, "#board-dialog .markdown-content h2", "Updated acceptance")
+    refute has_element?(view, "#board-dialog .markdown-content a")
   end
 
   test "versioned board JavaScript is embedded and served through its route" do

@@ -476,8 +476,11 @@ you.
 
 The optional HTTP service serves a LiveView Kanban board with searchable project,
 status and priority filters, per-lane sorting, and browser-local manual order.
-Card details and Settings open as native dialogs with Close and Escape. Tracker
-issues, current runtime and durable holds own the displayed stages; stale sources
+Card details and Settings open as native dialogs with Close and Escape. Task
+descriptions render Markdown headings, lists, code, tables and safe external links;
+embedded HTML and interactive attributes are omitted, and images show their alt text.
+Relative links remain text; open the source issue for repository-relative navigation.
+Tracker issues, current runtime and durable holds own the displayed stages; stale sources
 are marked. A terminal issue does not verify a merge or deployment.
 
 Local browser controls use a CSRF-protected operator-token login at

@@ -2,7 +2,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   @moduledoc "Live task board with browser preferences and authenticated native controls."
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
-  alias SymphonyElixirWeb.{BoardActions, BrowserAuth, Endpoint, ObservabilityPubSub, Presenter, TaskBoard}
+  alias SymphonyElixirWeb.{BoardActions, BrowserAuth, Endpoint, Markdown, ObservabilityPubSub, Presenter, TaskBoard}
 
   @lanes [{"backlog", "Backlog"}, {"ready", "Ready"}, {"running", "Running"}, {"review", "Review"}, {"done", "Done"}]
   @refresh_ms 30_000
@@ -310,7 +310,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <p :if={blocker(@selected)} class="attention-badge"><strong>Needs attention:</strong> {blocker(@selected)}</p>
               <p :if={Map.get(@selected, :completion_evidence)} class="muted">{Map.get(@selected, :completion_evidence)}</p>
               <section :if={pull_requests(@selected) != []} class="dialog-section"><h3>Pull requests</h3><.pull_request :for={pr <- pull_requests(@selected)} pr={pr} compact={false} /></section>
-              <section class="dialog-section"><h3>Scope &amp; acceptance</h3><p class="task-description">{@selected.description || "No description available."}</p></section>
+              <section class="dialog-section"><h3>Scope &amp; acceptance</h3><div class="markdown-content">{Markdown.render(@selected.description)}</div></section>
               <section class="dialog-section"><h3>Codex update</h3><p>{current_activity(@selected, @payload) || "No current worker activity."}</p>
                 <button :if={session_id(@selected)} class="button button-small" data-copy={session_id(@selected)}>Copy ID</button>
               </section>

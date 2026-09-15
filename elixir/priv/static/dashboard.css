@@ -192,6 +192,22 @@ input, select {
 .field { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
 .field input { width: 100%; }
 .task-description, pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.markdown-content { overflow-wrap: anywhere; line-height: 1.6; }
+.markdown-content > * { margin: 0 0 12px; }
+.markdown-content > :last-child { margin-bottom: 0; }
+.markdown-content :is(h1, h2, h3, h4, h5, h6) { font-size: 16px; line-height: 1.4; margin: 22px 0 8px; font-weight: 600; }
+.markdown-content > :first-child { margin-top: 0; }
+.markdown-content :is(ul, ol) { padding-left: 24px; }
+.markdown-content li + li { margin-top: 4px; }
+.markdown-content li > :is(ul, ol) { margin: 4px 0; }
+.markdown-content blockquote { border-left: 3px solid var(--line); padding-left: 14px; color: var(--muted); }
+.markdown-content code { font: 0.9em/1.5 ui-monospace, monospace; background: var(--soft); padding: 2px 5px; border-radius: 4px; }
+.markdown-content pre { white-space: pre; overflow: auto; }
+.markdown-content pre code { padding: 0; background: none; }
+.markdown-content table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.markdown-content :is(th, td) { border: 1px solid var(--line); padding: 6px 10px; text-align: left; }
+.markdown-content th { background: var(--soft); }
+.markdown-content hr { border: 0; border-top: 1px solid var(--line); }
 pre { font: 12px/1.6 ui-monospace, monospace; padding: 12px; background: var(--soft); border-radius: 6px; }
 details { margin-top: 12px; }
 summary { cursor: pointer; color: var(--accent); }
