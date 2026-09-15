@@ -104,6 +104,63 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:2']")
   end
 
+  @tag read_only: true
+  test "right chat preserves the selected card and filters without enabling the preview runtime" do
+    {view, _html} = board_view()
+    render_click(view, "board-filters", %{"project" => "github:example/fixture", "status" => "ready"})
+    open_task(view, "2")
+    render_click(view, "open-chat")
+    assert has_element?(view, "#management-chat-dock #chat-app.embedded-chat")
+    assert has_element?(view, "#board-dialog[data-nonmodal=true]", "Ready fixture")
+    assert has_element?(view, "#management-chat-dock", "Chat is unavailable in this read-only view")
+    refute has_element?(view, "#management-chat-dock input[name=operator_token]")
+    refute has_element?(view, "#chat-composer")
+
+    render_click(view, "close-dialog")
+    assert has_element?(view, "#management-chat-dock")
+    refute has_element?(view, "#board-dialog")
+    view |> element("button[aria-label='Close chat']") |> render_click()
+    refute has_element?(view, "#management-chat-dock")
+    assert has_element?(view, "#task-board-app[data-url-filters*='ready']")
+  end
+
+  @tag read_only: true
+  test "view context is bounded to current project cards and selected task comes from the server" do
+    {view, _html} = board_view()
+    open_task(view, "2")
+    render_click(view, "open-chat")
+
+    context = %{
+      "version" => 1,
+      "project_id" => "github:example/fixture",
+      "visible_task_ids" => ["github:example/fixture:2"],
+      "viewport_task_ids" => [],
+      "selected_task_id" => "github:example/fixture:1"
+    }
+
+    render_click(view, "board-view-context", context)
+    assert :sys.get_state(view.pid).socket.assigns.view_context["selected_task_id"] == "github:example/fixture:2"
+
+    render_click(view, "board-view-context", Map.put(context, "visible_task_ids", ["github:example/fixture:unknown"]))
+    assert is_nil(:sys.get_state(view.pid).socket.assigns.view_context)
+    render_click(view, "board-view-context", Map.put(context, "project_id", "github:example/other"))
+    assert is_nil(:sys.get_state(view.pid).socket.assigns.view_context)
+  end
+
+  @tag read_only: true
+  test "chat references retain the dock and reject external or other project destinations" do
+    {view, _html} = board_view()
+    render_click(view, "open-chat")
+    send(view.pid, {:chat_panel, :board_link, "/?project=github%3Aexample%2Ffixture&status=review&task=github%3Aexample%2Ffixture%3A4"})
+    assert render(view) =~ "Review fixture"
+    assert has_element?(view, "#management-chat-dock")
+    assert has_element?(view, "#board-dialog[data-nonmodal=true]")
+    send(view.pid, {:chat_panel, :board_link, "https://example.com/?project=github%3Aexample%2Ffixture"})
+    assert render(view) =~ "does not belong to this project board"
+    send(view.pid, {:chat_panel, :board_link, "/?project=github%3Aexample%2Fother"})
+    assert render(view) =~ "does not belong to this project board"
+  end
+
   test "selected task details refresh with the board and close when the task disappears", ctx do
     {view, _html} = board_view()
     open_task(view, "2")
@@ -170,6 +227,17 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert render(view) =~ "saving an issue alone does not start a worker"
   end
 
+  test "background board refresh preserves non-task dialogs after a linked card", ctx do
+    {view, _html} = board_view()
+    open_task(view, "2")
+    render_click(view, "new-task")
+    refresh(view, ctx.runtime, ctx.board)
+    assert has_element?(view, "#board-dialog h2", "New task")
+    render_click(view, "open-settings")
+    refresh(view, ctx.runtime, ctx.board)
+    assert has_element?(view, "#board-dialog h2", "Settings")
+  end
+
   test "tracker titles remain text and descriptions cannot inject HTML or unsafe links", ctx do
     changed = update_task(ctx.board, "1", &%{&1 | title: "<script>window.bad=1</script>", description: "<img src=x onerror=alert(1)>", url: "javascript:alert(1)"})
     :ok = GenServer.call(ctx.runtime, {:board, changed})
@@ -226,7 +294,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     {view, _} = board_view()
     render_click(view, "board-filters", %{"project" => "github:example/fixture", "status" => "running", "q" => "Fixture", "sort" => "updated", "priority" => %{"bad" => "shape"}})
     assert_patch(view, "/?" <> URI.encode_query(%{"project" => "github:example/fixture", "status" => "running", "q" => "Fixture", "sort" => "updated"}))
-    assert has_element?(view, "a[href='/chat?project=github%3Aexample%2Ffixture']")
+    assert has_element?(view, "#open-chat-button[phx-click=open-chat]")
+    assert has_element?(view, "#task-board-app[data-chat-project='github:example/fixture']")
   end
 
   test "cards and popups distinguish tracker, execution, blocker and verified PR evidence", ctx do
@@ -442,7 +511,9 @@ defmodule SymphonyElixir.DashboardLiveTest do
     conn = Plug.Test.init_test_session(conn, %{BrowserAuth.session_key() => marker})
     {:ok, view, _} = live(conn, "/")
     render_async(view)
+    open_task(view, "2")
     render_click(view, "prepare-command", %{"action" => "pause"})
+    refresh(view, ctx.runtime, ctx.board)
     assert has_element?(view, "#board-dialog button[phx-click=confirm-command]")
     board = Map.merge(ctx.board, %{read_only: true, source_note: "Chat is unavailable in this view."})
     refresh(view, ctx.runtime, board)

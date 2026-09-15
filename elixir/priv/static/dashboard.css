@@ -77,6 +77,10 @@ input, select {
   flex-direction: column;
 }
 .dashboard-shell[data-theme=dark] { color-scheme: dark; }
+.board-main { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 100dvh; position: relative; }
+.dashboard-shell[data-chat-open=true] { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 420px); align-items: start; }
+.management-chat-dock { position: sticky; top: 0; height: 100dvh; min-width: 0; border-left: 1px solid var(--line); background: var(--panel); z-index: 15; }
+.board-dialog[data-nonmodal=true] { position: fixed; inset: 80px calc(420px + 20px) auto 20px; width: auto; max-width: 720px; margin: 0 auto; max-height: calc(100dvh - 110px); z-index: 12; }
 .board-header {
   display: flex;
   align-items: center;
@@ -344,7 +348,7 @@ summary { cursor: pointer; color: var(--accent); }
   .kanban-lane { transition: none; }
 }
 
-/* Board and chat share navigation; project conversations never become a sidebar. */
+/* The standalone chat and board dock share one conversation component. */
 .workspace-tabs { display: inline-flex; align-items: center; gap: 4px; }
 .workspace-tabs a, .workspace-tabs button { border: 0; background: transparent; color: var(--muted); text-decoration: none; border-radius: 6px; padding: 6px 10px; font-weight: 500; }
 .workspace-tabs [aria-current=page], .workspace-tabs [aria-selected=true] { color: var(--fg); background: var(--soft); }
@@ -466,4 +470,40 @@ summary { cursor: pointer; color: var(--accent); }
   .chat-header #new-chat-button { margin-left: auto; }
   .chat-title { flex-basis: 100%; }
   #chat-inspector-button { margin-left: auto; }
+}
+
+.embedded-chat { height: 100%; }
+.embedded-chat .chat-header { padding: 12px 14px; gap: 6px; flex-wrap: nowrap; }
+.embedded-chat .chat-header > strong { font-size: 13px; white-space: nowrap; }
+.embedded-chat .chat-header .header-spacer { display: block; }
+.embedded-chat .chat-toolbar { padding: 10px 14px; gap: 6px; flex-wrap: wrap; }
+.embedded-chat .chat-title { flex: 1 1 100%; margin: 0; font-size: 13px; }
+.embedded-chat .chat-toolbar .button { font-size: 11px; padding: 4px 6px; }
+.embedded-chat .chat-workspace { position: relative; }
+.embedded-chat .chat-workspace[data-inspector=true] { grid-template-columns: minmax(0, 1fr); }
+.embedded-chat .chat-inspector { position: absolute; inset: 0; width: 100%; z-index: 5; border: 0; }
+.embedded-chat .chat-scroll { padding: 20px 16px; }
+.embedded-chat .chat-empty { padding: 24px 0; min-height: 0; gap: 10px; }
+.embedded-chat .chat-empty h1 { font-size: 22px; }
+.embedded-chat .chat-unavailable { padding: 28px 24px; }
+.embedded-chat .chat-starters { margin-top: 12px; }
+.embedded-chat .chat-starters button { padding: 10px; font-size: 12px; }
+.embedded-chat .chat-messages { gap: 22px; font-size: 13px; }
+.embedded-chat .chat-message-user { margin-left: 6%; padding: 10px 12px; }
+.embedded-chat .chat-composer-wrap { padding: 10px 12px; }
+.embedded-chat .chat-composer { padding: 10px; }
+.embedded-chat .chat-notice { margin: 10px 12px 0; font-size: 12px; }
+.chat-view-context { border: 1px solid var(--line); border-radius: 8px; background: var(--soft); padding: 8px 10px; margin-bottom: 8px; font-size: 11px; }
+.chat-view-context label { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.chat-view-context input[type=checkbox] { margin: 0; min-height: 0; flex-shrink: 0; accent-color: var(--accent); }
+.chat-view-context p { margin-top: 5px; line-height: 1.45; overflow-wrap: anywhere; }
+.chat-context-summary { color: var(--muted); }
+@media (min-width: 861px) and (max-width: 1200px) {
+  .dashboard-shell[data-chat-open=true] { grid-template-columns: minmax(0, 1fr) 360px; }
+  .board-dialog[data-nonmodal=true] { right: 380px; }
+}
+@media (max-width: 860px) {
+  .dashboard-shell[data-chat-open=true] { display: flex; }
+  .management-chat-dock { position: fixed; inset: 0 0 0 auto; width: min(420px, 100%); box-shadow: -16px 0 40px #0003; }
+  .board-dialog[data-nonmodal=true] { inset: 24px 16px auto; width: calc(100% - 32px); }
 }

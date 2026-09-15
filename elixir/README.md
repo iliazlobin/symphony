@@ -318,11 +318,21 @@ describes access and limits.
 The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
-- Optional authenticated management chat at `/chat`; streaming uses LiveView's existing connection
+- Optional authenticated management chat in the board's right-side panel and at `/chat`;
+  streaming uses LiveView's existing connection
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
+
+The board and full-page chat share `ChatPanel`. The dock retains board filters and
+selected task links. **Share this view** attaches a validated, project-bound snapshot
+to each message; the selected-card checkbox removes its explicit selection. Snapshot
+records contain bounded IDs and filters, not raw browser contents. The current-view
+tool resolves fresh authorized task summaries; existing action previews and browser
+confirmations own all writes. See [management conversations](../ARCHITECTURE.md#management-conversations)
+for the context, storage and tool boundary, and the [operator guide](../profiles/events-concierge/README.md#operate)
+for supported actions and examples.
 
 Enable management chat in the selected workflow's YAML front matter:
 

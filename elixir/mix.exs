@@ -33,6 +33,8 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Workspace,
           SymphonyElixirWeb.DashboardLive,
           SymphonyElixirWeb.ChatLive,
+          # Rendering moved from ChatLive into the shared board/standalone component.
+          SymphonyElixirWeb.ChatPanel,
           SymphonyElixirWeb.Endpoint,
           SymphonyElixirWeb.ErrorHTML,
           SymphonyElixirWeb.ErrorJSON,

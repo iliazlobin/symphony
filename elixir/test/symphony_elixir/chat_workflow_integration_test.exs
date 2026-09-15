@@ -323,6 +323,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     assert has_element?(view, "#chat-inspector")
     System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("new-integration-token", 3))
     Phoenix.PubSub.broadcast(SymphonyElixir.PubSub, "chat:" <> chat["id"], {:chat_updated, chat["id"]})
+    assert eventually(fn -> render(view) =~ "Unlock chat" end)
     html = render(view)
     assert html =~ "Unlock chat"
     refute html =~ "The retry task needs attention."
@@ -405,6 +406,24 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
   end
 
   defp local_conn, do: %{build_conn() | host: "localhost"}
+
+  defp eventually(predicate, attempts \\ 50) do
+    cond do
+      predicate.() ->
+        true
+
+      attempts == 0 ->
+        false
+
+      true ->
+        receive do
+        after
+          5 -> :ok
+        end
+
+        eventually(predicate, attempts - 1)
+    end
+  end
 
   defp github_response("GET", path, _body) do
     if String.ends_with?(path, "/issues/2") do

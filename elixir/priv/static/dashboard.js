@@ -134,6 +134,41 @@
         if (!status) { status = document.createElement("p"); status.dataset.boardAnnouncement = ""; status.className = "board-notice"; status.setAttribute("role", "status"); this.el.querySelector(".board-content").prepend(status); }
         status.textContent = message;
       };
+      this.captureContext = () => {
+        if (this.el.dataset.chatOpen !== "true" || !this.el.dataset.chatProject) { this.contextKey = null; return; }
+        const project = this.el.dataset.chatProject;
+        const cards = [...this.el.querySelectorAll(".task-card[data-task-id]")].filter(card =>
+          card.dataset.project === project && !card.closest("[hidden]") && card.getClientRects().length > 0);
+        const board = this.el.querySelector(".board-main").getBoundingClientRect();
+        const laneArea = this.el.querySelector(".kanban-board").getBoundingClientRect();
+        const dock = this.el.querySelector("#management-chat-dock").getBoundingClientRect();
+        const taskOpen = this.el.querySelector("#board-dialog[open]");
+        const inViewport = card => {
+          const rect = card.getBoundingClientRect();
+          return !taskOpen && rect.bottom > Math.max(0, board.top, laneArea.top) && rect.top < Math.min(window.innerHeight, board.bottom, laneArea.bottom) &&
+            rect.right > Math.max(0, board.left, laneArea.left) && rect.left < Math.min(window.innerWidth, board.right, laneArea.right, dock.left);
+        };
+        // Keep on-screen cards within the bounded list even on a large, scrolled board.
+        const viewport = cards.filter(inViewport).slice(0, 50);
+        const visible = [...new Set([...viewport, ...cards])].slice(0, 50);
+        const snapshot = {
+          version: 1, project_id: project,
+          filters: {project: this.prefs.project, status: this.prefs.status, priority: this.prefs.priority, q: this.prefs.query, sort: this.prefs.sort},
+          selected_task_id: this.el.dataset.selectedTask || null,
+          visible_task_ids: visible.map(card => card.dataset.taskId), viewport_task_ids: viewport.map(card => card.dataset.taskId),
+          hidden_columns: lanes.filter(([stage]) => this.el.querySelector(`[data-stage="${stage}"]`).hidden).map(([stage]) => stage),
+          board_checked_at: this.el.dataset.boardCheckedAt || null, truncated: cards.length > 50
+        };
+        const key = JSON.stringify([snapshot, this.el.dataset.contextRevision]);
+        if (key !== this.contextKey) {
+          this.contextKey = key;
+          this.pushEvent("board-view-context", {...snapshot, captured_at: new Date().toISOString()});
+        }
+      };
+      this.scheduleContext = () => {
+        clearTimeout(this.contextTimer);
+        this.contextTimer = setTimeout(this.captureContext, 100);
+      };
       this.apply = () => {
         this.load();
         this.readURL();
@@ -193,6 +228,7 @@
           const selectedProject = key === "project" && this.prefs.project.length === 1 ? this.options(key).find(([id]) => id === this.prefs.project[0])?.[1] : null;
           this.el.querySelector("#filter-" + key).placeholder = selectedProject || `${key[0].toUpperCase() + key.slice(1)}: ${this.prefs[key].length ? this.prefs[key].length + " selected" : "All"}`;
         }
+        this.scheduleContext();
       };
       on("focusin", event => { const key = event.target.closest("[data-filter]")?.dataset.filter; if (key && event.target.matches("input")) this.openFilter(key); });
       on("input", event => { const key = event.target.closest("[data-filter]")?.dataset.filter; if (key) { this.popup = key; this.activeOption = 0; this.drawOptions(key); } else if (event.target.matches("[data-board-search]")) { this.prefs.query = event.target.value; this.apply(); this.save(); } });
@@ -262,6 +298,10 @@
         this.closeMenus(event.target.closest("details.board-menu"), true);
       }, {signal: this.abort.signal});
       this.darkMode.addEventListener("change", () => this.applyAppearance(), {signal: this.abort.signal});
+      this.el.addEventListener("scroll", this.scheduleContext, {capture: true, passive: true, signal: this.abort.signal});
+      on("symphony:capture-context", this.captureContext);
+      window.addEventListener("scroll", this.scheduleContext, {passive: true, signal: this.abort.signal});
+      window.addEventListener("resize", this.scheduleContext, {passive: true, signal: this.abort.signal});
       this.apply();
     },
     beforeUpdate() { this.openMenuKeys = [...this.el.querySelectorAll("details.board-menu[open]")].map(menu => menu.closest("[data-stage]")?.dataset.stage || "display"); },
@@ -273,17 +313,29 @@
         if (!lane?.hidden && this.openMenuKeys?.includes(lane?.dataset.stage || "display")) menu.open = true;
       }
     },
-    destroyed() { this.abort.abort(); clearTimeout(this.urlTimer); }
+    destroyed() { this.abort.abort(); clearTimeout(this.urlTimer); clearTimeout(this.contextTimer); }
   };
   const BoardDialog = {
     mounted() {
       this.previous = document.activeElement;
       this.taskId = this.previous?.closest("[data-task-id]")?.dataset.taskId;
       this.bodyOverflow = document.body.style.overflow;
-      document.body.style.overflow = "hidden";
       this.abort = new AbortController();
-      this.el.addEventListener("cancel", event => { event.preventDefault(); this.pushEvent("close-dialog", {}); }, {signal: this.abort.signal});
+      this.closeDialog = () => this.el.dataset.eventTarget ? this.pushEventTo(this.el, "close-dialog", {}) : this.pushEvent("close-dialog", {});
+      this.showDialog = () => {
+        const nonmodal = this.el.dataset.nonmodal === "true";
+        if (this.nonmodal !== nonmodal && this.el.open) this.el.close();
+        this.nonmodal = nonmodal;
+        document.body.style.overflow = nonmodal ? this.bodyOverflow : "hidden";
+        if (!this.el.open) { if (nonmodal) this.el.show(); else this.el.showModal(); }
+      };
+      this.closeSelector = this.el.dataset.closeSelector || "#close-dialog";
+      this.el.addEventListener("cancel", event => { event.preventDefault(); this.closeDialog(); }, {signal: this.abort.signal});
       this.el.addEventListener("keydown", event => {
+        if (this.nonmodal) {
+          if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); this.closeDialog(); }
+          return;
+        }
         if (event.key !== "Tab") return;
         const controls = [...this.el.querySelectorAll('button, a[href], input, select, textarea, summary, [tabindex]')]
           .filter(control => !control.disabled && control.tabIndex >= 0 && control.getClientRects().length);
@@ -291,13 +343,13 @@
         if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
       }, {signal: this.abort.signal});
-      this.el.addEventListener("click", event => { if (event.target !== this.el) return; const rect = this.el.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) this.pushEvent("close-dialog", {}); }, {signal: this.abort.signal});
-      this.el.showModal();
-      this.el.querySelector("#close-dialog")?.focus();
+      this.el.addEventListener("click", event => { if (event.target !== this.el) return; const rect = this.el.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) this.closeDialog(); }, {signal: this.abort.signal});
+      this.showDialog();
+      this.el.querySelector(this.closeSelector)?.focus();
     },
     updated() {
-      if (!this.el.open) this.el.showModal();
-      if (!this.el.contains(document.activeElement)) this.el.querySelector("#close-dialog")?.focus({preventScroll: true});
+      this.showDialog();
+      if (!this.nonmodal && !this.el.contains(document.activeElement)) this.el.querySelector(this.closeSelector)?.focus({preventScroll: true});
     },
     destroyed() {
       this.abort.abort();
@@ -333,6 +385,10 @@
         if (event.target.id === "chat-scroll") this.atBottom = event.target.scrollHeight - event.target.scrollTop - event.target.clientHeight < 90;
       }, {capture: true, signal: this.abort.signal});
       on("input", event => { if (event.target.id === "chat-message-input") this.resizeComposer(); });
+      // Queue the current view before LiveView sends this form's message event.
+      on("submit", event => {
+        if (event.target.id === "chat-composer") this.el.dispatchEvent(new CustomEvent("symphony:capture-context", {bubbles: true}));
+      });
       on("keydown", event => {
         if (event.target.id === "chat-message-input" && event.key === "Enter" && !event.shiftKey && !event.isComposing) {
           event.preventDefault();
@@ -340,6 +396,9 @@
         }
       });
       on("click", event => {
+        const boardLink = event.target.closest('a[phx-click="board-link"]');
+        if (boardLink && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) event.preventDefault();
+        else if (boardLink) event.stopPropagation();
         const starter = event.target.closest("[data-chat-prompt]");
         const input = this.el.querySelector("#chat-message-input");
         if (starter && input && !input.disabled) { input.value = starter.dataset.chatPrompt; input.dispatchEvent(new Event("input", {bubbles: true})); input.focus(); this.resizeComposer(); }

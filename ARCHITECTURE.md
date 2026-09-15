@@ -91,7 +91,7 @@ commands to the native API and owns no scheduling state.
   turns in a dedicated Codex home, retaining native thread history and compaction.
   [`Chat.Tools`](elixir/lib/symphony_elixir/chat/tools.ex) exposes typed project reads and
   bounded action proposals. `Chat.GitHub` owns the scoped tracker HTTP operations.
-  [`ChatLive`](elixir/lib/symphony_elixir_web/live/chat_live.ex) renders messages, validated
+  [`ChatPanel`](elixir/lib/symphony_elixir_web/live/chat_panel.ex) renders messages, validated
   widgets, references and action previews through the existing LiveView connection.
 - [`ControlApiController`](elixir/lib/symphony_elixir_web/controllers/control_api_controller.ex)
   authenticates local control requests. [`symphony_control.py`](tools/symphony_control.py)
@@ -155,6 +155,22 @@ project picker filters chats; it cannot move a conversation into another project
 The current service exposes one configured tracker project. Multi-controller routing
 is a separate extension. Historical messages are records; tools refresh current work
 and attach source timestamps, task links and board filters.
+
+The board hosts the shared conversation component in a right-side panel; `/chat`
+is its standalone host. Task popups remain interactive alongside the panel.
+[`Chat.ViewContext`](elixir/lib/symphony_elixir/chat/view_context.ex) validates a
+bounded snapshot for each user message: project, filters, selected task ID,
+up to 50 displayed task IDs, their viewport subset, hidden columns and timestamps.
+The browser sends IDs and display metadata, never arbitrary page text, screenshots
+or form contents. The parent restricts IDs to its current board; the store validates
+the immutable project boundary again before persistence and model execution.
+
+Sharing controls affect the next message, not retained history. A disabled snapshot
+is explicitly delivered to the resumed native thread; earlier context is not silently
+reused as the current view. `symphony_view_context` refreshes authorized task summaries
+and reports missing records, stale sources and truncation. Snapshot hints never grant
+write authority. `symphony_task_details` retains each linked PR's independent state,
+review, head revision and CI instead of treating one merged PR as issue completion.
 
 There are three distinct records: the app's visible messages and receipts, Codex's
 native thread history with automatic compaction, and committed project documents

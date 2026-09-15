@@ -119,7 +119,8 @@ automatic repairs and web publication actions remain separate implementation wor
 Do not expose this local listener as an authenticated GCP application.
 
 **Web chat.** After [dedicated runtime setup](../../elixir/README.md#web-board-and-chat),
-open **Chat**, unlock with the local operator token and select the project. Use
+select one project on the board and open **Chat** in the right-side panel. A task
+popup also offers **Discuss this task**. Unlock with the local operator token. Use
 **New chat** for a separate topic; **History** opens searchable history with rename
 and archive actions. Project changes clear the current selection and draft. A chat
 stays with its original project. This service currently supplies one configured
@@ -130,9 +131,21 @@ task. Closing the tab leaves the response running; reopen its URL to reconnect.
 After a service restart, send another message to continue an interrupted conversation.
 Codex handles native compaction while the app retains visible messages and receipts.
 The optional **Context / Outputs** drawer shows retrieved sources, task widgets and
-actions. References open a task popup or the board with the stated filters.
+actions. References update the board filters or open a task popup while keeping
+the conversation open. `/chat` remains available as a full-page conversation view.
 
-Try “Show blocked tasks”, “Explain this project's architecture”, or “Create a task
+**Manage the view context.** The composer shows what will accompany the next message:
+project, filters, displayed task count and the selected card. Switch off **Share this
+view** to send no current board snapshot, or uncheck **Identify selected card** to
+remove its explicit selection (the card may still be part of the displayed task list).
+Sharing off does not erase earlier messages or sources; start a new chat for a fresh
+conversation. Context refreshes as you filter, scroll, switch lanes or open a card.
+It includes up to 50 task IDs and marks truncated lists. It excludes arbitrary screen
+text, screenshots, password fields and other browser tabs. Tools recheck task details
+and authorization before using a snapshot; the snapshot is not approval to act.
+
+Try “Explain this card and all its PR checks”, “Which tasks in this view need input?”,
+“Explain this project's architecture”, or “Create a task
 to improve the admin filters, with acceptance criteria”. Read tools render status,
 task cards and commit-pinned document references. A write first renders its exact
 preview; **Confirm** applies it and **Cancel** discards it. A receipt records the
@@ -150,6 +163,14 @@ Feedback is saved to the GitHub issue; it is not injected into an active coding 
 Deployment, merge, arbitrary code execution and worker input delivery are not chat
 actions. External GitHub edits can still race the final issue patch; refresh and
 review the issue after changes.
+
+| Read tools | Confirmed workflow actions |
+| --- | --- |
+| Current view, project status, filtered task search, task details with all fetched PRs/CI, committed project documents | Create or edit a task, add issue feedback, queue/unqueue, pause/drain/resume, cancel/retry |
+
+The read-only preview on port 8778 shows the panel's availability state but does not
+start a chat runtime. A signed-in dedicated management account and an explicitly
+installed controller revision are required for live model responses.
 
 **External management agent — controls through MCP.** Ask a connected agent:
 

@@ -85,7 +85,13 @@ defmodule SymphonyElixir.BrowserControlsTest do
   end
 
   test "chat login returns to chat while untrusted return URLs cannot redirect", ctx do
-    for {destination, expected} <- [{"/chat", "/chat"}, {"https://evil.example", "/?panel=settings"}, {"//evil.example", "/?panel=settings"}, {"/chat?next=//evil.example", "/?panel=settings"}] do
+    for {destination, expected} <- [
+          {"/chat", "/chat"},
+          {"/?assistant=1", "/?assistant=1"},
+          {"https://evil.example", "/?panel=settings"},
+          {"//evil.example", "/?panel=settings"},
+          {"/chat?next=//evil.example", "/?panel=settings"}
+        ] do
       {conn, csrf} = browser_page()
       logged_in = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => ctx.token, "return_to" => destination})
       assert redirected_to(logged_in) == expected

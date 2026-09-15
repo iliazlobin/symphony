@@ -34,6 +34,7 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
 
   # Only known app entrypoints can receive an authentication redirect.
   defp return_to(%{"return_to" => "/chat"}), do: "/chat"
+  defp return_to(%{"return_to" => "/?assistant=1"}), do: "/?assistant=1"
   defp return_to(_params), do: "/?panel=settings"
 
   @spec delete(Conn.t(), map()) :: Conn.t()
