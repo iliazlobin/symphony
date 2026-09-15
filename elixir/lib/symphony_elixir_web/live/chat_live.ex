@@ -30,10 +30,10 @@ defmodule SymphonyElixirWeb.ChatLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    if connected?(socket) and BrowserAuth.authorized?(socket.assigns.auth) do
-      {:noreply, load_location(socket, params)}
-    else
-      {:noreply, assign(socket, :loading, not connected?(socket))}
+    cond do
+      not connected?(socket) -> {:noreply, assign(socket, :loading, true)}
+      BrowserAuth.authorized?(socket.assigns.auth) -> {:noreply, load_location(socket, params)}
+      true -> {:noreply, socket |> assign(:loading, false) |> show_error(:unauthorized)}
     end
   end
 
@@ -71,15 +71,15 @@ defmodule SymphonyElixirWeb.ChatLive do
     {:noreply, socket |> assign(:inspector_tab, tab) |> assign(:inspector, true)}
   end
 
-  def handle_event("draft", %{"message" => text}, socket), do: {:noreply, assign(socket, :draft, String.slice(text, 0, 20_000))}
+  def handle_event("draft", %{"message" => text}, socket), do: {:noreply, assign(socket, :draft, String.slice(text, 0, 16_000))}
 
   def handle_event("send-message", %{"message" => text}, socket) do
     text = String.trim(text)
 
     cond do
       text == "" -> {:noreply, socket}
-      byte_size(text) > 20_000 -> {:noreply, assign(socket, :notice, "Keep a message under 20,000 bytes.")}
-      running?(socket.assigns.chat) -> {:noreply, assign(socket, :notice, "Wait for this response or stop it before sending another message.")}
+      byte_size(text) > 16_000 -> {:noreply, assign(socket, :notice, "Keep a message under 16,000 bytes.")}
+      busy?(socket.assigns.chat) -> {:noreply, show_error(socket, :chat_busy)}
       true -> send_message(socket, text)
     end
   end
@@ -233,13 +233,15 @@ defmodule SymphonyElixirWeb.ChatLive do
   end
 
   defp error_message(reason) when reason in [:unauthorized, :forbidden], do: "Your session is locked or has expired. Unlock chat to continue."
-  defp error_message(reason) when reason in [:not_found, :project_mismatch, :unknown_project], do: "This conversation is not available in the selected project."
-  defp error_message(reason) when reason in [:busy, :already_running], do: "A response is already running in this conversation."
+  defp error_message(reason) when reason in [:not_found, :chat_not_found, :project_mismatch, :unknown_project, :project_not_found], do: "This conversation is not available in the selected project."
+  defp error_message(reason) when reason in [:busy, :chat_busy, :already_running], do: "Wait for the current response or action to finish before continuing."
   defp error_message(reason) when reason in [:stale_revision, :stale_proposal], do: "The task changed since this action was prepared. Ask for a fresh proposal."
   defp error_message(:unavailable), do: "Chat is temporarily unavailable. Your conversation has been retained; try again."
   defp error_message(:chat_disabled), do: "Chat is not enabled for this service yet."
   defp error_message(:chat_not_configured), do: "Chat is not configured for this service yet."
-  defp error_message(reason) when reason in [:chat_storage_unavailable, :locked], do: "Conversation storage is unavailable or locked. Try again once the service is ready."
+  defp error_message(reason) when reason in [:chat_storage_unavailable, :chat_storage_locked, :locked], do: "Conversation storage is unavailable or locked. Try again once the service is ready."
+  defp error_message(:message_id_conflict), do: "This message could not be matched to its earlier submission. Reload the conversation before sending again."
+  defp error_message(:invalid_message), do: "Enter a message of up to 16,000 bytes before sending."
   defp error_message(:chat_capacity), do: "The conversation service is at capacity. Wait for an active response to finish and try again."
   defp error_message(:start_new_chat), do: "This conversation has reached its current limit. Start a new chat to continue."
   defp error_message(:chat_runtime_changed), do: "The chat runtime changed. Start a new chat to use the current configuration."
@@ -250,6 +252,8 @@ defmodule SymphonyElixirWeb.ChatLive do
   defp chat_id(socket), do: socket.assigns.chat && socket.assigns.chat["id"]
   defp nonce, do: Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
   defp running?(chat), do: is_map(chat) and chat["status"] == "running"
+  defp executing?(chat), do: is_map(chat) and Enum.any?(list(chat["proposals"]), &(&1["status"] == "executing"))
+  defp busy?(chat), do: running?(chat) or executing?(chat)
   defp chat_title(nil), do: "New conversation"
   defp chat_title(chat), do: chat["title"] || "Untitled conversation"
   defp project_label(nil), do: "Select a project"
@@ -288,7 +292,7 @@ defmodule SymphonyElixirWeb.ChatLive do
 
   @impl true
   def render(assigns) do
-    assigns = assign(assigns, authorized: BrowserAuth.authorized?(assigns.auth), running: running?(assigns.chat))
+    assigns = assign(assigns, authorized: BrowserAuth.authorized?(assigns.auth), running: running?(assigns.chat), executing: executing?(assigns.chat), busy: busy?(assigns.chat))
 
     ~H"""
     <section id="chat-app" class="chat-shell" phx-hook="ChatWorkspace" data-chat-id={@chat && @chat["id"]} data-running={to_string(@running)}>
@@ -308,9 +312,9 @@ defmodule SymphonyElixirWeb.ChatLive do
             <option :for={project <- @projects} value={project["id"]} selected={@project && @project["id"] == project["id"]}>{project_label(project)}</option>
           </select>
         </form>
-        <div class="chat-title"><strong>{chat_title(@chat)}</strong><span class="muted">{if @running, do: "Responding…", else: "Project conversation"}</span></div>
+        <div class="chat-title"><strong>{chat_title(@chat)}</strong><span class="muted">{conversation_status(@chat)}</span></div>
         <button :if={@chat} class="button button-small button-quiet" phx-click="open-rename" aria-label="Rename conversation">Rename</button>
-        <button :if={@chat} class="button button-small button-quiet" phx-click="open-archive" disabled={@running}>Archive</button>
+        <button :if={@chat} class="button button-small button-quiet" phx-click="open-archive" disabled={@busy}>Archive</button>
         <button id="chat-inspector-button" class="button button-small" phx-click="toggle-inspector" aria-expanded={to_string(@inspector)} aria-controls="chat-inspector">Context & outputs</button>
       </div>
 
@@ -349,7 +353,7 @@ defmodule SymphonyElixirWeb.ChatLive do
                 <div :if={text(message["text"]) != ""} class="message-text">{text(message["text"])}</div>
                 <span :if={message["status"] in ["streaming", "pending"] && text(message["text"]) == ""} class="chat-thinking" role="status">Working<span aria-hidden="true"> ···</span></span>
                 <div :if={list(message["widgets"]) != []} class="chat-widgets">
-                  <.widget :for={widget <- list(message["widgets"])} widget={map(widget)} project={@project} running={@running} />
+                  <.widget :for={widget <- list(message["widgets"])} widget={map(widget)} project={@project} busy={@busy} />
                 </div>
               </article>
             </div>
@@ -358,13 +362,13 @@ defmodule SymphonyElixirWeb.ChatLive do
           </div>
 
           <div class="chat-composer-wrap">
-            <p id="chat-live-status" class="visually-hidden" role="status" aria-live="polite">{if @running, do: "Response in progress.", else: "Ready for your message."}</p>
+            <p id="chat-live-status" class="visually-hidden" role="status" aria-live="polite">{if @busy, do: conversation_status(@chat), else: "Ready for your message."}</p>
             <form id="chat-composer" phx-submit="send-message" phx-change="draft" class="chat-composer">
               <label for="chat-message-input" class="visually-hidden">Message {project_label(@project)}</label>
-              <textarea id="chat-message-input" name="message" placeholder={"Message #{project_label(@project)}…"} rows="2" maxlength="20000" disabled={is_nil(@project)} phx-debounce="150">{@draft}</textarea>
+              <textarea id="chat-message-input" name="message" placeholder={"Message #{project_label(@project)}…"} rows="2" maxlength="16000" disabled={is_nil(@project) || @executing} phx-debounce="150">{@draft}</textarea>
               <div class="composer-bottom"><span class="composer-project">{project_label(@project)}</span>
                 <button :if={@running} id="stop-response-button" type="button" class="button" phx-click="stop-response" title="Stop this response; coding tasks keep running">■ Stop</button>
-                <button :if={!@running} id="send-message-button" class="button button-primary" disabled={is_nil(@project)} phx-disable-with="Sending…" aria-label="Send message">Send ↑</button>
+                <button :if={!@running} id="send-message-button" class="button button-primary" disabled={is_nil(@project) || @busy} phx-disable-with="Sending…" aria-label="Send message">{if @executing, do: "Applying action…", else: "Send ↑"}</button>
               </div>
             </form>
             <p class="composer-hint">Enter to send · Shift + Enter for a new line<span class="chat-connection"><span class="status-badge-offline">Disconnected · reconnecting</span></span></p>
@@ -388,7 +392,7 @@ defmodule SymphonyElixirWeb.ChatLive do
           <div :if={@inspector_tab == "outputs"} id="outputs-content" role="tabpanel" aria-labelledby="outputs-tab">
             <p class="muted">Task references and confirmed action results from this conversation.</p>
             <p :if={output_widgets(@chat) == []} class="inspector-empty">No outputs yet.</p>
-            <.widget :for={widget <- output_widgets(@chat)} widget={map(widget)} project={@project} running={@running} />
+            <.widget :for={widget <- output_widgets(@chat)} widget={map(widget)} project={@project} busy={@busy} />
           </div>
         </aside>
       </div>
@@ -404,7 +408,7 @@ defmodule SymphonyElixirWeb.ChatLive do
             <p :if={matching_chats(@chats, @history_query) == []} class="inspector-empty">{if @history_query == "", do: "No conversations in this project yet.", else: "No conversations match your search."}</p>
           </div>
           <form :if={@dialog == :rename && @chat} phx-submit="rename-chat"><label class="field">Conversation name<input name="title" value={chat_title(@chat)} maxlength="120" required /></label><button class="button button-primary" phx-disable-with="Saving…">Save name</button></form>
-          <div :if={@dialog == :archive && @chat}><p>Archive “{chat_title(@chat)}”? It will leave the conversation picker. Its stored history will be retained.</p><div class="dialog-actions"><button class="button" phx-click="close-dialog">Keep conversation</button><button class="button button-primary" phx-click="archive-chat" disabled={@running} phx-disable-with="Archiving…">Archive conversation</button></div></div>
+          <div :if={@dialog == :archive && @chat}><p>Archive “{chat_title(@chat)}”? It will leave the conversation picker. Its stored history will be retained.</p><div class="dialog-actions"><button class="button" phx-click="close-dialog">Keep conversation</button><button class="button button-primary" phx-click="archive-chat" disabled={@busy} phx-disable-with="Archiving…">Archive conversation</button></div></div>
         </div>
       </dialog>
     </section>
@@ -414,6 +418,14 @@ defmodule SymphonyElixirWeb.ChatLive do
   defp dialog_title(:history), do: "Chat history"
   defp dialog_title(:rename), do: "Rename conversation"
   defp dialog_title(:archive), do: "Archive conversation"
+
+  defp conversation_status(chat) do
+    cond do
+      running?(chat) -> "Responding…"
+      executing?(chat) -> "Applying action…"
+      true -> "Project conversation"
+    end
+  end
 
   defp widget(assigns) do
     assigns = assign(assigns, type: widget_type(assigns.widget), task: map(assigns.widget["task"]))
@@ -438,11 +450,11 @@ defmodule SymphonyElixirWeb.ChatLive do
       <div :if={@type == "proposal"}>
         <div class="widget-heading"><strong>{text(@widget["title"] || "Proposed action")}</strong><span class="widget-label">{text(@widget["status"] || "pending")}</span></div>
         <p class="proposal-action">{text(@widget["action"])}</p><p class="message-text">{details_text(@widget["details"])}</p>
-        <div :if={@widget["status"] in [nil, "pending"]} class="dialog-actions"><button class="button button-primary" phx-click="decide" phx-value-id={@widget["id"]} phx-value-decision="confirm" phx-disable-with="Confirming…">Confirm action</button><button class="button" phx-click="decide" phx-value-id={@widget["id"]} phx-value-decision="cancel" phx-disable-with="Cancelling…">Cancel</button></div>
+        <div :if={@widget["status"] in [nil, "pending"]} class="dialog-actions"><button class="button button-primary" phx-click="decide" phx-value-id={@widget["id"]} phx-value-decision="confirm" disabled={@busy} phx-disable-with="Confirming…">Confirm action</button><button class="button" phx-click="decide" phx-value-id={@widget["id"]} phx-value-decision="cancel" disabled={@busy} phx-disable-with="Cancelling…">Cancel</button></div>
         <p :if={@widget["status"] in [nil, "pending"]} class="muted widget-footnote">Nothing changes until you confirm this action.</p>
         <p :if={@widget["status"] == "executing"} class="muted" role="status">Applying action…</p>
         <p :if={@widget["status"] == "failed"} class="board-warning" role="alert">Action failed: {text(@widget["error"] || "The action could not be completed.")}</p>
-        <div :if={@widget["status"] == "unknown"}><p class="muted">The outcome is uncertain. Check the recorded result before trying another action.</p><button class="button" phx-click="decide" phx-value-id={@widget["id"]} phx-value-decision="reconcile" phx-disable-with="Checking…">Check outcome</button></div>
+        <div :if={@widget["status"] == "unknown"}><p class="muted">The outcome is uncertain. Check the recorded result before trying another action.</p><button class="button" phx-click="decide" phx-value-id={@widget["id"]} phx-value-decision="reconcile" disabled={@busy} phx-disable-with="Checking…">Check outcome</button></div>
       </div>
       <div :if={@type == "receipt"} class="action-receipt"><span aria-hidden="true">✓</span><div><strong>Action result</strong><p>{text(@widget["summary"])}</p><a :if={safe_url(@widget["url"])} href={safe_url(@widget["url"])}>View result ↗</a></div></div>
     </section>

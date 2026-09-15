@@ -212,6 +212,39 @@ defmodule SymphonyElixir.ChatLiveTest do
     refute has_element?(view, "#chat-inspector a[href='//evil.example']")
   end
 
+  test "conflicting controls wait for streaming or action completion without exposing action cancellation", ctx do
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+
+    proposals = [
+      %{"type" => "proposal", "id" => "pending", "title" => "Pending action", "status" => "pending"},
+      %{"type" => "proposal", "id" => "unknown", "title" => "Uncertain action", "status" => "unknown"}
+    ]
+
+    messages = Enum.map(chat["messages"], &Map.put(&1, "widgets", proposals))
+    chat = chat |> Map.put("messages", messages) |> Map.put("status", "running") |> Map.put("proposals", proposals)
+    FixtureStore.put(chat)
+    {view, _} = chat_view(ctx, "/chat?project=alpha&chat=a1")
+    assert has_element?(view, "button[phx-value-decision=confirm][disabled]")
+    assert has_element?(view, "button[phx-value-decision=cancel][disabled]")
+    assert has_element?(view, "button[phx-value-decision=reconcile][disabled]")
+    assert has_element?(view, "#stop-response-button")
+
+    executing = Map.put(hd(proposals), "status", "executing")
+    chat = chat |> Map.put("status", "idle") |> Map.put("proposals", [executing | tl(proposals)])
+    FixtureStore.put(chat)
+    assert has_element?(view, "#send-message-button[disabled]", "Applying action")
+    assert has_element?(view, "#chat-message-input[disabled]")
+    assert has_element?(view, "button[phx-click=open-archive][disabled]")
+    refute has_element?(view, "#stop-response-button")
+    render_submit(view, "send-message", %{"message" => "A conflicting message"})
+    assert render(view) =~ "Wait for the current response or action"
+    assert {:ok, %{"messages" => ^messages}} = FixtureStore.get("alpha", "a1", nil)
+
+    FixtureStore.put(Map.put(chat, "proposals", proposals))
+    assert has_element?(view, "button[phx-value-decision=reconcile]:not([disabled])")
+    assert has_element?(view, "#send-message-button:not([disabled])")
+  end
+
   test "source failure and uncertain or failed actions remain visible instead of implying idle or success", ctx do
     {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
 
