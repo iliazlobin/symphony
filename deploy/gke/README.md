@@ -1,6 +1,19 @@
 # Symphony on GKE
 
-The project board and management chat are the single web interface. The local web task runs on port 8778; this package creates no second dashboard. The Mac controller and publisher remain the active task owner until the cloud runner, subscription authentication, recovery and accepted web revision pass their integration checks.
+The deployed Symphony application must include the shared project-board and management-chat implementation. Its identity is the accepted source and functionality, independent of any local port, hostname or ingress address. The Mac controller and publisher remain the active task owner until cloud execution and the complete web package pass their integration checks.
+
+## Required application package
+
+The [board/chat integration](https://github.com/iliazlobin/symphony/pull/2) owns this implementation. Package its accepted revision together with the cloud changes in one reviewed release commit and pin the resulting image digest. Do not rebuild a second UI. The current infrastructure overlay does not yet deploy this application.
+
+- **Web application:** the Phoenix `DashboardLive` project board, task details, multiple PRs per issue, `ChatPanel` on the right, standalone `ChatLive`, validated board-view context and existing workflow actions. Keep its router, browser session boundary, GitHub projections and control API together.
+- **Management chat:** normal application supervision of `Chat.Store`, persistence, runtime and bounded dynamic tools. Retain private `chat.state_path` and a dedicated `chat.codex_home`; configure the accepted chat executable, timeout and concurrency. Chat state/authentication is separate from builder/reviewer authentication slots and must have a single owner.
+- **Build inputs:** compile the complete accepted Elixir source and its `mix.lock`. `StaticAssets` embeds CSS, JavaScript, favicon and Phoenix dependency assets at compilation; copying an older service binary does not include new UI code. No separate frontend npm build is required.
+- **Runtime dependencies:** provide Python for the process guardian and the management-chat Codex version required by the accepted source. The published chat runtime pins Codex `0.154.0` and `gpt-6-astra`; the worker image's `0.153.4` pin is a separate contract. Use the native Linux Codex executable or verify a portable launcher: the published chat environment omits `/usr/local/bin`, where common Node images install Node. Do not silently change either role's version or reuse Mac authentication.
+
+`tools/symphony_web.py` is a read-only local preview that explicitly disables chat. It is not the application deployment entrypoint. A port number, static board render or healthy observability endpoint is not evidence that the full package is present.
+
+**Release acceptance:** verify that the built Linux image includes the board/chat modules, `/` and `/chat` routes, embedded assets and supervised chat store. Run the existing dashboard, chat, persistence, workflow-integration and browser-control tests, plus a no-model Codex version/initialization smoke test inside that image. After cloud authentication and access are implemented, verify task/PR views, chat/context/actions and conversation persistence through restart from the deployed browser. The current `BrowserAuth` is loopback-only; establish the reviewed remote identity/session boundary before exposing management actions. Keep cloud activation blocked if any required component is absent.
 
 ## Ownership and retained resources
 
@@ -58,6 +71,6 @@ Keep cloud admission and real credential enrollment disabled until a reviewed ru
 - Persist exact Job and Pod identities before releasing model work. Use independent Pod deadlines, no automatic retries and terminal-process evidence before reusing a workspace or authentication slot.
 - Preserve the existing candidate pipeline's exact-revision and independent-review checks. Candidate import must complete before the controller receives successful completion. Controller loss or transport failure retains uncertain ownership.
 - Enroll a dedicated cloud subscription login after real gVisor permission canaries pass. Preserve Codex-managed refreshes in an exclusive retained slot, respecting the interrupted-write limit above; never clone a Mac login, restore stale credentials or fall back to API billing.
-- Integrate the web task's accepted published revision. Its local browser authentication must be reviewed for remote use; moving a container does not establish remote authorization.
+- Satisfy the required application package and release acceptance above. Integrate the web task's accepted revision; include its management-chat runtime and persistence in the cloud release.
 
 The worker pool is bounded to zero through one node for the pilot. Larger concurrency requires measured capacity, quota and cost review. The cloud task path remains disabled until the gates above are verified.

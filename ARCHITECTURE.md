@@ -10,8 +10,11 @@ coding after validating the scoped container policies and a bounded delivery pil
 The [GKE package](deploy/gke/README.md) owns Symphony's private image repository,
 scoped image-pull grant, Terraform state and retained journal. The shared platform
 repository owns node pools, networking and storage classes. The project board and
-management chat are the single user interface; cloud deployment adds no separate
-dashboard. Kubernetes execution and durable subscription authentication must pass
+management chat are the single user interface. Every cloud application release must
+include that full Phoenix implementation, its supervised chat runtime and durable
+chat state, as defined by the [package contract](deploy/gke/README.md#required-application-package).
+Local ports and the read-only preview launcher do not identify the deployed product.
+Kubernetes execution and durable subscription authentication must pass
 runtime verification before replacing the Mac task owner. The standalone
 [runner](tools/kubernetes_runner.py) and [auth-slot journal](tools/kubernetes_auth.py)
 are not wired into the live candidate pipeline. The real gVisor permission canary
