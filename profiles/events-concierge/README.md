@@ -1,6 +1,6 @@
 # Events Concierge on the Mac
 
-This profile connects GitHub Issues to one builder and a separate reviewer. Symphony
+This profile connects each GitHub Issue to a builder and a separate reviewer. Symphony
 owns scheduling; the native API owns controls; the small MCP client forwards those
 controls. See the [architecture](../../ARCHITECTURE.md) for boundaries and code ownership.
 
@@ -54,6 +54,22 @@ Use GitHub for task intent and PR review, a management chat for status and autho
 controls, and the local dashboard for monitoring. The initial mode is paused. Worker
 launch has a separate host gate; resume cannot bypass the activation prerequisites
 in [Verification and recovery](#verification-and-recovery).
+
+**Task concurrency.** In the private `WORKFLOW.md` identified by `workflow_path`,
+`agent.max_concurrent_agents` accepts the integer `1` (default) or `2`. Each issue
+runs its builder and then its reviewer, in independent task/review workspaces;
+two slots allow two issue pipelines to overlap. Budgets remain per issue, while
+Codex account usage limits are shared. The host publisher still processes handoffs
+serially. Drain, wait for active work and cleanup to finish, then change the setting
+and restart the scheduler with its existing ledger. New installations remain paused
+with worker launch disabled; changing concurrency does not enable execution.
+
+Each active stage is capped at 2 CPUs and 4 GiB; these are limits, not reservations
+or guaranteed throughput. Two stages can use 4 CPUs and 8 GiB. Budget for those caps
+plus existing services, VM overhead and headroom, while leaving resources for macOS
+and other applications. Verify that the workload fits before selecting two slots;
+retain one otherwise. A Colima resize requires approval for the shared-VM restart
+and verification of affected services afterward.
 
 **GitHub — task and PR interface.** Create or edit work in
 [Issues](https://github.com/iliazlobin/events-concierge/issues), using the
