@@ -7,13 +7,15 @@ services and cloud infrastructure remain separate from this orchestration runtim
 New installations start paused with worker launch disabled. The operator enables
 coding after validating the scoped container policies and a bounded delivery pilot.
 
-The separate [GKE bootstrap package](deploy/gke/README.md) installs a paused controller
-with an empty tracker and retained journal in the existing private cluster. Its
-Terraform root owns the Symphony image repository, scoped image-pull grant and state
-bucket; the shared platform repository owns node pools, networking and storage classes.
-This bootstrap does not execute tasks or replace the Mac runtime. Kubernetes execution,
-subscription authentication, publication and the accepted board/chat revision require
-their own integration and runtime verification.
+The [GKE package](deploy/gke/README.md) owns Symphony's private image repository,
+scoped image-pull grant, Terraform state and retained journal. The shared platform
+repository owns node pools, networking and storage classes. The project board and
+management chat are the single user interface; cloud deployment adds no separate
+dashboard. Kubernetes execution and durable subscription authentication must pass
+runtime verification before replacing the Mac task owner. The standalone
+[runner](tools/kubernetes_runner.py) and [auth-slot journal](tools/kubernetes_auth.py)
+are not wired into the live candidate pipeline. The real gVisor permission canary
+currently fails during Codex sandbox startup; cloud admission remains disabled.
 
 ## System boundary
 
