@@ -62,7 +62,7 @@ in [Verification and recovery](#verification-and-recovery).
 candidate diff, independent review and check evidence in
 [Pull requests](https://github.com/iliazlobin/events-concierge/pulls). A draft PR is a
 review handoff; it does not mean the task is merged or deployed. Task creation and
-label changes use GitHub's UI or tools, not Symphony's MCP server.
+queue-label changes are available in GitHub and the optional web chat.
 
 **Web board.** Open [Symphony](http://127.0.0.1:8777/). Real tracker issues,
 runtime activity and durable holds appear in Backlog, Ready, Running, Review and
@@ -94,11 +94,44 @@ resume, cancel and retry use native revisions, idempotency and project checks; e
 consequential action has a confirmation. A cancel receipt is not proof of worker cleanup.
 
 The board and read APIs retain the local observability access model. Google sign-in,
-remote access, additional project services, persisted question/answer delivery,
+remote access, additional project services, delivery of answers into running workers,
 automatic repairs and web publication actions remain separate implementation work.
 Do not expose this local listener as an authenticated GCP application.
 
-**Management chat — controls through MCP.** Ask a connected management agent:
+**Web chat.** After [dedicated runtime setup](../../elixir/README.md#web-board-and-chat),
+open **Chat**, unlock with the local operator token and select the project. Use
+**New chat** for a separate topic; **History** opens searchable history with rename
+and archive actions. Project changes clear the current selection and draft. A chat
+stays with its original project. This service currently supplies one configured
+project; additional controllers are not aggregated yet.
+
+Responses stream as they arrive. **Stop** interrupts the chat response, not a coding
+task. Closing the tab leaves the response running; reopen its URL to reconnect.
+After a service restart, send another message to continue an interrupted conversation.
+Codex handles native compaction while the app retains visible messages and receipts.
+The optional **Context / Outputs** drawer shows retrieved sources, task widgets and
+actions. References open a task popup or the board with the stated filters.
+
+Try “Show blocked tasks”, “Explain this project's architecture”, or “Create a task
+to improve the admin filters, with acceptance criteria”. Read tools render status,
+task cards and commit-pinned document references. A write first renders its exact
+preview; **Confirm** applies it and **Cancel** discards it. A receipt records the
+action, not proof of worker completion. **Check outcome** reconciles uncertain
+writes without repeating them; do not create a replacement request meanwhile.
+
+Chat can create a backlog issue, edit title/description/state/priority, add feedback,
+queue/unqueue intake labels and request native pause/drain/resume/cancel/retry.
+Editing or changing intake labels requires a cancelled, idle task. For new work:
+create the issue, cancel it to hold admission, queue it, then retry when ready.
+Queueing adds only the configured intake labels; retry releases the hold but retains
+dependency, budget and host launch gates. Creating a task requires explicit intake
+labels in the tracker configuration so a new unlabeled issue cannot launch itself.
+Feedback is saved to the GitHub issue; it is not injected into an active coding turn.
+Deployment, merge, arbitrary code execution and worker input delivery are not chat
+actions. External GitHub edits can still race the final issue patch; refresh and
+review the issue after changes.
+
+**External management agent — controls through MCP.** Ask a connected agent:
 
 - “Show the current mode, running tasks, holds and publication blockers.”
 - “Inspect runtime details for GH-6 and link its GitHub issue.”

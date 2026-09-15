@@ -305,15 +305,67 @@ codex:
 - `gitlab_api` forwards raw GitLab REST requests with host-side auth and keeps configured tracker
   credentials and provider authentication aliases out of the Codex child.
 
-## Web dashboard
+## Web board and chat
 
 The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
+- Optional authenticated management chat at `/chat`; streaming uses LiveView's existing connection
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
+
+Enable management chat in the selected workflow's YAML front matter:
+
+```yaml
+chat:
+  enabled: true
+  state_path: $SYMPHONY_CHAT_STATE
+  codex_home: $SYMPHONY_CHAT_CODEX_HOME
+  executable: $SYMPHONY_CHAT_CODEX_EXECUTABLE
+  timeout_ms: 300000
+  max_concurrent: 2
+```
+
+Supply absolute paths through the service's environment or directly in its host-owned
+workflow. macOS launch agents do not inherit interactive shell exports. `state_path` must be a
+dedicated private directory, separate from the control ledger and worker checkouts.
+The executable must initialize as Codex **0.154.0** and expose **gpt-6-astra**; chat
+fails closed on another version or unavailable model. This pin is independent of
+the coding worker version. `timeout_ms` accepts 1,000–900,000; `max_concurrent`
+accepts 1–8 and covers turns and actions together. Chat settings apply at startup.
+
+Create a fresh management Codex home and sign in using that exact executable:
+
+```sh
+mkdir -p "$SYMPHONY_CHAT_CODEX_HOME"
+chmod 700 "$SYMPHONY_CHAT_CODEX_HOME"
+CODEX_HOME="$SYMPHONY_CHAT_CODEX_HOME" "$SYMPHONY_CHAT_CODEX_EXECUTABLE" login
+```
+
+Never copy another Codex home's authentication, configuration or history. The new
+home must have no user configuration, agent instructions, hooks, plugins or user
+skills. Native generated system skills are tolerated but disabled. The backend
+creates empty conversation workspaces and supplies only typed management tools.
+The browser uses the existing local operator login; model credentials stay on the
+host. A disabled store exposes no chat history. See the
+[operator guide](../profiles/events-concierge/README.md#operate) for the user flow.
+
+Conversation JSON and the native Codex home both need durable private storage to
+retain display history and resume model threads after restart. Stop the service
+before moving or restoring either; preserve both together. A second store owner,
+corrupt records or failed writes block operation without overwriting recovery data.
+Browser reconnect does not stop a turn; service restart leaves interrupted turns
+available to continue and uncertain writes available for read-only reconciliation.
+The file store is bounded to 500 conversations and 8 MiB per conversation. Archive
+hides a chat from the active list; it does not delete its retained records.
+Once a conversation reaches 400 messages, start another chat for further turns.
+
+The current backend serves one configured project; the picker and immutable chat
+scope prepare the interface for additional controllers without mixing their data.
+This listener remains loopback-only. Cloud identity, remote ingress, multi-replica
+storage and cloud sign-in are not supplied by this feature.
 
 ## Project Layout
 

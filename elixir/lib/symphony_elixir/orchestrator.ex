@@ -1482,7 +1482,11 @@ defmodule SymphonyElixir.Orchestrator do
   @doc "Checks retained tracker scope inside the owner before applying the ordinary revision-fenced command."
   @spec control_command_guarded(map(), String.t(), GenServer.server(), (-> boolean()) | nil) :: {:ok, map()} | {:error, term()}
   def control_command_guarded(command, expected_tracker, server \\ __MODULE__, authorize \\ nil) do
-    message = if is_function(authorize, 0), do: {:authorized_control_command, command, expected_tracker, authorize}, else: {:guarded_control_command, command, expected_tracker}
+    message =
+      if is_function(authorize, 0),
+        do: {:authorized_control_command, command, expected_tracker, authorize},
+        else: {:guarded_control_command, command, expected_tracker}
+
     safe_control_call(server, message)
   end
 
@@ -1633,7 +1637,6 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_call({:tracker_action, scope, revision, id, callback}, _from, state) do
     state = refresh_runtime_config(state)
-    issue = if state.control, do: get_in(state.control.data, ["issues", id]) || %{}, else: %{}
 
     result =
       cond do
@@ -1641,10 +1644,7 @@ defmodule SymphonyElixir.Orchestrator do
         is_nil(state.control) -> {:error, :control_disabled}
         not is_nil(state.control_fault) -> {:error, :control_unavailable}
         revision != state.control.data["revision"] -> {:error, :revision_conflict}
-        issue["hold"] != "cancelled" or not is_nil(issue["active"]) -> {:error, :task_must_be_cancelled}
-        Map.has_key?(state.running, id) or Map.has_key?(state.retry_attempts, id) -> {:error, :task_still_active}
-        not is_function(callback, 0) -> {:error, :invalid_command}
-        true -> execute_tracker_action(callback)
+        true -> execute_cancelled_tracker_action(state, id, callback)
       end
 
     {:reply, result, state}
@@ -2272,6 +2272,17 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp integer_like(_value), do: nil
+
+  defp execute_cancelled_tracker_action(state, id, callback) do
+    issue = get_in(state.control.data, ["issues", id]) || %{}
+
+    cond do
+      issue["hold"] != "cancelled" or not is_nil(issue["active"]) -> {:error, :task_must_be_cancelled}
+      Map.has_key?(state.running, id) or Map.has_key?(state.retry_attempts, id) -> {:error, :task_still_active}
+      not is_function(callback, 0) -> {:error, :invalid_command}
+      true -> execute_tracker_action(callback)
+    end
+  end
 
   defp execute_tracker_action(callback) do
     callback.()

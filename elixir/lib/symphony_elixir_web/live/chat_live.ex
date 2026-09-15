@@ -449,7 +449,7 @@ defmodule SymphonyElixirWeb.ChatLive do
       </div>
       <div :if={@type == "proposal"}>
         <div class="widget-heading"><strong>{text(@widget["title"] || "Proposed action")}</strong><span class="widget-label">{text(@widget["status"] || "pending")}</span></div>
-        <p class="proposal-action">{text(@widget["action"])}</p><p class="message-text">{details_text(@widget["details"])}</p>
+        <p class="message-text">{details_text(@widget["details"])}</p>
         <div :if={@widget["status"] in [nil, "pending"]} class="dialog-actions"><button class="button button-primary" phx-click="decide" phx-value-id={@widget["id"]} phx-value-decision="confirm" disabled={@busy} phx-disable-with="Confirming…">Confirm action</button><button class="button" phx-click="decide" phx-value-id={@widget["id"]} phx-value-decision="cancel" disabled={@busy} phx-disable-with="Cancelling…">Cancel</button></div>
         <p :if={@widget["status"] in [nil, "pending"]} class="muted widget-footnote">Nothing changes until you confirm this action.</p>
         <p :if={@widget["status"] == "executing"} class="muted" role="status">Applying action…</p>

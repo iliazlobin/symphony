@@ -6,51 +6,101 @@ defmodule SymphonyElixir.Chat.StoreTest do
     @spec run(map(), function(), function()) :: term()
     def run(opts, emit, tool) do
       send(opts.test_pid, {:runtime, self(), opts.thread_id, opts.text})
+      before_events(opts.text)
       emit.({:thread, opts.thread_id || "native-#{System.unique_integer([:positive])}"})
       emit.({:status, "Reading project"})
       emit.({:usage, %{"totalTokens" => 10}})
+      send(opts.test_pid, {:phase_ready, self(), opts.text})
 
-      case opts.text do
-        "wait" ->
-          emit.({:delta, "Partial response"})
+      respond(opts.text, opts, emit, tool)
+    end
 
-          receive do
-            :interrupt -> {:ok, %{status: :interrupted}}
-            :finish -> {:ok, %{status: :completed}}
-          end
-
-        "proposal" ->
-          result = tool.("propose_action", %{})
-          send(opts.test_pid, {:tool_result, result})
-          emit.({:delta, "Review this action."})
-          {:ok, %{status: :completed}}
-
-        "unauthorized tool" ->
-          receive do
-            :continue -> :ok
-          end
-
-          send(opts.test_pid, {:tool_result, tool.("project_status", %{})})
-          {:ok, %{status: :completed}}
-
-        "tool error" ->
-          send(opts.test_pid, {:tool_result, tool.("invalid", %{})})
-          {:ok, %{status: :completed}}
-
-        "crash" ->
-          exit(:runtime_failure)
-
-        "error" ->
-          {:error, :model_unavailable}
-
-        "auth" ->
-          {:error, :auth_required}
-
-        _ ->
-          emit.({:delta, "Hello "})
-          emit.({:delta, "from the project."})
-          {:ok, %{status: :completed}}
+    defp before_events("delay thread") do
+      receive do
+        :continue -> :ok
       end
+    end
+
+    defp before_events(_), do: :ok
+
+    defp respond("delayed delta", _opts, emit, _tool) do
+      receive do
+        :continue -> :ok
+      end
+
+      emit.({:delta, "Buffered response"})
+
+      receive do
+        :finish -> {:ok, %{status: :completed}}
+      end
+    end
+
+    defp respond("delay finish", _opts, _emit, _tool) do
+      receive do
+        :continue -> {:ok, %{status: :completed}}
+      end
+    end
+
+    defp respond("ignore stop", opts, _emit, _tool) do
+      receive do
+        :interrupt -> send(opts.test_pid, :interrupt_received)
+      end
+
+      receive do
+        :finish -> {:ok, %{status: :completed}}
+      end
+    end
+
+    defp respond("status", opts, emit, tool) do
+      emit.({:future_event, %{}})
+      send(opts.test_pid, {:tool_result, tool.("symphony_project_status", %{})})
+      emit.({:delta, "Current status is available in the card."})
+      {:ok, %{status: :completed}}
+    end
+
+    defp respond("malformed tool", opts, _emit, tool) do
+      send(opts.test_pid, {:tool_result, tool.("malformed", %{})})
+      {:ok, %{status: :completed}}
+    end
+
+    defp respond("wait", _opts, emit, _tool) do
+      emit.({:delta, "Partial response"})
+
+      receive do
+        :interrupt -> {:ok, %{status: :interrupted}}
+        :finish -> {:ok, %{status: :completed}}
+      end
+    end
+
+    defp respond("proposal", opts, emit, tool) do
+      result = tool.("symphony_propose_action", %{})
+      send(opts.test_pid, {:tool_result, result})
+      emit.({:delta, "Review this action."})
+      {:ok, %{status: :completed}}
+    end
+
+    defp respond("unauthorized tool", opts, _emit, tool) do
+      receive do
+        :continue -> :ok
+      end
+
+      send(opts.test_pid, {:tool_result, tool.("symphony_project_status", %{})})
+      {:ok, %{status: :completed}}
+    end
+
+    defp respond("tool error", opts, _emit, tool) do
+      send(opts.test_pid, {:tool_result, tool.("invalid", %{})})
+      {:ok, %{status: :completed}}
+    end
+
+    defp respond("crash", _opts, _emit, _tool), do: exit(:runtime_failure)
+    defp respond("error", _opts, _emit, _tool), do: {:error, :model_unavailable}
+    defp respond("auth", _opts, _emit, _tool), do: {:error, :authentication_required}
+
+    defp respond(_, _opts, emit, _tool) do
+      emit.({:delta, "Hello "})
+      emit.({:delta, "from the project."})
+      {:ok, %{status: :completed}}
     end
   end
 
@@ -59,16 +109,35 @@ defmodule SymphonyElixir.Chat.StoreTest do
     def specs, do: []
     @spec call(String.t(), map(), map()) :: term()
     def call("invalid", _, _), do: {:error, :invalid_tool}
+    def call("malformed", _, _), do: :unavailable
 
-    def call("propose_action", _, ctx) do
+    def call("symphony_propose_action", _, ctx) do
+      if ctx.auth[:delay_tool] do
+        send(ctx.auth.test_pid, {:tool_prepared, self()})
+
+        receive do
+          :deliver -> :ok
+        end
+      end
+
       proposal = %{"action" => "feedback", "args" => %{"body" => "Please check this"}, "project_id" => ctx.project_id, "tracker_fingerprint" => ctx.tracker_fingerprint}
       {:ok, %{"proposal" => proposal, "widgets" => [%{"type" => "proposal"}], "references" => [%{"label" => "Task", "url" => "https://github.com/test/project/issues/1"}]}}
     end
 
-    def call(_, _, _), do: {:ok, %{"summary" => "No active tasks", "widgets" => []}}
+    def call(_, _, _) do
+      {:ok,
+       %{
+         "summary" => "No active tasks",
+         "widgets" => [
+           %{"type" => "status", "title" => "Current work", "url" => "/?project=github%3Atest%2Fone"}
+         ]
+       }}
+    end
+
     @spec confirm(map(), map()) :: term()
     def confirm(proposal, ctx) do
       send(ctx.auth.test_pid, {:confirmed, proposal})
+      send(ctx.auth.test_pid, {:action_started, self(), proposal["id"]})
 
       case ctx.auth[:action_result] do
         :wait ->
@@ -90,19 +159,44 @@ defmodule SymphonyElixir.Chat.StoreTest do
     @spec reconcile(map(), map()) :: term()
     def reconcile(proposal, ctx) do
       send(ctx.auth.test_pid, {:reconciled, proposal})
-      {:ok, %{"summary" => "Existing feedback found"}}
+
+      case ctx.auth[:reconcile_result] do
+        :unavailable -> {:error, :github_unavailable}
+        :unauthorized -> {:error, :unauthorized}
+        :native_unavailable -> {:error, :native_receipt_required}
+        _ -> {:ok, %{"summary" => "Existing feedback found"}}
+      end
     end
   end
 
   setup do
     {:ok, tmp} = SymphonyElixir.PathSafety.canonicalize(System.tmp_dir!())
     root = Path.join(tmp, "symphony-chat-store-#{System.unique_integer([:positive])}")
-    settings = %{enabled: true, state_path: root, codex_home: root <> "/runtime", executable: "/test/codex", timeout_ms: 3_000, max_concurrent: 2, test_pid: self()}
+
+    settings = %{
+      enabled: true,
+      state_path: root,
+      codex_home: root <> "/runtime",
+      executable: "/test/codex",
+      timeout_ms: 3_000,
+      max_concurrent: 2,
+      test_pid: self()
+    }
+
     project_reader = fn -> [%{"id" => "github:test/one", "label" => "One"}, %{"id" => "github:test/two", "label" => "Two"}] end
     {:ok, access} = Agent.start_link(fn -> true end)
     authorize = fn auth -> is_map(auth) and auth[:allowed] == true and Agent.get(access, & &1) end
     name = Module.concat(__MODULE__, "Store#{System.unique_integer([:positive])}")
-    opts = [name: name, settings: settings, projects: project_reader, authorize: authorize, runtime: TestRuntime, tools: TestTools]
+
+    opts = [
+      name: name,
+      settings: settings,
+      projects: project_reader,
+      authorize: authorize,
+      runtime: TestRuntime,
+      tools: TestTools
+    ]
+
     server = start_supervised!({Store, opts})
     auth = %{allowed: true, tracker_fingerprint: "scope", test_pid: self()}
     on_exit(fn -> File.rm_rf(root) end)
@@ -164,23 +258,30 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, _} = Store.stop(c.project, chat["id"], c.auth, c.server)
     assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "next", c.auth, c.server)
     assert_receive {:runtime, running, _, "wait"}
+    wait_chat(c, chat, &(List.last(&1["messages"])["text"] == "Partial response"))
     stop_supervised!(Store)
     refute Process.alive?(running)
     server = start_supervised!({Store, c.opts})
     assert {:ok, restored} = Store.get(c.project, chat["id"], c.auth, server)
     assert restored["status"] == "interrupted"
+    assert List.last(restored["messages"])["status"] == "interrupted"
+    assert List.last(restored["messages"])["text"] == "Partial response"
   end
 
   test "bounded concurrency, runtime failures and stale events never start extra work", c do
     first = create(c)
     second = create(c)
     third = create(c)
-    for chat <- [first, second], do: assert({:ok, _} = Store.send_message(c.project, chat["id"], "wait", chat["id"], c.auth, c.server))
+
+    for chat <- [first, second] do
+      assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", chat["id"], c.auth, c.server)
+    end
+
     assert {:error, :chat_capacity} = Store.send_message(c.project, third["id"], "Hello", "three", c.auth, c.server)
     assert {:ok, _} = Store.stop(c.project, first["id"], c.auth, c.server)
     wait_chat(c, first, &(&1["status"] == "interrupted"))
 
-    for text <- ["error", "auth", "crash", "tool error"] do
+    for text <- ["error", "auth", "crash", "tool error", "malformed tool"] do
       assert {:ok, _} = Store.send_message(c.project, first["id"], text, text, c.auth, c.server)
       wait_chat(c, first, &(&1["status"] != "running"))
     end
@@ -256,10 +357,234 @@ defmodule SymphonyElixir.Chat.StoreTest do
   end
 
   test "disabled chat and conflicting storage owners fail closed", c do
-    disabled = start_supervised!({Store, name: nil, settings: %{enabled: false}, projects: fn -> [] end, authorize: fn _ -> true end}, id: :disabled)
+    opts = [name: nil, settings: %{enabled: false}, projects: fn -> [] end, authorize: fn _ -> true end]
+    disabled = start_supervised!({Store, opts}, id: :disabled)
     assert {:ok, []} = Store.projects(%{}, disabled)
     assert {:error, :chat_storage_locked} = Persistence.open(c.root)
     assert {:error, _} = Store.projects(%{}, :not_running)
+  end
+
+  test "a reused submission id with different content is rejected and stays rejected after restart", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "Original request", "same-id", c.auth, c.server)
+    assert_receive {:runtime, _, nil, "Original request"}
+    original = wait_chat(c, chat, &(&1["status"] == "idle"))
+    assert {:error, :message_id_conflict} = Store.send_message(c.project, chat["id"], "Different request", "same-id", c.auth, c.server)
+    refute_receive {:runtime, _, _, _}
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    assert {:error, :message_id_conflict} = Store.send_message(c.project, chat["id"], "Different request", "same-id", c.auth, server)
+    assert {:ok, replay} = Store.send_message(c.project, chat["id"], " Original request ", "same-id", c.auth, server)
+    assert replay["messages"] == original["messages"]
+    refute_receive {:runtime, _, _, _}
+  end
+
+  test "reconcile cannot substitute for confirming a pending action", c do
+    {chat, proposal} = propose(c)
+    assert {:error, :invalid_decision} = Store.decide(c.project, chat["id"], proposal["id"], "reconcile", c.auth, c.server)
+    refute_receive {:confirmed, _}
+    refute_receive {:reconciled, _}
+    assert {:ok, saved} = Store.get(c.project, chat["id"], c.auth, c.server)
+    assert hd(saved["proposals"])["status"] == "pending"
+  end
+
+  test "failed read-only reconciliation preserves unknown outcomes across retries and restart", c do
+    {chat, proposal} = propose(c)
+    assert {:ok, _} = Store.decide(c.project, chat["id"], proposal["id"], "confirm", Map.put(c.auth, :action_result, :unknown), c.server)
+    assert_receive {:confirmed, _}
+    wait_chat(c, chat, &(hd(&1["proposals"])["status"] == "unknown"))
+
+    for error <- [:unavailable, :unauthorized, :native_unavailable] do
+      auth = Map.put(c.auth, :reconcile_result, error)
+      assert {:ok, _} = Store.decide(c.project, chat["id"], proposal["id"], "reconcile", auth, c.server)
+      assert_receive {:reconciled, _}
+      wait_chat(c, chat, &(hd(&1["proposals"])["status"] == "unknown"))
+      refute_receive {:confirmed, _}
+    end
+
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    assert {:ok, restored} = Store.get(c.project, chat["id"], c.auth, server)
+    assert hd(restored["proposals"])["status"] == "unknown"
+    assert {:ok, _} = Store.decide(c.project, chat["id"], proposal["id"], "reconcile", c.auth, server)
+    assert_receive {:reconciled, _}
+    wait_chat(%{c | server: server}, chat, &(hd(&1["proposals"])["status"] == "completed"))
+    refute_receive {:confirmed, _}
+  end
+
+  test "action execution shares the job capacity limit and frees capacity on completion", c do
+    [{first, first_proposal}, {second, second_proposal}, {third, third_proposal}] = Enum.map(1..3, fn _ -> propose(c) end)
+    blocked_auth = Map.put(c.auth, :action_result, :wait)
+
+    for {chat, proposal} <- [{first, first_proposal}, {second, second_proposal}] do
+      assert {:ok, _} = Store.decide(c.project, chat["id"], proposal["id"], "confirm", blocked_auth, c.server)
+    end
+
+    first_id = first_proposal["id"]
+    second_id = second_proposal["id"]
+    assert_receive {:action_started, first_pid, ^first_id}
+    assert_receive {:action_started, second_pid, ^second_id}
+    assert {:error, :chat_capacity} = Store.decide(c.project, third["id"], third_proposal["id"], "confirm", c.auth, c.server)
+    assert {:error, :chat_capacity} = Store.send_message(c.project, third["id"], "Status", "capacity-test", c.auth, c.server)
+    assert {:ok, pending} = Store.get(c.project, third["id"], c.auth, c.server)
+    assert hd(pending["proposals"])["status"] == "pending"
+    send(first_pid, :finish)
+    wait_chat(c, first, &(hd(&1["proposals"])["status"] == "completed"))
+    assert {:ok, _} = Store.decide(c.project, third["id"], third_proposal["id"], "confirm", c.auth, c.server)
+    wait_chat(c, third, &(hd(&1["proposals"])["status"] == "completed"))
+    send(second_pid, :finish)
+    wait_chat(c, second, &(hd(&1["proposals"])["status"] == "completed"))
+  end
+
+  test "authorization is rechecked for every conversation mutation", c do
+    {chat, proposal} = propose(c)
+    Agent.update(c.access, fn _ -> false end)
+    assert {:error, :unauthorized} = Store.rename(c.project, chat["id"], "Changed", c.auth, c.server)
+    assert {:error, :unauthorized} = Store.archive(c.project, chat["id"], c.auth, c.server)
+    assert {:error, :unauthorized} = Store.send_message(c.project, chat["id"], "New", "denied", c.auth, c.server)
+    assert {:error, :unauthorized} = Store.stop(c.project, chat["id"], c.auth, c.server)
+    assert {:error, :unauthorized} = Store.decide(c.project, chat["id"], proposal["id"], "confirm", c.auth, c.server)
+    refute_receive {:confirmed, _}
+    Agent.update(c.access, fn _ -> true end)
+    assert {:ok, saved} = Store.get(c.project, chat["id"], c.auth, c.server)
+    assert saved["messages"] == chat["messages"]
+    assert hd(saved["proposals"])["status"] == "pending"
+  end
+
+  test "a status tool produces visible widgets and context references without an action", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "status", "read-status", c.auth, c.server)
+    saved = wait_chat(c, chat, &(&1["status"] == "idle"))
+    assert saved["proposals"] == []
+    assert [%{"type" => "status", "title" => "Current work"}] = List.last(saved["messages"])["widgets"]
+
+    assert [%{"label" => "Current work", "url" => "/?project=github%3Atest%2Fone", "checked_at" => time}] =
+             Enum.filter(saved["context"], &(&1["label"] == "Current work"))
+
+    assert {:ok, _, _} = DateTime.from_iso8601(time)
+  end
+
+  test "a rejected action stays failed and pending proposals survive a service restart", c do
+    {pending_chat, pending} = propose(c)
+    {failed_chat, failed} = propose(c)
+    auth = Map.put(c.auth, :action_result, :failed)
+    assert {:ok, _} = Store.decide(c.project, failed_chat["id"], failed["id"], "confirm", auth, c.server)
+    saved = wait_chat(c, failed_chat, &(hd(&1["proposals"])["status"] == "failed"))
+    assert is_binary(hd(saved["proposals"])["error"])
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    assert {:ok, pending_saved} = Store.get(c.project, pending_chat["id"], c.auth, server)
+    assert hd(pending_saved["proposals"])["id"] == pending["id"]
+    assert hd(pending_saved["proposals"])["status"] == "pending"
+    assert {:ok, failed_saved} = Store.get(c.project, failed_chat["id"], c.auth, server)
+    assert hd(failed_saved["proposals"])["status"] == "failed"
+  end
+
+  test "Stop enforces its deadline when a runtime ignores interruption", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "ignore stop", "stubborn", c.auth, c.server)
+    assert_receive {:runtime, pid, _, "ignore stop"}
+    monitor = Process.monitor(pid)
+    assert {:ok, _} = Store.stop(c.project, chat["id"], c.auth, c.server)
+    assert_receive :interrupt_received
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :killed}, 7_000
+    saved = wait_chat(c, chat, &(&1["status"] == "interrupted"))
+    assert List.last(saved["messages"])["status"] == "interrupted"
+  end
+
+  test "failure to save a turn or approval prevents its execution", c do
+    chat = create(c)
+    block_record(c, chat)
+    assert {:error, :chat_storage_unavailable} = Store.send_message(c.project, chat["id"], "New", "not-started", c.auth, c.server)
+    refute_receive {:runtime, _, _, _}
+  end
+
+  test "failure to save an approved proposal does not execute the action", c do
+    {chat, proposal} = propose(c)
+    block_record(c, chat)
+    assert {:error, :chat_storage_unavailable} = Store.decide(c.project, chat["id"], proposal["id"], "confirm", c.auth, c.server)
+    refute_receive {:confirmed, _}
+  end
+
+  for phase <- ["delay thread", "delayed delta", "delay finish"] do
+    test "storage failure during #{phase} stops the response", c do
+      chat = create(c)
+      phase = unquote(phase)
+      assert {:ok, _} = Store.send_message(c.project, chat["id"], phase, phase, c.auth, c.server)
+      assert_receive {:runtime, pid, _, ^phase}
+      if phase != "delay thread", do: assert_receive({:phase_ready, ^pid, ^phase})
+      block_record(c, chat)
+      send(pid, :continue)
+      saved = wait_chat(c, chat, &(&1["status"] == "error"))
+      assert saved["error"] =~ "storage"
+    end
+  end
+
+  test "failure to save a tool proposal cannot leave an approved action", c do
+    chat = create(c)
+    auth = Map.put(c.auth, :delay_tool, true)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "proposal", "delayed-proposal", auth, c.server)
+    assert_receive {:tool_prepared, pid}
+    block_record(c, chat)
+    send(pid, :deliver)
+    saved = wait_chat(c, chat, &(&1["status"] == "error"))
+    assert saved["proposals"] == []
+    refute_receive {:confirmed, _}
+  end
+
+  test "losing the OS ownership lock stops active work and rejects new writes", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "lock-loss", c.auth, c.server)
+    assert_receive {:runtime, pid, _, "wait"}
+    wait_chat(c, chat, &(List.last(&1["messages"])["text"] == "Partial response"))
+    # Kill the actual lock helper to exercise loss of OS ownership, not a synthetic store event.
+    lock = :sys.get_state(c.server).persistence.lock
+    {:os_pid, os_pid} = Port.info(lock, :os_pid)
+    assert {_, 0} = System.cmd("/bin/kill", ["-TERM", Integer.to_string(os_pid)], stderr_to_stdout: true)
+    wait_chat(c, chat, &(&1["status"] == "error"))
+    refute Process.alive?(pid)
+    assert {:error, :chat_storage_unavailable} = Store.create(c.project, "Blocked", c.auth, c.server)
+  end
+
+  test "unavailable storage remains explicit while configured project discovery still works", c do
+    path = Path.join(c.root, "unavailable")
+    File.write!(path, "retained")
+    settings = Keyword.fetch!(c.opts, :settings) |> Map.put(:state_path, path)
+    options = c.opts |> Keyword.put(:name, nil) |> Keyword.put(:settings, settings)
+    unavailable = start_supervised!({Store, options}, id: :unavailable_storage)
+    assert {:error, :chat_storage_unavailable} = Store.create(c.project, "Blocked", c.auth, unavailable)
+    assert File.read!(path) == "retained"
+
+    previous_workflow = SymphonyElixir.Workflow.workflow_file_path()
+    workflow = Path.join(c.root, "WORKFLOW.md")
+
+    config = %{
+      tracker: %{
+        kind: "github",
+        provider: %{repo: "example/discovery", token: "fixture-only-token"},
+        active_states: ["open"],
+        terminal_states: ["closed"]
+      }
+    }
+
+    File.write!(workflow, "---\n" <> Jason.encode!(config) <> "\n---\nTask")
+    SymphonyElixir.Workflow.set_workflow_file_path(workflow)
+
+    try do
+      :ok = SymphonyElixir.WorkflowStore.force_reload()
+      default_options = [name: nil, settings: %{enabled: false}, authorize: fn _ -> true end]
+      defaults = start_supervised!({Store, default_options}, id: :configured_projects)
+      assert {:ok, [%{"id" => "github:example/discovery"}]} = Store.projects(%{}, defaults)
+    after
+      SymphonyElixir.Workflow.set_workflow_file_path(previous_workflow)
+      SymphonyElixir.WorkflowStore.force_reload()
+    end
+  end
+
+  defp block_record(c, chat) do
+    path = Path.join(c.root, chat["id"] <> ".json")
+    File.rm!(path)
+    File.mkdir!(path)
   end
 
   defp create(c) do

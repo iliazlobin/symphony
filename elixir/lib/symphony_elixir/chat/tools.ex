@@ -422,7 +422,7 @@ defmodule SymphonyElixir.Chat.Tools do
     with :ok <- complete_board(board),
          {:ok, task} <- action_task(proposal["args"], context, board),
          {:ok, result} <- native_command(proposal, context, task) do
-      summary = action_title(proposal["action"]) <> " completed."
+      summary = action_title(proposal["action"]) <> " recorded. Refresh status to check execution."
       widget = %{"type" => "receipt", "summary" => summary, "url" => board_url(context.project_id), "result" => result}
       {:ok, %{"widgets" => [widget]}}
     end

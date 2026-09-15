@@ -71,6 +71,7 @@ defmodule SymphonyElixir.Chat.Persistence do
 
   defp load_record(path, {:ok, acc}) do
     id = Path.basename(path, ".json")
+
     with true <- valid_id?(id),
          {:ok, %{type: :regular, size: size}} when size <= 8_000_000 <- File.lstat(path),
          {:ok, bytes} <- File.read(path),
@@ -99,12 +100,14 @@ defmodule SymphonyElixir.Chat.Persistence do
     Enum.all?(~w(id text status), &is_binary(message[&1])) and
       message["role"] in ["user", "assistant"] and collection?(message["widgets"], &is_map/1)
   end
+
   defp message_valid?(_), do: false
 
   defp proposal_valid?(proposal) when is_map(proposal) do
     valid_id?(proposal["id"]) and is_binary(proposal["action"]) and is_map(proposal["args"]) and
       proposal["status"] in ["pending", "executing", "completed", "cancelled", "unknown", "failed"]
   end
+
   defp proposal_valid?(_), do: false
 
   defp lock(root) do
