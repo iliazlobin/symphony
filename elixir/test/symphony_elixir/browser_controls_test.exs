@@ -52,7 +52,7 @@ defmodule SymphonyElixir.BrowserControlsTest do
   end
 
   test "settings commands keep browser auth, tracker scope and revision guards", ctx do
-    assert {:error, :unauthorized} = BoardActions.settings_command(1, 0, "unauthorized", %{}, ctx.pid)
+    assert {:error, :unauthorized} = BoardActions.settings_command(1, 0, "unauthorized", %{})
     assert {:error, :unauthorized} = BoardActions.settings_command(1, 0, "foreign", %{ctx.authorization | tracker_fingerprint: "foreign"}, ctx.pid)
     assert {:ok, %{"limit" => 1, "revision" => 1}} = BoardActions.settings_command(1, 0, "settings", ctx.authorization, ctx.pid)
     assert {:error, :revision_conflict} = BoardActions.settings_command(nil, 0, "stale", ctx.authorization, ctx.pid)
