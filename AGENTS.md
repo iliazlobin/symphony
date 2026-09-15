@@ -17,6 +17,9 @@ profile is the first consumer; application code and GCP infrastructure live sepa
   disabled until their explicit prerequisites and user authorization are satisfied.
 - Do not mount the owner's Codex home, application secrets, other checkouts or Docker
   socket into a coding worker. Retain failed workspaces and uncertain cleanup state.
+- Cloud application releases must include the shared Phoenix board/chat implementation
+  and its runtime/state requirements in [the package contract](deploy/gke/README.md#required-application-package).
+  A local port or the read-only `tools/symphony_web.py` preview is not that package.
 - GitHub owns instructions, workflows, code, issues and PR evidence. Notion explains
   the system and links published revisions. Update canonical files instead of creating
   duplicate trackers or report bundles.
