@@ -94,7 +94,7 @@ def probe(image=None, seccomp_policy=None, apparmor_profile=None, fixture_parent
                 connection.send({"id": 1, "method": "initialize", "params": {
                     "clientInfo": {"name": "symphony-linux-permission-probe", "version": "1"},
                     "capabilities": {"experimentalApi": True}}})
-                connection.response(1)
+                connection.response(1, timeout=30)
                 connection.send({"method": "initialized", "params": {}})
                 cidfiles = list(root.glob("permission.lock.*.cid"))
                 if len(cidfiles) != 1:

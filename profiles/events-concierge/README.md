@@ -287,6 +287,13 @@ scope and checks both digests before selecting the Docker security options.
 configuration, not that the guest policy is currently loaded or a model can run.
 Changed policy content fails closed and requires review, installation and validation.
 
+In the private workflow identified by `workflow_path`, set `codex.read_timeout_ms`
+to `30000` for container startup. This allows 30 seconds for app-server protocol
+acknowledgements; keep the task's overall runtime budget unchanged. Restart the
+scheduler after editing its workflow, with active work settled and the existing
+control ledger preserved. The disposable probes use the same initialization limit;
+command and cancellation acceptance deadlines remain separate.
+
 Validate the operational selection with fake authentication and no model calls:
 
 ```sh
