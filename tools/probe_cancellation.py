@@ -81,7 +81,8 @@ def identity(pid):
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def probe(binary, native_terminate=False, container_image=None, seccomp_policy=None, apparmor_profile=None, fixed_root=False):
+def probe(binary, native_terminate=False, container_image=None, seccomp_policy=None, apparmor_profile=None,
+          fixed_root=False, fixture_parent=None, operator_config=None):
     repository = Path(__file__).resolve().parents[1]
     source = (repository / "elixir/lib/symphony_elixir/process_group.ex").read_text()
     guardian = re.search(r'@guardian ~S"""\n(.*?)\n  """', source, re.S)
@@ -91,9 +92,13 @@ def probe(binary, native_terminate=False, container_image=None, seccomp_policy=N
     spec = importlib.util.spec_from_file_location("profile", repository / "profiles/events-concierge/profile.py")
     profile = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(profile)
+    from probe_runtime import resolve_runtime, verify_container_policy
+    runtime = resolve_runtime(profile, repository, container_image, seccomp_policy, apparmor_profile,
+                              fixture_parent, operator_config)
+    container_image = runtime["image"]
     results = {}
 
-    temporary_parent = repository / ".runtime" if container_image else None
+    temporary_parent = runtime["parent"]
     if fixed_root and not container_image:
         raise ValueError("Fixed root is only for container sandbox diagnosis")
     with disposable_root(temporary_parent, fixed=fixed_root) as root:
@@ -110,10 +115,7 @@ def probe(binary, native_terminate=False, container_image=None, seccomp_policy=N
             if container_image:
                 command = ["/opt/homebrew/bin/python3", "-I", str(repository / "tools/container_worker.py"),
                            "--workspace", str(workspace), "--codex-home", str(home), "--image", container_image]
-                if seccomp_policy:
-                    command += ["--seccomp-policy", str(Path(seccomp_policy).resolve())]
-                if apparmor_profile:
-                    command += ["--apparmor-profile", apparmor_profile]
+                command += runtime["options"]
             process = subprocess.Popen(
                 ["/opt/homebrew/bin/python3", "-I", "-u", "-c", guardian_source,
                  str(root / (mode + ".lock"))] + command,
@@ -187,6 +189,10 @@ while time.monotonic()<deadline:
                     cid = cidfiles[0].read_text().strip()
                     intent = json.loads(Path(str(cidfiles[0]) + ".intent").read_text())
                     docker_endpoint = intent["docker_host"]
+                    docker_env = {key: value for key, value in os.environ.items() if key not in ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG")}
+                    inspected = subprocess.run(["docker", "--host", docker_endpoint, "inspect", cid],
+                                               env=docker_env, capture_output=True, text=True, timeout=2, check=True)
+                    verify_container_policy(json.loads(inspected.stdout)[0], runtime)
                 cancelled_at = time.monotonic()
                 if cancelled_at - started > 15 and container_image:
                     raise RuntimeError("Probe startup too slow to distinguish cancellation from self-expiry")
@@ -217,6 +223,8 @@ while time.monotonic()<deadline:
                     "guardian_exit_code": process.returncode,
                     "live_parent_and_child_heartbeats": True,
                     "cancellation_seconds": round(elapsed, 3), "self_expiry_seconds": ttl,
+                    "selected_container_policy_verified": bool(container_image),
+                    "operator_launch_selection": runtime["operational"],
                 }
             finally:
                 connection.selector.close()
@@ -244,7 +252,10 @@ if __name__ == "__main__":
     parser.add_argument("--seccomp-policy", help="Explicit inactive compatibility policy for disposable containers only")
     parser.add_argument("--apparmor-profile", help="Explicit worker-only AppArmor compatibility profile")
     parser.add_argument("--fixed-root", action="store_true", help="Use a unique fixed disposable fixture for exact-path AppArmor diagnosis; refuses existing state")
+    parser.add_argument("--fixture-parent", help="Existing canonical directory for disposable fixtures; operational mode confines it to the configured workspace root")
+    parser.add_argument("--operator-config", help="Use the service's pinned image and reviewed launch-policy selector without loading real authentication into a worker")
     arguments = parser.parse_args()
-    observed = probe(arguments.codex, arguments.native_terminate, arguments.container_image, arguments.seccomp_policy, arguments.apparmor_profile, arguments.fixed_root)
+    observed = probe(arguments.codex, arguments.native_terminate, arguments.container_image, arguments.seccomp_policy,
+                     arguments.apparmor_profile, arguments.fixed_root, arguments.fixture_parent, arguments.operator_config)
     print(json.dumps(observed, indent=2))
     raise SystemExit(0 if all(result["cancelled"] for result in observed.values()) else 1)

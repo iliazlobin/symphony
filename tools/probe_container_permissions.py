@@ -46,15 +46,23 @@ def verify_inner(observed, role):
         raise RuntimeError(f"{role} permission mismatch: {observed}; expected {expected}")
 
 
-def probe(image, seccomp_policy, apparmor_profile):
+def probe(image=None, seccomp_policy=None, apparmor_profile=None, fixture_parent=None, operator_config=None):
     spec = importlib.util.spec_from_file_location("profile", ROOT / "profiles/events-concierge/profile.py")
     profile = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(profile)
+    from probe_runtime import resolve_runtime, verify_container_policy
+    if operator_config is None and apparmor_profile is None:
+        apparmor_profile = "symphony-codex"
+    runtime = resolve_runtime(profile, ROOT, image, seccomp_policy, apparmor_profile,
+                              fixture_parent, operator_config)
+    image = runtime["image"]
+    if image is None:
+        raise ValueError("Linux permission probes require a container image or operator configuration")
     source = (ROOT / "elixir/lib/symphony_elixir/process_group.ex").read_text()
     guardian = textwrap.dedent(re.search(r'@guardian ~S"""\n(.*?)\n  """', source, re.S).group(1))
     results = {}
     for role, mount_role in (("builder", "builder"), ("reviewer", "builder"), ("reviewer", "reviewer")):
-        with disposable_root(ROOT / ".runtime", fixed=True) as root:
+        with disposable_root(runtime["parent"], fixed=True) as root:
             workspace, home = root / "pipe", root / "codex"
             workspace.mkdir()
             home.mkdir()
@@ -75,8 +83,7 @@ def probe(image, seccomp_policy, apparmor_profile):
             env = {"PATH": profile.WORKER_PATH, "HOME": str(Path.home()), "CODEX_HOME": str(home),
                    "SYMPHONY_WORKER_ROLE": mount_role}
             command = ["/opt/homebrew/bin/python3", "-I", str(ROOT / "tools/container_worker.py"),
-                       "--workspace", str(workspace), "--codex-home", str(home), "--image", image,
-                       "--seccomp-policy", str(Path(seccomp_policy).resolve()), "--apparmor-profile", apparmor_profile]
+                       "--workspace", str(workspace), "--codex-home", str(home), "--image", image] + runtime["options"]
             process = subprocess.Popen(["/opt/homebrew/bin/python3", "-I", "-u", "-c", guardian,
                                         str(root / "permission.lock")] + command,
                                        cwd=workspace, env=env, stdin=subprocess.PIPE,
@@ -154,6 +161,7 @@ print(json.dumps(out))
                 inspect = subprocess.run(docker + ["inspect", cid], env=docker_env, capture_output=True,
                                          text=True, timeout=5, check=True)
                 info = json.loads(inspect.stdout)[0]
+                verify_container_policy(info, runtime)
                 checkout = next(m for m in info["Mounts"] if m["Destination"] == str(workspace))
                 host = info["HostConfig"]
                 if (checkout["RW"] != (mount_role == "builder") or not host["ReadonlyRootfs"]
@@ -162,6 +170,8 @@ print(json.dumps(out))
                     raise RuntimeError("Outer container restrictions differ from the production wrapper")
                 results[role + "_on_" + mount_role + "_mount"] = {
                     **observed, "active_permission_profile": "symphony-" + role,
+                    "selected_container_policy_verified": True,
+                    "operator_launch_selection": runtime["operational"],
                     "outer_secret_and_network_controls_verified": True,
                     "outer_checkout_writable": checkout["RW"], "outer_restrictions_verified": True}
             finally:
@@ -179,8 +189,11 @@ print(json.dumps(out))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--container-image", required=True)
-    parser.add_argument("--seccomp-policy", required=True)
-    parser.add_argument("--apparmor-profile", default="symphony-codex")
+    parser.add_argument("--container-image")
+    parser.add_argument("--seccomp-policy")
+    parser.add_argument("--apparmor-profile")
+    parser.add_argument("--fixture-parent", help="Existing canonical directory for disposable fixtures; operational mode confines it to the configured workspace root")
+    parser.add_argument("--operator-config", help="Use the service's pinned image and reviewed launch-policy selector without loading real authentication into a worker")
     args = parser.parse_args()
-    print(json.dumps(probe(args.container_image, args.seccomp_policy, args.apparmor_profile), indent=2))
+    print(json.dumps(probe(args.container_image, args.seccomp_policy, args.apparmor_profile,
+                           args.fixture_parent, args.operator_config), indent=2))
