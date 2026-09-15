@@ -92,8 +92,8 @@ os.killpg=signal_unreaped
     def test_seccomp_candidate_preserves_pinned_moby_default_and_only_adds_bwrap_operations(self):
         policy_path = ROOT / "profiles/events-concierge/seccomp-codex.json"
         policy = json.loads(policy_path.read_text())
-        added = policy["syscalls"][-14:]
-        policy["syscalls"] = policy["syscalls"][:-14]
+        added = policy["syscalls"][-16:]
+        policy["syscalls"] = policy["syscalls"][:-16]
         baseline = json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
         # Canonical JSON digest of official moby/profiles at
         # 61eaf32614c7c71b60bd8927d3e6a4ffc8ff1f31/seccomp/default.json.
@@ -104,7 +104,12 @@ os.killpg=signal_unreaped
         self.assertTrue(all(item["includes"] == {"arches": ["arm64", "amd64"]} for item in added))
         self.assertTrue(all("args" in item for item in added if item["names"] != ["pivot_root"]))
         self.assertEqual([item["args"][0]["value"] for item in added if item["names"] == ["clone"]],
-                         [805437457, 1879179281])
+                         [805437457, 1879179281, 939655185, 2013397009])
+        # The upgraded helper adds only CLONE_NEWIPC; extra namespace bits
+        # and clone argument masks would broaden this reviewed boundary.
+        clones = [item for item in added if item["names"] == ["clone"]]
+        self.assertTrue(all(item["args"] == [{"index": 0, "value": flags, "op": "SCMP_CMP_EQ"}]
+                            for item, flags in zip(clones, (0x30020011, 0x70020011, 0x38020011, 0x78020011))))
 
     def test_mounts_are_scoped_and_review_source_is_readonly(self):
         with tempfile.TemporaryDirectory() as directory:

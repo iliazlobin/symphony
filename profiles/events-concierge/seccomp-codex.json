@@ -1144,6 +1144,46 @@
           "op": "SCMP_CMP_EQ"
         }
       ]
+    },
+    {
+      "names": [
+        "clone"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "includes": {
+        "arches": [
+          "arm64",
+          "amd64"
+        ]
+      },
+      "comment": "Codex 0.153.4 (3d2ee51ca2d5db578f328aa75e20aa22c0197c9a) linux-sandbox/src/bwrap.rs adds IPC isolation to user+mount+PID namespaces, optionally network; exact flags, unchanged bubblewrap implementation.",
+      "args": [
+        {
+          "index": 0,
+          "value": 939655185,
+          "op": "SCMP_CMP_EQ"
+        }
+      ]
+    },
+    {
+      "names": [
+        "clone"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "includes": {
+        "arches": [
+          "arm64",
+          "amd64"
+        ]
+      },
+      "comment": "Codex 0.153.4 (3d2ee51ca2d5db578f328aa75e20aa22c0197c9a) linux-sandbox/src/bwrap.rs adds IPC isolation to user+mount+PID namespaces, optionally network; exact flags, unchanged bubblewrap implementation.",
+      "args": [
+        {
+          "index": 0,
+          "value": 2013397009,
+          "op": "SCMP_CMP_EQ"
+        }
+      ]
     }
   ]
 }
