@@ -2,7 +2,14 @@ defmodule SymphonyElixir.ControlledConcurrencyTest do
   use SymphonyElixir.TestSupport
   alias SymphonyElixir.{PathSafety, ProcessGroup}
 
-  test "two issue reservations run independently and cancellation admits the queued third" do
+  for capacity <- 1..5 do
+    @tag capacity: capacity
+    test "capacity #{capacity} preserves other runs when cancellation admits queued work", %{capacity: capacity} do
+      exercise_capacity(capacity)
+    end
+  end
+
+  defp exercise_capacity(capacity) do
     {:ok, root} = PathSafety.canonicalize(Path.join(System.tmp_dir!(), "symphony-concurrency-#{System.unique_integer([:positive])}"))
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf(root) end)
@@ -17,7 +24,7 @@ defmodule SymphonyElixir.ControlledConcurrencyTest do
       workspace: %{root: workspaces},
       hooks: %{after_create: "git clone --local --no-hardlinks -- '#{source}' ."},
       polling: %{interval_ms: 60_000},
-      agent: %{max_concurrent_agents: 2},
+      agent: %{max_concurrent_agents: capacity},
       observability: %{dashboard_enabled: false},
       codex: %{command: server, read_timeout_ms: 5_000, turn_timeout_ms: 30_000},
       control: %{enabled: true, state_path: Path.join(root, "control.json"), initial_mode: "paused", base_sha: base, max_attempts: 2, max_total_runtime_ms: 30_000, max_total_tokens: 100}
@@ -28,7 +35,7 @@ defmodule SymphonyElixir.ControlledConcurrencyTest do
     WorkflowStore.force_reload()
 
     issues =
-      for number <- 7..9 do
+      for number <- 1..(capacity + 1) do
         %Issue{id: to_string(number), identifier: "GH-#{number}", title: "Concurrent fixture #{number}", state: "open", labels: ["ready"], dispatchable: true}
       end
 
@@ -37,50 +44,64 @@ defmodule SymphonyElixir.ControlledConcurrencyTest do
     name = Module.concat(__MODULE__, "Runtime#{System.unique_integer([:positive])}")
     pid = start_supervised!({Orchestrator, name: name, task_supervisor: supervisor})
 
+    expected = Enum.map(1..capacity, &to_string/1)
+    queued = to_string(capacity + 1)
+
     try do
       assert {:ok, %{"revision" => 1}} = control(pid, "resume", "resume")
-      first = await_running(pid, ["7", "8"])
+      first = await_running(pid, expected)
       ledger = Orchestrator.control_snapshot(pid)
-      assert Map.keys(ledger["issues"]) |> Enum.sort() == ["7", "8"]
+      assert Map.keys(ledger["issues"]) |> Enum.sort() == expected
 
       assert Enum.all?(ledger["issues"], fn {id, issue} ->
                issue["attempts"] == 1 and issue["active"]["run_id"] == first.running[id].run_id
              end)
 
-      refute first.running["7"].run_id == first.running["8"].run_id
-      refute File.exists?(Path.join(workspaces, "GH-9"))
+      runs = Enum.map(first.running, fn {_id, worker} -> worker.run_id end)
+      workers = Enum.map(first.running, fn {_id, worker} -> worker.pid end)
+      assert length(Enum.uniq(runs)) == capacity
+      assert length(Enum.uniq(workers)) == capacity
+      refute File.exists?(Path.join(workspaces, "GH-#{queued}"))
 
-      # Another poll while both slots are occupied must not reserve the third issue.
+      # A full-capacity poll must leave the next issue unreserved.
       send(pid, :run_poll_cycle)
       assert Orchestrator.control_snapshot(pid)["issues"] == ledger["issues"]
-      assert map_size(:sys.get_state(pid).running) == 2
-      survivor = first.running["8"]
-      survivor_ledger = ledger["issues"]["8"]
-      cancelled_ref = Process.monitor(first.running["7"].pid)
+      assert map_size(:sys.get_state(pid).running) == capacity
+      survivors = Map.delete(first.running, "1")
+      cancelled_ref = Process.monitor(first.running["1"].pid)
 
-      assert {:ok, %{"revision" => 2}} = control(pid, "cancel-seven", "cancel", "7")
+      assert {:ok, %{"revision" => 2}} = control(pid, "cancel-first", "cancel", "1")
       assert_receive {:DOWN, ^cancelled_ref, :process, _pid, _reason}, 1_000
-      assert Process.alive?(survivor.pid)
-      assert Orchestrator.control_snapshot(pid)["issues"]["8"] == survivor_ledger
+      assert_survivors(pid, survivors, ledger)
 
-      assert %{"attempts" => 1, "tokens" => 7, "active" => nil, "hold" => "cancelled"} =
-               Orchestrator.control_snapshot(pid)["issues"]["7"]
+      assert %{"attempts" => 1, "tokens" => 1, "active" => nil, "hold" => "cancelled"} =
+               Orchestrator.control_snapshot(pid)["issues"]["1"]
 
       send(pid, :run_poll_cycle)
-      next = await_running(pid, ["8", "9"])
-      assert next.running["8"].pid == survivor.pid
-      assert next.running["8"].run_id == survivor.run_id
-      assert Process.alive?(survivor.pid)
-      refute next.running["9"].run_id in [first.running["7"].run_id, survivor.run_id]
+      next = await_running(pid, tl(expected) ++ [queued])
+      assert_survivors(pid, survivors, ledger)
+      refute next.running[queued].run_id in runs
       next_ledger = Orchestrator.control_snapshot(pid)
-      assert next_ledger["issues"]["8"] == survivor_ledger
-      assert %{"attempts" => 1, "active" => %{"tokens" => 9}} = next_ledger["issues"]["9"]
+      assert %{"attempts" => 1, "active" => %{"tokens" => tokens}} = next_ledger["issues"][queued]
+      assert tokens == capacity + 1
     after
       if Process.alive?(pid), do: control(pid, "cleanup", "pause")
       # Taking each workspace lock waits for its fake app-server's guardian cleanup.
-      for number <- 7..9, workspace = Path.join(workspaces, "GH-#{number}"), File.dir?(workspace) do
+      for number <- 1..(capacity + 1), workspace = Path.join(workspaces, "GH-#{number}"), File.dir?(workspace) do
         assert {:ok, {"clean", 0}} = ProcessGroup.run("printf clean", cd: workspace, timeout_ms: 5_000)
       end
+    end
+  end
+
+  defp assert_survivors(pid, survivors, ledger) do
+    running = :sys.get_state(pid).running
+    current = Orchestrator.control_snapshot(pid)
+
+    for {id, worker} <- survivors do
+      assert Process.alive?(worker.pid)
+      assert running[id].pid == worker.pid
+      assert running[id].run_id == worker.run_id
+      assert current["issues"][id] == ledger["issues"][id]
     end
   end
 

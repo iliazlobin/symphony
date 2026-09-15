@@ -56,20 +56,23 @@ launch has a separate host gate; resume cannot bypass the activation prerequisit
 in [Verification and recovery](#verification-and-recovery).
 
 **Task concurrency.** In the private `WORKFLOW.md` identified by `workflow_path`,
-`agent.max_concurrent_agents` accepts the integer `1` (default) or `2`. Each issue
+`agent.max_concurrent_agents` accepts an integer from `1` (default) through `5`. Each issue
 runs its builder and then its reviewer, in independent task/review workspaces;
-two slots allow two issue pipelines to overlap. Budgets remain per issue, while
+the setting caps overlapping issue pipelines, not the number of tasks in the queue.
+Budgets remain per issue, while
 Codex account usage limits are shared. The host publisher still processes handoffs
 serially. Drain, wait for active work and cleanup to finish, then change the setting
 and restart the scheduler with its existing ledger. New installations remain paused
 with worker launch disabled; changing concurrency does not enable execution.
 
 Each active stage is capped at 2 CPUs and 4 GiB; these are limits, not reservations
-or guaranteed throughput. Two stages can use 4 CPUs and 8 GiB. Budget for those caps
-plus existing services, VM overhead and headroom, while leaving resources for macOS
-and other applications. Verify that the workload fits before selecting two slots;
-retain one otherwise. A Colima resize requires approval for the shared-VM restart
-and verification of affected services afterward.
+or guaranteed throughput. Five active stages have combined caps of 10 CPUs and
+20 GiB, with additional resources needed for existing services, host operations,
+cleanup and VM overhead. Leave headroom for macOS and other applications. The scheduler
+does not check CPU or memory capacity before admission: supporting five slots does
+not establish that five workloads fit on a particular Mac. Validate capacity before
+raising the live limit; retain one otherwise. A Colima resize requires approval for
+the shared-VM restart and verification of affected services afterward.
 
 **GitHub — task and PR interface.** Create or edit work in
 [Issues](https://github.com/iliazlobin/events-concierge/issues), using the

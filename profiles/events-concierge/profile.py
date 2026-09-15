@@ -68,9 +68,9 @@ def validate_workflow(workflow: str) -> None:
                  and tracker["active_states"] == ["open"] and tracker["terminal_states"] == ["closed"]
                  and controls["enabled"] is True and controls["initial_mode"] == "paused"
                  and controls["base_sha"] == "$SYMPHONY_BASE_SHA"
-                 and type(concurrency) is int and concurrency in (1, 2))
+                 and type(concurrency) is int and 1 <= concurrency <= 5)
         if not valid:
-            raise ControlError("Workflow must enforce the approved paused GitHub profile with one or two task slots")
+            raise ControlError("Workflow must enforce the approved paused GitHub profile with one to five task slots")
     except (KeyError, TypeError, yaml.YAMLError) as exc:
         raise ControlError("Workflow front matter is missing or invalid") from exc
 

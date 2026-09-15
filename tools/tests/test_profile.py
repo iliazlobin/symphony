@@ -137,12 +137,12 @@ class ProfileTests(unittest.TestCase):
             with self.assertRaises(profile.ControlError):
                 profile.validate_workflow(changed + "\ninitial_mode: paused\nmax_concurrent_agents: 1\nenabled: true")
 
-    def test_workflow_accepts_only_integer_one_or_two_task_slots(self):
-        for slots in ("1", "2"):
+    def test_workflow_accepts_only_integer_one_to_five_task_slots(self):
+        for slots in ("1", "2", "3", "4", "5"):
             with self.subTest(slots=slots):
                 profile.validate_workflow(WORKFLOW.replace("max_concurrent_agents: 1", "max_concurrent_agents: " + slots))
-        for slots in ("true", "false", "yes", "on", "1.0", "2.0", "'1'", "'2'", "0", "-1", "3", "8", "null", "[]", "{}"):
-            with self.subTest(slots=slots), self.assertRaisesRegex(profile.ControlError, "one or two task slots"):
+        for slots in ("true", "false", "yes", "on", "1.0", "5.0", "2.5", "'1'", "'5'", "0", "-1", "6", "8", "null", "[]", "{}"):
+            with self.subTest(slots=slots), self.assertRaisesRegex(profile.ControlError, "one to five task slots"):
                 profile.validate_workflow(WORKFLOW.replace("max_concurrent_agents: 1", "max_concurrent_agents: " + slots))
 
     def test_private_state_rejects_directory_symlink(self):
