@@ -519,7 +519,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
     assert has_element?(view, "#lane-running .task-card")
-    assert html =~ "Connected"
+    assert html =~ "Live updates connected"
     assert html =~ "Disconnected"
     assert has_element?(view, "#settings-button", "Settings")
     view |> element("#lane-running .card-title") |> render_click()

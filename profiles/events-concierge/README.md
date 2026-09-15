@@ -77,6 +77,26 @@ Tracker/control failures retain last-known cards with an explicit warning. The b
 refreshes tracker data every 30 seconds; runtime messages also update over LiveView.
 Done means the tracker is terminal; it does not establish merge, acceptance or deployment.
 
+Cards link the issue, repository and related pull requests. PR draft/merge state,
+GitHub review and checks for the current PR head remain separate from the worker's
+candidate review. The source strip shows refresh failures and controller mode;
+“Live updates connected” describes the browser connection only.
+
+To try updated web code against live work without replacing the installed controller,
+run this from the Symphony checkout with its pinned Elixir runtime and Python dependencies:
+
+```sh
+python3 tools/symphony_web.py --port 8778
+```
+
+Open [the local live board](http://127.0.0.1:8778/) and leave that terminal running;
+Ctrl-C stops this view. It reads the existing operator profile, GitHub and the
+controller's status APIs. It never starts coding workers, opens the controller's
+ledger or enables browser commands. Chat is unavailable in this read-only view.
+Use `--config /absolute/path/to/config.json` for another configured profile.
+The profile binds the repository to the controller address; the current controller
+API does not attest repository identity in its response.
+
 **New task** opens the configured GitHub issue form. Create the issue and manage its
 intake labels in GitHub, then refresh the board. Moving across lanes cannot fabricate
 workflow progress. Moving Ready to Backlog requests a confirmed native cancellation;

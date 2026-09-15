@@ -2445,6 +2445,19 @@ they do not constitute admission, completion or scheduler priority. Missing sour
 data preserves last-known tasks with explicit uncertainty. Tracker-terminal issues
 are not evidence of merge, acceptance or deployment.
 
+Optional GitHub enrichment reads explicit issue/PR relationships and reports draft
+state, GitHub review decisions and checks tied to the current PR head. Enrichment
+failure MUST NOT remove otherwise valid issue data or imply successful checks.
+Bounded or changed relationship data MUST be marked incomplete. Native candidate
+review and GitHub review are separate evidence.
+
+A standalone read-only web process MAY bind to an existing operator profile and
+read its controller via GET-only loopback requests. It MUST NOT start the scheduler,
+own the control ledger, inherit browser command authority or start a model runtime.
+The current API's repository identity is supplied by the trusted profile binding,
+not attested by the controller response. Browser refresh MUST update runtime data
+and mark unavailable or retained observations explicitly.
+
 Local operator login/logout uses CSRF-protected browser POST routes. Authorization
 requires the actual loopback peer and host, a same-origin connection and a signed,
 time-bounded proof bound to the configured control token. Raw tokens are neither

@@ -79,6 +79,12 @@ commands to the native API and owns no scheduling state.
   [`BrowserAuth`](elixir/lib/symphony_elixir_web/browser_auth.ex) gates local operator
   sessions; `BoardActions` forwards only existing commands with native project,
   revision and idempotency checks. The same checks apply to chat control actions.
+- [`ReadOnlyBoard`](elixir/lib/symphony_elixir_web/read_only_board.ex) supports a
+  separate local UI against a configured controller. The
+  [`web launcher`](tools/symphony_web.py) starts only the web dependencies and reads
+  live GitHub and controller status; it owns no scheduler or execution state.
+  GitHub PR relationships, review decisions and current-head checks enrich cards
+  without changing task admission, lifecycle stages or deployment claims.
 - [`Chat.Store`](elixir/lib/symphony_elixir/chat/store.ex) owns project-bound conversations,
   streamed display state, action decisions and durable recovery through `Chat.Persistence`.
   [`Chat.Runtime`](elixir/lib/symphony_elixir/chat/runtime.ex) runs private App Server

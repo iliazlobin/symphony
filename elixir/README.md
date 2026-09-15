@@ -307,6 +307,14 @@ codex:
 
 ## Web board and chat
 
+For a separate read-only view of a configured Mac controller, run
+`python3 tools/symphony_web.py --port 8778` from the repository root. It serves this
+checkout's UI with live GitHub issues, linked PR evidence and GET-only controller
+status. The launcher uses the existing host GitHub login and private operator
+profile; credentials stay in the host process. It starts no scheduler, ledger
+owner, coding worker or chat runtime. The [operator guide](../profiles/events-concierge/README.md#operate)
+describes access and limits.
+
 The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
