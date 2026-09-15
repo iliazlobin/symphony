@@ -72,7 +72,27 @@ does not change scheduler priority. GitHub issues without a priority remain unsp
 
 Click a card or **Settings** to open a popup above the board. **Close**, **Escape**,
 or clicking outside the popup returns to the same filters and position. Settings
-shows recorded runtime and control mode; connection status is not worker readiness.
+has **Execution**, **AI & chat**, and **Connections** tabs:
+
+- **Execution:** pause/drain/resume, maximum concurrent tasks, and read-only per-task
+  budgets. Unlock first, change the limit, then confirm. The range is 1 through the
+  workflow ceiling. Successful changes preserve active work and consumed budgets;
+  the limit controls new starts and survives restart. **Use workflow default** removes
+  the saved override. Raising the configured ceiling or changing budgets remains a
+  reviewed configuration change.
+- **AI & chat:** save per-project defaults for sharing the board view and identifying
+  the selected card. These are browser-local; composer switches override one chat's
+  current choices without saving new defaults. **Cancel** discards edits; **Restore
+  defaults** stages enabled choices until **Save preferences**. Existing messages stay
+  unchanged. Model presets are read-only.
+- **Connections:** refresh tracker/controller/chat-storage health, inspect recorded
+  usage, or unlock/lock the operator session. Health does not verify model sign-in,
+  tracker write permissions or worker readiness. No probe starts a model or worker.
+
+Older controllers that do not report settings show unavailable values, not frontend
+configuration defaults. The port 8778 read-only preview never exposes execution edits;
+only browser preferences are editable there.
+
 Tracker/control failures retain last-known cards with an explicit warning. The board
 refreshes tracker data every 30 seconds; runtime messages also update over LiveView.
 Done means the tracker is terminal; it does not establish merge, acceptance or deployment.
@@ -104,7 +124,7 @@ moving a held Backlog card to Ready offers native retry. Cancel can stop work cl
 since the card was displayed; retry clears a hold without resetting budgets or
 providing a missing answer. Other transitions explain the owning workflow action.
 
-**Local operator controls.** In Settings, unlock with the token from the private
+**Local operator controls.** In Settings → Connections, unlock with the token from the private
 `token_file` beside the operator configuration. The password form posts only to the
 loopback service; never put the token in a URL. The signed browser session expires
 after eight hours and becomes invalid when the token changes. Tracker configuration

@@ -4,6 +4,12 @@
   const parse = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };
   const escapeText = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[c]));
   const storage = { get(key) { try { return localStorage.getItem(key); } catch { return null; } }, set(key, value) { try { localStorage.setItem(key, value); } catch { /* Preferences are optional. */ } } };
+  const chatPreferenceKey = project => "symphony.chat.preferences.v1:" + project;
+  const chatPreferences = project => {
+    const saved = parse(storage.get(chatPreferenceKey(project)), null);
+    return {share_context: typeof saved?.share_context === "boolean" ? saved.share_context : true,
+      include_selected: typeof saved?.include_selected === "boolean" ? saved.include_selected : true};
+  };
 
   const TaskBoard = {
     mounted() {
@@ -365,6 +371,52 @@
       });
     }
   };
+  const ChatPreferences = {
+    mounted() {
+      this.abort = new AbortController();
+      this.project = null;
+      this.status = message => { const node = this.el.querySelector("[data-chat-prefs-status]"); if (node) node.textContent = message; };
+      this.draw = () => {
+        this.el.querySelectorAll("[data-chat-pref]").forEach(input => {
+          if (Object.hasOwn(this.draft, input.dataset.chatPref)) input.checked = this.draft[input.dataset.chatPref];
+          input.disabled = !this.project;
+        });
+        this.el.querySelectorAll("[data-chat-prefs-save], [data-chat-prefs-reset]").forEach(button => button.disabled = !this.project);
+      };
+      this.load = () => {
+        const project = this.el.dataset.project || null;
+        if (this.project !== project || !this.draft) {
+          this.project = project;
+          this.draft = project ? chatPreferences(project) : {share_context: true, include_selected: true};
+          this.status(project ? "" : "Select a project to save chat preferences.");
+        }
+        this.draw();
+      };
+      this.save = () => {
+        if (!this.project || this.project !== this.el.dataset.project) return;
+        try { localStorage.setItem(chatPreferenceKey(this.project), JSON.stringify(this.draft)); }
+        catch { this.status("Could not save in this browser. Check browser storage permissions and try again."); return; }
+        window.dispatchEvent(new CustomEvent("symphony:chat-preferences", {detail: {project_id: this.project, ...this.draft}}));
+        this.status("Saved in this browser. Applies to the next message and future visits.");
+      };
+      this.el.addEventListener("change", event => {
+        const key = event.target.dataset.chatPref;
+        if (Object.hasOwn(this.draft, key)) { this.draft[key] = event.target.checked; this.status("Unsaved changes."); }
+      }, {signal: this.abort.signal});
+      this.el.addEventListener("click", event => {
+        if (event.target.closest("[data-chat-prefs-save]")) { event.preventDefault(); this.save(); }
+        else if (event.target.closest("[data-chat-prefs-reset]")) {
+          event.preventDefault(); this.draft = {share_context: true, include_selected: true}; this.draw(); this.status("Defaults restored. Save to apply.");
+        } else if (event.target.closest("[data-chat-prefs-cancel]")) {
+          this.draft = chatPreferences(this.project); this.draw(); this.status("");
+        }
+      }, {signal: this.abort.signal});
+      this.el.addEventListener("submit", event => { event.preventDefault(); this.save(); }, {signal: this.abort.signal});
+      this.load();
+    },
+    updated() { this.load(); },
+    destroyed() { this.abort.abort(); }
+  };
   const ChatWorkspace = {
     mounted() {
       this.abort = new AbortController();
@@ -372,6 +424,22 @@
       this.atBottom = true;
       this.running = this.el.dataset.running === "true";
       const on = (name, handler) => this.el.addEventListener(name, handler, {signal: this.abort.signal});
+      this.applyPreferences = preferences => {
+        if (!preferences.project_id || preferences.project_id !== this.el.dataset.project || !this.el.dataset.eventTarget) return;
+        this.pushEventTo(this.el.dataset.eventTarget, "context-preferences", preferences);
+      };
+      this.loadPreferences = () => {
+        const project = this.el.dataset.project || null;
+        if (this.preferenceProject !== project) {
+          this.preferenceProject = project;
+          if (project) this.applyPreferences({project_id: project, ...chatPreferences(project)});
+        }
+      };
+      window.addEventListener("symphony:chat-preferences", event => this.applyPreferences(event.detail || {}), {signal: this.abort.signal});
+      window.addEventListener("storage", event => {
+        const project = this.el.dataset.project;
+        if (project && event.key === chatPreferenceKey(project)) this.applyPreferences({project_id: project, ...chatPreferences(project)});
+      }, {signal: this.abort.signal});
       this.scroll = () => {
         const scroller = this.el.querySelector("#chat-scroll");
         if (scroller && this.atBottom) scroller.scrollTop = scroller.scrollHeight;
@@ -408,14 +476,16 @@
         if (input) { input.value = ""; input.focus(); }
         this.atBottom = true; this.resizeComposer(); requestAnimationFrame(this.scroll);
       });
+      this.loadPreferences();
       requestAnimationFrame(this.scroll);
     },
     updated() {
       if (this.chatId !== this.el.dataset.chatId) { this.chatId = this.el.dataset.chatId; this.atBottom = true; }
+      this.loadPreferences();
       this.resizeComposer();
       requestAnimationFrame(this.scroll);
     },
     destroyed() { this.abort.abort(); }
   };
-  window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace};
+  window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace, ChatPreferences};
 })();

@@ -211,6 +211,26 @@ defmodule SymphonyElixir.Chat.StoreTest do
     %{server: server, opts: opts, root: root, auth: auth, access: access, project: "github:test/one"}
   end
 
+  test "health exposes only captured configuration and storage state to an authorized caller", c do
+    create(c)
+    before = :sys.get_state(c.server)
+    assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
+    assert :sys.get_state(c.server) == before
+    assert {:error, :unauthorized} = Store.health(%{})
+    assert {:error, :unauthorized} = Store.health(%{}, c.server)
+    Agent.update(c.access, fn _ -> false end)
+    assert {:error, :unauthorized} = Store.health(c.auth, c.server)
+    refute_receive {:runtime, _, _, _}
+  end
+
+  test "health reports disabled configuration without treating it as ready or probing a runtime", c do
+    opts = c.opts |> Keyword.put(:name, nil) |> Keyword.put(:settings, %{enabled: false})
+    disabled = start_supervised!({Store, opts}, id: :disabled_health)
+    assert Store.health(c.auth, disabled) == {:ok, %{enabled: false, healthy: false}}
+    assert {:error, :unauthorized} = Store.health(%{}, disabled)
+    refute_receive {:runtime, _, _, _}
+  end
+
   test "project lookup, history and immutable ownership reject foreign selections", c do
     assert {:ok, [_, _]} = Store.projects(c.auth, c.server)
     assert {:error, :unauthorized} = Store.projects(%{}, c.server)
@@ -404,6 +424,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
   end
 
   test "storage faults stop active response and preserve last durable record", c do
+    assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
     chat = create(c)
     assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "wait", c.auth, c.server)
     assert_receive {:runtime, running, _, _}
@@ -412,6 +433,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     File.rm!(path)
     File.mkdir!(path)
     assert {:error, :chat_storage_unavailable} = Store.rename(c.project, chat["id"], "Rename", c.auth, c.server)
+    assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: false}}
     refute Process.alive?(running)
     assert {:error, :chat_storage_unavailable} = Store.create(c.project, "Another", c.auth, c.server)
   end
@@ -612,6 +634,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     settings = Keyword.fetch!(c.opts, :settings) |> Map.put(:state_path, path)
     options = c.opts |> Keyword.put(:name, nil) |> Keyword.put(:settings, settings)
     unavailable = start_supervised!({Store, options}, id: :unavailable_storage)
+    assert Store.health(c.auth, unavailable) == {:ok, %{enabled: true, healthy: false}}
     assert {:error, :chat_storage_unavailable} = Store.create(c.project, "Blocked", c.auth, unavailable)
     assert File.read!(path) == "retained"
 

@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
   alias SymphonyElixir.Chat.ViewContext
-  alias SymphonyElixirWeb.{BoardActions, BrowserAuth, ChatPanel, Endpoint, Markdown}
+  alias SymphonyElixirWeb.{BoardActions, BrowserAuth, ChatPanel, Endpoint, Markdown, SettingsPanel}
   alias SymphonyElixirWeb.{ObservabilityPubSub, Presenter, TaskBoard}
 
   @lanes [{"backlog", "Backlog"}, {"ready", "Ready"}, {"running", "Running"}, {"review", "Review"}, {"done", "Done"}]
@@ -21,6 +21,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:dialog, nil)
       |> assign(:selected, nil)
       |> assign(:pending_command, nil)
+      |> assign(:settings_tab, "execution")
+      |> assign(:concurrency_draft, nil)
+      |> assign(:chat_health, "Not checked")
       |> assign(:notice, nil)
       |> assign(:auth, BrowserAuth.context(session, socket))
       |> assign(:csrf_token, Plug.CSRFProtection.get_csrf_token())
@@ -151,7 +154,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_event(action, params, socket)
-      when action in ["new-task", "move-task", "prepare-command", "confirm-command"] do
+      when action in ["new-task", "move-task", "prepare-command", "confirm-command", "save-concurrency", "reset-concurrency"] do
     if read_only?(socket.assigns.board) do
       dialog = if socket.assigns.dialog in [:confirm, :new_task], do: nil, else: socket.assigns.dialog
       {:noreply, socket |> assign(:pending_command, nil) |> assign(:dialog, dialog) |> assign(:notice, "This board is read-only. Execution and tracker changes are unavailable here.")}
@@ -177,8 +180,30 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  def handle_event("open-settings", _params, socket),
-    do: {:noreply, socket |> clear_card_context() |> assign(:dialog, :settings)}
+  def handle_event("open-settings", _params, socket) do
+    socket = socket |> clear_card_context() |> assign(:dialog, :settings) |> assign(:concurrency_draft, nil)
+    {:noreply, refresh_chat_health(socket)}
+  end
+
+  def handle_event("settings-tab", %{"tab" => tab}, socket) when tab in ["execution", "ai", "connections"],
+    do: {:noreply, assign(socket, :settings_tab, tab)}
+
+  def handle_event("settings-tab", _params, socket), do: {:noreply, socket}
+
+  def handle_event("edit-concurrency", %{"limit" => limit}, socket) when is_binary(limit) and byte_size(limit) <= 10,
+    do: {:noreply, assign(socket, :concurrency_draft, limit)}
+
+  def handle_event("edit-concurrency", _params, socket), do: {:noreply, socket}
+  def handle_event("cancel-settings-edit", _params, socket), do: {:noreply, assign(socket, :concurrency_draft, nil)}
+  def handle_event("refresh-settings", _params, socket), do: {:noreply, socket |> refresh_chat_health() |> refresh_board()}
+
+  def handle_event("cancel-command", _params, socket) do
+    if socket.assigns.pending_command && socket.assigns.pending_command.action == "set_concurrency" do
+      {:noreply, socket |> assign(:pending_command, nil) |> assign(:dialog, :settings)}
+    else
+      handle_event("close-dialog", %{}, socket)
+    end
+  end
 
   def handle_event("close-dialog", _params, socket) do
     socket = socket |> clear_card_context() |> assign(:pending_command, nil)
@@ -243,16 +268,34 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  defp handle_write_event("save-concurrency", %{"limit" => text}, socket) when is_binary(text) and byte_size(text) <= 10 do
+    case Integer.parse(text) do
+      {limit, ""} -> prepare_concurrency(socket, limit)
+      _ -> {:noreply, assign(socket, :notice, "Enter a whole number within the workflow ceiling.")}
+    end
+  end
+
+  defp handle_write_event("save-concurrency", _params, socket), do: {:noreply, assign(socket, :notice, "Enter a whole number within the workflow ceiling.")}
+  defp handle_write_event("reset-concurrency", _params, socket), do: prepare_concurrency(socket, nil)
+
   defp handle_write_event("confirm-command", _params, %{assigns: %{pending_command: nil}} = socket), do: {:noreply, socket}
 
   defp handle_write_event("confirm-command", _params, socket) do
     pending = socket.assigns.pending_command
 
-    case BoardActions.command(pending.action, pending.issue_id, pending.revision, pending.id, socket.assigns.auth, orchestrator()) do
+    result =
+      if pending.action == "set_concurrency" do
+        BoardActions.settings_command(pending.limit, pending.revision, pending.id, socket.assigns.auth, orchestrator())
+      else
+        BoardActions.command(pending.action, pending.issue_id, pending.revision, pending.id, socket.assigns.auth, orchestrator())
+      end
+
+    case result do
       {:ok, _result} ->
         {:noreply,
          socket
-         |> assign(:dialog, nil)
+         |> assign(:dialog, if(pending.action == "set_concurrency", do: :settings))
+         |> assign(:concurrency_draft, nil)
          |> assign(:pending_command, nil)
          |> assign(:notice, command_receipt(pending.action))
          |> refresh_board()}
@@ -281,9 +324,97 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  defp prepare_concurrency(socket, limit) do
+    board = socket.assigns.board
+    settings = reported_settings(board)
+    ceiling = get_in(settings, ["concurrency", "ceiling"])
+
+    cond do
+      not settings_editable?(socket.assigns) ->
+        {:noreply, socket |> assign(:dialog, :settings) |> assign(:notice, "Settings unavailable. Refresh controller state and unlock local controls in Connections.")}
+
+      not is_nil(limit) and (not is_integer(limit) or limit < 1 or limit > ceiling) ->
+        {:noreply, assign(socket, :notice, "Choose a limit from 1 to #{ceiling}.")}
+
+      true ->
+        pending = %{
+          action: "set_concurrency",
+          limit: limit,
+          issue_id: nil,
+          identifier: nil,
+          revision: board.control["revision"],
+          id: Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+        }
+
+        socket = socket |> assign(:pending_command, pending) |> assign(:settings_tab, "execution")
+        {:noreply, socket |> assign(:dialog, :confirm) |> assign(:notice, nil)}
+    end
+  end
+
+  defp reported_settings(board), do: if(is_map(board.control["settings"]), do: board.control["settings"], else: %{})
+
+  defp settings_available?(settings) do
+    case settings["concurrency"] do
+      %{"effective" => effective, "ceiling" => ceiling, "default" => default} ->
+        is_integer(effective) and is_integer(ceiling) and is_integer(default) and
+          effective > 0 and effective <= ceiling and default == ceiling
+
+      _ ->
+        false
+    end
+  end
+
+  defp controls_available?(assigns) do
+    board = assigns.board
+
+    not read_only?(board) and BrowserAuth.authorized?(assigns.auth) and not runtime_unavailable?(board, assigns.payload) and
+      board.control["enabled"] == true and is_nil(board.control["fault"]) and is_integer(board.control["revision"])
+  end
+
+  defp settings_editable?(assigns), do: controls_available?(assigns) and settings_available?(reported_settings(assigns.board))
+
+  defp refresh_chat_health(socket) do
+    health =
+      cond do
+        read_only?(socket.assigns.board) ->
+          "Unavailable in read-only preview"
+
+        not BrowserAuth.authorized?(socket.assigns.auth) ->
+          "Unlock controls to inspect"
+
+        true ->
+          server = Endpoint.config(:chat_store) || SymphonyElixir.Chat.Store
+
+          case chat_service_health(server, socket.assigns.auth) do
+            {:ok, %{enabled: false}} -> "Disabled"
+            {:ok, %{enabled: true, healthy: true}} -> "Service available · sign-in not checked"
+            {:ok, %{enabled: true, healthy: false}} -> "Storage unavailable"
+            _ -> "Service unavailable"
+          end
+      end
+
+    assign(socket, :chat_health, health)
+  end
+
+  defp chat_service_health(module, auth) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :health, 1), do: module.health(auth), else: {:error, :unavailable}
+  rescue
+    _ -> {:error, :unavailable}
+  catch
+    :exit, _ -> {:error, :unavailable}
+  end
+
   @impl true
   def render(assigns) do
-    assigns = assign(assigns, authorized: BrowserAuth.authorized?(assigns.auth), read_only: read_only?(assigns.board))
+    assigns =
+      assign(assigns,
+        authorized: BrowserAuth.authorized?(assigns.auth),
+        read_only: read_only?(assigns.board),
+        settings: reported_settings(assigns.board),
+        settings_editable: settings_editable?(assigns),
+        controls_available: controls_available?(assigns),
+        settings_projects: Enum.map(assigns.board.projects, &Map.put(&1, :url, safe_url(&1.url)))
+      )
 
     ~H"""
     <section id="task-board-app" class="dashboard-shell" phx-hook="TaskBoard" data-density="compact" data-theme="light"
@@ -297,9 +428,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <div id="board-search" phx-update="ignore"><input type="search" data-board-search aria-label="Search tasks" placeholder="Search tasks…" /></div>
         <button id="settings-button" class="button button-quiet" phx-click="open-settings">Settings</button>
         <button :if={!@read_only} id="new-task-button" class="button button-primary" phx-click="new-task">+ New task</button>
+        <button id="open-chat-button" class="button button-quiet" phx-click="open-chat" aria-expanded={to_string(@chat_open)} aria-controls="management-chat-dock">Chat</button>
       </header>
 
-      <nav class="board-view-tabs workspace-tabs" aria-label="Workspace"><a href="/" aria-current="page">Board</a><button id="open-chat-button" phx-click="open-chat" aria-expanded={to_string(@chat_open)} aria-controls="management-chat-dock">Chat</button></nav>
       <div id="board-toolbar" class="board-toolbar" phx-update="ignore">
         <div class="toolbar-primary">
           <div class="filter-combo project-combo" data-filter="project">
@@ -416,27 +547,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <p :if={@notice} class="board-notice" role="status">{@notice}</p>
           <%= case @dialog do %>
             <% :settings -> %>
-              <section class="dialog-section"><h3>Operator controls</h3>
-                <p class="muted">{execution_status(@board, @payload)}. Connection status does not establish worker readiness.</p>
-                <%= cond do %>
-                  <% @read_only -> %><p class="muted">This board is read-only. Native execution controls and tracker intake are unavailable here.</p>
-                  <% @authorized -> %>
-                  <div class="dialog-actions"><button :for={action <- ["drain", "pause", "resume"]} class="button" phx-click="prepare-command" phx-value-action={action}>{String.capitalize(action)}</button></div>
-                  <form action="/operator/session/logout" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} /><button class="button button-quiet">Lock controls</button></form>
-                  <% true -> %>
-                  <p class="muted">Read-only until unlocked on this local host. Use the operator token from your local Symphony configuration.</p>
-                  <form action="/operator/session" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} />
-                    <label class="field">Operator token<input type="password" name="operator_token" autocomplete="off" required /></label>
-                    <button class="button button-primary">Unlock local controls</button></form>
-                <% end %>
-              </section>
-              <section class="dialog-section"><h3>Projects</h3><p :for={project <- @board.projects}><a :if={safe_url(project.url)} href={safe_url(project.url)} target="_blank" rel="noopener noreferrer">{project.label}</a><span :if={!safe_url(project.url)}>{project.label}</span></p>
-                <p class="muted">This service represents its configured repository. Additional project services and remote Google sign-in are not configured by this page.</p></section>
-              <section class="dialog-section"><h3>Runtime</h3>
-                <p>Total tokens: {get_in(@payload, [:codex_totals, :total_tokens]) || "Unavailable"}</p>
-                <p>Runtime: {runtime_duration(@payload)}</p>
-                <details><summary>Rate limits</summary><pre>{pretty(@payload[:rate_limits])}</pre></details>
-              </section>
+              <SettingsPanel.content board={%{@board | projects: @settings_projects}} read_only={@read_only} tab={@settings_tab}
+                execution_status={execution_status(@board, @payload)} authorized={@authorized} can_control={@controls_available}
+                can_edit={@settings_editable} settings={@settings} settings_available={settings_available?(@settings)} draft={@concurrency_draft}
+                project_id={selected_project(@board, @url_filters)} chat_health={@chat_health} source_status={source_status(@board, @loading)}
+                loading={@loading} csrf_token={@csrf_token} total_tokens={get_in(@payload, [:codex_totals, :total_tokens]) || "Unavailable"}
+                runtime_duration={runtime_duration(@payload)} rate_limits={pretty(@payload[:rate_limits])} />
             <% :task -> %>
               <p class="muted">{@selected.project_label} · {@selected.identifier} · {lane_label(@selected.stage)}</p>
               <button :if={!@chat_open} class="button button-small" phx-click="open-chat">Discuss this task</button>
@@ -461,9 +577,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <details><summary>Runtime details</summary><pre>{pretty(@selected.runtime)}</pre></details>
               </section>
             <% :confirm -> %>
-              <p>{command_description(@pending_command.action)}</p>
+              <p>{command_description(@pending_command)}</p>
               <p class="muted">{@pending_command.identifier || "Configured project"} · operator revision {@pending_command.revision}</p>
-              <div class="dialog-actions"><button :if={!@read_only} class="button button-primary" phx-click="confirm-command" phx-disable-with="Submitting…">Confirm {String.downcase(@pending_command.action)}</button><button class="button" phx-click="close-dialog">Cancel</button></div>
+              <div class="dialog-actions"><button :if={!@read_only} class="button button-primary" phx-click="confirm-command" phx-disable-with="Submitting…">Confirm {if @pending_command.action == "set_concurrency", do: "change", else: @pending_command.action}</button><button class="button" phx-click="cancel-command">Cancel</button></div>
             <% :new_task -> %>
               <p>Create the canonical task in the configured issue tracker. Specify its outcome, scope, acceptance checks and dependencies before queueing.</p>
               <div :if={!@read_only} class="dialog-actions"><a :for={project <- @board.projects} :if={new_issue_url(project)} class="button button-primary" href={new_issue_url(project)} target="_blank" rel="noopener noreferrer">New issue · {project.label} ↗</a></div>
@@ -876,7 +992,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp dialog_title(:settings, _, _), do: "Settings"
   defp dialog_title(:new_task, _, _), do: "New task"
   defp dialog_title(:task, task, _), do: task.title
+  defp dialog_title(:confirm, _, %{action: "set_concurrency"}), do: "Change concurrency?"
   defp dialog_title(:confirm, _, pending), do: "#{String.capitalize(pending.action)} #{pending.identifier || "project"}?"
+
+  defp command_description(%{action: "set_concurrency", limit: nil}),
+    do: "Restore the workflow concurrency default. Active tasks keep running and cumulative budgets are unchanged. The controller rejects this change if its revision has changed."
+
+  defp command_description(%{action: "set_concurrency", limit: limit}),
+    do: "Allow at most #{limit} concurrent tasks. Active tasks keep running; new starts respect this limit and the workflow ceiling. Cumulative budgets are unchanged."
+
+  defp command_description(%{action: action}), do: command_description(action)
   defp command_description("drain"), do: "Finish active work, then stop taking new tasks."
   defp command_description("pause"), do: "Interrupt active work and stop dispatch. Work may require recovery before continuing."
   defp command_description("resume"), do: "Allow eligible tasks to run within existing launch gates and budgets."
@@ -885,6 +1010,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     do: "Hold this issue and request cleanup of any active worker, including a worker claimed since the board was read. Cancellation is not complete until cleanup is confirmed."
 
   defp command_description("retry"), do: "Clear this issue’s hold without resetting its budget. An eligible task can start again; this does not deliver an answer or automatically repair a candidate."
+  defp command_receipt("set_concurrency"), do: "Concurrency saved. Refreshing the controller’s confirmed limit."
   defp command_receipt("cancel"), do: "Cancel accepted. The issue is held; verify worker cleanup before treating it as stopped."
   defp command_receipt(action), do: "#{String.capitalize(action)} accepted. Refreshing confirmed execution state."
   defp command_error(:revision_conflict), do: "State changed. Close this dialog and review the refreshed board before trying again."

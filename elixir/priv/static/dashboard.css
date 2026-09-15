@@ -100,8 +100,6 @@ input, select {
 .header-spacer { flex: 1; }
 #board-search { flex: 0 1 230px; min-width: 130px; }
 #board-search input { width: 100%; border-color: transparent; padding: 5px 8px; background: var(--soft); font-size: 12px; border-radius: 5px; }
-.board-view-tabs { padding: 8px 24px 0; background: var(--panel); }
-.board-view-tabs a { font-size: 12px; }
 .board-toolbar { padding: 8px 24px; background: var(--panel); border-bottom: 1px solid var(--line); position: relative; z-index: 5; }
 .toolbar-primary { display: flex; align-items: center; gap: 8px; }
 .project-combo { flex: 0 1 240px; }
@@ -315,7 +313,7 @@ summary { cursor: pointer; color: var(--accent); }
   .board-context-state { align-items: start; gap: 6px 10px; }
   .board-header { padding: 10px 14px; gap: 8px; }
   #board-search { order: 3; flex: 1 1 100%; }
-  .board-view-tabs { padding-left: 14px; }
+  .board-header .header-divider, .board-header .board-heading { display: none; }
   .board-toolbar { padding: 8px 14px; }
   .toolbar-primary { gap: 3px; }
   .toolbar-primary .header-spacer { display: none; }
@@ -506,4 +504,30 @@ summary { cursor: pointer; color: var(--accent); }
   .dashboard-shell[data-chat-open=true] { display: flex; }
   .management-chat-dock { position: fixed; inset: 0 0 0 auto; width: min(420px, 100%); box-shadow: -16px 0 40px #0003; }
   .board-dialog[data-nonmodal=true] { inset: 24px 16px auto; width: calc(100% - 32px); }
+}
+
+.settings-scope, .settings-section-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.settings-scope { margin: 0 0 20px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.settings-badge { display: inline-block; padding: 3px 7px; border-radius: 5px; background: var(--soft); color: var(--muted); font-size: 11px; font-weight: 500; }
+.settings-tabs { display: flex; gap: 4px; padding-bottom: 12px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
+.settings-tabs button { border: 0; border-radius: 6px; padding: 8px 12px; color: var(--muted); background: transparent; font: inherit; font-size: 13px; cursor: pointer; }
+.settings-tabs button[aria-pressed=true] { background: var(--soft); color: var(--fg); font-weight: 600; }
+.settings-section { padding: 18px 0; border-bottom: 1px solid var(--line); }
+.settings-section:last-child { border-bottom: 0; padding-bottom: 0; }
+.settings-section h3 { margin: 0 0 10px; font-size: 14px; }
+.settings-section-title { margin-bottom: 8px; }
+.settings-section-title h3 { margin: 0; }
+.settings-help { color: var(--muted); font-size: 12px; line-height: 1.55; margin: 10px 0 0; }
+.settings-values { display: grid; gap: 9px; margin: 14px 0; font-size: 13px; }
+.settings-values > div { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.settings-values dt { color: var(--muted); }
+.settings-values dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.settings-check { display: flex; align-items: center; gap: 9px; font-size: 13px; margin: 12px 0; }
+.settings-check input { width: 16px; height: 16px; flex: 0 0 auto; accent-color: var(--accent); }
+#concurrency-settings { margin: 18px 0; }
+#concurrency-settings input { max-width: 130px; }
+.settings-section .dialog-actions { flex-wrap: wrap; }
+@media (max-width: 480px) {
+  .settings-tabs button { padding: 8px; font-size: 12px; }
+  .settings-values > div { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 }

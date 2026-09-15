@@ -16,6 +16,33 @@ defmodule SymphonyElixir.DashboardLiveTest do
     def handle_call(:control_snapshot, _from, state), do: {:reply, state.control, state}
     def handle_call(:board, _from, state), do: {:reply, state.board, state}
     def handle_call({:board, board}, _from, state), do: {:reply, :ok, %{state | board: board}}
+
+    def handle_call({:authorized_control_command, command, _tracker, authorize}, _from, state) do
+      send(state.owner, {:settings_command, command})
+
+      cond do
+        not authorize.() ->
+          {:reply, {:error, :unauthorized}, state}
+
+        command["expected_revision"] != state.board.control["revision"] ->
+          {:reply, {:error, :revision_conflict}, state}
+
+        true ->
+          settings = state.board.control["settings"]
+
+          control =
+            state.board.control
+            |> Map.put("revision", state.board.control["revision"] + 1)
+            |> put_in(["settings", "concurrency", "effective"], command["limit"] || settings["concurrency"]["default"])
+            |> put_in(["settings", "concurrency", "override"], command["limit"])
+
+          {:reply, {:ok, %{}}, %{state | board: %{state.board | control: control}, control: control}}
+      end
+    end
+  end
+
+  defmodule UnavailableChatApi do
+    def health(_auth), do: {:error, :unavailable}
   end
 
   setup context do
@@ -43,7 +70,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     }
 
     runtime = Module.concat(__MODULE__, "Runtime#{System.unique_integer([:positive])}")
-    start_supervised!({FixtureRuntime, %{name: runtime, snapshot: snapshot(), control: control, board: nil}})
+    fixture = %{name: runtime, snapshot: snapshot(), control: control, board: nil, owner: self()}
+    start_supervised!({FixtureRuntime, fixture})
     board = TaskBoard.project(issues(), Presenter.state_payload(runtime, 100), control, Config.settings!())
     :ok = GenServer.call(runtime, {:board, board})
     previous_endpoint = Application.get_env(:symphony_elixir, Endpoint, [])
@@ -53,6 +81,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
         server: false,
         secret_key_base: String.duplicate("d", 64),
         orchestrator: runtime,
+        chat_store: UnavailableChatApi,
         snapshot_timeout_ms: 100,
         board_read_only: context[:read_only] || false,
         snapshot_loader: if(context[:snapshot_fixture], do: fn -> %{error: %{code: "fixture_snapshot_unavailable"}} end),
@@ -490,7 +519,14 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#board-dialog form[action='/operator/session/logout']")
     refute has_element?(view, "#board-dialog button[phx-click=prepare-command]")
 
-    for {event, params} <- [{"new-task", %{}}, {"prepare-command", %{"action" => "pause"}}, {"move-task", %{"id" => "github:example/fixture:2", "stage" => "backlog"}}, {"confirm-command", %{}}] do
+    for {event, params} <- [
+          {"new-task", %{}},
+          {"prepare-command", %{"action" => "pause"}},
+          {"move-task", %{"id" => "github:example/fixture:2", "stage" => "backlog"}},
+          {"confirm-command", %{}},
+          {"save-concurrency", %{"limit" => "1"}},
+          {"reset-concurrency", %{}}
+        ] do
       render_click(view, event, params)
       assert render(view) =~ "This board is read-only"
     end
@@ -568,6 +604,109 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refresh(view, ctx.runtime, %{idle | runtime: Map.delete(idle.runtime, :running)})
     assert has_element?(view, ".board-runtime-state", "Controller: Running · active unknown")
     refute has_element?(view, ".board-runtime-state", "0 active")
+  end
+
+  test "settings separates scope, preserves edits across refresh and confirms exact concurrency", ctx do
+    board = settings_board(ctx.board)
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    render_click(view, "open-settings")
+    assert has_element?(view, "#settings-execution:not([hidden])")
+    assert has_element?(view, "#settings-ai[hidden]")
+    assert has_element?(view, "#concurrency-settings input[value='5'][max='5']")
+    render_change(view, "edit-concurrency", %{"limit" => "2"})
+    refresh(view, ctx.runtime, board)
+    assert has_element?(view, "#concurrency-settings input[value='2']")
+    render_click(view, "settings-tab", %{"tab" => "ai"})
+    assert has_element?(view, "#settings-ai:not([hidden])")
+    assert has_element?(view, "#chat-preferences[data-project='github:example/fixture']")
+    render_click(view, "settings-tab", %{"tab" => "untrusted"})
+    assert has_element?(view, "#settings-ai:not([hidden])")
+    render_click(view, "settings-tab", %{"tab" => "execution"})
+    render_submit(view, "save-concurrency", %{"limit" => "2"})
+    assert has_element?(view, "#board-dialog", "Allow at most 2 concurrent tasks")
+    render_click(view, "cancel-command")
+    assert has_element?(view, "#concurrency-settings input[value='2']")
+    refute_received {:settings_command, _}
+    render_submit(view, "save-concurrency", %{"limit" => "2"})
+    render_click(view, "confirm-command")
+    render_async(view)
+    assert_received {:settings_command, %{"action" => "set_concurrency", "limit" => 2, "expected_revision" => 0}}
+    assert has_element?(view, "#concurrency-settings input[value='2']")
+    assert render(view) =~ "Concurrency saved"
+    render_click(view, "reset-concurrency")
+    assert has_element?(view, "#board-dialog", "Restore the workflow concurrency default")
+    render_click(view, "confirm-command")
+    render_async(view)
+    assert_received {:settings_command, %{"limit" => nil, "expected_revision" => 1}}
+    assert has_element?(view, "#concurrency-settings input[value='5']")
+  end
+
+  test "settings rejects malformed, above-ceiling and stale edits without fabricating success", ctx do
+    board = settings_board(ctx.board)
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    render_click(view, "open-settings")
+
+    for limit <- ["0", "6", "-1", "2.5", "2junk", String.duplicate("9", 20)] do
+      render_submit(view, "save-concurrency", %{"limit" => limit})
+      refute has_element?(view, "[phx-click=confirm-command]")
+    end
+
+    refute_received {:settings_command, _}
+    render_submit(view, "save-concurrency", %{"limit" => "2"})
+    newer = put_in(board.control["revision"], 1)
+    refresh(view, ctx.runtime, newer)
+    render_click(view, "confirm-command")
+    render_async(view)
+    assert_received {:settings_command, %{"expected_revision" => 0, "command_id" => id}}
+    assert render(view) =~ "State changed"
+    refute render(view) =~ "Concurrency saved"
+    render_click(view, "confirm-command")
+    render_async(view)
+    assert_received {:settings_command, %{"command_id" => ^id}}
+    render_click(view, "cancel-command")
+    refresh(view, ctx.runtime, %{newer | runtime_error: "Disconnected"})
+    refute has_element?(view, "#concurrency-settings")
+    render_submit(view, "save-concurrency", %{"limit" => "2"})
+    refute has_element?(view, "[phx-click=confirm-command]")
+    refute_received {:settings_command, _}
+  end
+
+  test "unknown settings stay unknown and unsafe project links remain inert", ctx do
+    board = %{ctx.board | projects: [%{id: "github:example/fixture", label: "Fixture", url: "javascript:alert(1)"}]}
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    render_click(view, "open-settings")
+    refute has_element?(view, "#concurrency-settings")
+    assert has_element?(view, "#settings-execution", "Not reported")
+    refute has_element?(view, "a[href^='javascript:']")
+    render_click(view, "refresh-settings")
+    render_async(view)
+    assert has_element?(view, "#settings-connections", "Service unavailable")
+    assert has_element?(view, "#settings-connections", "Not checked · verify through a chat turn")
+    render_click(view, "reset-concurrency")
+    refute has_element?(view, "[phx-click=confirm-command]")
+  end
+
+  defp settings_board(board) do
+    put_in(board.control["settings"], %{
+      "concurrency" => %{"effective" => 5, "default" => 5, "ceiling" => 5, "override" => nil},
+      "budgets" => %{"max_attempts" => 3, "max_total_runtime_ms" => 3_600_000, "max_total_tokens" => 200_000}
+    })
+  end
+
+  defp authorized_board_view do
+    previous = System.get_env("SYMPHONY_CONTROL_TOKEN")
+    token = String.duplicate("settings-fixture", 3)
+    System.put_env("SYMPHONY_CONTROL_TOKEN", token)
+    on_exit(fn -> restore_env("SYMPHONY_CONTROL_TOKEN", previous) end)
+    conn = %{build_conn() | host: "localhost"}
+    {:ok, marker} = BrowserAuth.authenticate(conn, token)
+    conn = Plug.Test.init_test_session(conn, %{BrowserAuth.session_key() => marker})
+    {:ok, view, _} = live(conn, "/")
+    render_async(view)
+    view
   end
 
   defp board_view do

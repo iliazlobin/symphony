@@ -12,6 +12,10 @@ defmodule SymphonyElixir.Chat.Store do
   @spec projects(map(), GenServer.server()) :: {:ok, list()} | {:error, term()}
   def projects(auth, server \\ __MODULE__), do: call(server, {:projects, auth})
 
+  @doc "Reads captured configuration and storage health; does not probe model availability or authentication."
+  @spec health(map(), GenServer.server()) :: {:ok, %{enabled: boolean(), healthy: boolean()}} | {:error, term()}
+  def health(auth, server \\ __MODULE__), do: call(server, {:health, auth})
+
   @spec list(String.t(), map(), GenServer.server()) :: {:ok, list()} | {:error, term()}
   def list(project, auth, server \\ __MODULE__), do: call(server, {:list, project, auth})
 
@@ -73,6 +77,18 @@ defmodule SymphonyElixir.Chat.Store do
   @impl true
   def handle_call({:projects, auth}, _from, state) do
     result = if state.authorize.(auth), do: {:ok, state.project_reader.()}, else: {:error, :unauthorized}
+    {:reply, result, state}
+  end
+
+  def handle_call({:health, auth}, _from, state) do
+    result =
+      if state.authorize.(auth) do
+        enabled = state.settings.enabled == true
+        {:ok, %{enabled: enabled, healthy: enabled and is_map(state.persistence) and is_nil(state.fault)}}
+      else
+        {:error, :unauthorized}
+      end
+
     {:reply, result, state}
   end
 

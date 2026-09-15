@@ -51,6 +51,25 @@ defmodule SymphonyElixir.BrowserControlsTest do
     %{pid: pid, token: token, marker: marker, authorization: authorization, workflow: workflow, config: config}
   end
 
+  test "settings commands keep browser auth, tracker scope and revision guards", ctx do
+    assert {:error, :unauthorized} = BoardActions.settings_command(1, 0, "unauthorized", %{})
+    assert {:error, :unauthorized} = BoardActions.settings_command(1, 0, "foreign", %{ctx.authorization | tracker_fingerprint: "foreign"}, ctx.pid)
+    assert {:ok, %{"limit" => 1, "revision" => 1}} = BoardActions.settings_command(1, 0, "settings", ctx.authorization, ctx.pid)
+    assert {:error, :revision_conflict} = BoardActions.settings_command(nil, 0, "stale", ctx.authorization, ctx.pid)
+    assert {:error, :invalid_command} = BoardActions.settings_command("2", 1, "invalid", ctx.authorization, ctx.pid)
+    assert {:ok, %{"limit" => nil}} = BoardActions.settings_command(nil, 1, "reset", ctx.authorization, ctx.pid)
+  end
+
+  test "queued settings command rechecks authorization inside its owner", ctx do
+    :sys.suspend(ctx.pid)
+    command = Task.async(fn -> BoardActions.settings_command(1, 0, "queued-settings", ctx.authorization, ctx.pid) end)
+    Process.sleep(20)
+    System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("changed", 8))
+    :sys.resume(ctx.pid)
+    assert {:error, :unauthorized} = Task.await(command)
+    assert %{"revision" => 0} = Orchestrator.control_snapshot(ctx.pid)
+  end
+
   test "login accepts only a configured token with a loopback Host and actual peer", ctx do
     assert {:ok, _} = BrowserAuth.authenticate(local_conn(), ctx.token)
     assert {:error, :unauthorized} = BrowserAuth.authenticate(local_conn(), "wrong")
