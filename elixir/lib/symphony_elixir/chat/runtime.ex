@@ -183,7 +183,7 @@ defmodule SymphonyElixir.Chat.Runtime do
       rpc(state, "turn/start", %{"threadId" => id, "model" => @model, "environments" => [], "approvalPolicy" => "never", "effort" => "medium", "input" => [%{"type" => "text", "text" => opts.text}]})
 
     turn_id = get_in(turn, ["turn", "id"])
-    unless is_binary(turn_id), do: fail(:protocol_error)
+    unless is_binary(turn_id) and turn_id != "", do: fail(:protocol_error)
     await_completion(%{state | turn_id: turn_id})
   end
 
@@ -298,7 +298,8 @@ defmodule SymphonyElixir.Chat.Runtime do
   defp server_request(%{"id" => id, "method" => "item/tool/call", "params" => params}, state) do
     name = params["tool"]
 
-    unless params["threadId"] == state.thread_id and params["turnId"] == state.turn_id and
+    unless is_binary(state.thread_id) and is_binary(state.turn_id) and
+             params["threadId"] == state.thread_id and params["turnId"] == state.turn_id and
              Enum.any?(state.tools, &(&1["name"] == name)) and is_map(params["arguments"]),
            do: fail(:forbidden_tool)
 
@@ -339,9 +340,11 @@ defmodule SymphonyElixir.Chat.Runtime do
         end
       end)
 
+    %Task{ref: task_ref} = task
+
     receive do
-      {ref, result} when ref == task.ref ->
-        Process.demonitor(ref, [:flush])
+      {^task_ref, result} ->
+        Process.demonitor(task_ref, [:flush])
         result
 
       :interrupt ->
@@ -356,7 +359,10 @@ defmodule SymphonyElixir.Chat.Runtime do
 
   defp notification(%{"method" => "turn/started", "params" => params}, state) do
     id = get_in(params, ["turn", "id"])
-    unless params["threadId"] == state.thread_id and is_binary(id), do: fail(:thread_mismatch)
+
+    unless params["threadId"] == state.thread_id and is_binary(id) and id != "" and state.turn_id in [nil, id],
+      do: fail(:thread_mismatch)
+
     %{state | turn_id: id}
   end
 
@@ -438,7 +444,7 @@ defmodule SymphonyElixir.Chat.Runtime do
   defp fail(reason), do: throw({:runtime_error, reason})
 
   defp close(port) do
-    if Port.info(port), do: Port.close(port)
+    Port.close(port)
   rescue
     ArgumentError -> :ok
   end
