@@ -129,21 +129,21 @@ defmodule SymphonyElixir.ControlLedger do
     with :ok <- persist(next), do: {:ok, next}
   end
 
-  @spec command(t(), map()) :: {:ok, t(), map(), boolean()} | {:error, term()}
-  def command(ledger, params) do
+  @spec command(t(), map(), pos_integer() | nil) :: {:ok, t(), map(), boolean()} | {:error, term()}
+  def command(ledger, params, concurrency_ceiling \\ nil) do
     with :ok <- validate_command(params) do
-      fingerprint = params |> Map.take(["action", "issue_id", "expected_revision"]) |> Jason.encode!()
+      fingerprint = command_fingerprint(params)
       command_id = params["command_id"]
 
       case ledger.data["commands"][command_id] do
         %{"fingerprint" => ^fingerprint, "result" => result} -> {:ok, ledger, result, true}
         %{} -> {:error, :command_id_conflict}
-        nil -> apply_command(ledger, params, fingerprint)
+        nil -> apply_command(ledger, params, fingerprint, concurrency_ceiling)
       end
     end
   end
 
-  defp apply_command(ledger, params, fingerprint) do
+  defp apply_command(ledger, params, fingerprint, concurrency_ceiling) do
     cond do
       params["expected_revision"] != ledger.data["revision"] ->
         {:error, :revision_conflict}
@@ -152,20 +152,36 @@ defmodule SymphonyElixir.ControlLedger do
         {:error, :command_history_full}
 
       true ->
-        transition_command(ledger, params, fingerprint)
+        transition_command(ledger, params, fingerprint, concurrency_ceiling)
     end
   end
 
-  defp transition_command(ledger, params, fingerprint) do
-    with {:ok, next} <- transition(ledger, params["action"], params["issue_id"]) do
+  defp transition_command(ledger, params, fingerprint, concurrency_ceiling) do
+    with {:ok, next} <- transition_settings(ledger, params, concurrency_ceiling) do
       revision = ledger.data["revision"] + 1
       result = %{"command_id" => params["command_id"], "revision" => revision, "mode" => next.data["mode"], "action" => params["action"], "issue_id" => params["issue_id"]}
+      result = if params["action"] == "set_concurrency", do: Map.put(result, "limit", params["limit"]), else: result
       entry = %{"fingerprint" => fingerprint, "result" => result}
       data = next.data |> Map.put("revision", revision) |> put_in(["commands", params["command_id"]], entry)
       next = %{next | data: data}
       with :ok <- persist(next), do: {:ok, next, result, false}
     end
   end
+
+  @spec command_fingerprint(map()) :: String.t()
+  def command_fingerprint(params), do: params |> Map.take(["action", "issue_id", "expected_revision", "limit"]) |> Jason.encode!()
+
+  @spec effective_concurrency(t() | nil, pos_integer()) :: pos_integer()
+  def effective_concurrency(nil, ceiling), do: ceiling
+  def effective_concurrency(ledger, ceiling), do: min(ledger.data["concurrency_override"] || ceiling, ceiling)
+
+  defp transition_settings(ledger, %{"action" => "set_concurrency", "limit" => limit}, ceiling) do
+    if is_integer(ceiling) and (is_nil(limit) or limit <= ceiling),
+      do: {:ok, %{ledger | data: Map.put(ledger.data, "concurrency_override", limit)}},
+      else: {:error, :concurrency_limit_exceeded}
+  end
+
+  defp transition_settings(ledger, params, _ceiling), do: transition(ledger, params["action"], params["issue_id"])
 
   defp transition(ledger, action, nil) when action in ["pause", "drain", "resume"] do
     mode = %{"pause" => "paused", "drain" => "draining", "resume" => "running"}[action]
@@ -198,16 +214,19 @@ defmodule SymphonyElixir.ControlLedger do
 
   defp validate_command(%{"command_id" => id, "expected_revision" => revision, "action" => action} = params)
        when is_binary(id) and byte_size(id) in 1..128 and is_integer(revision) and revision >= 0 do
-    allowed_keys = ["command_id", "expected_revision", "action", "issue_id"]
+    allowed_keys = ["command_id", "expected_revision", "action", "issue_id"] ++ if(action == "set_concurrency", do: ["limit"], else: [])
+    valid_limit = valid_setting?(action, params)
 
-    if valid_action?(action, params["issue_id"]) and Enum.all?(Map.keys(params), &(&1 in allowed_keys)),
+    if valid_limit and valid_action?(action, params["issue_id"]) and Enum.all?(Map.keys(params), &(&1 in allowed_keys)),
       do: :ok,
       else: {:error, :invalid_command}
   end
 
   defp validate_command(_), do: {:error, :invalid_command}
+  defp valid_setting?("set_concurrency", params), do: Map.has_key?(params, "limit") and valid_override?(params["limit"])
+  defp valid_setting?(_action, _params), do: true
 
-  defp valid_action?(action, nil) when action in ["pause", "drain", "resume"], do: true
+  defp valid_action?(action, nil) when action in ["pause", "drain", "resume", "set_concurrency"], do: true
 
   defp valid_action?(action, id) when action in ["cancel", "retry"] and is_binary(id),
     do: byte_size(id) in 1..128
@@ -266,20 +285,22 @@ defmodule SymphonyElixir.ControlLedger do
         with {:ok, data} <- Jason.decode(bytes), true <- valid_data?(data), do: {:ok, data}, else: (_ -> {:error, :invalid_control_state})
 
       {:error, :enoent} ->
-        {:ok, %{"version" => 1, "revision" => 0, "mode" => initial_mode, "issues" => %{}, "commands" => %{}}}
+        {:ok, %{"version" => 1, "revision" => 0, "mode" => initial_mode, "issues" => %{}, "commands" => %{}, "concurrency_override" => nil}}
 
       _ ->
         {:error, :unreadable_control_state}
     end
   end
 
-  defp valid_data?(%{"version" => 1, "revision" => revision, "mode" => mode, "issues" => issues, "commands" => commands})
+  defp valid_data?(%{"version" => 1, "revision" => revision, "mode" => mode, "issues" => issues, "commands" => commands} = data)
        when is_integer(revision) and revision >= 0 and mode in ["paused", "draining", "running"] and is_map(issues) and is_map(commands) do
-    Enum.all?(issues, fn {id, item} -> is_binary(id) and valid_issue?(item) end) and
+    valid_override?(data["concurrency_override"]) and Enum.all?(issues, fn {id, item} -> is_binary(id) and valid_issue?(item) end) and
       Enum.all?(commands, &valid_command_entry?/1)
   end
 
   defp valid_data?(_), do: false
+  defp valid_override?(nil), do: true
+  defp valid_override?(limit), do: is_integer(limit) and limit > 0
 
   defp valid_command_entry?({id, %{"fingerprint" => fingerprint, "result" => result}}),
     do: is_binary(id) and is_binary(fingerprint) and is_map(result)

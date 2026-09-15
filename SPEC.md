@@ -2349,7 +2349,9 @@ termination deadline MUST not depend on completion of a tracker API poll.
 ### B.2 Native control API
 
 `GET /api/v1/control` returns enabled state, mode, operator revision, issue budgets,
-active run identifiers, holds, candidate handoffs and any control fault.
+active run identifiers, holds, candidate handoffs and any control fault. The
+`settings` object reports `concurrency` (`effective`, `default`, `ceiling`, `override`),
+read-only configured `budgets` and the retained `base_sha`; it contains no credentials.
 `POST /api/v1/control` accepts only:
 
 ```json
@@ -2365,6 +2367,7 @@ active run identifiers, holds, candidate handoffs and any control fault.
 | `resume` | Enable eligible dispatch without clearing issue holds or budgets. |
 | `cancel` | Persist a per-issue hold, stop owned work and retain its workspace. |
 | `retry` | Clear an issue hold only within remaining budgets; never reset counters. |
+| `set_concurrency` | Persist `limit` (integer 1 through the configured ceiling), or `null` to restore the default. No `issue_id`; active work and consumed budgets are unchanged. |
 
 Both routes require `Authorization: Bearer $SYMPHONY_CONTROL_TOKEN`; the token MUST
 have at least 32 bytes. The Mac profile binds loopback, accepts only loopback Host
@@ -2379,6 +2382,17 @@ a stale expected revision returns conflict. Replayed results identify the origin
 revision, not necessarily the latest current revision. Operator revisions are
 separate from streaming worker updates. The command journal is bounded; when full,
 new commands fail closed rather than silently forgetting idempotency history.
+
+The concurrency override is retained in the control ledger, including across restart.
+Older ledgers without it use the configured default. `agent.max_concurrent_agents`
+remains the host-approved ceiling and default; admission always uses the lesser of
+that ceiling and any retained override, including after configuration reload.
+Lowering concurrency prevents new starts until capacity is available; it does not
+cancel active work. Reset restores the current default without rewriting workflow
+configuration. The receipt fingerprint includes the requested `limit` (including
+`null`); a previous receipt can be read or replayed after the ceiling changes without
+reapplying its old setting. Persistence faults retain the existing fail-closed behavior.
+When native controls are disabled, upstream scheduling behavior is unchanged.
 
 ### B.3 Candidate handoff and recovery
 
@@ -2465,11 +2479,11 @@ serialized in session state nor exposed by browser assets. Every browser command
 revalidates authorization and uses the native idempotency key and displayed
 revision. The controller also verifies the expected tracker fingerprint inside
 its mailbox before applying a command, preventing stale project cards from
-controlling another repository. The existing bearer API contract is unchanged.
+controlling another repository. The bearer API authentication boundary is unchanged.
 
 Dialogs do not suspend execution. Closing or disconnecting the browser cannot
-cancel work. Browser controls expose only existing pause, drain, resume, cancel
-and retry operations; optional management chat adds bounded tracker edits.
+cancel work. Browser controls expose pause, drain, resume, concurrency settings,
+cancel and retry operations; optional management chat adds bounded tracker edits.
 Missing-input delivery, repair and publication workflows remain separate owners. Remote identity and ingress are
 not provided by the local login mechanism.
 

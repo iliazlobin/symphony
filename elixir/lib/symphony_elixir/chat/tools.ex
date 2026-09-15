@@ -5,7 +5,7 @@ defmodule SymphonyElixir.Chat.Tools do
   alias SymphonyElixir.{Config, Orchestrator}
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, TaskBoard}
 
-  @controls ~w(pause drain resume cancel retry)
+  @controls ~w(pause drain resume cancel retry set_concurrency)
   @writes ~w(create_task edit_task feedback queue_task unqueue_task)
   @stages ~w(backlog ready running review done attention)
   @sorts ~w(updated priority title oldest)
@@ -16,6 +16,7 @@ defmodule SymphonyElixir.Chat.Tools do
   @documents ~w(ARCHITECTURE.md WORKFLOW.md PROJECT.md README.md AGENTS.md)
   @errors %{
     invalid_view_context: "This view snapshot is invalid or belongs to another project. Send a fresh message from the board.",
+    concurrency_limit_exceeded: "Choose a concurrency limit within the configured project ceiling, or restore its default.",
     invalid_arguments: "Use only the documented fields and allowed values for this tool.",
     unknown_tool: "This management tool is not available.",
     unauthorized: "Operator access has expired or was revoked. Sign in again before continuing.",
@@ -90,9 +91,10 @@ defmodule SymphonyElixir.Chat.Tools do
       ),
       spec(
         "symphony_propose_action",
-        "Prepare an exact action preview for operator approval. Never claim a proposal was executed. create_task makes an unqueued backlog issue. edit_task, queue_task and unqueue_task require a cancelled, idle task and retain its hold: cancel, edit/queue, then retry are separate actions. Queue changes affect only configured routing labels, never bypass admission or launch gates. Feedback adds a GitHub comment without steering a running worker.",
+        "Prepare an exact action preview for operator approval. Never claim a proposal was executed. create_task makes an unqueued backlog issue. edit_task, queue_task and unqueue_task require a cancelled, idle task and retain its hold: cancel, edit/queue, then retry are separate actions. Queue changes affect only configured routing labels, never bypass admission or launch gates. Feedback adds a GitHub comment without steering a running worker. set_concurrency persists an admission limit within the configured ceiling; limit:null restores the default. Running work and consumed budgets are unchanged.",
         %{
           "action" => enum(@controls ++ @writes),
+          "limit" => %{"type" => ["integer", "null"], "minimum" => 1},
           "task_id" => string(240),
           "title" => string(240),
           "body" => string(16_000),
@@ -256,6 +258,8 @@ defmodule SymphonyElixir.Chat.Tools do
     is_binary(value) and String.valid?(value) and byte_size(value) <= max and not String.contains?(value, [<<0>>, "<!-- symphony-chat:"])
   end
 
+  defp valid_value?(value, %{"type" => ["integer", "null"], "minimum" => min}), do: is_nil(value) or (is_integer(value) and value >= min)
+
   defp valid_value?(value, %{"type" => "integer", "minimum" => min, "maximum" => max}), do: is_integer(value) and value >= min and value <= max
 
   defp read_board(context) do
@@ -276,7 +280,7 @@ defmodule SymphonyElixir.Chat.Tools do
       "type" => "status",
       "counts" => counts,
       "project_id" => context.project_id,
-      "control" => Map.take(board[:control] || %{}, ~w(enabled revision mode)),
+      "control" => Map.take(board[:control] || %{}, ~w(enabled revision mode settings fault)),
       "source_error" => board[:source_error],
       "runtime_error" => board[:runtime_error],
       "generated_at" => board[:generated_at],
@@ -398,11 +402,12 @@ defmodule SymphonyElixir.Chat.Tools do
 
     valid =
       Enum.all?(Map.keys(args), &(&1 in allowed)) and Enum.all?(required, &present?(args[&1])) and
-        valid_edit_fields?(args) and valid_title?(args)
+        valid_edit_fields?(args) and valid_title?(args) and (action != "set_concurrency" or Map.has_key?(args, "limit"))
 
     if valid, do: :ok, else: {:error, :invalid_arguments}
   end
 
+  defp action_fields("set_concurrency"), do: {~w(action limit), []}
   defp action_fields("create_task"), do: {~w(action title body), ~w(title body)}
   defp action_fields("edit_task"), do: {~w(action task_id title body state priority), ~w(task_id)}
   defp action_fields("feedback"), do: {~w(action task_id body), ~w(task_id body)}
@@ -414,6 +419,16 @@ defmodule SymphonyElixir.Chat.Tools do
   defp valid_title?(_args), do: true
 
   defp present?(text), do: is_binary(text) and String.trim(text) != ""
+
+  defp proposal_evidence(%{"action" => "set_concurrency", "limit" => limit}, _context, _settings, board) do
+    ceiling = get_in(board, [:control, "settings", "concurrency", "ceiling"])
+
+    with {:ok, revision} <- control_revision(board),
+         true <- is_integer(ceiling) or {:error, :control_unavailable},
+         true <- is_nil(limit) or limit <= ceiling or {:error, :concurrency_limit_exceeded} do
+      {:ok, %{"expected_revision" => revision}}
+    end
+  end
 
   defp proposal_evidence(%{"action" => "create_task"}, _context, settings, _board) do
     with :ok <- github_tracker(settings.tracker),
@@ -506,7 +521,12 @@ defmodule SymphonyElixir.Chat.Tools do
     revision = proposal["expected_revision"]
     server = context[:orchestrator] || Orchestrator
 
-    case BoardActions.command(action, task && task.issue_id, revision, proposal["id"], context.auth, server) do
+    result =
+      if action == "set_concurrency",
+        do: BoardActions.settings_command(proposal["args"]["limit"], revision, proposal["id"], context.auth, server),
+        else: BoardActions.command(action, task && task.issue_id, revision, proposal["id"], context.auth, server)
+
+    case result do
       {:error, :unavailable} -> {:error, :write_outcome_unknown}
       result -> result
     end
@@ -518,6 +538,7 @@ defmodule SymphonyElixir.Chat.Tools do
 
   defp recover(proposal, _settings, context) do
     command = %{"action" => proposal["action"], "issue_id" => proposal["args"]["task_id"], "expected_revision" => proposal["expected_revision"], "command_id" => proposal["id"]}
+    command = if proposal["action"] == "set_concurrency", do: Map.put(command, "limit", proposal["args"]["limit"]), else: command
     owner = Application.get_env(:symphony_elixir, :chat_tracker_owner, Orchestrator)
     server = context[:orchestrator] || Orchestrator
 

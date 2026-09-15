@@ -495,6 +495,41 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     assert {:error, :revision_conflict} = Tools.confirm(conflict, context)
   end
 
+  test "chat concurrency changes preview exact limits, confirm through the owner and reconcile without writing", ctx do
+    config = put_in(ctx.config, [:tracker], %{kind: "memory", project_slug: "team", active_states: ["open"], terminal_states: ["closed"]})
+    configure(Map.put(config, :agent, %{max_concurrent_agents: 3}))
+    supervisor = start_supervised!({Task.Supervisor, []})
+    name = Module.concat(__MODULE__, "Settings#{System.unique_integer([:positive])}")
+    pid = start_supervised!({Orchestrator, name: name, task_supervisor: supervisor})
+    fingerprint = Orchestrator.tracker_fingerprint()
+    context = %{ctx.context | project_id: "memory:team", tracker_fingerprint: fingerprint, auth: %{ctx.context.auth | tracker_fingerprint: fingerprint}} |> Map.put(:orchestrator, pid)
+    board = %{ctx.board | tasks: [], control: Orchestrator.control_snapshot(pid)}
+    Application.put_env(:symphony_elixir, :chat_test_board, board)
+    Application.put_env(:symphony_elixir, :chat_tracker_owner, Orchestrator)
+
+    for args <- [
+          %{"action" => "set_concurrency"},
+          %{"action" => "set_concurrency", "limit" => 0},
+          %{"action" => "set_concurrency", "limit" => "2"},
+          %{"action" => "set_concurrency", "limit" => 2, "task_id" => "1"}
+        ] do
+      assert {:error, :invalid_arguments} = Tools.call("symphony_propose_action", args, context)
+    end
+
+    assert {:error, :concurrency_limit_exceeded} = Tools.call("symphony_propose_action", %{"action" => "set_concurrency", "limit" => 4}, context)
+    assert {:ok, %{"widgets" => [%{"control" => %{"settings" => %{"concurrency" => %{"ceiling" => 3}}}}]}} = Tools.call("symphony_project_status", %{}, context)
+    proposal = propose(context, %{"action" => "set_concurrency", "limit" => 2})
+    assert Orchestrator.control_snapshot(pid)["revision"] == 0
+    assert {:ok, %{"widgets" => [%{"result" => %{"limit" => 2, "revision" => 1}}]}} = Tools.confirm(proposal, context)
+    assert {:ok, %{"widgets" => [%{"result" => %{"limit" => 2, "replayed" => true}}]}} = Tools.confirm(proposal, context)
+    assert {:ok, %{"widgets" => [%{"result" => %{"limit" => 2}}]}} = Tools.reconcile(proposal, context)
+    assert {:error, :command_id_conflict} = Tools.reconcile(put_in(proposal, ["args", "limit"], 1), context)
+    Application.put_env(:symphony_elixir, :chat_test_board, %{board | control: Orchestrator.control_snapshot(pid)})
+    reset = propose(context, %{"action" => "set_concurrency", "limit" => nil}) |> Map.put("id", "c63f2004-17cf-4f50-bae7-e1368b8d046b")
+    assert {:ok, %{"widgets" => [%{"result" => %{"limit" => nil}}]}} = Tools.confirm(reset, context)
+    assert %{"effective" => 3, "override" => nil} = Orchestrator.control_snapshot(pid)["settings"]["concurrency"]
+  end
+
   test "creation requires an explicit nonempty queue label and a supported fixed GitHub repository", ctx do
     proposal = propose(ctx.context, %{"action" => "create_task", "title" => "New", "body" => "Body"})
     configure(put_in(ctx.config, [:tracker, :required_labels], []))
