@@ -4,6 +4,19 @@ This profile connects GitHub Issues to one builder and a separate reviewer. Symp
 owns scheduling; the native API owns controls; the small MCP client forwards those
 controls. See the [architecture](../../ARCHITECTURE.md) for boundaries and code ownership.
 
+A **project profile** is the project configuration and launch adapter: repository and
+baseline, issue selection, execution budgets, workspace setup, worker settings and
+publication policy. `WORKFLOW.md` provides scheduler settings, trusted hooks and the
+task prompt; `AGENTS.md` and `ARCHITECTURE.md` provide agent guidance and system context.
+The [host adapter](profile.py) validates and connects those inputs to the runtime.
+
+The project profile is not an isolation boundary. Separate worker containers, scoped
+mounts, Codex filesystem/network permissions and host-only publication credentials
+enforce that boundary. A separate checkout prevents work from colliding but is not a
+sandbox by itself. Host hooks remain trusted code outside the coding container.
+The narrower terms **Codex permission profile** and **AppArmor profile** mean policy
+inputs enforced by the tool sandbox and Linux kernel respectively.
+
 ## Setup
 
 Use Elixir 1.19.5 / OTP 28 from `elixir/mise.toml`, Python 3.9+ with
@@ -37,46 +50,145 @@ This pilot target does not select a permanent release branch or enable automatic
 
 ## Operate
 
-Start the service in the foreground with `python3 profiles/events-concierge/profile.py run`.
-The private dashboard is `http://127.0.0.1:8777/`. The initial mode is paused. Worker
-launch has a separate host gate and remains disabled until isolation, cancellation,
-authentication and a bounded pilot have passed. A resume request alone cannot enable it.
+Use GitHub for task intent and PR review, a management chat for status and authorized
+controls, and the local dashboard for monitoring. The initial mode is paused. Worker
+launch has a separate host gate; resume cannot bypass the activation prerequisites
+in [Verification and recovery](#verification-and-recovery).
 
-For persistence after closing the terminal, install and load the two user launch agents:
+**GitHub — task and PR interface.** Create or edit work in
+[Issues](https://github.com/iliazlobin/events-concierge/issues), using the
+[task contract below](#task-and-publication-contract). Once execution is activated,
+`symphony:ready` makes an eligible open issue available to the scheduler. Review the
+candidate diff, independent review and check evidence in
+[Pull requests](https://github.com/iliazlobin/events-concierge/pulls). A draft PR is a
+review handoff; it does not mean the task is merged or deployed. Task creation and
+label changes use GitHub's UI or tools, not Symphony's MCP server.
+
+**Dashboard — monitoring.** Open [the local dashboard](http://127.0.0.1:8777/).
+It updates running/retrying/blocked-session counts, token usage, elapsed runtime,
+rate limits, recent agent activity, errors and retry timing. Issue links open GitHub;
+**JSON details** opens runtime data; **Copy ID** copies a Codex session ID.
+
+There are no task creation, pause/resume/cancel, PR review or issue-detail screens.
+**Live** means the browser connection is live, not that workers are enabled or busy.
+**Blocked** counts runtime sessions requesting input or approval; it is not a list
+of setup prerequisites or every durable hold. Use management status for operating
+mode, launch/merge gates, review holds, budgets and publication receipts.
+
+**Management chat — controls through MCP.** Ask a connected management agent:
+
+- “Show the current mode, running tasks, holds and publication blockers.”
+- “Inspect runtime details for GH-6 and link its GitHub issue.”
+- “Read current status, then drain Symphony after the current task finishes.”
+- “Cancel issue #6, then confirm its execution state.”
+
+The connector exposes only `symphony_status`, `symphony_issue` and `symphony_control`.
+It does not create tasks, send arbitrary prompts to a worker, merge PRs or deploy.
+An agent can prepare a task through separate GitHub tools when authorized.
+
+Register it in the management Codex environment, replacing both paths with absolute
+paths to this checkout and a Python interpreter with `tools/requirements.txt` installed:
+
+```sh
+codex mcp add symphony -- "/path/to/python3" "/path/to/symphony/tools/symphony_control.py" mcp
+```
+
+Never register management MCP in the worker home. Start or reload the management
+session after changing its configuration, then verify that `symphony_status` is
+available and responds; a saved configuration alone does not connect a session.
+
+**Identifiers matter.** With this GitHub adapter, issue **#6** has runtime identifier
+`GH-6` and control `issue_id` **`"6"`**. `symphony_issue`, the CLI `issue` command and
+runtime HTTP details use `GH-6`. Cancel/retry and publisher commands use `6`; MCP/HTTP
+send it as a string. Copy identifiers from status rather than using GitHub's separate
+global database ID or a Codex session ID. Runtime details can return 404 for an issue
+that is not currently running, retrying or input-blocked; check GitHub and durable
+control status for queued work, review holds and completed handoffs.
+
+**Terminal — local operation and recovery.** Run these commands from the Symphony
+checkout with the configured Python interpreter. For a different initialized profile,
+place `--config /path/to/config.json` before the action. Start with read-only checks:
+
+```sh
+python3 tools/symphony_service.py status
+python3 tools/symphony_control.py status
+python3 tools/symphony_control.py issue GH-6
+python3 tools/symphony_publish.py inspect 6
+```
+
+The last two commands are examples for issue #6: runtime details require a tracked
+session, and publisher inspection requires a settled, independently approved
+candidate. An unavailable API means worker state is unknown, not that workers stopped.
+
+For an initialized host, install and start both persistent user services:
 
 ```sh
 python3 tools/symphony_service.py install
 python3 tools/symphony_service.py start
-python3 tools/symphony_service.py status
 ```
 
-Use `python3 tools/symphony_service.py stop` to unload both services. The publication
-process watches completed handoffs; it does not schedule coding tasks. Keep the Mac
-awake and Colima/Docker running. GKE deployment is a separate, unimplemented cutover.
+`python3 tools/symphony_service.py stop` unloads the scheduler and publication service.
+For foreground scheduler diagnosis, use `python3 profiles/events-concierge/profile.py run`
+only when the persistent scheduler is stopped. The publication service watches
+completed handoffs; it does not schedule coding tasks. Keep the Mac awake and
+Colima/Docker running. Service process status alone does not prove task progress.
+
+Read `status` immediately before a control change and use its **`control.revision`**:
 
 ```sh
-python3 tools/symphony_control.py status
 python3 tools/symphony_control.py drain --revision CURRENT_REVISION
 python3 tools/symphony_control.py pause --revision CURRENT_REVISION
-python3 tools/symphony_control.py cancel ISSUE_ID --revision CURRENT_REVISION
-python3 tools/symphony_control.py retry ISSUE_ID --revision CURRENT_REVISION
+python3 tools/symphony_control.py cancel 6 --revision CURRENT_REVISION
+python3 tools/symphony_control.py retry 6 --revision CURRENT_REVISION
 python3 tools/symphony_control.py resume --revision CURRENT_REVISION
 ```
 
-Read status before a change. Reuse `--command-id` after an uncertain response; a stale
-revision is rejected. Pause interrupts active work and blocks dispatch; drain lets the
-current bounded pipeline finish. Cancel holds the issue. Retry preserves consumed budget.
-An unavailable API means status is unknown. It does not mean workers stopped.
+These are separate actions, not a sequence to run together. Drain stops new dispatch
+while the current bounded pipeline finishes; pause interrupts active work. Cancel
+holds one issue and requests cleanup; retry clears its hold within the remaining
+budget. Resume permits eligible work without changing the host launch gate.
+Re-read status to confirm the resulting state.
 
-Add a **management-only** stdio MCP server using an absolute interpreter and source path:
+Each mutation accepts `--command-id UNIQUE_ID`; supply one when a request might need
+retrying. After an uncertain response, reuse the same ID, revision and action rather
+than sending another command. A changed body for the same ID or a new command with a
+stale revision is rejected. In MCP, pass `expected_revision`, `command_id`, `action`, and `issue_id` for cancel/retry.
 
-```sh
-codex mcp add symphony -- python3 /path/to/symphony/tools/symphony_control.py mcp
-```
+Publisher recovery commands are `publish ISSUE_ID`, `merge ISSUE_ID`, `reconcile` and
+`watch` under `tools/symphony_publish.py`; unlike `inspect`, they can write GitHub.
+Use them only for authorized publication or recovery. They retain the exact-candidate,
+review, repository and merge gates described below; do not start a second publication
+watcher alongside the installed service. `symphony_control.py status` includes the
+publication receipts and confirmed PR links.
 
-It exposes `symphony_status`, `symphony_issue` and `symphony_control`. Never install the
-management MCP server in the worker home. New MCP configuration requires a new or
-reloaded management session; writing configuration does not connect an existing session.
+**HTTP — programmatic interface.** The base URL is the local `api_url` in operator
+configuration, normally `http://127.0.0.1:8777`. Existing CLI/MCP clients handle the
+private token; custom clients must follow the
+[control API contract](../../SPEC.md#b2-native-control-api).
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/v1/state` | Runtime sessions, counts, usage and rate limits. |
+| `GET /api/v1/GH-6` | Runtime details for that issue identifier, when tracked. |
+| `GET /api/v1/control` | Durable operating mode, revision, holds, budgets and handoffs. |
+| `POST /api/v1/control` | Authorized pause, drain, resume, cancel or retry with revision and command ID. |
+| `POST /api/v1/refresh` | Request a tracker refresh; does not enable workers or bypass admission. |
+
+Control reads/writes and refresh in this controlled profile require bearer
+authentication. Control routes accept local clients and reject browser Origin headers;
+they are not wired to dashboard buttons. Keep tokens out of URLs, chat and browser
+scripts. State/details are the local observability view; use CLI/MCP status to combine
+that view with host launch settings and publication receipts.
+
+**Codex App Server — internal worker protocol.** Symphony starts a separate Codex
+app-server process for each builder/reviewer stage and uses JSON-RPC over stdio to
+start threads/turns and receive events. This is not the operator HTTP API or the
+management MCP server, and operators do not need to call it directly. Existing
+independently launched VS Code/CLI sessions are not adopted by Symphony.
+
+GKE hosting, remote/mobile access, a control UI and a Slack command/reporting integration
+are not implemented by this profile. GitHub remains the task record; this Mac is the
+current execution host.
 
 ## Task and publication contract
 
