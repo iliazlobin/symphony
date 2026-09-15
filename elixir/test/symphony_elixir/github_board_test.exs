@@ -193,10 +193,13 @@ defmodule SymphonyElixir.GitHub.BoardTest do
 
   test "source-missing rows preserve holds and cannot gain fabricated PR or candidate links" do
     handoff = %{"candidate_sha" => @sha}
-    source = TaskBoard.project([], %{}, %{"issues" => %{"1" => %{"hold" => "owner_review", "handoff" => handoff}}}, settings())
+    source = TaskBoard.project([], %{}, %{"issues" => %{"2" => %{"hold" => "owner_review", "handoff" => handoff}}}, settings())
     respond(fn _, _, _, _, _ -> flunk("must not query synthetic rows") end)
     assert [%{source_missing: true, github_status: "source_missing", pull_requests: [], blocker_reason: reason}] = Board.enrich(source, settings()).tasks
     assert reason =~ "Tracker issue is missing"
+    respond(payload(evidence()))
+    mixed = %{source | tasks: board().tasks ++ source.tasks}
+    assert [_, %{source_missing: true, github_status: "source_missing", pull_requests: []}] = Board.enrich(mixed, settings()).tasks
   end
 
   test "transport does not retry or follow redirects" do

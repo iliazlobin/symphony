@@ -127,7 +127,7 @@ defmodule SymphonyElixir.GitHub.Board do
         case index[task.issue_id] do
           {:ok, prs, partial} ->
             links = Enum.flat_map(prs, &pr_links/1)
-            status = if(partial, do: "partial", else: "available")
+            status = evidence_status(partial)
             task = %{task | pull_requests: prs, links: base_links(task) ++ links, github_status: status}
             {task, incomplete or partial}
 
@@ -203,6 +203,8 @@ defmodule SymphonyElixir.GitHub.Board do
   defp base_links(task), do: Enum.filter(task.links, &(&1.kind in ["issue", "repository"]))
   defp empty_status(%{source_missing: true}), do: "source_missing"
   defp empty_status(_task), do: "not_loaded"
+  defp evidence_status(true), do: "partial"
+  defp evidence_status(false), do: "available"
 
   defp pr_links(pr) do
     [
