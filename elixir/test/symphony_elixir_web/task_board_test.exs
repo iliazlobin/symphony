@@ -38,7 +38,9 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
 
   setup do
     previous = Application.get_env(:symphony_elixir, :github_client_module)
+    previous_enrichment = Application.get_env(:symphony_elixir, :github_board_request)
     Application.put_env(:symphony_elixir, :github_client_module, ReadOnlyGitHub)
+    Application.put_env(:symphony_elixir, :github_board_request, fn _, _, _, _, _ -> {:error, :unavailable} end)
 
     on_exit(fn ->
       if previous,
@@ -46,6 +48,10 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
         else: Application.delete_env(:symphony_elixir, :github_client_module)
 
       Application.delete_env(:symphony_elixir, :task_board_test_source)
+
+      if previous_enrichment,
+        do: Application.put_env(:symphony_elixir, :github_board_request, previous_enrichment),
+        else: Application.delete_env(:symphony_elixir, :github_board_request)
     end)
 
     :ok
@@ -347,6 +353,61 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     assert [card] = board.tasks
     assert card.source_missing
     assert card.stage == "running"
+  end
+
+  test "execution and blocker evidence retain actual reason and safe canonical links" do
+    runtime = %{blocked: [Map.put(activity("1"), :error, "Worker needs input: choose the deployment region")], retrying: [Map.put(activity("2"), :error, "Rate limit; retry at the recorded deadline")]}
+    control = %{"issues" => %{"3" => %{"hold" => "token_budget"}, "4" => %{"active" => %{}}}}
+    issues = [issue("1", url: "https://evil.example/steal"), issue("2"), issue("3"), issue("4"), issue("5")]
+    board = TaskBoard.project(issues, runtime, control, settings())
+    assert task(board.tasks, "1").blocker_reason =~ "choose the deployment region"
+    assert task(board.tasks, "1").execution_status == "blocked"
+    assert task(board.tasks, "2").blocker_reason =~ "Rate limit"
+    assert task(board.tasks, "3").blocker_reason == "Token budget"
+    assert task(board.tasks, "3").execution_status == "held"
+    assert task(board.tasks, "4").execution_status == "unknown"
+    assert task(board.tasks, "5").execution_status == "idle"
+    assert task(board.tasks, "1").url == "https://github.com/example/repo/issues/1"
+
+    assert task(board.tasks, "1").links == [
+             %{kind: "issue", label: "GitHub issue", url: "https://github.com/example/repo/issues/1"},
+             %{kind: "repository", label: "Repository", url: "https://github.com/example/repo"}
+           ]
+
+    assert Enum.all?(board.tasks, &(&1.pull_requests == []))
+  end
+
+  test "enrichment failure and tracker reload preserve issue data with separate uncertainty" do
+    configure_workflow()
+    name = start_runtime()
+    Application.put_env(:symphony_elixir, :task_board_test_source, {self(), {:ok, [issue("1")]}})
+    board = TaskBoard.load(name, 500)
+    assert board.source_error == nil
+    assert board.enrichment_error =~ "PR evidence unavailable"
+    assert [card] = board.tasks
+    assert card.github_status == "unavailable"
+
+    Application.put_env(:symphony_elixir, :github_board_request, fn _, _, _, _, _ ->
+      configure_workflow(false, "memory")
+      {:error, :unavailable}
+    end)
+
+    assert TaskBoard.load(name, 500).source_error =~ "configuration changed"
+  end
+
+  test "unsafe provider URLs and unknown issue identifiers cannot become clickable GitHub paths" do
+    settings = settings()
+    enterprise = put_in(settings, [:tracker, :provider, "api_url"], "https://enterprise.example/api")
+    assert [card] = TaskBoard.project([issue("1")], %{}, %{}, enterprise).tasks
+    assert card.links == []
+    assert [card] = TaskBoard.project([issue("../other")], %{}, %{}, settings).tasks
+    assert card.url == nil
+    memory = put_in(settings, [:tracker, :kind], "memory")
+
+    for url <- ["javascript:alert(1)", "https://user:secret@host/path", nil] do
+      assert [card] = TaskBoard.project([issue("1", url: url)], %{}, %{}, memory).tasks
+      assert card.url == nil
+    end
   end
 
   defp task(tasks, id), do: Enum.find(tasks, &(&1.issue_id == id))
