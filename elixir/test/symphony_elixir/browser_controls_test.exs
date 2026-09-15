@@ -98,6 +98,16 @@ defmodule SymphonyElixir.BrowserControlsTest do
     refute BrowserAuth.authorized?(ctx.authorization)
   end
 
+  test "a queued browser command rechecks authentication inside the native owner", ctx do
+    :sys.suspend(ctx.pid)
+    command = Task.async(fn -> BoardActions.command("resume", nil, 0, "queued-auth", ctx.authorization, ctx.pid) end)
+    Process.sleep(20)
+    System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("changed", 8))
+    :sys.resume(ctx.pid)
+    assert {:error, :unauthorized} = Task.await(command)
+    assert %{"mode" => "paused", "revision" => 0} = Orchestrator.control_snapshot(ctx.pid)
+  end
+
   test "both HTTP and socket mount derive authorization from verified connection information", ctx do
     session = %{BrowserAuth.session_key() => ctx.marker}
     conn = local_conn()
