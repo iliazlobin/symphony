@@ -1,4 +1,4 @@
-# Symphony Codex 0.144.6 / pinned Debian worker image compatibility policy.
+# Symphony Codex 0.153.4 / pinned Debian worker image compatibility policy.
 # Retains Docker 29.5.2 (moby 568f755) AppArmor permissions and proc/sys denials.
 # Replaces the default mount denial with finite bubblewrap setup operations.
 # The outer container still exposes only one assigned checkout, drops all
@@ -62,6 +62,9 @@ profile "symphony-codex" flags=(attach_disconnected,mediate_deleted) {
   mount options=(ro,nosuid,nodev,remount,bind,silent,relatime) -> /newroot/sbin/docker-init,
   mount options=(ro,nosuid,nodev,remount,bind,silent,relatime) -> /newroot/usr/sbin/docker-init,
   mount options=(rw,rbind) /oldroot/dev/pts/0 -> /newroot/dev/console,
+  # Only the generated six-character executable-alias directory is admitted.
+  mount options=(rw,rbind) /oldroot/codex-home/tmp/arg0/codex-arg0[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]/ -> /newroot/codex-home/tmp/arg0/codex-arg0[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]/,
+  mount options=(ro,nosuid,nodev,remount,bind,silent,relatime) -> /newroot/codex-home/tmp/arg0/codex-arg0[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]/,
 @@WORKSPACE_RULES@@
   deny /sys/[^f]*/** wklx,
   deny /sys/f[^s]*/** wklx,

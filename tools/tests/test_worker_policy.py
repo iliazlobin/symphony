@@ -58,7 +58,6 @@ class WorkerPolicyTests(unittest.TestCase):
         }
         self.assertEqual(set(sources), expected)
         self.assertTrue(all("**" not in source for source in sources))
-        self.assertNotIn("/oldroot/codex-home", rendered)
         self.assertNotIn("/oldroot/tmp/", rendered)
         self.assertNotIn("/oldroot/**", rendered)
         self.assertNotIn("/newroot/**", rendered)
@@ -93,8 +92,24 @@ class WorkerPolicyTests(unittest.TestCase):
         # Outside the configured task root, every bind source/destination is
         # literal and finite. Namespace setup does not expose another host tree.
         fixed = [line for line in rendered.splitlines()
-                 if line.strip().startswith("mount ") and str(self.root) not in line]
+                 if line.strip().startswith("mount ") and str(self.root) not in line
+                 and "/codex-home/tmp/arg0/codex-arg0" not in line]
         self.assertTrue(all(not re.search(r"[?*\[\]{}]", line) for line in fixed))
+
+    def test_helper_alias_directory_does_not_admit_codex_home_or_other_runtime_state(self):
+        rendered = POLICY.render_policy(self.root)
+        helper = "/codex-home/tmp/arg0/codex-arg0" + "[A-Za-z0-9]" * 6 + "/"
+        home_mounts = [line.strip() for line in rendered.splitlines()
+                       if line.strip().startswith("mount ") and "/codex-home" in line]
+        self.assertEqual(home_mounts, [
+            f"mount options=(rw,rbind) /oldroot{helper} -> /newroot{helper},",
+            f"mount options=(ro,nosuid,nodev,remount,bind,silent,relatime) -> /newroot{helper},",
+        ])
+        self.assertTrue(all("*" not in line and "?" not in line for line in home_mounts))
+        self.assertNotIn("/codex-home/auth.json", rendered)
+        self.assertNotIn("/codex-home/config.toml", rendered)
+        self.assertNotIn("/codex-home/AGENTS.md", rendered)
+        self.assertNotIn("/codex-home/stage-state", rendered)
 
     def test_render_is_deterministic_and_cli_has_no_write_or_install_action(self):
         before = sorted(str(path) for path in self.parent.rglob("*"))
