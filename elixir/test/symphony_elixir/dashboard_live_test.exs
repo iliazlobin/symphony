@@ -228,7 +228,11 @@ defmodule SymphonyElixir.DashboardLiveTest do
           execution_status: "paused",
           blocker_reason: "Review changes before retrying",
           pull_requests: prs,
-          links: [%{kind: "repo", label: "Repository", url: "https://github.com/example/fixture"}, %{kind: "candidate", label: "Verified candidate", url: candidate}]
+          links: [
+            %{kind: "repository", label: "Repository", url: "https://github.com/example/fixture"},
+            %{kind: "commit", label: "Verified candidate", url: candidate},
+            %{kind: "pull_request", label: "Linked PR", url: "https://github.com/example/fixture/pull/12"}
+          ]
         })
       )
 
@@ -248,11 +252,14 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, card, "Review: Changes requested")
     assert has_element?(view, card, "CI: Failure")
     assert has_element?(view, card, "Merged")
+    assert has_element?(view, card <> " .card-reference-links a[href='https://github.com/example/fixture']", "Repository")
+    assert has_element?(view, card <> " .card-reference-links a[href='#{candidate}']", "Verified candidate")
     assert has_element?(view, ".status-badge-live", "Live updates connected")
     open_task(view, "2")
     assert has_element?(view, "#board-dialog a[href='#{candidate}']", "Verified candidate")
     assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/issues/2']")
     assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/pull/12']", "Fix retries")
+    assert has_element?(view, "#board-dialog .task-reference-links a[href='https://github.com/example/fixture/pull/12']", "Linked PR")
     assert has_element?(view, "#board-dialog", "CI: Success")
   end
 
@@ -286,6 +293,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     :ok = GenServer.call(ctx.runtime, {:board, changed})
     {view, _} = board_view()
     open_task(view, "4")
+    assert has_element?(view, "#board-dialog", "Worker review: Request changes")
+    assert has_element?(view, "#board-dialog details summary", "Handoff details")
     refute has_element?(view, "a[href^='javascript:']")
     refute has_element?(view, "a[href^='data:']")
     refute has_element?(view, "a[href^='//']")
@@ -339,6 +348,44 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert render(view) =~ "This board is read-only"
     refute has_element?(view, "#board-dialog")
     assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+  end
+
+  @tag snapshot_fixture: true
+  test "standalone board refreshes runtime activity and totals through outage and recovery", ctx do
+    {view, _} = board_view()
+    refute render(view) =~ "fixture_snapshot_unavailable"
+    assert has_element?(view, ".board-runtime-state", "Execution: Paused")
+
+    payload =
+      ctx.board.runtime
+      |> put_in([:running, Access.at(0), :last_message], "Fresh worker activity")
+      |> put_in([:codex_totals, :total_tokens], 321)
+
+    fresh = %{ctx.board | runtime: payload}
+    refresh(view, ctx.runtime, fresh)
+    assert has_element?(view, "[data-task-id='github:example/fixture:3'] .card-activity", "Fresh worker activity")
+    render_click(view, "open-settings")
+    assert has_element?(view, "#board-dialog", "Total tokens: 321")
+
+    unavailable = %{fresh | runtime: %{error: %{code: "controller_unavailable"}}, runtime_error: "Controller activity unavailable"}
+    refresh(view, ctx.runtime, unavailable)
+    assert has_element?(view, ".board-runtime-state", "Execution unavailable")
+    assert has_element?(view, ".board-source-state", "Last-known cards")
+    refute has_element?(view, ".board-source-state", "GitHub checked")
+    assert has_element?(view, ".board-warning", "controller_unavailable")
+    assert has_element?(view, "#board-dialog", "Total tokens: Unavailable")
+    assert has_element?(view, "[data-task-id='github:example/fixture:3']", "Running fixture")
+
+    recovered =
+      payload
+      |> put_in([:running, Access.at(0), :last_message], "Recovered worker activity")
+      |> put_in([:codex_totals, :total_tokens], 654)
+
+    refresh(view, ctx.runtime, %{fresh | runtime: recovered})
+    assert has_element?(view, ".board-runtime-state", "Execution: Paused")
+    assert has_element?(view, "[data-task-id='github:example/fixture:3'] .card-activity", "Recovered worker activity")
+    assert has_element?(view, "#board-dialog", "Total tokens: 654")
+    refute has_element?(view, ".board-warning", "controller_unavailable")
   end
 
   defp board_view do

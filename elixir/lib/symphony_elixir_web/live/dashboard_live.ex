@@ -69,6 +69,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     selected = socket.assigns.selected
     current = selected && Enum.find(result.tasks, &(&1.id == selected.id))
+    socket = refresh_payload(socket, result)
     socket = socket |> assign(:board, result) |> assign(:selected, current) |> assign(:loading, false)
     socket = if selected && is_nil(current) && socket.assigns.dialog == :task, do: socket |> assign(:dialog, nil) |> assign(:notice, "Task no longer available in this board."), else: socket
     {:noreply, open_linked_task(socket)}
@@ -313,7 +314,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <section class="dialog-section"><h3>Codex update</h3><p>{current_activity(@selected, @payload) || "No current worker activity."}</p>
                 <button :if={session_id(@selected)} class="button button-small" data-copy={session_id(@selected)}>Copy ID</button>
               </section>
-              <section :if={@selected.handoff} class="dialog-section"><h3>Candidate handoff</h3><pre>{pretty(@selected.handoff)}</pre><p class="muted">A handoff does not establish successful checks, merge or deployment. Review the candidate and PR evidence in GitHub.</p></section>
+              <section :if={@selected.handoff} class="dialog-section"><h3>Candidate review</h3>
+                <p :if={is_binary(field(handoff(@selected), :summary))}>{field(handoff(@selected), :summary)}</p>
+                <p>Worker review: {worker_review(@selected)}</p>
+                <p :if={is_binary(field(handoff(@selected), :candidate_sha))} class="task-description">Candidate: <code>{field(handoff(@selected), :candidate_sha)}</code></p>
+                <p class="muted">Worker review is separate from GitHub review, checks, merge and deployment.</p>
+                <details><summary>Handoff details</summary><pre>{pretty(@selected.handoff)}</pre></details>
+              </section>
               <section :if={!@read_only} class="dialog-section"><h3>Execution</h3><p class="muted">Cancel requests a hold and worker cleanup. Retry clears a hold without resetting the budget; it does not answer a question or approve a candidate.</p>
                 <div class="dialog-actions"><button :for={action <- ["cancel", "retry"]} class="button" phx-click="prepare-command" phx-value-action={action} phx-value-id={@selected.id}>{String.capitalize(action)}</button></div>
                 <details><summary>Runtime details</summary><pre>{pretty(@selected.runtime)}</pre></details>
@@ -345,11 +352,21 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp initial_board(payload), do: TaskBoard.from_runtime(payload)
   defp read_only?(board), do: Endpoint.config(:board_read_only, false) == true or Map.get(board, :read_only, false) == true
 
+  defp refresh_payload(socket, board) do
+    if is_function(Endpoint.config(:snapshot_loader), 0) do
+      payload = if is_map(board[:runtime]), do: board.runtime, else: %{error: %{code: "snapshot_unavailable"}}
+      assign(socket, :payload, payload)
+    else
+      socket
+    end
+  end
+
   defp source_status(board, loading) do
     provider = if Enum.any?(board.projects, &String.starts_with?(&1.id, "github:")), do: "GitHub", else: "Tracker"
 
     cond do
       board.source_error -> "#{provider} unavailable · last-known data"
+      board.runtime_error -> "Last-known cards · controller unavailable"
       loading -> "#{provider} checking…"
       board.generated_at -> "#{provider} checked #{age(board.generated_at)}"
       true -> "#{provider} not checked"
@@ -375,6 +392,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp records(_), do: []
   defp field(record, key), do: Map.get(record, key, Map.get(record, Atom.to_string(key)))
   defp pull_requests(task), do: task |> Map.get(:pull_requests, []) |> records()
+  defp handoff(task), do: if(is_map(task.handoff), do: task.handoff, else: %{})
+
+  defp worker_review(task) do
+    case field(handoff(task), :review) do
+      review when is_map(review) -> display(field(review, :verdict))
+      _ -> "Unknown"
+    end
+  end
 
   defp context_links(board), do: board |> Map.get(:context_links, []) |> records() |> valid_links()
 
@@ -389,9 +414,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp link_kind(link) do
-    case field(link, :kind) do
-      kind when is_binary(kind) -> kind
-      kind when is_atom(kind) -> Atom.to_string(kind)
+    kind = field(link, :kind)
+    kind = if is_atom(kind), do: Atom.to_string(kind), else: kind
+
+    case kind do
+      "repository" -> "repo"
+      "pull_request" -> "pr"
+      "commit" -> "candidate"
+      other when is_binary(other) -> other
       _ -> nil
     end
   end
