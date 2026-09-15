@@ -23,9 +23,11 @@ do not define this profile's authorization policy.
 
 ### Web operation in this fork
 
-The local service includes a Kanban task board with top filters, sorting and popup
-task/Settings dialogs. An authenticated local browser can invoke existing bounded
-operator controls; GitHub remains the task and publication record. See the
+The local service includes a Kanban task board and optional project-specific Astra
+chat with streaming replies, saved conversations, task widgets and filtered board
+links. Chat uses bounded management tools to read work and preview authorized
+changes; coding remains with the scheduler's workers. An authenticated local browser
+can invoke native operator controls; GitHub remains the task and publication record. See the
 [operator guide](profiles/events-concierge/README.md#operate) for setup and limits.
 
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](https://player.vimeo.com/video/1186371009?h=5626e4b899)

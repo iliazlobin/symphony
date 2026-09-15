@@ -84,6 +84,24 @@ defmodule SymphonyElixir.BrowserControlsTest do
     end
   end
 
+  test "chat login returns to chat while untrusted return URLs cannot redirect", ctx do
+    for {destination, expected} <- [
+          {"/chat", "/chat"},
+          {"/?assistant=1", "/?assistant=1"},
+          {"https://evil.example", "/?panel=settings"},
+          {"//evil.example", "/?panel=settings"},
+          {"/chat?next=//evil.example", "/?panel=settings"}
+        ] do
+      {conn, csrf} = browser_page()
+      logged_in = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => ctx.token, "return_to" => destination})
+      assert redirected_to(logged_in) == expected
+    end
+
+    {conn, csrf} = browser_page()
+    rejected = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => "wrong", "return_to" => "/chat"})
+    assert redirected_to(rejected) == "/chat"
+  end
+
   test "authorization rejects missing context, expiry, token rotation and unavailable token", ctx do
     assert BrowserAuth.authorized?(ctx.authorization)
     refute BrowserAuth.authorized?(%{})
@@ -96,6 +114,16 @@ defmodule SymphonyElixir.BrowserControlsTest do
     refute BrowserAuth.authorized?(ctx.authorization)
     System.delete_env("SYMPHONY_CONTROL_TOKEN")
     refute BrowserAuth.authorized?(ctx.authorization)
+  end
+
+  test "a queued browser command rechecks authentication inside the native owner", ctx do
+    :sys.suspend(ctx.pid)
+    command = Task.async(fn -> BoardActions.command("resume", nil, 0, "queued-auth", ctx.authorization, ctx.pid) end)
+    Process.sleep(20)
+    System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("changed", 8))
+    :sys.resume(ctx.pid)
+    assert {:error, :unauthorized} = Task.await(command)
+    assert %{"mode" => "paused", "revision" => 0} = Orchestrator.control_snapshot(ctx.pid)
   end
 
   test "both HTTP and socket mount derive authorization from verified connection information", ctx do

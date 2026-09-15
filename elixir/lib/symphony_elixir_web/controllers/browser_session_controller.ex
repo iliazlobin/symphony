@@ -15,7 +15,7 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
         |> put_session(BrowserAuth.session_key(), marker)
         |> put_session("live_socket_id", "operator:" <> Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false))
         |> put_flash(:info, "Operator controls unlocked for this browser for 8 hours.")
-        |> redirect(to: "/?panel=settings")
+        |> redirect(to: return_to(params))
 
       {:error, :local_browser_required} ->
         conn |> send_resp(403, "Operator controls require a same-origin loopback browser.") |> halt()
@@ -28,9 +28,14 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
         |> delete_session(BrowserAuth.session_key())
         |> delete_session("live_socket_id")
         |> put_flash(:error, message)
-        |> redirect(to: "/?panel=settings")
+        |> redirect(to: return_to(params))
     end
   end
+
+  # Only known app entrypoints can receive an authentication redirect.
+  defp return_to(%{"return_to" => "/chat"}), do: "/chat"
+  defp return_to(%{"return_to" => "/?assistant=1"}), do: "/?assistant=1"
+  defp return_to(_params), do: "/?panel=settings"
 
   @spec delete(Conn.t(), map()) :: Conn.t()
   def delete(conn, _params) do

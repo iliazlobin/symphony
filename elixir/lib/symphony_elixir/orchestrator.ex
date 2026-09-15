@@ -1480,9 +1480,26 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc "Checks retained tracker scope inside the owner before applying the ordinary revision-fenced command."
-  @spec control_command_guarded(map(), String.t(), GenServer.server()) :: {:ok, map()} | {:error, term()}
-  def control_command_guarded(command, expected_tracker, server \\ __MODULE__) do
-    safe_control_call(server, {:guarded_control_command, command, expected_tracker})
+  @spec control_command_guarded(map(), String.t(), GenServer.server(), (-> boolean()) | nil) :: {:ok, map()} | {:error, term()}
+  def control_command_guarded(command, expected_tracker, server \\ __MODULE__, authorize \\ nil) do
+    message =
+      if is_function(authorize, 0),
+        do: {:authorized_control_command, command, expected_tracker, authorize},
+        else: {:guarded_control_command, command, expected_tracker}
+
+    safe_control_call(server, message)
+  end
+
+  @doc "Serializes a trusted tracker edit with dispatch and retry while a task is durably cancelled."
+  @spec tracker_action_guarded(String.t(), non_neg_integer(), String.t(), (-> term()), GenServer.server()) :: term()
+  def tracker_action_guarded(expected_tracker, expected_revision, issue_id, callback, server \\ __MODULE__) do
+    safe_control_call(server, {:tracker_action, expected_tracker, expected_revision, issue_id, callback})
+  end
+
+  @doc "Reads an exact retained control receipt without submitting or replaying a command."
+  @spec control_receipt_guarded(map(), String.t(), GenServer.server()) :: {:ok, map()} | {:error, term()}
+  def control_receipt_guarded(command, expected_tracker, server \\ __MODULE__) do
+    safe_control_call(server, {:control_receipt, command, expected_tracker})
   end
 
   defp safe_control_call(server, message) do
@@ -1606,6 +1623,54 @@ defmodule SymphonyElixir.Orchestrator do
     else
       {:reply, {:error, :tracker_changed}, state}
     end
+  end
+
+  def handle_call({:authorized_control_command, command, expected_tracker, authorize}, from, state) do
+    state = refresh_runtime_config(state)
+
+    if authorize.() == true do
+      handle_call({:guarded_control_command, command, expected_tracker}, from, state)
+    else
+      {:reply, {:error, :unauthorized}, state}
+    end
+  end
+
+  def handle_call({:tracker_action, scope, revision, id, callback}, _from, state) do
+    state = refresh_runtime_config(state)
+
+    result =
+      cond do
+        not is_binary(scope) or scope != tracker_fingerprint() -> {:error, :tracker_changed}
+        is_nil(state.control) -> {:error, :control_disabled}
+        not is_nil(state.control_fault) -> {:error, :control_unavailable}
+        revision != state.control.data["revision"] -> {:error, :revision_conflict}
+        true -> execute_cancelled_tracker_action(state, id, callback)
+      end
+
+    {:reply, result, state}
+  end
+
+  def handle_call({:control_receipt, command, scope}, _from, state) do
+    state = refresh_runtime_config(state)
+    fingerprint = command |> Map.take(["action", "issue_id", "expected_revision"]) |> Jason.encode!()
+
+    result =
+      cond do
+        not is_binary(scope) or scope != tracker_fingerprint() ->
+          {:error, :tracker_changed}
+
+        is_nil(state.control) or not is_nil(state.control_fault) ->
+          {:error, :control_unavailable}
+
+        true ->
+          case state.control.data["commands"][command["command_id"]] do
+            %{"fingerprint" => ^fingerprint, "result" => receipt} -> {:ok, receipt}
+            %{} -> {:error, :command_id_conflict}
+            nil -> {:error, :command_not_found}
+          end
+      end
+
+    {:reply, result, state}
   end
 
   def handle_call({:control_command, _command}, _from, %{control: nil} = state), do: {:reply, {:error, :control_disabled}, state}
@@ -2207,4 +2272,23 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp integer_like(_value), do: nil
+
+  defp execute_cancelled_tracker_action(state, id, callback) do
+    issue = get_in(state.control.data, ["issues", id]) || %{}
+
+    cond do
+      issue["hold"] != "cancelled" or not is_nil(issue["active"]) -> {:error, :task_must_be_cancelled}
+      Map.has_key?(state.running, id) or Map.has_key?(state.retry_attempts, id) -> {:error, :task_still_active}
+      not is_function(callback, 0) -> {:error, :invalid_command}
+      true -> execute_tracker_action(callback)
+    end
+  end
+
+  defp execute_tracker_action(callback) do
+    callback.()
+  rescue
+    _ -> {:error, :write_outcome_unknown}
+  catch
+    _, _ -> {:error, :write_outcome_unknown}
+  end
 end

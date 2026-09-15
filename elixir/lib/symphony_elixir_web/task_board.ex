@@ -13,7 +13,7 @@ defmodule SymphonyElixirWeb.TaskBoard do
   """
 
   alias SymphonyElixir.{Config, Orchestrator, Tracker}
-  alias SymphonyElixir.GitHub.{Admission, Client}
+  alias SymphonyElixir.GitHub.{Admission, Board, Client}
   alias SymphonyElixir.Tracker.Issue
   alias SymphonyElixirWeb.Presenter
 
@@ -66,6 +66,8 @@ defmodule SymphonyElixirWeb.TaskBoard do
         issue
         |> task(issue, entry, ledger[id], project, settings)
         |> Map.put(:source_missing, true)
+        |> Map.put(:github_status, "source_missing")
+        |> Map.update!(:blocker_reason, &missing_reason/1)
       end)
 
     %{
@@ -74,12 +76,15 @@ defmodule SymphonyElixirWeb.TaskBoard do
       generated_at: timestamp(),
       source_error: nil,
       runtime_error: nil,
+      enrichment_error: nil,
       control: control,
       runtime: runtime
     }
   end
 
   defp load_settings(orchestrator, timeout, settings) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+
     reads = [
       source: fn -> read_issues(settings.tracker) end,
       runtime: fn -> Presenter.state_payload(orchestrator, timeout) end,
@@ -105,6 +110,15 @@ defmodule SymphonyElixirWeb.TaskBoard do
     |> project(runtime, control, settings)
     |> Map.put(:source_error, source_error)
     |> Map.put(:runtime_error, runtime_error || control_error)
+    |> Board.enrich(settings, max(0, deadline - System.monotonic_time(:millisecond)))
+    |> verify_tracker(settings.tracker)
+  end
+
+  defp verify_tracker(board, tracker) do
+    case Config.settings() do
+      {:ok, %{tracker: ^tracker}} -> board
+      _ -> %{board | source_error: "Tracker configuration changed during refresh. Waiting for a complete board."}
+    end
   end
 
   defp safe_read(read) do
@@ -178,6 +192,7 @@ defmodule SymphonyElixirWeb.TaskBoard do
       generated_at: timestamp(),
       source_error: "Workflow configuration unavailable.",
       runtime_error: nil,
+      enrichment_error: nil,
       control: %{},
       runtime: %{}
     }
@@ -213,6 +228,8 @@ defmodule SymphonyElixirWeb.TaskBoard do
     terminal = terminal?(issue, settings.tracker)
     routable = active?(issue, settings.tracker) and Issue.routable?(admitted, settings.tracker.required_labels)
     issue_attention = attention(runtime, hold, admitted, issue, settings.tracker, terminal)
+    attention = reservation_attention(runtime, ledger) || issue_attention
+    url = issue_url(issue, runtime, project, settings.tracker.kind)
 
     %{
       id: project.id <> ":" <> issue.id,
@@ -221,9 +238,14 @@ defmodule SymphonyElixirWeb.TaskBoard do
       title: issue.title,
       project: project.id,
       project_label: project.label,
-      url: issue.url || (runtime && runtime[:issue_url]),
+      url: url,
+      links: links(url, project.url),
+      pull_requests: [],
+      github_status: if(settings.tracker.kind == "github", do: "not_loaded", else: "not_applicable"),
       stage: stage(runtime, hold, handoff, terminal, routable),
-      attention: reservation_attention(runtime, ledger) || issue_attention,
+      attention: attention,
+      blocker_reason: blocker_reason(runtime, hold, attention),
+      execution_status: execution_status(runtime, hold, ledger),
       priority: issue.priority,
       created_at: iso8601(issue.created_at),
       updated_at: iso8601(issue.updated_at),
@@ -237,6 +259,39 @@ defmodule SymphonyElixirWeb.TaskBoard do
       completion_evidence: if(terminal, do: "Tracker marked this issue #{issue.state}; merge and deployment are not verified.", else: nil),
       source_missing: false
     }
+  end
+
+  defp blocker_reason(%{error: error}, _hold, _attention) when is_binary(error) and error != "", do: String.slice(error, 0, 2_000)
+  defp blocker_reason(_runtime, hold, attention) when is_binary(hold), do: attention || humanize_hold(hold)
+  defp blocker_reason(_runtime, _hold, attention), do: attention
+
+  defp execution_status(%{status: status}, _hold, _ledger), do: status
+  defp execution_status(_runtime, _hold, %{"active" => active}) when is_map(active), do: "unknown"
+  defp execution_status(_runtime, hold, _ledger) when is_binary(hold), do: "held"
+  defp execution_status(_runtime, _hold, _ledger), do: "idle"
+
+  defp missing_reason(nil), do: "Tracker issue is missing from this refresh; retained execution data may be stale."
+  defp missing_reason(reason), do: reason <> " Tracker issue is missing from this refresh."
+
+  defp issue_url(issue, _runtime, %{url: url}, "github") when is_binary(url) do
+    if is_binary(issue.id) and String.match?(issue.id, ~r/^[1-9][0-9]{0,9}$/), do: url <> "/issues/" <> issue.id
+  end
+
+  defp issue_url(_issue, _runtime, _project, "github"), do: nil
+  defp issue_url(issue, runtime, _project, _kind), do: safe_url(issue.url || (runtime && runtime[:issue_url]))
+
+  defp safe_url(url) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host, userinfo: nil} when scheme in ["http", "https"] and is_binary(host) -> url
+      _ -> nil
+    end
+  end
+
+  defp safe_url(_url), do: nil
+
+  defp links(issue_url, repo_url) do
+    [%{label: "GitHub issue", url: issue_url, kind: "issue"}, %{label: "Repository", url: repo_url, kind: "repository"}]
+    |> Enum.reject(&is_nil(&1.url))
   end
 
   defp stage(%{status: "running"}, _hold, _handoff, _terminal, _routable), do: "running"
@@ -276,7 +331,7 @@ defmodule SymphonyElixirWeb.TaskBoard do
     provider = tracker.provider || %{}
     scope = provider["repo"] || tracker.project_slug || provider["project_id"] || provider["project"] || "configured-project"
     kind = tracker.kind || "tracker"
-    url = if kind == "github" and provider["api_url"] in [nil, "https://api.github.com"], do: "https://github.com/" <> scope
+    url = Board.repository_url(tracker)
     %{id: kind <> ":" <> scope, label: scope, url: url}
   end
 

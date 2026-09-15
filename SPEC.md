@@ -2445,6 +2445,19 @@ they do not constitute admission, completion or scheduler priority. Missing sour
 data preserves last-known tasks with explicit uncertainty. Tracker-terminal issues
 are not evidence of merge, acceptance or deployment.
 
+Optional GitHub enrichment reads explicit issue/PR relationships and reports draft
+state, GitHub review decisions and checks tied to the current PR head. Enrichment
+failure MUST NOT remove otherwise valid issue data or imply successful checks.
+Bounded or changed relationship data MUST be marked incomplete. Native candidate
+review and GitHub review are separate evidence.
+
+A standalone read-only web process MAY bind to an existing operator profile and
+read its controller via GET-only loopback requests. It MUST NOT start the scheduler,
+own the control ledger, inherit browser command authority or start a model runtime.
+The current API's repository identity is supplied by the trusted profile binding,
+not attested by the controller response. Browser refresh MUST update runtime data
+and mark unavailable or retained observations explicitly.
+
 Local operator login/logout uses CSRF-protected browser POST routes. Authorization
 requires the actual loopback peer and host, a same-origin connection and a signed,
 time-bounded proof bound to the configured control token. Raw tokens are neither
@@ -2456,6 +2469,57 @@ controlling another repository. The existing bearer API contract is unchanged.
 
 Dialogs do not suspend execution. Closing or disconnecting the browser cannot
 cancel work. Browser controls expose only existing pause, drain, resume, cancel
-and retry operations; tracker intake edits, missing-input delivery, repair and
-publication workflows remain separate owners. Remote identity and ingress are
+and retry operations; optional management chat adds bounded tracker edits.
+Missing-input delivery, repair and publication workflows remain separate owners. Remote identity and ingress are
 not provided by the local login mechanism.
+
+### B.6 Project management chat
+
+`chat.enabled` defaults to false. Enabled chat requires absolute `state_path`,
+`codex_home` and `executable` values, directly or through `$ENV_NAME` configuration.
+`timeout_ms` defaults to 300000 (1000–900000); `max_concurrent` defaults to 2 (1–8).
+Settings are fixed for the store lifetime. The current service resolves only its
+configured tracker project; it does not aggregate other Symphony controllers.
+
+The conversation store MUST bind each record to an immutable project, tracker
+fingerprint and native runtime identity. Every read, turn, tool request and action
+decision MUST revalidate browser authorization and project scope. A project picker
+changes selection, never conversation ownership. Client message IDs deduplicate
+reconnect submissions and reject changed text under the same ID. The browser MUST
+not receive model credentials, private native thread IDs or another project's history.
+
+Each turn uses Codex 0.154.0 App Server with `gpt-6-astra`, private stdio and a
+dedicated home. The runtime MUST verify effective configuration and model availability,
+register no execution environments on either thread or turn, disable inherited
+tools/instructions and reject unexpected requests. The host exposes only typed
+management tools. Codex owns native history and automatic compaction; the application
+separately persists visible messages, references, action previews and receipts.
+
+Read tools expose current project status, filtered tasks, task details and a bounded
+set of committed project documents. Document reads resolve a full default-branch SHA
+and fetch that same revision, return pinned links, and accept only ARCHITECTURE.md,
+WORKFLOW.md, PROJECT.md, README.md and AGENTS.md, capped at 128 KiB UTF-8. Source text
+is untrusted data and never grants authority. Widgets use fixed renderers and safe
+links; model output cannot inject HTML, JavaScript or executable UI descriptions.
+
+Write tools produce proposals; only a subsequent authenticated browser decision
+can execute them. Proposals retain exact arguments, scope, expected control revision
+and observed task update time. Supported writes are create/edit issue, additive
+feedback, configured queue-label changes, and existing native controls. Creation
+requires configured intake labels and creates an unlabeled backlog issue. Edit and
+queue/unqueue require a cancelled, inactive task and serialize with native dispatch.
+External GitHub writers remain outside this local serialization boundary.
+
+The store MUST persist execution intent before dispatch. Unknown outcomes MUST
+reconcile read-only through exact native receipts or GitHub operation markers,
+without resubmitting a mutation. Native control writes recheck authorization in
+the owner mailbox. An action receipt is not proof of worker cleanup or publication.
+Chat tools MUST NOT add merge, deployment, raw coding or live worker-input authority.
+
+One OS-locked store owns atomic private files (maximum 500 records, 8 MiB each).
+Persistence failure stops active jobs and blocks new work; invalid retained files
+are not overwritten. Browser disconnect does not cancel a turn. Stop interrupts
+only the conversation runtime; a service restart recovers active turns as interrupted
+and executing proposals as uncertain. Retain both the store and dedicated native
+home for recovery. Multi-host persistence, remote identity and ingress are outside
+this local extension.

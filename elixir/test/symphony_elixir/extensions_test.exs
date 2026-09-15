@@ -507,7 +507,8 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, _html} = live(build_conn(), "/")
     html = render_async(view)
-    assert html =~ "Task board"
+    assert has_element?(view, "nav[aria-label='Workspace'] a[aria-current='page']", "Board")
+    assert has_element?(view, "nav[aria-label='Workspace'] button[phx-click='open-chat']", "Chat")
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
@@ -518,7 +519,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
     assert has_element?(view, "#lane-running .task-card")
-    assert html =~ "Connected"
+    assert html =~ "Live updates connected"
     assert html =~ "Disconnected"
     assert has_element?(view, "#settings-button", "Settings")
     view |> element("#lane-running .card-title") |> render_click()

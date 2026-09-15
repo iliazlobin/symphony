@@ -195,6 +195,7 @@ defmodule SymphonyElixir.GitHub.Client do
         url: issue["html_url"],
         assignee_id: get_in(issue, ["assignee", "login"]),
         labels: extract_labels(issue),
+        priority: extract_priority(issue),
         blocked_by: [],
         dispatchable: not Map.has_key?(issue, "pull_request"),
         created_at: parse_datetime(issue["created_at"]),
@@ -233,6 +234,23 @@ defmodule SymphonyElixir.GitHub.Client do
   end
 
   defp extract_labels(_issue), do: []
+
+  # A task has one management priority. Conflicting labels remain unset rather
+  # than silently choosing a different ordering from the user's preview.
+  defp extract_priority(issue) do
+    priorities =
+      issue
+      |> extract_labels()
+      |> Enum.flat_map(fn
+        "priority:p" <> number when number in ["1", "2", "3", "4"] -> [String.to_integer(number)]
+        _ -> []
+      end)
+
+    case priorities do
+      [priority] -> priority
+      _ -> nil
+    end
+  end
 
   defp parse_datetime(value) when is_binary(value) do
     case DateTime.from_iso8601(value) do
