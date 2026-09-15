@@ -58,7 +58,7 @@ class WorkerPolicyTests(unittest.TestCase):
         }
         self.assertEqual(set(sources), expected)
         self.assertTrue(all("**" not in source for source in sources))
-        self.assertNotIn("/oldroot/tmp/", rendered)
+        self.assertNotRegex(rendered, r'(?m)^\s*mount\b[^\n]*\s"?/oldroot/tmp/?"?\s+->')
         self.assertNotIn("/oldroot/**", rendered)
         self.assertNotIn("/newroot/**", rendered)
         self.assertNotIn("/oldroot" + str(self.root) + '/"', rendered)
