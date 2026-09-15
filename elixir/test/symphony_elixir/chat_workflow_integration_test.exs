@@ -10,7 +10,18 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
   # Only routes the optional server argument to this test's isolated real Store.
   # Conversation state, tool dispatch, persistence, previews and receipts are real.
   defmodule StoreClient do
-    @operations [projects: 1, list: 2, create: 3, get: 3, rename: 4, archive: 3, send_message: 5, stop: 3, decide: 5]
+    @operations [
+      projects: 1,
+      list: 2,
+      create: 3,
+      get: 3,
+      rename: 4,
+      archive: 3,
+      send_message: 5,
+      send_message_with_context: 6,
+      stop: 3,
+      decide: 5
+    ]
     for {operation, arity} <- @operations do
       args = Macro.generate_arguments(arity, __MODULE__)
 
@@ -18,6 +29,37 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
         server = Application.fetch_env!(:symphony_elixir, :chat_integration_store)
         apply(SymphonyElixir.Chat.Store, unquote(operation), [unquote_splicing(args)] ++ [server])
       end
+    end
+  end
+
+  defmodule PanelHost do
+    use Phoenix.LiveView
+    alias SymphonyElixirWeb.{BrowserAuth, ChatPanel}
+
+    def mount(_params, session, socket) do
+      socket =
+        assign(socket,
+          auth: BrowserAuth.context(session, socket),
+          project_id: session["project"],
+          chat_id: nil,
+          view_context: session["context"]
+        )
+
+      {:ok, socket}
+    end
+
+    def handle_info({:chat_updated, id}, socket) do
+      send_update(ChatPanel, id: "management-chat", refresh_chat: id)
+      {:noreply, socket}
+    end
+
+    def handle_info({:chat_panel, :navigate, location}, socket), do: {:noreply, assign(socket, Map.to_list(location))}
+
+    def render(assigns) do
+      ~H"""
+      <.live_component module={ChatPanel} id="management-chat" auth={@auth} csrf_token="fixture-only"
+        embedded={true} project_id={@project_id} chat_id={@chat_id} view_context={@view_context} read_only={false} />
+      """
     end
   end
 
@@ -39,6 +81,12 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
       emit.({:thread, opts.thread_id || "native-integration-thread"})
       emit.({:delta, "Reading this project. "})
       run_request(opts.text, opts, emit, tool)
+    end
+
+    defp run_request("Use this view", opts, emit, tool) do
+      send(opts.test_pid, {:view_seen, opts.view_context, tool.("symphony_view_context", %{})})
+      emit.({:delta, "View reviewed."})
+      {:ok, %{status: :completed}}
     end
 
     defp run_request("Review work", opts, emit, tool) do
@@ -292,6 +340,38 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     refute_receive {:model_started, _, _, _}
   end
 
+  test "embedded sharing controls reach real Store and tools per turn without reusing a prior view", ctx do
+    snapshot = %{
+      "version" => 1,
+      "project_id" => @project,
+      "filters" => %{"project" => [@project], "status" => ["ready"], "priority" => [], "q" => "retry", "sort" => "priority"},
+      "selected_task_id" => @project <> ":2",
+      "visible_task_ids" => [@project <> ":2"],
+      "viewport_task_ids" => [@project <> ":2"],
+      "hidden_columns" => [],
+      "captured_at" => "2026-09-15T12:00:00Z",
+      "board_checked_at" => nil,
+      "truncated" => false
+    }
+
+    session = %{BrowserAuth.session_key() => ctx.marker, "project" => @project, "context" => snapshot}
+    {:ok, view, _html} = live_isolated(local_conn(), PanelHost, session: session)
+    view = with_target(view, "#chat-app")
+    render_change(view, "context-options", %{"share_context" => "true", "include_selected" => "false"})
+    render_submit(view, "send-message", %{"message" => "Use this view"})
+    expected = Map.put(snapshot, "selected_task_id", nil)
+    assert_receive {:view_seen, ^expected, %{"sharing" => "on", "snapshot" => ^expected, "current_tasks" => [%{"issue_id" => "2"}]}}
+    chat = wait_chat(ctx, &(&1["status"] == "idle"))
+    user = Enum.find(chat["messages"], &(&1["role"] == "user"))
+    assert user["view_context"] == expected
+    render_change(view, "context-options", %{"share_context" => "false"})
+    render_submit(view, "send-message", %{"message" => "Use this view"})
+    assert_receive {:view_seen, nil, %{"sharing" => "off", "snapshot" => nil, "current_tasks" => []}}
+    chat = wait_chat(ctx, &(&1["status"] == "idle" and length(&1["messages"]) == 4))
+    assert chat["messages"] |> Enum.filter(&(&1["role"] == "user")) |> List.last() |> Map.fetch!("view_context") == nil
+    assert Agent.get(ctx.requests, & &1) == []
+  end
+
   defp chat_view(ctx, id \\ nil) do
     session = %{BrowserAuth.session_key() => ctx.marker, "live_socket_id" => "operator:chat-integration-#{System.unique_integer([:positive])}"}
     conn = Plug.Test.init_test_session(local_conn(), session)
@@ -301,7 +381,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     assert has_element?(view, "#chat-project option[value='github:example/integration']"),
            inspect({Store.projects(ctx.auth, ctx.server), render(view) |> Floki.parse_document!() |> Floki.find(".chat-notice") |> Floki.text()})
 
-    {view, conn}
+    {with_target(view, "#chat-app"), conn}
   end
 
   defp wait_chat(ctx, predicate, remaining \\ 100)
