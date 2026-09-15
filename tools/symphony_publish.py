@@ -318,8 +318,10 @@ class Broker:
         limits = "\n".join("- " + plain(value) for value in candidate.get("limitations", [])) or "- No additional limitations reported."
         return (self.marker(issue_id) + "\n\n" + plain(candidate["summary"]) + "\n\nRefs #" + issue_id
                 + "\n\nCandidate: `" + candidate["candidate_sha"] + "`. Base: `" + candidate["base_sha"]
-                + "`.\nIndependent reviewer approved this exact commit with no findings.\n\nReported local checks:\n"
-                + checks + "\n\nLimits:\n" + limits + "\n\nDeployment is not part of this pull request.\n")
+                + "`.\nIndependent reviewer approved this exact commit with no findings.\n\n"
+                + "The builder recorded the following checks and limitations before independent host review and publication.\n\n"
+                + "Local checks at builder handoff:\n" + checks + "\n\nLimitations at builder handoff:\n"
+                + limits + "\n\nDeployment is not part of this pull request.\n")
 
     def verify_pr(self, pr: dict, issue_id: str, candidate: dict, *, allow_old_head=False):
         if (pr.get("state") != "open" or self.marker(issue_id) not in pr.get("body", "")
