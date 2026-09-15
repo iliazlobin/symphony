@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -206,6 +207,28 @@ def worker_env(config: dict) -> dict:
     }
 
 
+def container_launch_options(config: dict) -> list[str]:
+    """Select the reviewed, workspace-scoped policies for every worker stage."""
+    from worker_policy import render_policy
+
+    sandbox = config.get("worker_sandbox", {})
+    if not isinstance(sandbox, dict):
+        raise ControlError("Worker sandbox configuration must be an object")
+    root = Path(config["workspace_root"])
+    policy = Path(config["state_dir"]) / "worker-apparmor"
+    seccomp = ROOT / "profiles/events-concierge/seccomp-codex.json"
+    if (sandbox.get("apparmor_profile") != "symphony-codex"
+            or sandbox.get("workspace_root") != str(root)):
+        raise ControlError("Reviewed workspace-scoped worker sandbox configuration is missing")
+    content = read_private(policy)
+    if content != render_policy(root):
+        raise ControlError("Worker AppArmor source does not match the configured workspace root")
+    for name, data in (("apparmor_sha256", content.encode()), ("seccomp_sha256", seccomp.read_bytes())):
+        if sandbox.get(name) != hashlib.sha256(data).hexdigest():
+            raise ControlError("Worker sandbox policy changed; review and reinstall it before launch")
+    return ["--seccomp-policy", str(seccomp), "--apparmor-profile", "symphony-codex"]
+
+
 def codex_server(config: dict) -> None:
     if config.get("worker_launch_enabled") is not True:
         raise ControlError("Live workers are disabled until isolation, cancellation, authentication and pilot acceptance are verified")
@@ -218,6 +241,7 @@ def codex_server(config: dict) -> None:
     image = config.get("worker_image_id", "")
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
         raise ControlError("Verified immutable worker image ID is missing")
+    launch_options = container_launch_options(config)
     # Rule synchronization runs on the host. The worker sees only its dedicated
     # Codex home and its own checkout mounted into a separate PID namespace.
     run(str(rules), "sync", env=dict(os.environ, CODEX_HOME=config["codex_home"]))
@@ -228,7 +252,7 @@ def codex_server(config: dict) -> None:
         env[key] = os.environ[key]
     wrapper = ROOT / "tools/container_worker.py"
     os.execve(sys.executable, [sys.executable, "-I", str(wrapper), "--workspace", str(Path.cwd()),
-                             "--codex-home", config["codex_home"], "--image", image], env)
+                             "--codex-home", config["codex_home"], "--image", image, *launch_options], env)
 
 
 def install_rules(config: dict) -> dict:
@@ -297,6 +321,11 @@ def main() -> int:
                 env = dict(os.environ, CODEX_HOME=config["codex_home"])
                 os.execve(config["codex_binary"], [config["codex_binary"], "login", "--device-auth"], env)
             elif args.command == "doctor":
+                try:
+                    container_launch_options(config)
+                    sandbox_source_verified = True
+                except (ControlError, OSError, ValueError):
+                    sandbox_source_verified = False
                 result = {
                     "repository": config["repository"], "base_sha": config["base_sha"],
                     "integration_branch": config["integration_branch"],
@@ -305,10 +334,11 @@ def main() -> int:
                     "compiled_service_present": (ROOT / "elixir/bin/symphony").is_file(),
                     "auto_merge_enabled": config["auto_merge"]["enabled"],
                     "worker_launch_enabled": config.get("worker_launch_enabled", False),
+                    "worker_sandbox_source_verified": sandbox_source_verified,
                 }
         print(json.dumps(result, indent=2))
         return 0
-    except (ControlError, OSError, KeyError, subprocess.TimeoutExpired) as exc:
+    except (ControlError, OSError, KeyError, ValueError, subprocess.TimeoutExpired) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 

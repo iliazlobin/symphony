@@ -4,8 +4,8 @@ Symphony schedules coding work from GitHub Issues on one trusted Mac. The contro
 profile adds durable execution limits, operator commands, a separate reviewer and a
 host publication broker. Coding workers run in local Docker containers; application
 services and cloud infrastructure remain separate from this orchestration runtime.
-The control services are usable while paused; live coding is disabled pending the
-runtime acceptance checks described below.
+New installations start paused with worker launch disabled. The operator enables
+coding after validating the scoped container policies and a bounded delivery pilot.
 
 ## System boundary
 
@@ -140,12 +140,18 @@ Mac process-group path cannot contain real Codex commands that detach into other
 groups; its fixture tests do not establish the container boundary. Implementation and
 local unit coverage do not imply accepted live operation.
 
-Disposable Linux canaries verify named builder/reviewer permissions, protected-file
-and network restrictions, and cancellation of pipe, PTY and detached-child commands.
-They use an exact-path diagnostic AppArmor candidate; that policy was unloaded after
-testing and is not installed by the service. Saving an operational policy restricted
-to Symphony workspaces, wiring the launcher and accepting a real issue-to-PR pilot
-remain activation work. Dedicated worker sign-in is verified; no live task has run.
+[`worker_policy.py`](tools/worker_policy.py) renders the AppArmor policy for the
+configured private workspace root. Its finite mount rules permit Codex's inner Linux
+sandbox without exposing other checkouts. Colima loads that named profile in enforce
+mode; Docker's default policy remains unchanged for other containers. The host pins
+the rendered AppArmor and repository seccomp digests. The actual worker entrypoint
+checks both policies and the workspace scope before launching either role.
+
+Linux canaries use the same policy selector and container wrapper as normal launches,
+with disposable fake authentication under the configured workspace root. They verify
+named builder/reviewer permissions, protected-file and network restrictions, and
+cancellation of pipe, PTY and detached-child commands. The real issue-to-PR pilot also
+exercises the full host entrypoint, dedicated sign-in, handoff and publication path.
 
 The host publication broker can perform only the approved repository operations.
 Automatic merge requires explicit host enablement, issue opt-in, a clean review of

@@ -96,6 +96,7 @@ def probe(binary, native_terminate=False, container_image=None, seccomp_policy=N
     runtime = resolve_runtime(profile, repository, container_image, seccomp_policy, apparmor_profile,
                               fixture_parent, operator_config)
     container_image = runtime["image"]
+    fixed_root = fixed_root or runtime["operational"]
     results = {}
 
     temporary_parent = runtime["parent"]

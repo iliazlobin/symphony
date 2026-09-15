@@ -254,19 +254,42 @@ both writable and read-only outer mounts, and reachable positive controls before
 checking file and network denial. Container cancellation probes require fresh parent/child
 heartbeats and container removal within 10 seconds, before their 60-second expiry.
 
-**Activation prerequisites:** Linux permission and cancellation canaries pass with an
-exact-path diagnostic AppArmor candidate. Docker's default policy still blocks Codex's
-inner sandbox mounts. The temporary profile was unloaded; no worker AppArmor policy is
-shipped, installed or selected by the service. The probes accept an explicitly reviewed
-`--apparmor-profile symphony-codex` only alongside the existing seccomp candidate;
-`--fixed-root` selects the cancellation probe's exact disposable fixture and refuses
-existing state. The permission probe uses that fixture automatically.
+**Operational sandbox:** `tools/worker_policy.py --workspace-root PATH` renders the
+reviewed AppArmor template for the configured private `workspaces` directory. It
+admits direct task/reviewer checkout paths, exact canary paths and finite runtime
+mount operations. It does not install policies or change permissions by itself.
+Store the reviewed output as mode-0600 `worker-apparmor` beside operator `config.json`.
+After authorization, install that exact source as root-owned mode-0644
+`/etc/apparmor.d/symphony-codex` inside Colima, parse/load it with
+`sudo apparmor_parser -r -T /etc/apparmor.d/symphony-codex`, and verify
+`symphony-codex (enforce)` in `/sys/kernel/security/apparmor/profiles`.
+Keep Docker's default policy in place for other containers.
 
-Saving and installing a policy limited to the configured Symphony workspace root and
-finite runtime paths, then wiring the launcher, needs focused approval. Revalidate
-that operational configuration before a bounded issue-to-PR pilot. Dedicated worker
-sign-in is verified; the pilot has not run. Keep ordinary dispatch and automatic merge
-disabled while these gates are unresolved.
+The private operator configuration's `worker_sandbox` object records
+`apparmor_profile: "symphony-codex"`, the canonical `workspace_root`, and the SHA-256
+digests `apparmor_sha256` and `seccomp_sha256`. The latter identifies this repository's
+`profiles/events-concierge/seccomp-codex.json`. Review configuration updates while
+worker launch is disabled; retain the previous private configuration for recovery.
+The service's worker entrypoint compares the rendered source with the configured
+scope and checks both digests before selecting the Docker security options.
+`profile.py doctor` reports `worker_sandbox_source_verified`; this verifies source
+configuration, not that the guest policy is currently loaded or a model can run.
+Changed policy content fails closed and requires review, installation and validation.
+
+Validate the operational selection with fake authentication and no model calls:
+
+```sh
+python3 tools/probe_container_permissions.py --operator-config "/path/to/config.json"
+python3 tools/probe_cancellation.py --operator-config "/path/to/config.json"
+```
+
+Operator mode selects the pinned image and the same policy options as the service,
+and puts the disposable fixture under its workspace root. Existing fixtures and
+uncertain cleanup markers are retained/refused rather than overwritten. Keep worker
+launch disabled until these checks pass; then allow only the bounded pilot issue and
+validate builder, independent reviewer and host draft-PR publication. Ordinary
+dispatch follows pilot acceptance. Automatic merge has separate prerequisites and
+can stay disabled while agents produce draft PRs.
 
 Retain failed workspaces and GitHub records. Do not delete the ledger or lock to reset
 budgets or force ownership. Restart conservatively holds interrupted work. Resolve any

@@ -82,7 +82,7 @@ def main():
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--codex-home", required=True)
     parser.add_argument("--image", required=True)
-    parser.add_argument("--seccomp-policy", help="Explicit compatibility canary policy; not enabled by the service profile")
+    parser.add_argument("--seccomp-policy", help="Reviewed repository policy for Codex's inner Linux sandbox")
     parser.add_argument("--apparmor-profile", help="Explicit worker-only AppArmor compatibility profile")
     args = parser.parse_args()
     docker = shutil.which("docker")
