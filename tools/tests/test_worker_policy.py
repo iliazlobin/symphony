@@ -58,7 +58,9 @@ class WorkerPolicyTests(unittest.TestCase):
         }
         self.assertEqual(set(sources), expected)
         self.assertTrue(all("**" not in source for source in sources))
-        self.assertNotIn("/oldroot/tmp/", rendered)
+        # Linux test fixtures can live below /tmp. Reject binding that whole
+        # directory, while allowing the exact private task root checked above.
+        self.assertNotRegex(rendered, r'/oldroot/tmp/"? ->')
         self.assertNotIn("/oldroot/**", rendered)
         self.assertNotIn("/newroot/**", rendered)
         self.assertNotIn("/oldroot" + str(self.root) + '/"', rendered)

@@ -23,6 +23,7 @@ REPOSITORY = "iliazlobin/events-concierge"
 REMOTE = "https://github.com/" + REPOSITORY + ".git"
 SHA = re.compile(r"[0-9a-f]{40}")
 WORKER_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+COMMAND_PATH = "/usr/local/bin:/usr/bin:/bin"
 
 
 def run(*args: str, cwd: Path | None = None, env: dict | None = None) -> str:
@@ -82,6 +83,9 @@ def permission_config() -> str:
         'default_permissions = "symphony-builder"',
         '[shell_environment_policy]',
         'inherit = "none"',
+        # Resolve image toolchain/system binaries without inheriting host variables.
+        '[shell_environment_policy.set]',
+        f'PATH = "{COMMAND_PATH}"',
         '[features]',
         'multi_agent = false',
         # Apps use the signed-in account outside the command network sandbox.

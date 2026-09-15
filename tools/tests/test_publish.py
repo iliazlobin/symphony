@@ -203,6 +203,23 @@ class PublishTest(unittest.TestCase):
         self.assertNotIn("![image]", body)
         self.assertIn("Refs #7", body)
 
+    def test_builder_evidence_keeps_results_and_limitations_in_handoff_context(self):
+        self.candidate["checks"] = [
+            {"name": "Unit tests", "result": "failed", "details": "Two assertions failed."},
+            {"name": "Integration tests", "result": "not_run", "details": "Database unavailable."},
+            {"name": "Formatting", "result": "passed", "details": "No formatting errors."},
+        ]
+        self.candidate["limitations"] = ["Independent review is pending.", "Candidate has not been pushed."]
+        original = copy.deepcopy(self.candidate)
+        body = self.broker.pr_body("7", self.candidate)
+        self.assertIn("before independent host review and publication", body)
+        self.assertIn("Independent reviewer approved this exact commit with no findings.", body)
+        for check in original["checks"]:
+            self.assertIn(check["name"] + ": **" + check["result"] + "** — " + check["details"], body)
+        for limitation in original["limitations"]:
+            self.assertIn(limitation, body)
+        self.assertEqual(self.candidate, original)
+
     def test_low_risk_allowlist_rejects_controls_binary_symlinks_and_large_changes(self):
         self.config["auto_merge"]["enabled"] = True
         low_risk(self.config, self.changes)

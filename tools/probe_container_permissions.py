@@ -31,7 +31,8 @@ def verify_profile(response, role):
 
 def verify_outer(observed, mount_role):
     expected = {"auth_read": True, "env_read": True, "host_input_read": True,
-                "runtime_read": True, "network": True, "workspace_write": mount_role == "builder"}
+                "runtime_read": True, "network": True, "workspace_write": mount_role == "builder",
+                "ambient_environment": True}
     if observed != expected:
         raise RuntimeError("Outer namespace controls did not establish the expected boundary")
 
@@ -40,7 +41,8 @@ def verify_inner(observed, role):
     expected = {"workspace_read": True, "workspace_write": role == "builder",
                 "env_read": False, "auth_read": False, "host_input_read": False,
                 "runtime_read": False, "tmp_write": False, "network": False,
-                "python": True, "node": True, "uv": True, "git_diff": True,
+                "python": True, "node": True, "uv": True, "git_diff": True, "cat": True,
+                "command_path": True, "ambient_environment": False,
                 "handoff_write": role == "builder", "git_commit": role == "builder"}
     if observed != expected:
         raise RuntimeError(f"{role} permission mismatch: {observed}; expected {expected}")
@@ -94,7 +96,7 @@ def probe(image=None, seccomp_policy=None, apparmor_profile=None, fixture_parent
                 connection.send({"id": 1, "method": "initialize", "params": {
                     "clientInfo": {"name": "symphony-linux-permission-probe", "version": "1"},
                     "capabilities": {"experimentalApi": True}}})
-                connection.response(1)
+                connection.response(1, timeout=30)
                 connection.send({"method": "initialized", "params": {}})
                 cidfiles = list(root.glob("permission.lock.*.cid"))
                 if len(cidfiles) != 1:
@@ -112,9 +114,10 @@ def probe(image=None, seccomp_policy=None, apparmor_profile=None, fixture_parent
                     if not selector.select(5):
                         raise RuntimeError("Outer namespace network control did not start")
                     port = int(listener.stdout.readline())
-                baseline = """import json,pathlib,socket
+                baseline = """import json,os,pathlib,socket
 pathlib.Path('/codex-home/runtime-canary').write_text('disposable')
 out={name:bool(pathlib.Path(path).read_text()) for name,path in [('auth_read','/codex-home/auth.json'),('env_read','.env'),('host_input_read','/codex-home/AGENTS.md'),('runtime_read','/codex-home/runtime-canary')]}
+out['ambient_environment']=os.environ.get('GIT_TERMINAL_PROMPT')=='0'
 s=socket.socket();s.settimeout(1);s.connect(('127.0.0.1',%d));s.close();out['network']=True
 try:
  p=pathlib.Path('.outer-write-control');p.write_text('disposable');p.unlink();out['workspace_write']=True
@@ -129,8 +132,8 @@ print(json.dumps(out))
                     "cwd": str(workspace), "config": {"default_permissions": "symphony-" + role},
                     "approvalPolicy": "never", "ephemeral": True}})
                 verify_profile(connection.response(2), role)
-                script = '''import json,pathlib,socket,subprocess
-out={}
+                script = '''import json,os,pathlib,socket,subprocess
+out={'command_path':os.environ.get('PATH')==%r,'ambient_environment':'GIT_TERMINAL_PROMPT' in os.environ}
 for key,path,mode in [("workspace_read","read-canary","r"),("workspace_write","write-canary","w"),("env_read",".env","r"),("auth_read","/codex-home/auth.json","r"),("host_input_read","/codex-home/AGENTS.md","r"),("runtime_read","/codex-home/runtime-canary","r"),("tmp_write","/tmp/forbidden-write","w")]:
  try:
   with open(path,mode) as f:
@@ -140,7 +143,7 @@ for key,path,mode in [("workspace_read","read-canary","r"),("workspace_write","w
 try:
  s=socket.socket(); s.settimeout(0.3); s.connect(("127.0.0.1",%d)); out["network"]=True; s.close()
 except OSError: out["network"]=False
-for key,command in (("python",["/usr/local/bin/python3","--version"]),("node",["/usr/local/bin/node","--version"]),("uv",["/usr/local/bin/uv","--version"]),("git_diff",["/usr/bin/git","diff","HEAD","--exit-code"])):
+for key,command in (("python",["python3","--version"]),("node",["node","--version"]),("uv",["uv","--version"]),("git_diff",["git","diff","HEAD","--exit-code"]),("cat",["cat","read-canary"])):
  out[key]=subprocess.run(command,capture_output=True).returncode==0
 try:
  pathlib.Path('.symphony').mkdir(exist_ok=True)
@@ -149,7 +152,7 @@ try:
 except OSError: out["handoff_write"]=False
 out["git_commit"]=subprocess.run(["/usr/bin/git","add","read-canary"],capture_output=True).returncode==0 and subprocess.run(["/usr/bin/git","-c","user.name=Symphony Canary","-c","user.email=canary@invalid","commit","--allow-empty","-m","Disposable permission canary"],capture_output=True).returncode==0
 print(json.dumps(out))
-''' % port
+''' % (profile.COMMAND_PATH, port)
                 connection.send({"id": 3, "method": "command/exec", "params": {
                     "command": ["/usr/local/bin/python3", "-I", "-c", script],
                     "cwd": str(workspace), "timeoutMs": 10000}})

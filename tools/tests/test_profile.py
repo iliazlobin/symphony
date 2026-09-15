@@ -1,6 +1,7 @@
 """Guard the host configuration and task workspace boundary."""
 import importlib.util
 import hashlib
+import json
 import configparser
 import os
 from pathlib import Path
@@ -47,6 +48,9 @@ class ProfileTests(unittest.TestCase):
             # root keys get an explicit section; no Codex/auth calls are needed.
             config = configparser.RawConfigParser(delimiters=("=",))
             config.read_string("[root]\n" + (state / "codex/config.toml").read_text())
+            self.assertEqual(config["shell_environment_policy"]["inherit"], '"none"')
+            self.assertEqual(dict(config["shell_environment_policy.set"]),
+                             {"path": '"/usr/local/bin:/usr/bin:/bin"'})
             self.assertFalse(config.getboolean("features", "apps"))
             self.assertFalse(config.getboolean("features", "multi_agent"))
             self.assertEqual(config["root"]["approval_policy"], '"on-request"')
@@ -54,6 +58,22 @@ class ProfileTests(unittest.TestCase):
             for role in ("builder", "reviewer"):
                 self.assertFalse(config.getboolean("permissions.symphony-" + role + ".network", "enabled"))
                 self.assertEqual(config["permissions.symphony-" + role + ".filesystem"]['":root"'], '"deny"')
+
+    def test_explicit_command_environment_finds_tools_without_ambient_variables(self):
+        config = configparser.RawConfigParser(delimiters=("=",))
+        config.read_string("[root]\n" + profile.permission_config())
+        self.assertEqual(config["shell_environment_policy"]["inherit"], '"none"')
+        explicit = {key.upper(): json.loads(value)
+                    for key, value in config["shell_environment_policy.set"].items()}
+        self.assertEqual(explicit, {"PATH": "/usr/local/bin:/usr/bin:/bin"})
+        with patch.dict(os.environ, {"PATH": "/nonexistent-ambient-bin",
+                                     "SYMPHONY_TEST_AMBIENT": "must-not-inherit"}):
+            result = subprocess.run(
+                ["/bin/sh", "-c", 'command -v git && command -v cat && test -z "${SYMPHONY_TEST_AMBIENT+x}"'],
+                env=explicit, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(all(path.startswith(("/usr/local/bin/", "/usr/bin/", "/bin/"))
+                            for path in result.stdout.splitlines()))
 
     def sandbox_config(self, root):
         from worker_policy import render_policy

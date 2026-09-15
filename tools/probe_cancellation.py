@@ -124,13 +124,12 @@ def probe(binary, native_terminate=False, container_image=None, seccomp_policy=N
                 stderr=subprocess.STDOUT,
             )
             connection = Connection(process)
-            started = time.monotonic()
             ttl = 60 if container_image else 8
             verified_cleanup = False
 
             try:
                 connection.send({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "symphony-cancellation-probe", "version": "1"}, "capabilities": {"experimentalApi": True}}})
-                connection.response(1)
+                connection.response(1, timeout=30)
                 connection.send({"method": "initialized", "params": {}})
                 child_script = """import pathlib,time
 deadline=time.monotonic()+%d
@@ -151,6 +150,8 @@ while time.monotonic()<deadline:
  pathlib.Path('parent-heartbeat').write_text(str(counter))
  time.sleep(0.05)
 """ % (child_script, mode == "detached_child", ttl)
+                # Child expiry begins with this command, not container startup.
+                started = time.monotonic()
                 connection.send({"id": 2, "method": "command/exec", "params": {
                     "command": ["/usr/local/bin/python3" if container_image else "/opt/homebrew/bin/python3", "-I", "-c", script],
                     "cwd": str(workspace), "timeoutMs": (ttl + 5) * 1000,
