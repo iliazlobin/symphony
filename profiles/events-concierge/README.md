@@ -149,6 +149,10 @@ while the current bounded pipeline finishes; pause interrupts active work. Cance
 holds one issue and requests cleanup; retry clears its hold within the remaining
 budget. Resume permits eligible work without changing the host launch gate.
 Re-read status to confirm the resulting state.
+MCP reloads its original validated operator configuration for each tool call.
+Reconnect an existing MCP adapter after updating its Python implementation; running
+adapters do not reload code. Service configuration changes still require the
+appropriate service restart.
 
 Each mutation accepts `--command-id UNIQUE_ID`; supply one when a request might need
 retrying. After an uncertain response, reuse the same ID, revision and action rather
@@ -250,6 +254,10 @@ The client omits legacy sandbox overrides; builder tools can write the checkout,
 reviewer tools cannot, and both deny command network access and outside-file/`.env`
 reads. `tools/probe_permissions.py` verifies those restrictions and named role selection
 on the installed Mac Codex without model calls.
+The dedicated worker configuration explicitly sets `[features] apps = false`.
+Account-connected Apps otherwise operate outside the command network sandbox; they
+are not available to builders or reviewers. Do not add external MCP servers to this
+worker configuration or copy the management session's integrations into it.
 
 `tools/probe_container_permissions.py` checks the pinned Linux worker without real
 credentials or model calls. It verifies builder permissions, reviewer permissions on
@@ -299,3 +307,10 @@ budgets or force ownership. Restart conservatively holds interrupted work. Resol
 uncertain container/process ownership before retry; do not run two dispatchers for the
 same profile. No application Compose stack, retained database, GCP resource or deployment
 is started or changed by this profile's generic task hooks.
+
+Colima's data disk is shared with other local containers. Check capacity with
+`docker --context colima system df` and `colima ssh -- df -h /var/lib/containerd`.
+Remove only identified disposable build cache within the task's scope. Growing the
+data disk requires stopping and restarting Colima; coordinate that interruption and
+verify affected services afterward. Do not prune application images or volumes to
+make a worker test pass.

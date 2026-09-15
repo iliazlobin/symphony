@@ -133,6 +133,9 @@ tools; container mounts alone do not provide that separation. Controlled threads
 response. Builder tools may write the checkout; reviewer tools are read-only. Both
 profiles deny command network access and reads of outside files and `.env` files.
 Legacy sandbox fields are omitted so subsequent turns retain the named policy.
+The dedicated worker configuration disables account-connected Apps explicitly;
+connector traffic is outside the command network sandbox. GitHub publication
+credentials and connector authority stay with the host coordinator.
 
 Live worker launch has a separate disabled-by-default host gate. Container cancellation,
 credential isolation and a bounded real pilot must pass before activation. The native
