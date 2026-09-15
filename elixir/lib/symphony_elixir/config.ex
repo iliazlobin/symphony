@@ -66,6 +66,16 @@ defmodule SymphonyElixir.Config do
   @spec control_token() :: String.t() | nil
   def control_token, do: System.get_env("SYMPHONY_CONTROL_TOKEN")
 
+  @spec chat_settings() :: map()
+  def chat_settings do
+    settings!().chat
+    |> Map.from_struct()
+    |> Map.new(fn
+      {key, "$" <> name} when key in [:state_path, :codex_home, :executable] -> {key, System.get_env(name)}
+      entry -> entry
+    end)
+  end
+
   @spec max_concurrent_agents_for_state(term()) :: pos_integer()
   def max_concurrent_agents_for_state(state_name) when is_binary(state_name) do
     config = settings!()

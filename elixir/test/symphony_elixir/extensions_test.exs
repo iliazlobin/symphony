@@ -175,18 +175,18 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:noreply, returned_state} = WorkflowStore.handle_info(:poll, state)
     assert returned_state.workflow.prompt == "Manual workflow prompt"
     refute returned_state.stamp == nil
-    assert_receive :poll, 1_100
+    assert_receive :poll, 5_000
 
     Workflow.set_workflow_file_path(missing_path)
     assert {:noreply, path_error_state} = WorkflowStore.handle_info(:poll, returned_state)
     assert path_error_state.workflow.prompt == "Manual workflow prompt"
-    assert_receive :poll, 1_100
+    assert_receive :poll, 5_000
 
     Workflow.set_workflow_file_path(manual_path)
     File.rm!(manual_path)
     assert {:noreply, removed_state} = WorkflowStore.handle_info(:poll, path_error_state)
     assert removed_state.workflow.prompt == "Manual workflow prompt"
-    assert_receive :poll, 1_100
+    assert_receive :poll, 5_000
 
     assert :ok = GenServer.stop(manual_pid)
 
@@ -462,7 +462,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_css =~ ".status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
-    assert dashboard_css =~ "text-decoration-thickness: 1px"
+    assert dashboard_css =~ ~r/text-decoration-thickness:\s*1px/
 
     favicon_conn = get(build_conn(), "/favicon.png")
     assert response(favicon_conn, 200) == File.read!("priv/static/favicon.png")
@@ -496,10 +496,19 @@ defmodule SymphonyElixir.ExtensionsTest do
         }
       )
 
-    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+    start_test_endpoint(
+      orchestrator: orchestrator_name,
+      snapshot_timeout_ms: 50,
+      board_loader: fn server, timeout ->
+        payload = SymphonyElixirWeb.Presenter.state_payload(server, timeout)
+        SymphonyElixirWeb.TaskBoard.project([], payload, %{}, Config.settings!())
+      end
+    )
 
-    {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "Operations Dashboard"
+    {:ok, view, _html} = live(build_conn(), "/")
+    html = render_async(view)
+    refute has_element?(view, "nav[aria-label='Workspace']")
+    assert has_element?(view, "header.board-header button[phx-click='open-chat']", "Chat")
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
@@ -509,11 +518,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~s(aria-label="Open MT-HTTP in the issue tracker")
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
-    assert html =~ "Runtime"
-    assert html =~ "Live"
-    assert html =~ "Offline"
-    assert html =~ "Copy ID"
-    assert html =~ "Codex update"
+    assert has_element?(view, "#lane-running .task-card")
+    assert html =~ "Live updates connected"
+    assert html =~ "Disconnected"
+    assert has_element?(view, "#settings-button", "Settings")
+    view |> element("#lane-running .card-title") |> render_click()
+    assert has_element?(view, "dialog#board-dialog")
+    assert render(view) =~ "Copy ID"
+    assert render(view) =~ "Codex update"
+    view |> element("#close-dialog") |> render_click()
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"

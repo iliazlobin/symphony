@@ -28,7 +28,7 @@ defmodule SymphonyElixir.ControlOrchestratorTest do
 
     File.write!(workflow, "---\n" <> Jason.encode!(config) <> "\n---\nTask")
     Workflow.set_workflow_file_path(workflow)
-    issue = %Issue{id: "7", identifier: "GH-7", title: "Controlled fixture", state: "open", labels: ["ready"]}
+    issue = %Issue{id: "7", identifier: "GH-7", title: "Controlled fixture", state: "open", labels: ["ready"], dispatchable: true}
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
     supervisor = start_supervised!({Task.Supervisor, []})
     name = Module.concat(__MODULE__, "Runtime#{System.unique_integer([:positive])}")
@@ -50,6 +50,74 @@ defmodule SymphonyElixir.ControlOrchestratorTest do
     assert %{"issues" => %{}} = Orchestrator.control_snapshot(pid)
     assert :sys.get_state(pid).running == %{}
     refute MapSet.member?(:sys.get_state(pid).claimed, issue.id)
+  end
+
+  test "tracker edits serialize behind a current cancelled hold and reject stale ownership", c do
+    scope = Orchestrator.tracker_fingerprint()
+    parent = self()
+
+    callback = fn ->
+      send(parent, :tracker_write)
+      {:ok, :saved}
+    end
+
+    guarded = fn fingerprint, revision -> Orchestrator.tracker_action_guarded(fingerprint, revision, c.issue.id, callback, c.pid) end
+    assert {:error, :tracker_changed} = guarded.("foreign", 0)
+    assert {:error, :task_must_be_cancelled} = guarded.(scope, 0)
+    assert {:ok, %{"revision" => 1}} = Orchestrator.control_command(%{"command_id" => "hold-for-edit", "expected_revision" => 0, "action" => "cancel", "issue_id" => c.issue.id}, c.pid)
+    assert {:error, :revision_conflict} = guarded.(scope, 0)
+    refute_receive :tracker_write
+    assert {:ok, :saved} = guarded.(scope, 1)
+    assert_receive :tracker_write
+    assert {:error, :invalid_command} = Orchestrator.tracker_action_guarded(scope, 1, c.issue.id, nil, c.pid)
+    assert {:error, :write_outcome_unknown} = Orchestrator.tracker_action_guarded(scope, 1, c.issue.id, fn -> raise "provider disconnected" end, c.pid)
+    assert {:error, :write_outcome_unknown} = Orchestrator.tracker_action_guarded(scope, 1, c.issue.id, fn -> throw(:uncertain) end, c.pid)
+    :sys.replace_state(c.pid, fn state -> %{state | retry_attempts: %{c.issue.id => %{}}} end)
+    assert {:error, :task_still_active} = guarded.(scope, 1)
+    :sys.replace_state(c.pid, fn state -> %{state | retry_attempts: %{}, control_fault: :failed} end)
+    assert {:error, :control_unavailable} = guarded.(scope, 1)
+  end
+
+  test "native retry cannot pass a tracker edit in progress", c do
+    scope = Orchestrator.tracker_fingerprint()
+    assert {:ok, _} = Orchestrator.control_command(%{"command_id" => "hold", "expected_revision" => 0, "action" => "cancel", "issue_id" => c.issue.id}, c.pid)
+    parent = self()
+
+    edit =
+      Task.async(fn ->
+        Orchestrator.tracker_action_guarded(
+          scope,
+          1,
+          c.issue.id,
+          fn ->
+            send(parent, :editing)
+
+            receive do
+              :complete_edit -> {:ok, :saved}
+            end
+          end,
+          c.pid
+        )
+      end)
+
+    assert_receive :editing
+    retry = Task.async(fn -> Orchestrator.control_command(%{"command_id" => "retry", "expected_revision" => 1, "action" => "retry", "issue_id" => c.issue.id}, c.pid) end)
+    refute Task.yield(retry, 20)
+    send(c.pid, :complete_edit)
+    assert {:ok, :saved} = Task.await(edit)
+    assert {:ok, %{"revision" => 2}} = Task.await(retry)
+    assert %{"issues" => %{"7" => %{"hold" => nil}}} = Orchestrator.control_snapshot(c.pid)
+  end
+
+  test "uncertain native commands can be reconciled with a read-only exact receipt", c do
+    scope = Orchestrator.tracker_fingerprint()
+    command = %{"command_id" => "receipt", "expected_revision" => 0, "action" => "cancel", "issue_id" => c.issue.id}
+    assert {:error, :command_not_found} = Orchestrator.control_receipt_guarded(command, scope, c.pid)
+    assert {:ok, _} = Orchestrator.control_command(command, c.pid)
+    assert {:ok, %{"command_id" => "receipt", "revision" => 1}} = Orchestrator.control_receipt_guarded(command, scope, c.pid)
+    assert {:error, :command_id_conflict} = Orchestrator.control_receipt_guarded(Map.put(command, "action", "retry"), scope, c.pid)
+    assert {:error, :tracker_changed} = Orchestrator.control_receipt_guarded(command, "foreign", c.pid)
+    assert %{"revision" => 1} = Orchestrator.control_snapshot(c.pid)
   end
 
   test "cancel targets owned execution and stale deadline cannot stop another run", ctx do

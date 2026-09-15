@@ -305,15 +305,86 @@ codex:
 - `gitlab_api` forwards raw GitLab REST requests with host-side auth and keeps configured tracker
   credentials and provider authentication aliases out of the Codex child.
 
-## Web dashboard
+## Web board and chat
+
+For a separate read-only view of a configured Mac controller, run
+`python3 tools/symphony_web.py --port 8778` from the repository root. It serves this
+checkout's UI with live GitHub issues, linked PR evidence and GET-only controller
+status. The launcher uses the existing host GitHub login and private operator
+profile; credentials stay in the host process. It starts no scheduler, ledger
+owner, coding worker or chat runtime. The [operator guide](../profiles/events-concierge/README.md#operate)
+describes access and limits.
 
 The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
+- Optional authenticated management chat in the board's right-side panel and at `/chat`;
+  streaming uses LiveView's existing connection
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
+
+Open **Chat** at the right of the board header to show the conversation panel.
+The board and full-page chat share `ChatPanel`. The dock retains board filters and
+selected task links. **Share this view** attaches a validated, project-bound snapshot
+to each message; the selected-card checkbox removes its explicit selection. Snapshot
+records contain bounded IDs and filters, not raw browser contents. The current-view
+tool resolves fresh authorized task summaries; existing action previews and browser
+confirmations own all writes. See [management conversations](../ARCHITECTURE.md#management-conversations)
+for the context, storage and tool boundary, and the [operator guide](../profiles/events-concierge/README.md#operate)
+for supported actions and examples.
+
+Enable management chat in the selected workflow's YAML front matter:
+
+```yaml
+chat:
+  enabled: true
+  state_path: $SYMPHONY_CHAT_STATE
+  codex_home: $SYMPHONY_CHAT_CODEX_HOME
+  executable: $SYMPHONY_CHAT_CODEX_EXECUTABLE
+  timeout_ms: 300000
+  max_concurrent: 2
+```
+
+Supply absolute paths through the service's environment or directly in its host-owned
+workflow. macOS launch agents do not inherit interactive shell exports. `state_path` must be a
+dedicated private directory, separate from the control ledger and worker checkouts.
+The executable must initialize as Codex **0.154.0** and expose **gpt-6-astra**; chat
+fails closed on another version or unavailable model. This pin is independent of
+the coding worker version. `timeout_ms` accepts 1,000–900,000; `max_concurrent`
+accepts 1–8 and covers turns and actions together. Chat settings apply at startup.
+
+Create a fresh management Codex home and sign in using that exact executable:
+
+```sh
+mkdir -p "$SYMPHONY_CHAT_CODEX_HOME"
+chmod 700 "$SYMPHONY_CHAT_CODEX_HOME"
+CODEX_HOME="$SYMPHONY_CHAT_CODEX_HOME" "$SYMPHONY_CHAT_CODEX_EXECUTABLE" login
+```
+
+Never copy another Codex home's authentication, configuration or history. The new
+home must have no user configuration, agent instructions, hooks, plugins or user
+skills. Native generated system skills are tolerated but disabled. The backend
+creates empty conversation workspaces and supplies only typed management tools.
+The browser uses the existing local operator login; model credentials stay on the
+host. A disabled store exposes no chat history. See the
+[operator guide](../profiles/events-concierge/README.md#operate) for the user flow.
+
+Conversation JSON and the native Codex home both need durable private storage to
+retain display history and resume model threads after restart. Stop the service
+before moving or restoring either; preserve both together. A second store owner,
+corrupt records or failed writes block operation without overwriting recovery data.
+Browser reconnect does not stop a turn; service restart leaves interrupted turns
+available to continue and uncertain writes available for read-only reconciliation.
+The file store is bounded to 500 conversations and 8 MiB per conversation. Archive
+hides a chat from the active list; it does not delete its retained records.
+Once a conversation reaches 400 messages, start another chat for further turns.
+
+The current backend serves one configured project; the picker and immutable chat
+scope prepare the interface for additional controllers without mixing their data.
+This listener remains loopback-only. Cloud identity, remote ingress, multi-replica
+storage and cloud sign-in are not supplied by this feature.
 
 ## Project Layout
 
@@ -411,6 +482,38 @@ actively running subagents, which is very useful during development.
 
 Launch `codex` in your repo, give it the URL to the Symphony repo, and ask it to set things up for
 you.
+
+## Web task board
+
+The optional HTTP service serves a LiveView Kanban board with searchable project,
+status and priority filters, per-lane sorting, and browser-local manual order.
+The compact board follows the Linear board shown in OpenAI's Symphony demo while
+retaining this fork's GitHub workflow. Project selection stays in the top bar;
+**Filter** opens status and priority selectors. **Display** controls sorting, card
+detail, light/dark appearance and visible columns. Hidden columns remain available
+in the restore rail; selecting a status reveals its column. Display preferences are
+saved only in this browser and do not change scheduling or issue state.
+Card details and Settings open as native dialogs with Close and Escape. Task
+descriptions render Markdown headings, lists, code, tables and safe external links;
+embedded HTML and interactive attributes are omitted, and images show their alt text.
+Relative links remain text; open the source issue for repository-relative navigation.
+Tracker issues, current runtime and durable holds own the displayed stages; stale sources
+are marked. A terminal issue does not verify a merge or deployment.
+
+Compact cards show blockers and a short PR/CI summary. Detailed cards and task popups
+include the PR branch, commit and changed-file counts. Expand checks on a detailed
+card or open its popup for individual job results, durations and
+workflow/log links. Partial or stale check data stays explicit. Job durations are
+independent; passing CI and conflict-free branches do not establish merge approval.
+
+Local browser controls use a CSRF-protected operator-token login at
+`POST /operator/session` and logout at `POST /operator/session/logout`. Tokens are
+filtered from request logs and not stored in the session cookie; a signed
+eight-hour proof gates native pause/drain/resume/cancel/retry calls. Host, actual
+peer, websocket origin, tracker identity, command revision and replay are checked.
+The read dashboard/API remain local observability surfaces, not a remote-auth
+boundary. See the [operator guide](../profiles/events-concierge/README.md#operate)
+for commands, limitations and the existing GitHub task workflow.
 
 ## License
 

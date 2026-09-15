@@ -26,6 +26,13 @@ currently fails during Codex sandbox startup; cloud admission remains disabled.
 flowchart TB
   User["User"] --> Client["CLI or narrow MCP tools"]
   subgraph Mac["Trusted Mac services"]
+    Web["Web client · Board and Chat"] --> Browser["Local browser session and CSRF checks"]
+    Browser --> Scheduler
+    Browser --> Chat["Conversation store · project scope and action receipts"]
+    Chat --- History["Private durable chat records"]
+    Chat --> Runtime["Management App Server · Astra · no coding tools"]
+    Runtime --> Tools["Typed management tools"]
+    Tools --> Scheduler
     Client --> API["Authenticated loopback API"]
     API --> Scheduler["Symphony orchestrator"]
     Scheduler --- Ledger["Durable control ledger"]
@@ -39,6 +46,7 @@ flowchart TB
     Builder -->|"candidate SHA"| Reviewer
   end
   GitHub["GitHub Issues"] --> Scheduler
+  Tools --> GitHub
   Pipeline --> Builder
   Pipeline --> Reviewer
   Pipeline -->|"candidate and review evidence"| Ledger
@@ -78,6 +86,26 @@ commands to the native API and owns no scheduling state.
   guardian-owned container using an immutable local image ID.
 - [`Workspace`](elixir/lib/symphony_elixir/workspace.ex) creates and validates
   execution directories. Controlled mode retains workspaces for recovery.
+- [`TaskBoard`](elixir/lib/symphony_elixir_web/task_board.ex) combines tracker issues,
+  runtime and durable holds for the LiveView Kanban board. Sorting and manual order
+  are browser preferences. Card and Settings dialogs preserve the board underneath.
+  [`BrowserAuth`](elixir/lib/symphony_elixir_web/browser_auth.ex) gates local operator
+  sessions; `BoardActions` forwards only existing commands with native project,
+  revision and idempotency checks. The same checks apply to chat control actions.
+- [`ReadOnlyBoard`](elixir/lib/symphony_elixir_web/read_only_board.ex) supports a
+  separate local UI against a configured controller. The
+  [`web launcher`](tools/symphony_web.py) starts only the web dependencies and reads
+  live GitHub and controller status; it owns no scheduler or execution state.
+  GitHub PR relationships, review decisions and current-head checks enrich cards
+  without changing task admission, lifecycle stages or deployment claims.
+- [`Chat.Store`](elixir/lib/symphony_elixir/chat/store.ex) owns project-bound conversations,
+  streamed display state, action decisions and durable recovery through `Chat.Persistence`.
+  [`Chat.Runtime`](elixir/lib/symphony_elixir/chat/runtime.ex) runs private App Server
+  turns in a dedicated Codex home, retaining native thread history and compaction.
+  [`Chat.Tools`](elixir/lib/symphony_elixir/chat/tools.ex) exposes typed project reads and
+  bounded action proposals. `Chat.GitHub` owns the scoped tracker HTTP operations.
+  [`ChatPanel`](elixir/lib/symphony_elixir_web/live/chat_panel.ex) renders messages, validated
+  widgets, references and action previews through the existing LiveView connection.
 - [`ControlApiController`](elixir/lib/symphony_elixir_web/controllers/control_api_controller.ex)
   authenticates local control requests. [`symphony_control.py`](tools/symphony_control.py)
   provides CLI and stdio MCP clients of that API.
@@ -134,6 +162,64 @@ prove that its container has stopped.
 - Control configuration is fixed for the process lifetime. Changing it requires
   restart; the running instance fails closed rather than switching ledgers or
   silently dropping controls.
+
+## Management conversations
+
+Each chat has an immutable project identity and retained tracker fingerprint. The
+project picker filters chats; it cannot move a conversation into another project.
+The current service exposes one configured tracker project. Multi-controller routing
+is a separate extension. Historical messages are records; tools refresh current work
+and attach source timestamps, task links and board filters.
+
+The board hosts the shared conversation component in a right-side panel; `/chat`
+is its standalone host. Task popups remain interactive alongside the panel.
+[`Chat.ViewContext`](elixir/lib/symphony_elixir/chat/view_context.ex) validates a
+bounded snapshot for each user message: project, filters, selected task ID,
+up to 50 displayed task IDs, their viewport subset, hidden columns and timestamps.
+The browser sends IDs and display metadata, never arbitrary page text, screenshots
+or form contents. The parent restricts IDs to its current board; the store validates
+the immutable project boundary again before persistence and model execution.
+
+Sharing controls affect the next message, not retained history. A disabled snapshot
+is explicitly delivered to the resumed native thread; earlier context is not silently
+reused as the current view. `symphony_view_context` refreshes authorized task summaries
+and reports missing records, stale sources and truncation. Snapshot hints never grant
+write authority. `symphony_task_details` retains each linked PR's independent state,
+review, head revision and CI instead of treating one merged PR as issue completion.
+
+There are three distinct records: the app's visible messages and receipts, Codex's
+native thread history with automatic compaction, and committed project documents
+retrieved on demand. Compaction does not erase the visible conversation or create a
+shared project memory. Documents and task text are untrusted data. Context shows
+retrieved references, not a claim to list every token in the model context.
+
+Only browser decisions execute write proposals. Native controls retain revision and
+idempotency checks inside the orchestrator. Tracker edits require a cancelled, idle
+task and serialize with local dispatch; fresh GitHub timestamps reject observed
+staleness. GitHub does not provide an atomic compare-and-swap across the final read
+and patch, so concurrent external issue edits remain a limitation. Feedback is an
+additive issue comment, not a message delivered into a running coding turn.
+
+Before a write, the app persists its executing state. An uncertain result requires
+read-only reconciliation using the exact native receipt or GitHub marker; it never
+automatically repeats the write. Browser disconnects leave work running. Service
+restart interrupts chat turns and marks in-flight writes uncertain. A single store
+owner, bounded concurrency and private atomic files retain the Mac's history. This
+storage design requires persistent local storage and is not a multi-replica database.
+
+Direct dynamic tools keep project authority, UI widgets and existing controls in one
+backend. MCP remains an optional client interface for external management agents;
+the web chat does not call MCP to reach its own service. Codex 0.154.0 is pinned for
+this experimental protocol. The management runtime registers no execution environments
+or coding tools and disables inherited Apps, plugins, MCP servers and instructions.
+This reduces the model's tool authority; it is not a container isolation boundary.
+Remote ingress, identity, shared storage and cloud runtime credentials need a separate
+GCP implementation before exposing this local service remotely.
+
+The integration follows the [App Server thread and turn lifecycle](https://learn.chatgpt.com/docs/app-server)
+and [typed function-calling guidance](https://developers.openai.com/api/docs/guides/function-calling):
+keep tools narrow and inject trusted project identity in the host instead of asking
+the model to choose its authorization scope.
 
 ## Trust and extension points
 

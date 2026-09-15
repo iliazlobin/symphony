@@ -51,7 +51,7 @@ This pilot target does not select a permanent release branch or enable automatic
 ## Operate
 
 Use GitHub for task intent and PR review, a management chat for status and authorized
-controls, and the local dashboard for monitoring. The initial mode is paused. Worker
+controls, and the local web board for task inspection and bounded controls. The initial mode is paused. Worker
 launch has a separate host gate; resume cannot bypass the activation prerequisites
 in [Verification and recovery](#verification-and-recovery).
 
@@ -81,20 +81,117 @@ the shared-VM restart and verification of affected services afterward.
 candidate diff, independent review and check evidence in
 [Pull requests](https://github.com/iliazlobin/events-concierge/pulls). A draft PR is a
 review handoff; it does not mean the task is merged or deployed. Task creation and
-label changes use GitHub's UI or tools, not Symphony's MCP server.
+queue-label changes are available in GitHub and the optional web chat.
 
-**Dashboard — monitoring.** Open [the local dashboard](http://127.0.0.1:8777/).
-It updates running/retrying/blocked-session counts, token usage, elapsed runtime,
-rate limits, recent agent activity, errors and retry timing. Issue links open GitHub;
-**JSON details** opens runtime data; **Copy ID** copies a Codex session ID.
+**Web board.** Open [Symphony](http://127.0.0.1:8777/). Real tracker issues,
+runtime activity and durable holds appear in Backlog, Ready, Running, Review and
+Done. Top autocomplete filters select project, status and priority; search and
+sorting apply within each lane. Manual drag ordering is saved in this browser and
+does not change scheduler priority. GitHub issues without a priority remain unspecified.
 
-There are no task creation, pause/resume/cancel, PR review or issue-detail screens.
-**Live** means the browser connection is live, not that workers are enabled or busy.
-**Blocked** counts runtime sessions requesting input or approval; it is not a list
-of setup prerequisites or every durable hold. Use management status for operating
-mode, launch/merge gates, review holds, budgets and publication receipts.
+Click a card or **Settings** to open a popup above the board. **Close**, **Escape**,
+or clicking outside the popup returns to the same filters and position. Settings
+shows recorded runtime and control mode; connection status is not worker readiness.
+Tracker/control failures retain last-known cards with an explicit warning. The board
+refreshes tracker data every 30 seconds; runtime messages also update over LiveView.
+Done means the tracker is terminal; it does not establish merge, acceptance or deployment.
 
-**Management chat — controls through MCP.** Ask a connected management agent:
+Cards link the issue, repository and related pull requests. PR draft/merge state,
+GitHub review and checks for the current PR head remain separate from the worker's
+candidate review. The source strip shows refresh failures and controller mode;
+“Live updates connected” describes the browser connection only.
+
+To try updated web code against live work without replacing the installed controller,
+run this from the Symphony checkout with its pinned Elixir runtime and Python dependencies:
+
+```sh
+python3 tools/symphony_web.py --port 8778
+```
+
+Open [the local live board](http://127.0.0.1:8778/) and leave that terminal running;
+Ctrl-C stops this view. It reads the existing operator profile, GitHub and the
+controller's status APIs. It never starts coding workers, opens the controller's
+ledger or enables browser commands. Chat is unavailable in this read-only view.
+Use `--config /absolute/path/to/config.json` for another configured profile.
+The profile binds the repository to the controller address; the current controller
+API does not attest repository identity in its response.
+
+**New task** opens the configured GitHub issue form. Create the issue and manage its
+intake labels in GitHub, then refresh the board. Moving across lanes cannot fabricate
+workflow progress. Moving Ready to Backlog requests a confirmed native cancellation;
+moving a held Backlog card to Ready offers native retry. Cancel can stop work claimed
+since the card was displayed; retry clears a hold without resetting budgets or
+providing a missing answer. Other transitions explain the owning workflow action.
+
+**Local operator controls.** In Settings, unlock with the token from the private
+`token_file` beside the operator configuration. The password form posts only to the
+loopback service; never put the token in a URL. The signed browser session expires
+after eight hours and becomes invalid when the token changes. Tracker configuration
+changes disable controls in an open page until you reload it.
+**Lock controls** clears this browser session and disconnects its sockets. Pause, drain,
+resume, cancel and retry use native revisions, idempotency and project checks; each
+consequential action has a confirmation. A cancel receipt is not proof of worker cleanup.
+
+The board and read APIs retain the local observability access model. Google sign-in,
+remote access, additional project services, delivery of answers into running workers,
+automatic repairs and web publication actions remain separate implementation work.
+Do not expose this local listener as an authenticated GCP application.
+
+**Web chat.** After [dedicated runtime setup](../../elixir/README.md#web-board-and-chat),
+select one project on the board and open **Chat** in the right-side panel. A task
+popup also offers **Discuss this task**. Unlock with the local operator token. Use
+**New chat** for a separate topic; **History** opens searchable history with rename
+and archive actions. Project changes clear the current selection and draft. A chat
+stays with its original project. This service currently supplies one configured
+project; additional controllers are not aggregated yet.
+
+Responses stream as they arrive. **Stop** interrupts the chat response, not a coding
+task. Closing the tab leaves the response running; reopen its URL to reconnect.
+After a service restart, send another message to continue an interrupted conversation.
+Codex handles native compaction while the app retains visible messages and receipts.
+The optional **Context / Outputs** drawer shows retrieved sources, task widgets and
+actions. References update the board filters or open a task popup while keeping
+the conversation open. `/chat` remains available as a full-page conversation view.
+
+**Manage the view context.** The composer shows what will accompany the next message:
+project, filters, displayed task count and the selected card. Switch off **Share this
+view** to send no current board snapshot, or uncheck **Identify selected card** to
+remove its explicit selection (the card may still be part of the displayed task list).
+Sharing off does not erase earlier messages or sources; start a new chat for a fresh
+conversation. Context refreshes as you filter, scroll, switch lanes or open a card.
+It includes up to 50 task IDs and marks truncated lists. It excludes arbitrary screen
+text, screenshots, password fields and other browser tabs. Tools recheck task details
+and authorization before using a snapshot; the snapshot is not approval to act.
+
+Try “Explain this card and all its PR checks”, “Which tasks in this view need input?”,
+“Explain this project's architecture”, or “Create a task
+to improve the admin filters, with acceptance criteria”. Read tools render status,
+task cards and commit-pinned document references. A write first renders its exact
+preview; **Confirm** applies it and **Cancel** discards it. A receipt records the
+action, not proof of worker completion. **Check outcome** reconciles uncertain
+writes without repeating them; do not create a replacement request meanwhile.
+
+Chat can create a backlog issue, edit title/description/state/priority, add feedback,
+queue/unqueue intake labels and request native pause/drain/resume/cancel/retry.
+Editing or changing intake labels requires a cancelled, idle task. For new work:
+create the issue, cancel it to hold admission, queue it, then retry when ready.
+Queueing adds only the configured intake labels; retry releases the hold but retains
+dependency, budget and host launch gates. Creating a task requires explicit intake
+labels in the tracker configuration so a new unlabeled issue cannot launch itself.
+Feedback is saved to the GitHub issue; it is not injected into an active coding turn.
+Deployment, merge, arbitrary code execution and worker input delivery are not chat
+actions. External GitHub edits can still race the final issue patch; refresh and
+review the issue after changes.
+
+| Read tools | Confirmed workflow actions |
+| --- | --- |
+| Current view, project status, filtered task search, task details with all fetched PRs/CI, committed project documents | Create or edit a task, add issue feedback, queue/unqueue, pause/drain/resume, cancel/retry |
+
+The read-only preview on port 8778 shows the panel's availability state but does not
+start a chat runtime. A signed-in dedicated management account and an explicitly
+installed controller revision are required for live model responses.
+
+**External management agent — controls through MCP.** Ask a connected agent:
 
 - “Show the current mode, running tasks, holds and publication blockers.”
 - “Inspect runtime details for GH-6 and link its GitHub issue.”
@@ -200,7 +297,7 @@ private token; custom clients must follow the
 
 Control reads/writes and refresh in this controlled profile require bearer
 authentication. Control routes accept local clients and reject browser Origin headers;
-they are not wired to dashboard buttons. Keep tokens out of URLs, chat and browser
+the web adapter exposes the same bounded native controls. Keep tokens out of URLs and chat; never embed them in browser
 scripts. State/details are the local observability view; use CLI/MCP status to combine
 that view with host launch settings and publication receipts.
 
