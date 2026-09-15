@@ -51,7 +51,7 @@ This pilot target does not select a permanent release branch or enable automatic
 ## Operate
 
 Use GitHub for task intent and PR review, a management chat for status and authorized
-controls, and the local dashboard for monitoring. The initial mode is paused. Worker
+controls, and the local web board for task inspection and bounded controls. The initial mode is paused. Worker
 launch has a separate host gate; resume cannot bypass the activation prerequisites
 in [Verification and recovery](#verification-and-recovery).
 
@@ -64,16 +64,39 @@ candidate diff, independent review and check evidence in
 review handoff; it does not mean the task is merged or deployed. Task creation and
 label changes use GitHub's UI or tools, not Symphony's MCP server.
 
-**Dashboard — monitoring.** Open [the local dashboard](http://127.0.0.1:8777/).
-It updates running/retrying/blocked-session counts, token usage, elapsed runtime,
-rate limits, recent agent activity, errors and retry timing. Issue links open GitHub;
-**JSON details** opens runtime data; **Copy ID** copies a Codex session ID.
+**Web board.** Open [Symphony](http://127.0.0.1:8777/). Real tracker issues,
+runtime activity and durable holds appear in Backlog, Ready, Running, Review and
+Done. Top autocomplete filters select project, status and priority; search and
+sorting apply within each lane. Manual drag ordering is saved in this browser and
+does not change scheduler priority. GitHub issues without a priority remain unspecified.
 
-There are no task creation, pause/resume/cancel, PR review or issue-detail screens.
-**Live** means the browser connection is live, not that workers are enabled or busy.
-**Blocked** counts runtime sessions requesting input or approval; it is not a list
-of setup prerequisites or every durable hold. Use management status for operating
-mode, launch/merge gates, review holds, budgets and publication receipts.
+Click a card or **Settings** to open a popup above the board. **Close**, **Escape**,
+or clicking outside the popup returns to the same filters and position. Settings
+shows recorded runtime and control mode; connection status is not worker readiness.
+Tracker/control failures retain last-known cards with an explicit warning. The board
+refreshes tracker data every 30 seconds; runtime messages also update over LiveView.
+Done means the tracker is terminal; it does not establish merge, acceptance or deployment.
+
+**New task** opens the configured GitHub issue form. Create the issue and manage its
+intake labels in GitHub, then refresh the board. Moving across lanes cannot fabricate
+workflow progress. Moving Ready to Backlog requests a confirmed native cancellation;
+moving a held Backlog card to Ready offers native retry. Cancel can stop work claimed
+since the card was displayed; retry clears a hold without resetting budgets or
+providing a missing answer. Other transitions explain the owning workflow action.
+
+**Local operator controls.** In Settings, unlock with the token from the private
+`token_file` beside the operator configuration. The password form posts only to the
+loopback service; never put the token in a URL. The signed browser session expires
+after eight hours and becomes invalid when the token changes. Tracker configuration
+changes disable controls in an open page until you reload it.
+**Lock controls** clears this browser session and disconnects its sockets. Pause, drain,
+resume, cancel and retry use native revisions, idempotency and project checks; each
+consequential action has a confirmation. A cancel receipt is not proof of worker cleanup.
+
+The board and read APIs retain the local observability access model. Google sign-in,
+remote access, additional project services, persisted question/answer delivery,
+automatic repairs and web publication actions remain separate implementation work.
+Do not expose this local listener as an authenticated GCP application.
 
 **Management chat — controls through MCP.** Ask a connected management agent:
 
@@ -181,7 +204,7 @@ private token; custom clients must follow the
 
 Control reads/writes and refresh in this controlled profile require bearer
 authentication. Control routes accept local clients and reject browser Origin headers;
-they are not wired to dashboard buttons. Keep tokens out of URLs, chat and browser
+the web adapter exposes the same bounded native controls. Keep tokens out of URLs and chat; never embed them in browser
 scripts. State/details are the local observability view; use CLI/MCP status to combine
 that view with host launch settings and publication receipts.
 

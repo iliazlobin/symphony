@@ -1467,6 +1467,24 @@ defmodule SymphonyElixir.Orchestrator do
   @spec control_command(map(), GenServer.server()) :: {:ok, map()} | {:error, term()}
   def control_command(command, server \\ __MODULE__), do: safe_control_call(server, {:control_command, command})
 
+  @doc "Opaque tracker scope for clients that retain task selections across configuration refreshes."
+  @spec tracker_fingerprint() :: String.t() | nil
+  def tracker_fingerprint do
+    case Config.settings() do
+      {:ok, settings} ->
+        :crypto.hash(:sha256, :erlang.term_to_binary(settings.tracker)) |> Base.url_encode64(padding: false)
+
+      {:error, _reason} ->
+        nil
+    end
+  end
+
+  @doc "Checks retained tracker scope inside the owner before applying the ordinary revision-fenced command."
+  @spec control_command_guarded(map(), String.t(), GenServer.server()) :: {:ok, map()} | {:error, term()}
+  def control_command_guarded(command, expected_tracker, server \\ __MODULE__) do
+    safe_control_call(server, {:guarded_control_command, command, expected_tracker})
+  end
+
   defp safe_control_call(server, message) do
     GenServer.call(server, message, 15_000)
   catch
@@ -1578,6 +1596,16 @@ defmodule SymphonyElixir.Orchestrator do
     state = refresh_runtime_config(state)
     payload = if state.control, do: ControlLedger.snapshot(state.control), else: %{"enabled" => false}
     {:reply, Map.put(payload, "fault", state.control_fault), state}
+  end
+
+  def handle_call({:guarded_control_command, command, expected_tracker}, from, state) do
+    state = refresh_runtime_config(state)
+
+    if is_binary(expected_tracker) and expected_tracker == tracker_fingerprint() do
+      handle_call({:control_command, command}, from, state)
+    else
+      {:reply, {:error, :tracker_changed}, state}
+    end
   end
 
   def handle_call({:control_command, _command}, _from, %{control: nil} = state), do: {:reply, {:error, :control_disabled}, state}

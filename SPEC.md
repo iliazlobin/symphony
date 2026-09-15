@@ -2436,3 +2436,26 @@ issue opt-in, an allowed small documentation diff, an approving independent revi
 verified branch protection and successful exact-SHA required checks from pinned
 GitHub Apps. Unknown or changed evidence MUST block the operation. Deployment and
 infrastructure changes still require separate user authorization.
+
+### B.5 Local web operator adapter
+
+The LiveView board is a read model of tracker issues, runtime activity and durable
+control records. Browser sorting and manual order are presentation preferences;
+they do not constitute admission, completion or scheduler priority. Missing source
+data preserves last-known tasks with explicit uncertainty. Tracker-terminal issues
+are not evidence of merge, acceptance or deployment.
+
+Local operator login/logout uses CSRF-protected browser POST routes. Authorization
+requires the actual loopback peer and host, a same-origin connection and a signed,
+time-bounded proof bound to the configured control token. Raw tokens are neither
+serialized in session state nor exposed by browser assets. Every browser command
+revalidates authorization and uses the native idempotency key and displayed
+revision. The controller also verifies the expected tracker fingerprint inside
+its mailbox before applying a command, preventing stale project cards from
+controlling another repository. The existing bearer API contract is unchanged.
+
+Dialogs do not suspend execution. Closing or disconnecting the browser cannot
+cancel work. Browser controls expose only existing pause, drain, resume, cancel
+and retry operations; tracker intake edits, missing-input delivery, repair and
+publication workflows remain separate owners. Remote identity and ingress are
+not provided by the local login mechanism.

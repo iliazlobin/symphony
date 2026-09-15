@@ -412,6 +412,23 @@ actively running subagents, which is very useful during development.
 Launch `codex` in your repo, give it the URL to the Symphony repo, and ask it to set things up for
 you.
 
+## Web task board
+
+The optional HTTP service serves a LiveView Kanban board with searchable project,
+status and priority filters, per-lane sorting, and browser-local manual order.
+Card details and Settings open as native dialogs with Close and Escape. Tracker
+issues, current runtime and durable holds own the displayed stages; stale sources
+are marked. A terminal issue does not verify a merge or deployment.
+
+Local browser controls use a CSRF-protected operator-token login at
+`POST /operator/session` and logout at `POST /operator/session/logout`. Tokens are
+filtered from request logs and not stored in the session cookie; a signed
+eight-hour proof gates native pause/drain/resume/cancel/retry calls. Host, actual
+peer, websocket origin, tracker identity, command revision and replay are checked.
+The read dashboard/API remain local observability surfaces, not a remote-auth
+boundary. See the [operator guide](../profiles/events-concierge/README.md#operate)
+for commands, limitations and the existing GitHub task workflow.
+
 ## License
 
 This project is licensed under the [Apache License 2.0](../LICENSE).

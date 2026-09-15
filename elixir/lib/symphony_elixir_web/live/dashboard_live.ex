@@ -1,446 +1,365 @@
 defmodule SymphonyElixirWeb.DashboardLive do
-  @moduledoc """
-  Live observability dashboard for Symphony.
-  """
-
+  @moduledoc "Live task board with browser preferences and authenticated native controls."
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
-  alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
-  @runtime_tick_ms 1_000
+  alias SymphonyElixirWeb.{BoardActions, BrowserAuth, Endpoint, ObservabilityPubSub, Presenter, TaskBoard}
+
+  @lanes [{"backlog", "Backlog"}, {"ready", "Ready"}, {"running", "Running"}, {"review", "Review"}, {"done", "Done"}]
+  @refresh_ms 30_000
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
+    payload = load_payload()
+
     socket =
       socket
-      |> assign(:payload, load_payload())
-      |> assign(:now, DateTime.utc_now())
+      |> assign(:payload, payload)
+      |> assign(:board, initial_board(payload))
+      |> assign(:loading, false)
+      |> assign(:dialog, nil)
+      |> assign(:selected, nil)
+      |> assign(:pending_command, nil)
+      |> assign(:notice, nil)
+      |> assign(:auth, BrowserAuth.context(session, socket))
+      |> assign(:csrf_token, Plug.CSRFProtection.get_csrf_token())
+      |> assign(:lanes, @lanes)
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
-      schedule_runtime_tick()
+      Process.send_after(self(), :refresh_board, @refresh_ms)
+      {:ok, refresh_board(socket)}
+    else
+      {:ok, socket}
     end
-
-    {:ok, socket}
   end
 
   @impl true
-  def handle_info(:runtime_tick, socket) do
-    schedule_runtime_tick()
-    {:noreply, assign(socket, :now, DateTime.utc_now())}
+  def handle_params(params, _uri, socket) do
+    dialog = if params["panel"] == "settings", do: :settings, else: nil
+    {:noreply, assign(socket, :dialog, dialog)}
   end
 
   @impl true
   def handle_info(:observability_updated, socket) do
-    {:noreply,
-     socket
-     |> assign(:payload, load_payload())
-     |> assign(:now, DateTime.utc_now())}
+    {:noreply, assign(socket, :payload, load_payload())}
+  end
+
+  def handle_info(:refresh_board, socket) do
+    Process.send_after(self(), :refresh_board, @refresh_ms)
+    {:noreply, refresh_board(socket)}
+  end
+
+  @impl true
+  def handle_async(:board, {:ok, result}, socket) do
+    # A failed source cannot turn last-known work into an empty successful board.
+    previous = socket.assigns.board
+
+    result =
+      if result.source_error || result.runtime_error do
+        previous_tasks = Map.new(previous.tasks, &{&1.id, &1})
+        tasks = Map.merge(Map.new(result.tasks, &{&1.id, &1}), previous_tasks) |> Map.values()
+        %{result | tasks: tasks, generated_at: previous.generated_at}
+      else
+        result
+      end
+
+    selected = socket.assigns.selected
+    current = selected && Enum.find(result.tasks, &(&1.id == selected.id))
+    socket = socket |> assign(:board, result) |> assign(:selected, current) |> assign(:loading, false)
+    socket = if selected && is_nil(current) && socket.assigns.dialog == :task, do: socket |> assign(:dialog, nil) |> assign(:notice, "Task no longer available in this board."), else: socket
+    {:noreply, socket}
+  end
+
+  def handle_async(:board, {:exit, _reason}, socket) do
+    board = Map.put(socket.assigns.board, :source_error, "Board refresh failed; showing last-known tasks.")
+    {:noreply, socket |> assign(:board, board) |> assign(:loading, false)}
+  end
+
+  @impl true
+  def handle_event("open-task", %{"id" => id}, socket) do
+    case Enum.find(socket.assigns.board.tasks, &(&1.id == id)) do
+      nil -> {:noreply, assign(socket, :notice, "That task is no longer in the current board. Refresh and try again.")}
+      task -> {:noreply, socket |> assign(:selected, task) |> assign(:dialog, :task)}
+    end
+  end
+
+  def handle_event("open-settings", _params, socket), do: {:noreply, assign(socket, :dialog, :settings)}
+  def handle_event("new-task", _params, socket), do: {:noreply, assign(socket, :dialog, :new_task)}
+
+  def handle_event("close-dialog", _params, socket) do
+    {:noreply, socket |> assign(:dialog, nil) |> assign(:pending_command, nil) |> push_patch(to: "/")}
+  end
+
+  def handle_event("refresh", _params, socket), do: {:noreply, refresh_board(socket)}
+
+  def handle_event("move-task", %{"id" => id, "stage" => stage}, socket) do
+    task = Enum.find(socket.assigns.board.tasks, &(&1.id == id))
+
+    cond do
+      is_nil(task) ->
+        {:noreply, assign(socket, :notice, "Task unavailable; refresh the board.")}
+
+      task.stage == "ready" and stage == "backlog" ->
+        prepare_command(socket, "cancel", task)
+
+      task.stage == "backlog" and stage == "ready" and not is_nil(task.hold) ->
+        prepare_command(socket, "retry", task)
+
+      true ->
+        {:noreply,
+         socket
+         |> assign(:selected, task)
+         |> assign(:dialog, :task)
+         |> assign(:notice, "Stages follow confirmed work. Manage intake labels in the issue tracker; review and completion require their evidence.")}
+    end
+  end
+
+  def handle_event("prepare-command", %{"action" => action} = params, socket) do
+    task = Enum.find(socket.assigns.board.tasks, &(&1.id == params["id"]))
+
+    if action in ["pause", "drain", "resume"] or (action in ["cancel", "retry"] and task) do
+      prepare_command(socket, action, task)
+    else
+      {:noreply, assign(socket, :notice, "Unsupported action.")}
+    end
+  end
+
+  def handle_event("confirm-command", _params, %{assigns: %{pending_command: nil}} = socket), do: {:noreply, socket}
+
+  def handle_event("confirm-command", _params, socket) do
+    pending = socket.assigns.pending_command
+
+    case BoardActions.command(pending.action, pending.issue_id, pending.revision, pending.id, socket.assigns.auth, orchestrator()) do
+      {:ok, _result} ->
+        {:noreply,
+         socket
+         |> assign(:dialog, nil)
+         |> assign(:pending_command, nil)
+         |> assign(:notice, command_receipt(pending.action))
+         |> refresh_board()}
+
+      {:error, reason} ->
+        # Keep the original command identity on an uncertain response so a retry is idempotent.
+        {:noreply, socket |> assign(:notice, command_error(reason)) |> refresh_board()}
+    end
+  end
+
+  defp prepare_command(socket, action, task) do
+    control = socket.assigns.board.control
+
+    if BrowserAuth.authorized?(socket.assigns.auth) and control["enabled"] == true and is_integer(control["revision"]) do
+      pending = %{
+        action: action,
+        issue_id: task && task.issue_id,
+        identifier: task && task.identifier,
+        revision: control["revision"],
+        id: Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+      }
+
+      {:noreply, socket |> assign(:pending_command, pending) |> assign(:dialog, :confirm)}
+    else
+      {:noreply, socket |> assign(:dialog, :settings) |> assign(:notice, "Unlock local operator controls in Settings before changing execution.")}
+    end
   end
 
   @impl true
   def render(assigns) do
-    ~H"""
-    <section class="dashboard-shell">
-      <header class="hero-card">
-        <div class="hero-grid">
-          <div>
-            <p class="eyebrow">
-              Symphony Observability
-            </p>
-            <h1 class="hero-title">
-              Operations Dashboard
-            </h1>
-            <p class="hero-copy">
-              Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
-            </p>
-          </div>
+    assigns = assign(assigns, :authorized, BrowserAuth.authorized?(assigns.auth))
 
-          <div class="status-stack">
-            <span class="status-badge status-badge-live">
-              <span class="status-badge-dot"></span>
-              Live
-            </span>
-            <span class="status-badge status-badge-offline">
-              <span class="status-badge-dot"></span>
-              Offline
-            </span>
-          </div>
-        </div>
+    ~H"""
+    <section id="task-board-app" class="dashboard-shell" phx-hook="TaskBoard"
+      data-scope={scope(@board)} data-projects={Jason.encode!(@board.projects)}>
+      <header class="board-header">
+        <a href="/" class="brand">∿ Symphony</a><span class="header-subtitle">Task board</span>
+        <span class="header-spacer"></span>
+        <div id="board-search" phx-update="ignore"><input type="search" data-board-search aria-label="Search tasks" placeholder="Search tasks…" /></div>
+        <button id="settings-button" class="button button-quiet" phx-click="open-settings">Settings</button>
+        <button id="new-task-button" class="button button-primary" phx-click="new-task">+ New task</button>
       </header>
 
-      <%= if @payload[:error] do %>
-        <section class="error-card">
-          <h2 class="error-title">
-            Snapshot unavailable
-          </h2>
-          <p class="error-copy">
-            <strong><%= @payload.error.code %>:</strong> <%= @payload.error.message %>
-          </p>
-        </section>
-      <% else %>
-        <section class="metric-grid">
-          <article class="metric-card">
-            <p class="metric-label">Running</p>
-            <p class="metric-value numeric"><%= @payload.counts.running %></p>
-            <p class="metric-detail">Active issue sessions in the current runtime.</p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Retrying</p>
-            <p class="metric-value numeric"><%= @payload.counts.retrying %></p>
-            <p class="metric-detail">Issues waiting for the next retry window.</p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Blocked</p>
-            <p class="metric-value numeric"><%= @payload.counts.blocked %></p>
-            <p class="metric-detail">Issues paused for operator input or approval.</p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Total tokens</p>
-            <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
-            <p class="metric-detail numeric">
-              In <%= format_int(@payload.codex_totals.input_tokens) %> / Out <%= format_int(@payload.codex_totals.output_tokens) %>
-            </p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Runtime</p>
-            <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
-            <p class="metric-detail">Total Codex runtime across completed and active sessions.</p>
-          </article>
-        </section>
-
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Rate limits</h2>
-              <p class="section-copy">Latest upstream rate-limit snapshot, when available.</p>
-            </div>
+      <div id="board-toolbar" class="board-toolbar" phx-update="ignore">
+        <div class="filter-row">
+          <div :for={key <- ["project", "status", "priority"]} class="filter-combo" data-filter={key}>
+            <div class="combo-control"><input id={"filter-#{key}"} role="combobox" aria-label={"#{String.capitalize(key)} filter"}
+              autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls={"options-#{key}"}
+              placeholder={"#{String.capitalize(key)}: All"} /><button type="button" data-filter-toggle={key} aria-label={"Open #{key} filter"}>⌄</button></div>
+            <div id={"options-#{key}"} class="combo-options" role="listbox" aria-label={"#{String.capitalize(key)} options"} aria-multiselectable="true" hidden></div>
           </div>
+          <label class="sort-control"><span>Sort</span><select data-board-sort aria-label="Sort cards">
+            <option value="manual">Manual order</option><option value="priority">Priority first</option>
+            <option value="updated">Recently updated</option><option value="oldest">Oldest first</option><option value="title">Title A–Z</option>
+          </select></label>
+          <button type="button" class="button button-quiet" data-clear-filters>Clear filters</button>
+        </div>
+        <div data-filter-chips class="filter-chips" aria-label="Selected filters"></div>
+      </div>
 
-          <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
-        </section>
-
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Running sessions</h2>
-              <p class="section-copy">Active issues, last known agent activity, and token usage.</p>
+      <div class="board-content">
+        <p :if={@notice} class="board-notice" role="status">{@notice}</p>
+        <p :if={Phoenix.Flash.get(@flash, :error)} class="board-warning" role="alert">{Phoenix.Flash.get(@flash, :error)}</p>
+        <p :if={Phoenix.Flash.get(@flash, :info)} class="board-notice" role="status">{Phoenix.Flash.get(@flash, :info)}</p>
+        <p :if={@payload[:error]} class="board-warning" role="alert"><strong>Snapshot unavailable:</strong> {@payload.error.code}</p>
+        <p :if={@board.source_error} class="board-warning" role="alert">{@board.source_error}</p>
+        <p :if={@board.runtime_error} class="board-warning" role="alert">{@board.runtime_error}</p>
+        <div class="board-summary"><span data-result-count>{length(@board.tasks)} tasks</span>
+          <span class="summary-right"><span :if={@loading}>Refreshing…</span><time :if={@board.generated_at}>Checked {@board.generated_at}</time>
+          <button class="button button-small" phx-click="refresh" disabled={@loading}>Refresh</button></span></div>
+        <div id="mobile-lane-control" class="mobile-lane-control" phx-update="ignore"><label>Lane <select data-mobile-lane aria-label="Board lane">
+          <option :for={{id, label} <- @lanes} value={id}>{label}</option>
+        </select></label></div>
+        <div class="kanban-board">
+          <section :for={{stage, label} <- @lanes} id={"lane-#{stage}"} class="kanban-lane" data-stage={stage} aria-label={"#{label} lane"}>
+            <h2><span class={"lane-dot lane-dot-#{stage}"}></span>{label}<span class="lane-count" data-lane-count>{Enum.count(@board.tasks, &(&1.stage == stage))}</span></h2>
+            <div class="lane-cards" data-lane-cards>
+              <article :for={task <- Enum.filter(@board.tasks, &(&1.stage == stage))} id={card_id(task)} class="task-card" draggable="true"
+                data-task-id={task.id} data-project={task.project} data-priority={priority(task.priority)} data-attention={not is_nil(task.attention)}
+                data-title={task.title} data-identifier={task.identifier} data-created={task.created_at || ""} data-updated={task.updated_at || ""}>
+                <div class="card-top"><a :if={safe_url(task.url)} href={safe_url(task.url)} target="_blank" rel="noopener noreferrer"
+                  aria-label={"Open #{task.identifier} in the issue tracker"}>{task.identifier}</a><span :if={!safe_url(task.url)}>{task.identifier}</span>
+                  <span class="priority" data-priority={priority(task.priority)}>{priority(task.priority)}</span></div>
+                <button id={"open-#{card_id(task)}"} class="card-title" phx-click="open-task" phx-value-id={task.id}>{task.title}</button>
+                <div class="card-project">{task.project_label}</div>
+                <span :if={task.attention} class="attention-badge">{task.attention}</span>
+                <p :if={current_activity(task, @payload)} class="card-activity">{current_activity(task, @payload)}</p>
+                <div class="card-bottom"><span>{age(task.updated_at)}</span>
+                  <select class="move-select" data-move-task={task.id} aria-label={"Move #{task.identifier}"}>
+                    <option value="">Move…</option><option :for={{value, title} <- @lanes} :if={value != task.stage} value={value}>{title}</option>
+                  </select></div>
+              </article>
             </div>
-          </div>
+            <p class="lane-empty" data-lane-empty>No tasks</p>
+          </section>
+        </div>
+      </div>
+      <footer class="board-footer"><span class="status-stack"><span class="status-badge-live">Connected</span><span class="status-badge-offline">Disconnected · last-known state</span></span>
+        <span>Manual order is a browser preference; scheduling follows repository policy.</span></footer>
 
-          <%= if @payload.running == [] do %>
-            <p class="empty-state">No active sessions.</p>
-          <% else %>
-            <div class="table-wrap">
-              <table class="data-table data-table-running">
-                <colgroup>
-                  <col style="width: 12rem;" />
-                  <col style="width: 8rem;" />
-                  <col style="width: 7.5rem;" />
-                  <col style="width: 8.5rem;" />
-                  <col />
-                  <col style="width: 10rem;" />
-                </colgroup>
-                <thead>
-                  <tr>
-                    <th>Issue</th>
-                    <th>State</th>
-                    <th>Session</th>
-                    <th>Runtime / turns</th>
-                    <th>Codex update</th>
-                    <th>Tokens</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={entry <- @payload.running}>
-                    <td>
-                      <div class="issue-stack">
-                        <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
-                      </div>
-                    </td>
-                    <td>
-                      <span class={state_badge_class(entry.state)}>
-                        <%= entry.state %>
-                      </span>
-                    </td>
-                    <td>
-                      <div class="session-stack">
-                        <%= if entry.session_id do %>
-                          <button
-                            type="button"
-                            class="subtle-button"
-                            data-label="Copy ID"
-                            data-copy={entry.session_id}
-                            onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
-                          >
-                            Copy ID
-                          </button>
-                        <% else %>
-                          <span class="muted">n/a</span>
-                        <% end %>
-                      </div>
-                    </td>
-                    <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
-                    <td>
-                      <div class="detail-stack">
-                        <span
-                          class="event-text"
-                          title={entry.last_message || to_string(entry.last_event || "n/a")}
-                        ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
-                        <span class="muted event-meta">
-                          <%= entry.last_event || "n/a" %>
-                          <%= if entry.last_event_at do %>
-                            · <span class="mono numeric"><%= entry.last_event_at %></span>
-                          <% end %>
-                        </span>
-                      </div>
-                    </td>
-                    <td>
-                      <div class="token-stack numeric">
-                        <span>Total: <%= format_int(entry.tokens.total_tokens) %></span>
-                        <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+      <dialog :if={@dialog} id="board-dialog" class="board-dialog" phx-hook="BoardDialog" aria-labelledby="dialog-title">
+        <div class="dialog-inner"><div class="dialog-heading"><h2 id="dialog-title">{dialog_title(@dialog, @selected, @pending_command)}</h2>
+          <button id="close-dialog" class="button button-quiet" phx-click="close-dialog" aria-label="Close dialog">Close ×</button></div>
+          <p :if={@notice} class="board-notice" role="status">{@notice}</p>
+          <%= case @dialog do %>
+            <% :settings -> %>
+              <section class="dialog-section"><h3>Operator controls</h3>
+                <p class="muted">Mode: {@board.control["mode"] || "Unavailable"}. Connection status does not establish worker readiness.</p>
+                <%= if @authorized do %>
+                  <div class="dialog-actions"><button :for={action <- ["drain", "pause", "resume"]} class="button" phx-click="prepare-command" phx-value-action={action}>{String.capitalize(action)}</button></div>
+                  <form action="/operator/session/logout" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} /><button class="button button-quiet">Lock controls</button></form>
+                <% else %>
+                  <p class="muted">Read-only until unlocked on this local host. Use the operator token from your local Symphony configuration.</p>
+                  <form action="/operator/session" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} />
+                    <label class="field">Operator token<input type="password" name="operator_token" autocomplete="off" required /></label>
+                    <button class="button button-primary">Unlock local controls</button></form>
+                <% end %>
+              </section>
+              <section class="dialog-section"><h3>Projects</h3><p :for={project <- @board.projects}><a :if={safe_url(project.url)} href={safe_url(project.url)} target="_blank" rel="noopener noreferrer">{project.label}</a><span :if={!safe_url(project.url)}>{project.label}</span></p>
+                <p class="muted">This service represents its configured repository. Additional project services and remote Google sign-in are not configured by this page.</p></section>
+              <section class="dialog-section"><h3>Runtime</h3>
+                <p>Total tokens: {get_in(@payload, [:codex_totals, :total_tokens]) || "Unavailable"}</p>
+                <p>Runtime: {runtime_duration(@payload)}</p>
+                <details><summary>Rate limits</summary><pre>{pretty(@payload[:rate_limits])}</pre></details>
+              </section>
+            <% :task -> %>
+              <p class="muted">{@selected.project_label} · {@selected.identifier} · {lane_label(@selected.stage)}</p>
+              <a :if={safe_url(@selected.url)} class="button" href={safe_url(@selected.url)} target="_blank" rel="noopener noreferrer">Open issue in tracker ↗</a>
+              <p :if={@selected.attention} class="attention-badge">{@selected.attention}</p>
+              <p :if={Map.get(@selected, :completion_evidence)} class="muted">{Map.get(@selected, :completion_evidence)}</p>
+              <section class="dialog-section"><h3>Scope &amp; acceptance</h3><p class="task-description">{@selected.description || "No description available."}</p></section>
+              <section class="dialog-section"><h3>Codex update</h3><p>{current_activity(@selected, @payload) || "No current worker activity."}</p>
+                <button :if={session_id(@selected)} class="button button-small" data-copy={session_id(@selected)}>Copy ID</button>
+              </section>
+              <section :if={@selected.handoff} class="dialog-section"><h3>Candidate handoff</h3><pre>{pretty(@selected.handoff)}</pre><p class="muted">A handoff does not establish successful checks, merge or deployment. Review the candidate and PR evidence in GitHub.</p></section>
+              <section class="dialog-section"><h3>Execution</h3><p class="muted">Cancel requests a hold and worker cleanup. Retry clears a hold without resetting the budget; it does not answer a question or approve a candidate.</p>
+                <div class="dialog-actions"><button :for={action <- ["cancel", "retry"]} class="button" phx-click="prepare-command" phx-value-action={action} phx-value-id={@selected.id}>{String.capitalize(action)}</button></div>
+                <details><summary>Runtime details</summary><pre>{pretty(@selected.runtime)}</pre></details>
+              </section>
+            <% :confirm -> %>
+              <p>{command_description(@pending_command.action)}</p>
+              <p class="muted">{@pending_command.identifier || "Configured project"} · operator revision {@pending_command.revision}</p>
+              <div class="dialog-actions"><button class="button button-primary" phx-click="confirm-command" phx-disable-with="Submitting…">Confirm {String.downcase(@pending_command.action)}</button><button class="button" phx-click="close-dialog">Cancel</button></div>
+            <% :new_task -> %>
+              <p>Create the canonical task in the configured issue tracker. Specify its outcome, scope, acceptance checks and dependencies before queueing.</p>
+              <div class="dialog-actions"><a :for={project <- @board.projects} :if={new_issue_url(project)} class="button button-primary" href={new_issue_url(project)} target="_blank" rel="noopener noreferrer">New issue · {project.label} ↗</a></div>
+              <p class="muted">Return here and refresh after saving. Queue labels remain managed in GitHub; saving an issue alone does not start a worker.</p>
           <% end %>
-        </section>
-
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Blocked sessions</h2>
-              <p class="section-copy">Issues paused because Codex requested operator input or approval.</p>
-            </div>
-          </div>
-
-          <%= if @payload.blocked == [] do %>
-            <p class="empty-state">No blocked sessions.</p>
-          <% else %>
-            <div class="table-wrap">
-              <table class="data-table" style="min-width: 760px;">
-                <thead>
-                  <tr>
-                    <th>Issue</th>
-                    <th>State</th>
-                    <th>Session</th>
-                    <th>Blocked at</th>
-                    <th>Last update</th>
-                    <th>Error</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={entry <- @payload.blocked}>
-                    <td>
-                      <div class="issue-stack">
-                        <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
-                      </div>
-                    </td>
-                    <td>
-                      <span class={state_badge_class(entry.state || "Blocked")}>
-                        <%= entry.state || "Blocked" %>
-                      </span>
-                    </td>
-                    <td>
-                      <%= if entry.session_id do %>
-                        <button
-                          type="button"
-                          class="subtle-button"
-                          data-label="Copy ID"
-                          data-copy={entry.session_id}
-                          onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
-                        >
-                          Copy ID
-                        </button>
-                      <% else %>
-                        <span class="muted">n/a</span>
-                      <% end %>
-                    </td>
-                    <td class="mono"><%= entry.blocked_at || "n/a" %></td>
-                    <td>
-                      <div class="detail-stack">
-                        <span
-                          class="event-text"
-                          title={entry.last_message || to_string(entry.last_event || "n/a")}
-                        ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
-                        <span class="muted event-meta">
-                          <%= entry.last_event || "n/a" %>
-                          <%= if entry.last_event_at do %>
-                            · <span class="mono numeric"><%= entry.last_event_at %></span>
-                          <% end %>
-                        </span>
-                      </div>
-                    </td>
-                    <td><%= entry.error || "n/a" %></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          <% end %>
-        </section>
-
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Retry queue</h2>
-              <p class="section-copy">Issues waiting for the next retry window.</p>
-            </div>
-          </div>
-
-          <%= if @payload.retrying == [] do %>
-            <p class="empty-state">No issues are currently backing off.</p>
-          <% else %>
-            <div class="table-wrap">
-              <table class="data-table" style="min-width: 680px;">
-                <thead>
-                  <tr>
-                    <th>Issue</th>
-                    <th>Attempt</th>
-                    <th>Due at</th>
-                    <th>Error</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={entry <- @payload.retrying}>
-                    <td>
-                      <div class="issue-stack">
-                        <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
-                      </div>
-                    </td>
-                    <td><%= entry.attempt %></td>
-                    <td class="mono"><%= entry.due_at || "n/a" %></td>
-                    <td><%= entry.error || "n/a" %></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          <% end %>
-        </section>
-      <% end %>
+        </div>
+      </dialog>
     </section>
     """
   end
 
-  defp load_payload do
-    Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
+  defp refresh_board(%{assigns: %{loading: true}} = socket), do: socket
+
+  defp refresh_board(socket) do
+    server = orchestrator()
+    loader = Endpoint.config(:board_loader) || (&TaskBoard.load/2)
+    timeout = Endpoint.config(:board_timeout_ms) || 15_000
+    socket |> assign(:loading, true) |> start_async(:board, fn -> loader.(server, timeout) end)
   end
 
-  defp orchestrator do
-    Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator
+  defp initial_board(payload), do: TaskBoard.from_runtime(payload)
+
+  defp current_activity(task, payload) do
+    entries = Map.get(payload, :running, []) ++ Map.get(payload, :blocked, [])
+    entry = Enum.find(entries, &(&1.issue_id == task.issue_id))
+    runtime = task.runtime || %{}
+    (entry && entry[:last_message]) || runtime[:last_message] || runtime[:error]
   end
 
-  defp snapshot_timeout_ms do
-    Endpoint.config(:snapshot_timeout_ms) || 15_000
+  defp orchestrator, do: Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator
+  defp load_payload, do: Presenter.state_payload(orchestrator(), Endpoint.config(:snapshot_timeout_ms) || 15_000)
+  defp scope(board), do: Enum.map_join(board.projects, ",", & &1.id)
+  defp card_id(task), do: "task-" <> Base.url_encode64(task.id, padding: false)
+  defp session_id(task), do: task.runtime && (task.runtime[:session_id] || task.runtime["session_id"])
+  defp lane_label(stage), do: @lanes |> List.keyfind(stage, 0, {stage, stage}) |> elem(1)
+  defp priority(value) when is_integer(value) and value > 0, do: "P#{value}"
+  defp priority(_), do: "—"
+  defp pretty(nil), do: "Unavailable"
+  defp pretty(value), do: inspect(value, pretty: true, limit: 100, printable_limit: 10_000)
+
+  defp runtime_duration(payload) do
+    case get_in(payload, [:codex_totals, :seconds_running]) do
+      seconds when is_number(seconds) -> "#{Float.round(seconds / 1, 1)} seconds recorded"
+      _ -> "Unavailable"
+    end
   end
 
-  attr(:identifier, :string, required: true)
-  attr(:url, :string, default: nil)
+  defp age(nil), do: "Updated time unknown"
+  defp age(value), do: value |> to_string() |> String.replace("T", " ") |> String.replace("Z", " UTC")
+  defp dialog_title(:settings, _, _), do: "Settings"
+  defp dialog_title(:new_task, _, _), do: "New task"
+  defp dialog_title(:task, task, _), do: task.title
+  defp dialog_title(:confirm, _, pending), do: "#{String.capitalize(pending.action)} #{pending.identifier || "project"}?"
+  defp command_description("drain"), do: "Finish active work, then stop taking new tasks."
+  defp command_description("pause"), do: "Interrupt active work and stop dispatch. Work may require recovery before continuing."
+  defp command_description("resume"), do: "Allow eligible tasks to run within existing launch gates and budgets."
 
-  defp issue_identifier(assigns) do
-    assigns = assign(assigns, :href, external_issue_url(assigns.url))
+  defp command_description("cancel"),
+    do: "Hold this issue and request cleanup of any active worker, including a worker claimed since the board was read. Cancellation is not complete until cleanup is confirmed."
 
-    ~H"""
-    <%= if @href do %>
-      <a
-        class="issue-id issue-id-link"
-        href={@href}
-        target="_blank"
-        rel="noopener noreferrer"
-        aria-label={"Open #{@identifier} in the issue tracker"}
-      ><%= @identifier %></a>
-    <% else %>
-      <span class="issue-id"><%= @identifier %></span>
-    <% end %>
-    """
-  end
+  defp command_description("retry"), do: "Clear this issue’s hold without resetting its budget. An eligible task can start again; this does not deliver an answer or automatically repair a candidate."
+  defp command_receipt("cancel"), do: "Cancel accepted. The issue is held; verify worker cleanup before treating it as stopped."
+  defp command_receipt(action), do: "#{String.capitalize(action)} accepted. Refreshing confirmed execution state."
+  defp command_error(:revision_conflict), do: "State changed. Close this dialog and review the refreshed board before trying again."
+  defp command_error(:tracker_changed), do: "Project configuration changed. Reload the page and unlock controls again."
+  defp command_error(:unauthorized), do: "Operator session unavailable or expired. Unlock controls in Settings."
+  defp command_error(reason), do: "Command not confirmed (#{inspect(reason)}). A repeated confirmation uses the same command ID."
 
-  defp external_issue_url(url) when is_binary(url) do
-    url = String.trim(url)
-
+  defp safe_url(url) when is_binary(url) do
     case URI.parse(url) do
-      %URI{scheme: scheme, host: host}
-      when scheme in ["http", "https"] and is_binary(host) and host != "" ->
-        url
-
-      _ ->
-        nil
+      %URI{scheme: scheme, host: host, userinfo: nil} when scheme in ["http", "https"] and is_binary(host) and host != "" -> url
+      _ -> nil
     end
   end
 
-  defp external_issue_url(_url), do: nil
+  defp safe_url(_), do: nil
 
-  defp completed_runtime_seconds(payload) do
-    payload.codex_totals.seconds_running || 0
-  end
-
-  defp total_runtime_seconds(payload, now) do
-    completed_runtime_seconds(payload) +
-      Enum.reduce(payload.running, 0, fn entry, total ->
-        total + runtime_seconds_from_started_at(entry.started_at, now)
-      end)
-  end
-
-  defp format_runtime_and_turns(started_at, turn_count, now) when is_integer(turn_count) and turn_count > 0 do
-    "#{format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))} / #{turn_count}"
-  end
-
-  defp format_runtime_and_turns(started_at, _turn_count, now),
-    do: format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))
-
-  defp format_runtime_seconds(seconds) when is_number(seconds) do
-    whole_seconds = max(trunc(seconds), 0)
-    mins = div(whole_seconds, 60)
-    secs = rem(whole_seconds, 60)
-    "#{mins}m #{secs}s"
-  end
-
-  defp runtime_seconds_from_started_at(%DateTime{} = started_at, %DateTime{} = now) do
-    DateTime.diff(now, started_at, :second)
-  end
-
-  defp runtime_seconds_from_started_at(started_at, %DateTime{} = now) when is_binary(started_at) do
-    case DateTime.from_iso8601(started_at) do
-      {:ok, parsed, _offset} -> runtime_seconds_from_started_at(parsed, now)
-      _ -> 0
+  defp new_issue_url(%{id: "github:" <> _, url: url}) do
+    case safe_url(url) do
+      nil -> nil
+      safe -> String.trim_trailing(safe, "/") <> "/issues/new"
     end
   end
 
-  defp runtime_seconds_from_started_at(_started_at, _now), do: 0
-
-  defp format_int(value) when is_integer(value) do
-    value
-    |> Integer.to_string()
-    |> String.reverse()
-    |> String.replace(~r/.{3}(?=.)/, "\\0,")
-    |> String.reverse()
-  end
-
-  defp format_int(_value), do: "n/a"
-
-  defp state_badge_class(state) do
-    base = "state-badge"
-    normalized = state |> to_string() |> String.downcase()
-
-    cond do
-      String.contains?(normalized, ["progress", "running", "active"]) -> "#{base} state-badge-active"
-      String.contains?(normalized, ["blocked", "error", "failed"]) -> "#{base} state-badge-danger"
-      String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "#{base} state-badge-warning"
-      true -> base
-    end
-  end
-
-  defp schedule_runtime_tick do
-    Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
-  end
-
-  defp pretty_value(nil), do: "n/a"
-  defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)
+  defp new_issue_url(_), do: nil
 end

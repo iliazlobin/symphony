@@ -28,7 +28,7 @@ defmodule SymphonyElixir.ControlOrchestratorTest do
 
     File.write!(workflow, "---\n" <> Jason.encode!(config) <> "\n---\nTask")
     Workflow.set_workflow_file_path(workflow)
-    issue = %Issue{id: "7", identifier: "GH-7", title: "Controlled fixture", state: "open", labels: ["ready"]}
+    issue = %Issue{id: "7", identifier: "GH-7", title: "Controlled fixture", state: "open", labels: ["ready"], dispatchable: true}
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
     supervisor = start_supervised!({Task.Supervisor, []})
     name = Module.concat(__MODULE__, "Runtime#{System.unique_integer([:positive])}")

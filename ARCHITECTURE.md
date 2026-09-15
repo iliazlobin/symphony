@@ -13,6 +13,8 @@ coding after validating the scoped container policies and a bounded delivery pil
 flowchart TB
   User["User"] --> Client["CLI or narrow MCP tools"]
   subgraph Mac["Trusted Mac services"]
+    Web["Web client · Kanban and popup dialogs"] --> Browser["Local browser session and CSRF checks"]
+    Browser --> Scheduler
     Client --> API["Authenticated loopback API"]
     API --> Scheduler["Symphony orchestrator"]
     Scheduler --- Ledger["Durable control ledger"]
@@ -65,6 +67,12 @@ commands to the native API and owns no scheduling state.
   guardian-owned container using an immutable local image ID.
 - [`Workspace`](elixir/lib/symphony_elixir/workspace.ex) creates and validates
   execution directories. Controlled mode retains workspaces for recovery.
+- [`TaskBoard`](elixir/lib/symphony_elixir_web/task_board.ex) combines tracker issues,
+  runtime and durable holds for the LiveView Kanban board. Sorting and manual order
+  are browser preferences. Card and Settings dialogs preserve the board underneath.
+  [`BrowserAuth`](elixir/lib/symphony_elixir_web/browser_auth.ex) gates local operator
+  sessions; `BoardActions` forwards only existing commands with native project,
+  revision and idempotency checks. Tracker writes and publication remain with their owners.
 - [`ControlApiController`](elixir/lib/symphony_elixir_web/controllers/control_api_controller.ex)
   authenticates local control requests. [`symphony_control.py`](tools/symphony_control.py)
   provides CLI and stdio MCP clients of that API.
