@@ -79,7 +79,7 @@ mode, launch/merge gates, review holds, budgets and publication receipts.
 
 - “Show the current mode, running tasks, holds and publication blockers.”
 - “Inspect runtime details for GH-6 and link its GitHub issue.”
-- “Read current status, then drain Symphony after the current task finishes.”
+- “Read current status, then drain Symphony now and let the current task finish.”
 - “Cancel issue #6, then confirm its execution state.”
 
 The connector exposes only `symphony_status`, `symphony_issue` and `symphony_control`.
@@ -106,8 +106,9 @@ that is not currently running, retrying or input-blocked; check GitHub and durab
 control status for queued work, review holds and completed handoffs.
 
 **Terminal — local operation and recovery.** Run these commands from the Symphony
-checkout with the configured Python interpreter. For a different initialized profile,
-place `--config /path/to/config.json` before the action. Start with read-only checks:
+checkout with the configured Python interpreter. For another configuration of this
+Events Concierge profile, place `--config /path/to/config.json` before the action.
+Start with read-only checks:
 
 ```sh
 python3 tools/symphony_service.py status
