@@ -344,7 +344,7 @@ defmodule SymphonyElixir.Chat.Runtime do
 
     receive do
       {^task_ref, result} ->
-        Process.demonitor(task_ref, [:flush])
+        Task.ignore(task)
         result
 
       :interrupt ->
