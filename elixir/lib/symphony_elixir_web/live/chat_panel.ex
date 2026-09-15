@@ -101,6 +101,17 @@ defmodule SymphonyElixirWeb.ChatPanel do
     {:noreply, assign(socket, share_context: share, include_selected: selected)}
   end
 
+  def handle_event("context-preferences", %{"project_id" => project, "share_context" => share, "include_selected" => selected}, socket)
+      when is_binary(project) and is_boolean(share) and is_boolean(selected) do
+    if BrowserAuth.authorized?(socket.assigns.auth) and is_nil(socket.assigns.unavailable) and project == project_id(socket) do
+      {:noreply, assign(socket, share_context: share, include_selected: selected)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("context-preferences", _params, socket), do: {:noreply, socket}
+
   def handle_event("board-link", %{"url" => url}, socket) do
     if BrowserAuth.authorized?(socket.assigns.auth) and board_link?(url, project_id(socket)) do
       send(self(), {:chat_panel, :board_link, url})
@@ -433,7 +444,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
       )
 
     ~H"""
-    <section id="chat-app" class={"chat-shell chat-panel #{if @embedded, do: "embedded-chat", else: ""}"} phx-hook="ChatWorkspace" data-chat-id={@chat && @chat["id"]} data-running={to_string(@running)}>
+    <section id="chat-app" class={"chat-shell chat-panel #{if @embedded, do: "embedded-chat", else: ""}"} phx-hook="ChatWorkspace" data-chat-id={@chat && @chat["id"]} data-project={@project && @project["id"]} data-event-target={@myself} data-running={to_string(@running)}>
       <header class="board-header chat-header">
         <a :if={!@embedded} href="/" class="brand">∿ Symphony</a>
         <nav :if={!@embedded} class="workspace-tabs" aria-label="Workspace"><a href={board_path(@project && @project["id"])}>Board</a><a href={chat_path(@project && @project["id"])} aria-current="page">Chat</a></nav>
