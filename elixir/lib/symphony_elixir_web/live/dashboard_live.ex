@@ -80,6 +80,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
+  def handle_event(action, params, socket)
+      when action in ["new-task", "move-task", "prepare-command", "confirm-command"] do
+    if read_only?(socket.assigns.board) do
+      dialog = if socket.assigns.dialog in [:confirm, :new_task], do: nil, else: socket.assigns.dialog
+      {:noreply, socket |> assign(:pending_command, nil) |> assign(:dialog, dialog) |> assign(:notice, "This board is read-only. Execution and tracker changes are unavailable here.")}
+    else
+      handle_write_event(action, params, socket)
+    end
+  end
+
   def handle_event("open-task", %{"id" => id}, socket) do
     case Enum.find(socket.assigns.board.tasks, &(&1.id == id)) do
       nil -> {:noreply, assign(socket, :notice, "That task is no longer in the current board. Refresh and try again.")}
@@ -88,7 +98,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   def handle_event("open-settings", _params, socket), do: {:noreply, assign(socket, :dialog, :settings)}
-  def handle_event("new-task", _params, socket), do: {:noreply, assign(socket, :dialog, :new_task)}
 
   def handle_event("close-dialog", _params, socket) do
     socket = socket |> assign(:dialog, nil) |> assign(:pending_command, nil) |> assign(:linked_task, nil)
@@ -102,7 +111,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   def handle_event("refresh", _params, socket), do: {:noreply, refresh_board(socket)}
 
-  def handle_event("move-task", %{"id" => id, "stage" => stage}, socket) do
+  defp handle_write_event("new-task", _params, socket), do: {:noreply, assign(socket, :dialog, :new_task)}
+
+  defp handle_write_event("move-task", %{"id" => id, "stage" => stage}, socket) do
     task = Enum.find(socket.assigns.board.tasks, &(&1.id == id))
 
     cond do
@@ -124,7 +135,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  def handle_event("prepare-command", %{"action" => action} = params, socket) do
+  defp handle_write_event("prepare-command", %{"action" => action} = params, socket) do
     task = Enum.find(socket.assigns.board.tasks, &(&1.id == params["id"]))
 
     if action in ["pause", "drain", "resume"] or (action in ["cancel", "retry"] and task) do
@@ -134,9 +145,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  def handle_event("confirm-command", _params, %{assigns: %{pending_command: nil}} = socket), do: {:noreply, socket}
+  defp handle_write_event("confirm-command", _params, %{assigns: %{pending_command: nil}} = socket), do: {:noreply, socket}
 
-  def handle_event("confirm-command", _params, socket) do
+  defp handle_write_event("confirm-command", _params, socket) do
     pending = socket.assigns.pending_command
 
     case BoardActions.command(pending.action, pending.issue_id, pending.revision, pending.id, socket.assigns.auth, orchestrator()) do
@@ -174,7 +185,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def render(assigns) do
-    assigns = assign(assigns, :authorized, BrowserAuth.authorized?(assigns.auth))
+    assigns = assign(assigns, authorized: BrowserAuth.authorized?(assigns.auth), read_only: read_only?(assigns.board))
 
     ~H"""
     <section id="task-board-app" class="dashboard-shell" phx-hook="TaskBoard"
@@ -184,8 +195,21 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <span class="header-spacer"></span>
         <div id="board-search" phx-update="ignore"><input type="search" data-board-search aria-label="Search tasks" placeholder="Search tasks…" /></div>
         <button id="settings-button" class="button button-quiet" phx-click="open-settings">Settings</button>
-        <button id="new-task-button" class="button button-primary" phx-click="new-task">+ New task</button>
+        <button :if={!@read_only} id="new-task-button" class="button button-primary" phx-click="new-task">+ New task</button>
       </header>
+
+      <div id="board-context" class="board-context" aria-label="Board data and execution status">
+        <div class="board-context-state">
+          <strong :if={Map.get(@board, :data_mode)}>{Map.get(@board, :data_mode)}</strong>
+          <span class="board-source-state" data-unavailable={to_string(not is_nil(@board.source_error))}>{source_status(@board, @loading)}</span>
+          <span class="board-runtime-state" data-unavailable={to_string(runtime_unavailable?(@board, @payload))}>{execution_status(@board, @payload)}</span>
+          <span :if={@read_only} class="evidence-badge">Read-only</span>
+        </div>
+        <div :if={context_links(@board) != []} class="board-context-links">
+          <a :for={link <- context_links(@board)} href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a>
+        </div>
+        <p :if={Map.get(@board, :source_note)} class="board-source-note">{Map.get(@board, :source_note)}</p>
+      </div>
 
       <div id="board-toolbar" class="board-toolbar" phx-update="ignore">
         <div class="filter-row">
@@ -211,8 +235,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <p :if={@payload[:error]} class="board-warning" role="alert"><strong>Snapshot unavailable:</strong> {@payload.error.code}</p>
         <p :if={@board.source_error} class="board-warning" role="alert">{@board.source_error}</p>
         <p :if={@board.runtime_error} class="board-warning" role="alert">{@board.runtime_error}</p>
+        <p :if={Map.get(@board, :enrichment_error)} class="board-warning" role="alert"><strong>Pull request details incomplete:</strong> {Map.get(@board, :enrichment_error)}</p>
         <div class="board-summary"><span data-result-count>{length(@board.tasks)} tasks</span>
-          <span class="summary-right"><span :if={@loading}>Refreshing…</span><time :if={@board.generated_at}>Checked {@board.generated_at}</time>
+          <span class="summary-right"><span :if={@loading}>Refreshing…</span>
           <button class="button button-small" phx-click="refresh" disabled={@loading}>Refresh</button></span></div>
         <div id="mobile-lane-control" class="mobile-lane-control" phx-update="ignore"><label>Lane <select data-mobile-lane aria-label="Board lane">
           <option :for={{id, label} <- @lanes} value={id}>{label}</option>
@@ -221,7 +246,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <section :for={{stage, label} <- @lanes} id={"lane-#{stage}"} class="kanban-lane" data-stage={stage} aria-label={"#{label} lane"}>
             <h2><span class={"lane-dot lane-dot-#{stage}"}></span>{label}<span class="lane-count" data-lane-count>{Enum.count(@board.tasks, &(&1.stage == stage))}</span></h2>
             <div class="lane-cards" data-lane-cards>
-              <article :for={task <- Enum.filter(@board.tasks, &(&1.stage == stage))} id={card_id(task)} class="task-card" draggable="true"
+              <article :for={task <- Enum.filter(@board.tasks, &(&1.stage == stage))} id={card_id(task)} class="task-card" draggable={to_string(!@read_only)}
                 data-task-id={task.id} data-project={task.project} data-priority={priority(task.priority)} data-attention={to_string(not is_nil(task.attention))}
                 data-title={task.title} data-identifier={task.identifier} data-created={task.created_at || ""} data-updated={task.updated_at || ""}>
                 <div class="card-top"><a :if={safe_url(task.url)} href={safe_url(task.url)} target="_blank" rel="noopener noreferrer"
@@ -229,10 +254,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <span class="priority" data-priority={priority(task.priority)}>{priority(task.priority)}</span></div>
                 <button id={"open-#{card_id(task)}"} class="card-title" phx-click="open-task" phx-value-id={task.id}>{task.title}</button>
                 <div class="card-project">{task.project_label}</div>
-                <span :if={task.attention} class="attention-badge">{task.attention}</span>
+                <div class="card-evidence"><span class="evidence-badge">Issue: {display(Map.get(task, :tracker_state))}</span><span>{task_execution(task)}</span></div>
+                <span :if={blocker(task)} class="attention-badge">{blocker(task)}</span>
+                <div :if={pull_requests(task) != []} class="card-pull-requests">
+                  <.pull_request :for={pr <- Enum.take(pull_requests(task), 2)} pr={pr} compact={true} />
+                  <button :if={length(pull_requests(task)) > 2} class="card-more-links" phx-click="open-task" phx-value-id={task.id}>View all {length(pull_requests(task))} pull requests</button>
+                </div>
+                <div :if={task_links(task, ["repo", "candidate"]) != []} class="card-reference-links"><a :for={link <- task_links(task, ["repo", "candidate"])} href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
                 <p :if={current_activity(task, @payload)} class="card-activity">{current_activity(task, @payload)}</p>
                 <div class="card-bottom"><span>{age(task.updated_at)}</span>
-                  <select class="move-select" data-move-task={task.id} aria-label={"Move #{task.identifier}"}>
+                  <select :if={!@read_only} class="move-select" data-move-task={task.id} aria-label={"Move #{task.identifier}"}>
                     <option value="">Move…</option><option :for={{value, title} <- @lanes} :if={value != task.stage} value={value}>{title}</option>
                   </select></div>
               </article>
@@ -241,7 +272,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </section>
         </div>
       </div>
-      <footer class="board-footer"><span class="status-stack"><span class="status-badge-live">Connected</span><span class="status-badge-offline">Disconnected · last-known state</span></span>
+      <footer class="board-footer"><span class="status-stack"><span class="status-badge-live">Live updates connected</span><span class="status-badge-offline">Disconnected · last-known state</span></span>
         <span>Manual order is a browser preference; scheduling follows repository policy.</span></footer>
 
       <dialog :if={@dialog} id="board-dialog" class="board-dialog" phx-hook="BoardDialog" aria-labelledby="dialog-title">
@@ -251,11 +282,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <%= case @dialog do %>
             <% :settings -> %>
               <section class="dialog-section"><h3>Operator controls</h3>
-                <p class="muted">Mode: {@board.control["mode"] || "Unavailable"}. Connection status does not establish worker readiness.</p>
-                <%= if @authorized do %>
+                <p class="muted">{execution_status(@board, @payload)}. Connection status does not establish worker readiness.</p>
+                <%= cond do %>
+                  <% @read_only -> %><p class="muted">This board is read-only. Native execution controls and tracker intake are unavailable here.</p>
+                  <% @authorized -> %>
                   <div class="dialog-actions"><button :for={action <- ["drain", "pause", "resume"]} class="button" phx-click="prepare-command" phx-value-action={action}>{String.capitalize(action)}</button></div>
                   <form action="/operator/session/logout" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} /><button class="button button-quiet">Lock controls</button></form>
-                <% else %>
+                  <% true -> %>
                   <p class="muted">Read-only until unlocked on this local host. Use the operator token from your local Symphony configuration.</p>
                   <form action="/operator/session" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} />
                     <label class="field">Operator token<input type="password" name="operator_token" autocomplete="off" required /></label>
@@ -271,25 +304,27 @@ defmodule SymphonyElixirWeb.DashboardLive do
               </section>
             <% :task -> %>
               <p class="muted">{@selected.project_label} · {@selected.identifier} · {lane_label(@selected.stage)}</p>
-              <a :if={safe_url(@selected.url)} class="button" href={safe_url(@selected.url)} target="_blank" rel="noopener noreferrer">Open issue in tracker ↗</a>
-              <p :if={@selected.attention} class="attention-badge">{@selected.attention}</p>
+              <div class="task-evidence"><span class="evidence-badge">Issue: {display(Map.get(@selected, :tracker_state))}</span><span>{task_execution(@selected)}</span></div>
+              <div class="task-reference-links"><a :for={link <- task_links(@selected)} class="button button-small" href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
+              <p :if={blocker(@selected)} class="attention-badge"><strong>Needs attention:</strong> {blocker(@selected)}</p>
               <p :if={Map.get(@selected, :completion_evidence)} class="muted">{Map.get(@selected, :completion_evidence)}</p>
+              <section :if={pull_requests(@selected) != []} class="dialog-section"><h3>Pull requests</h3><.pull_request :for={pr <- pull_requests(@selected)} pr={pr} compact={false} /></section>
               <section class="dialog-section"><h3>Scope &amp; acceptance</h3><p class="task-description">{@selected.description || "No description available."}</p></section>
               <section class="dialog-section"><h3>Codex update</h3><p>{current_activity(@selected, @payload) || "No current worker activity."}</p>
                 <button :if={session_id(@selected)} class="button button-small" data-copy={session_id(@selected)}>Copy ID</button>
               </section>
               <section :if={@selected.handoff} class="dialog-section"><h3>Candidate handoff</h3><pre>{pretty(@selected.handoff)}</pre><p class="muted">A handoff does not establish successful checks, merge or deployment. Review the candidate and PR evidence in GitHub.</p></section>
-              <section class="dialog-section"><h3>Execution</h3><p class="muted">Cancel requests a hold and worker cleanup. Retry clears a hold without resetting the budget; it does not answer a question or approve a candidate.</p>
+              <section :if={!@read_only} class="dialog-section"><h3>Execution</h3><p class="muted">Cancel requests a hold and worker cleanup. Retry clears a hold without resetting the budget; it does not answer a question or approve a candidate.</p>
                 <div class="dialog-actions"><button :for={action <- ["cancel", "retry"]} class="button" phx-click="prepare-command" phx-value-action={action} phx-value-id={@selected.id}>{String.capitalize(action)}</button></div>
                 <details><summary>Runtime details</summary><pre>{pretty(@selected.runtime)}</pre></details>
               </section>
             <% :confirm -> %>
               <p>{command_description(@pending_command.action)}</p>
               <p class="muted">{@pending_command.identifier || "Configured project"} · operator revision {@pending_command.revision}</p>
-              <div class="dialog-actions"><button class="button button-primary" phx-click="confirm-command" phx-disable-with="Submitting…">Confirm {String.downcase(@pending_command.action)}</button><button class="button" phx-click="close-dialog">Cancel</button></div>
+              <div class="dialog-actions"><button :if={!@read_only} class="button button-primary" phx-click="confirm-command" phx-disable-with="Submitting…">Confirm {String.downcase(@pending_command.action)}</button><button class="button" phx-click="close-dialog">Cancel</button></div>
             <% :new_task -> %>
               <p>Create the canonical task in the configured issue tracker. Specify its outcome, scope, acceptance checks and dependencies before queueing.</p>
-              <div class="dialog-actions"><a :for={project <- @board.projects} :if={new_issue_url(project)} class="button button-primary" href={new_issue_url(project)} target="_blank" rel="noopener noreferrer">New issue · {project.label} ↗</a></div>
+              <div :if={!@read_only} class="dialog-actions"><a :for={project <- @board.projects} :if={new_issue_url(project)} class="button button-primary" href={new_issue_url(project)} target="_blank" rel="noopener noreferrer">New issue · {project.label} ↗</a></div>
               <p class="muted">Return here and refresh after saving. Queue labels remain managed in GitHub; saving an issue alone does not start a worker.</p>
           <% end %>
         </div>
@@ -308,6 +343,96 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp initial_board(payload), do: TaskBoard.from_runtime(payload)
+  defp read_only?(board), do: Endpoint.config(:board_read_only, false) == true or Map.get(board, :read_only, false) == true
+
+  defp source_status(board, loading) do
+    provider = if Enum.any?(board.projects, &String.starts_with?(&1.id, "github:")), do: "GitHub", else: "Tracker"
+
+    cond do
+      board.source_error -> "#{provider} unavailable · last-known data"
+      loading -> "#{provider} checking…"
+      board.generated_at -> "#{provider} checked #{age(board.generated_at)}"
+      true -> "#{provider} not checked"
+    end
+  end
+
+  defp runtime_unavailable?(board, payload), do: not is_nil(board.runtime_error) or not is_nil(payload[:error])
+
+  defp execution_status(board, payload) do
+    cond do
+      runtime_unavailable?(board, payload) -> "Execution unavailable"
+      board.control["enabled"] == false -> "Execution controls disabled"
+      is_binary(board.control["mode"]) -> "Execution: " <> display(board.control["mode"])
+      true -> "Execution unavailable"
+    end
+  end
+
+  defp task_execution(task), do: "Execution: " <> display(Map.get(task, :execution_status))
+  defp blocker(task), do: Map.get(task, :blocker_reason) || task.attention
+  defp display(value) when is_binary(value) and value != "", do: value |> String.downcase() |> String.replace("_", " ") |> String.capitalize()
+  defp display(_), do: "Unknown"
+  defp records(value) when is_list(value), do: Enum.filter(value, &is_map/1)
+  defp records(_), do: []
+  defp field(record, key), do: Map.get(record, key, Map.get(record, Atom.to_string(key)))
+  defp pull_requests(task), do: task |> Map.get(:pull_requests, []) |> records()
+
+  defp context_links(board), do: board |> Map.get(:context_links, []) |> records() |> valid_links()
+
+  defp task_links(task, kinds \\ ["issue", "repo", "pr", "checks", "candidate"]) do
+    supplied = records(Map.get(task, :links, []))
+    fallback = [%{kind: "issue", label: "Open issue in tracker", url: task.url}]
+
+    (supplied ++ fallback)
+    |> Enum.filter(&(link_kind(&1) in kinds))
+    |> valid_links()
+    |> Enum.uniq_by(& &1.url)
+  end
+
+  defp link_kind(link) do
+    case field(link, :kind) do
+      kind when is_binary(kind) -> kind
+      kind when is_atom(kind) -> Atom.to_string(kind)
+      _ -> nil
+    end
+  end
+
+  defp valid_links(links) do
+    links |> Enum.map(&valid_link/1) |> Enum.reject(&is_nil/1)
+  end
+
+  defp valid_link(link) do
+    case {safe_url(field(link, :url)), field(link, :label)} do
+      {url, label} when is_binary(url) and is_binary(label) and label != "" -> %{url: url, label: label}
+      _ -> nil
+    end
+  end
+
+  defp pr_state(pr) do
+    state = display(field(pr, :state))
+    if field(pr, :draft) == true and state not in ["Merged", "Closed"], do: "Draft", else: state
+  end
+
+  defp pull_request(assigns) do
+    pr = assigns.pr
+    label = "PR ##{field(pr, :number)}"
+
+    assigns =
+      assign(assigns,
+        url: safe_url(field(pr, :url)),
+        label: label,
+        state: pr_state(pr),
+        title: field(pr, :title),
+        review: display(field(pr, :review)),
+        checks: display(field(pr, :checks))
+      )
+
+    ~H"""
+    <div class={"pull-request-evidence #{if @compact, do: "compact", else: ""}"}>
+      <div class="pull-request-heading"><a :if={@url} href={@url} target="_blank" rel="noopener noreferrer" title={@title}>{@label}<span :if={!@compact && is_binary(@title)}> · {@title}</span></a><strong :if={!@url}>{@label}</strong><span class="evidence-badge">{@state}</span></div>
+      <div class="pull-request-checks"><span>Review: {@review}</span><span>CI: {@checks}</span></div>
+    </div>
+    """
+  end
 
   defp current_activity(task, payload) do
     entries = Map.get(payload, :running, []) ++ Map.get(payload, :blocked, [])
@@ -317,7 +442,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp orchestrator, do: Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator
-  defp load_payload, do: Presenter.state_payload(orchestrator(), Endpoint.config(:snapshot_timeout_ms) || 15_000)
+
+  defp load_payload do
+    case Endpoint.config(:snapshot_loader) do
+      loader when is_function(loader, 0) -> loader.()
+      _ -> Presenter.state_payload(orchestrator(), Endpoint.config(:snapshot_timeout_ms) || 15_000)
+    end
+  end
 
   defp url_filters(params),
     do: params |> Map.take(["project", "status", "priority", "q", "sort"]) |> Map.reject(fn {_key, value} -> not is_binary(value) or byte_size(value) > 2_000 or value == "" end)
@@ -376,13 +507,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp command_error(reason), do: "Command not confirmed (#{inspect(reason)}). A repeated confirmation uses the same command ID."
 
   defp safe_url(url) when is_binary(url) do
-    case URI.parse(url) do
-      %URI{scheme: scheme, host: host, userinfo: nil} when scheme in ["http", "https"] and is_binary(host) and host != "" -> url
-      _ -> nil
-    end
+    if String.contains?(url, ["\\", "\n", "\r", "\t"]), do: nil, else: safe_uri(URI.parse(url), url)
   end
 
   defp safe_url(_), do: nil
+  defp safe_uri(%URI{scheme: scheme, host: host, userinfo: nil}, url) when scheme in ["http", "https"] and is_binary(host) and host != "", do: url
+  defp safe_uri(_uri, _url), do: nil
 
   defp new_issue_url(%{id: "github:" <> _, url: url}) do
     case safe_url(url) do

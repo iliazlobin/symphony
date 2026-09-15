@@ -3,7 +3,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
-  alias SymphonyElixirWeb.{Endpoint, Presenter, TaskBoard}
+  alias SymphonyElixirWeb.{BrowserAuth, Endpoint, Presenter, TaskBoard}
   @endpoint Endpoint
 
   # Explicit fixture server: real OTP calls and LiveView transport, no coding
@@ -18,7 +18,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     def handle_call({:board, board}, _from, state), do: {:reply, :ok, %{state | board: board}}
   end
 
-  setup do
+  setup context do
     config = %{
       tracker: %{
         kind: "github",
@@ -54,6 +54,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
         secret_key_base: String.duplicate("d", 64),
         orchestrator: runtime,
         snapshot_timeout_ms: 100,
+        board_read_only: context[:read_only] || false,
+        snapshot_loader: if(context[:snapshot_fixture], do: fn -> %{error: %{code: "fixture_snapshot_unavailable"}} end),
         board_loader: fn server, _timeout -> GenServer.call(server, :board) end
       )
 
@@ -208,6 +210,135 @@ defmodule SymphonyElixir.DashboardLiveTest do
     render_click(view, "board-filters", %{"project" => "github:example/fixture", "status" => "running", "q" => "Fixture", "sort" => "updated", "priority" => %{"bad" => "shape"}})
     assert_patch(view, "/?" <> URI.encode_query(%{"project" => "github:example/fixture", "status" => "running", "q" => "Fixture", "sort" => "updated"}))
     assert has_element?(view, "a[href='/chat?project=github%3Aexample%2Ffixture']")
+  end
+
+  test "cards and popups distinguish tracker, execution, blocker and verified PR evidence", ctx do
+    candidate = "https://github.com/example/fixture/commit/" <> String.duplicate("b", 40)
+
+    prs = [
+      %{number: 12, title: "Fix retries", url: "https://github.com/example/fixture/pull/12", state: "open", draft: true, review: "CHANGES_REQUESTED", checks: "failure"},
+      %{number: 11, title: "Initial fix", url: "https://github.com/example/fixture/pull/11", state: "merged", draft: false, review: "APPROVED", checks: "success"}
+    ]
+
+    board =
+      update_task(
+        ctx.board,
+        "2",
+        &Map.merge(&1, %{
+          execution_status: "paused",
+          blocker_reason: "Review changes before retrying",
+          pull_requests: prs,
+          links: [%{kind: "repo", label: "Repository", url: "https://github.com/example/fixture"}, %{kind: "candidate", label: "Verified candidate", url: candidate}]
+        })
+      )
+
+    board = Map.merge(board, %{data_mode: "Live GitHub", context_links: [%{label: "Issues", url: "https://github.com/example/fixture/issues"}]})
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    {view, _} = board_view()
+    card = "[data-task-id='github:example/fixture:2']"
+    assert has_element?(view, "#board-context", "Live GitHub")
+    assert has_element?(view, ".board-source-state", "GitHub checked")
+    assert has_element?(view, ".board-runtime-state", "Execution: Paused")
+    assert has_element?(view, "#board-context a[href='https://github.com/example/fixture/issues']")
+    assert has_element?(view, card, "Issue: Open")
+    assert has_element?(view, card, "Execution: Paused")
+    assert has_element?(view, card, "Review changes before retrying")
+    assert has_element?(view, card <> " a[href='https://github.com/example/fixture/pull/12']", "PR #12")
+    assert has_element?(view, card, "Draft")
+    assert has_element?(view, card, "Review: Changes requested")
+    assert has_element?(view, card, "CI: Failure")
+    assert has_element?(view, card, "Merged")
+    assert has_element?(view, ".status-badge-live", "Live updates connected")
+    open_task(view, "2")
+    assert has_element?(view, "#board-dialog a[href='#{candidate}']", "Verified candidate")
+    assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/issues/2']")
+    assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/pull/12']", "Fix retries")
+    assert has_element?(view, "#board-dialog", "CI: Success")
+  end
+
+  test "source, runtime and enrichment failures stay explicit without inventing PR checks", ctx do
+    changed = update_task(ctx.board, "2", &Map.put(&1, :pull_requests, [%{number: 8, title: "Pending", url: "https://github.com/example/fixture/pull/8", state: "open"}]))
+    :ok = GenServer.call(ctx.runtime, {:board, changed})
+    {view, _} = board_view()
+    assert has_element?(view, ".pull-request-checks", "Review: Unknown")
+    assert has_element?(view, ".pull-request-checks", "CI: Unknown")
+    incomplete = Map.merge(changed, %{source_error: "GitHub rate limit", runtime_error: "Runtime endpoint unavailable", enrichment_error: "PR checks could not be read"})
+    refresh(view, ctx.runtime, incomplete)
+    assert has_element?(view, ".board-source-state[data-unavailable=true]", "GitHub unavailable")
+    assert has_element?(view, ".board-runtime-state[data-unavailable=true]", "Execution unavailable")
+    assert has_element?(view, ".board-warning", "PR checks could not be read")
+    assert has_element?(view, "[data-task-id='github:example/fixture:2']", "Ready fixture")
+    refute has_element?(view, ".board-runtime-state", "Paused")
+  end
+
+  test "all supplied evidence links reject unsafe URLs and a bare candidate SHA creates no link", ctx do
+    changed =
+      update_task(
+        ctx.board,
+        "4",
+        &Map.merge(&1, %{
+          links: [%{kind: "candidate", label: "Unsafe candidate", url: "javascript:alert(1)"}, %{kind: "repo", label: "Bad repo", url: "https://safe.example\\@evil.example"}],
+          pull_requests: [%{number: 9, title: "<script>bad()</script>", url: "//evil.example/pr/9", state: "open"}]
+        })
+      )
+
+    changed = Map.put(changed, :context_links, [%{label: "Unsafe context", url: "data:text/html,bad"}])
+    :ok = GenServer.call(ctx.runtime, {:board, changed})
+    {view, _} = board_view()
+    open_task(view, "4")
+    refute has_element?(view, "a[href^='javascript:']")
+    refute has_element?(view, "a[href^='data:']")
+    refute has_element?(view, "a[href^='//']")
+    refute has_element?(view, "a[href*='evil.example']")
+    refute has_element?(view, "a[href*='/commit/']")
+    refute has_element?(view, "#board-dialog script")
+  end
+
+  @tag read_only: true, snapshot_fixture: true
+  test "configured read-only mode applies before async data and rejects every mutation event", ctx do
+    html = html_response(get(build_conn(), "/"), 200)
+    refute html =~ "id=\"new-task-button\""
+    assert html =~ "fixture_snapshot_unavailable"
+    {view, _} = board_view()
+    refute has_element?(view, "#new-task-button")
+    refute has_element?(view, ".move-select")
+    assert has_element?(view, ".task-card[draggable=false]")
+    render_click(view, "open-settings")
+    refute has_element?(view, "#board-dialog input[name=operator_token]")
+    refute has_element?(view, "#board-dialog form[action='/operator/session/logout']")
+    refute has_element?(view, "#board-dialog button[phx-click=prepare-command]")
+
+    for {event, params} <- [{"new-task", %{}}, {"prepare-command", %{"action" => "pause"}}, {"move-task", %{"id" => "github:example/fixture:2", "stage" => "backlog"}}, {"confirm-command", %{}}] do
+      render_click(view, event, params)
+      assert render(view) =~ "This board is read-only"
+    end
+
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    open_task(view, "2")
+    refute has_element?(view, "#board-dialog button[phx-click=prepare-command]")
+    assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/issues/2']")
+  end
+
+  test "a board becoming read-only rejects an already prepared authorized command", ctx do
+    previous_token = System.get_env("SYMPHONY_CONTROL_TOKEN")
+    token = String.duplicate("readonly-transition", 3)
+    System.put_env("SYMPHONY_CONTROL_TOKEN", token)
+    on_exit(fn -> restore_env("SYMPHONY_CONTROL_TOKEN", previous_token) end)
+    conn = %{build_conn() | host: "localhost"}
+    {:ok, marker} = BrowserAuth.authenticate(conn, token)
+    conn = Plug.Test.init_test_session(conn, %{BrowserAuth.session_key() => marker})
+    {:ok, view, _} = live(conn, "/")
+    render_async(view)
+    render_click(view, "prepare-command", %{"action" => "pause"})
+    assert has_element?(view, "#board-dialog button[phx-click=confirm-command]")
+    board = Map.merge(ctx.board, %{read_only: true, source_note: "Chat is unavailable in this view."})
+    refresh(view, ctx.runtime, board)
+    assert has_element?(view, ".board-source-note", "Chat is unavailable")
+    refute has_element?(view, "#board-dialog button[phx-click=confirm-command]")
+    render_click(view, "confirm-command")
+    assert render(view) =~ "This board is read-only"
+    refute has_element?(view, "#board-dialog")
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
   end
 
   defp board_view do
