@@ -25,7 +25,7 @@ class PermissionProbeTests(unittest.TestCase):
 
     def test_unreachable_controls_cannot_establish_secret_or_network_denial(self):
         controls = {"auth_read": True, "env_read": True, "host_input_read": True,
-                    "runtime_read": True, "network": True, "workspace_write": True}
+                    "runtime_read": True, "network": True, "workspace_write": True, "ambient_environment": True}
         probe.verify_outer(controls, "builder")
         for key in controls:
             with self.subTest(key=key), self.assertRaises(RuntimeError):
@@ -34,7 +34,7 @@ class PermissionProbeTests(unittest.TestCase):
 
     def test_reviewer_denial_cannot_be_masked_by_readonly_outer_mount(self):
         controls = {"auth_read": True, "env_read": True, "host_input_read": True,
-                    "runtime_read": True, "network": True, "workspace_write": False}
+                    "runtime_read": True, "network": True, "workspace_write": False, "ambient_environment": True}
         with self.assertRaises(RuntimeError):
             probe.verify_outer(controls, "builder")
         with self.assertRaises(RuntimeError):
@@ -55,5 +55,6 @@ class PermissionProbeTests(unittest.TestCase):
         return {"workspace_read": True, "workspace_write": role == "builder",
                 "env_read": False, "auth_read": False, "host_input_read": False,
                 "runtime_read": False, "tmp_write": False, "network": False,
-                "python": True, "node": True, "uv": True, "git_diff": True,
+                "python": True, "node": True, "uv": True, "git_diff": True, "cat": True,
+                "command_path": True, "ambient_environment": False,
                 "handoff_write": role == "builder", "git_commit": role == "builder"}
