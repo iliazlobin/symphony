@@ -25,8 +25,51 @@ defmodule SymphonyElixir.ControlledWorkerTest do
     fake = fake_server(root, "ack_storm")
     controlled_workflow(root, fake, codex_turn_timeout_ms: 180, codex_read_timeout_ms: 5_000)
     started = System.monotonic_time(:millisecond)
-    assert {:error, :response_timeout} = AppServer.run(workspace, "bounded acknowledgement", issue())
+    assert {:error, {:startup_failed, :turn_start, :response_timeout}} = AppServer.run(workspace, "bounded acknowledgement", issue())
     assert System.monotonic_time(:millisecond) - started < 1_500
+  end
+
+  test "startup failures identify the controlled phase while uncontrolled errors stay unchanged",
+       %{root: root} do
+    for controlled <- [true, false], phase <- [:initialize, :thread_start, :turn_start] do
+      fixture = Path.join(root, "#{controlled}-#{phase}")
+      workspace = Path.join(fixture, "issue")
+      File.mkdir_p!(workspace)
+      fake = fake_server(fixture, "error_#{phase}")
+      configure_startup(fixture, fake, controlled)
+
+      error = %{
+        "code" => -32000,
+        "message" => "PRIVATE_RPC_SENTINEL",
+        "data" => %{"secret" => "PRIVATE_DATA_SENTINEL"}
+      }
+
+      reason = {:response_error, error}
+      expected = if controlled, do: {:startup_failed, phase, reason}, else: reason
+
+      logs =
+        capture_log(fn ->
+          assert {:error, ^expected} =
+                   AppServer.run(workspace, "PRIVATE_PROMPT_SENTINEL", issue())
+        end)
+
+      diagnostic_lines =
+        logs |> String.split("\n") |> Enum.filter(&String.contains?(&1, "Codex startup "))
+
+      if controlled do
+        assert Enum.any?(diagnostic_lines, &String.contains?(&1, "failed phase=#{phase}"))
+        assert Enum.any?(diagnostic_lines, &String.contains?(&1, "reason=response_error"))
+        assert logs =~ "worker_role=builder"
+        assert logs =~ "issue_id=42 issue_identifier=EC-42"
+        assert logs =~ ~r/elapsed_ms=\d+/
+        if phase == :turn_start, do: assert(logs =~ "thread_id=builder")
+        refute Enum.any?(diagnostic_lines, &String.contains?(&1, "PRIVATE_"))
+      else
+        assert diagnostic_lines == []
+      end
+
+      assert_startup_stopped(fixture, phase)
+    end
   end
 
   test "guardian kills same-group children and grandchildren after its Erlang owner dies", %{root: root} do
@@ -176,7 +219,9 @@ defmodule SymphonyElixir.ControlledWorkerTest do
       fake = fake_server(root, mode)
       controlled_workflow(root, fake)
       expected = "symphony-#{role}"
-      assert {:error, {:permission_profile_mismatch, ^expected}} = AppServer.run(workspace, "Must not execute", issue(), profile: role)
+
+      assert {:error, {:startup_failed, :thread_start, {:permission_profile_mismatch, ^expected}}} =
+               AppServer.run(workspace, "Must not execute", issue(), profile: role)
     end
 
     calls = File.read!(Path.join(root, "trace")) |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1)
@@ -247,6 +292,36 @@ defmodule SymphonyElixir.ControlledWorkerTest do
     refute File.exists?(Path.join(root, "trace"))
   end
 
+  defp configure_startup(root, command, true), do: controlled_workflow(root, command)
+
+  defp configure_startup(root, command, false) do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: root,
+      tracker_kind: "memory",
+      codex_command: command
+    )
+
+    WorkflowStore.force_reload()
+  end
+
+  defp assert_startup_stopped(root, phase) do
+    expected =
+      case phase do
+        :initialize -> ["initialize"]
+        :thread_start -> ["initialize", "initialized", "thread/start"]
+        :turn_start -> ["initialize", "initialized", "thread/start", "turn/start"]
+      end
+
+    methods =
+      File.read!(Path.join(root, "trace"))
+      |> String.split("\n", trim: true)
+      |> Enum.map(&Jason.decode!(&1)["method"])
+
+    assert methods == expected
+    pid = File.read!(Path.join(root, "fake-server.pid")) |> String.trim()
+    wait_until(fn -> not process_alive?(pid) end)
+  end
+
   defp controlled_workflow(root, command, overrides \\ []) do
     settings = [workspace_root: root, tracker_kind: "memory", codex_command: command] ++ overrides
     write_workflow_file!(Workflow.workflow_file_path(), settings)
@@ -311,6 +386,7 @@ defmodule SymphonyElixir.ControlledWorkerTest do
     import json, os, subprocess, sys, time
     mode = #{Jason.encode!(mode)}
     trace = #{Jason.encode!(Path.join(root, "trace"))}
+    with open(#{Jason.encode!(Path.join(root, "fake-server.pid"))}, 'w') as f: f.write(str(os.getpid()))
     role = 'builder'
     def send(value):
         print(json.dumps(value), flush=True)
@@ -318,9 +394,12 @@ defmodule SymphonyElixir.ControlledWorkerTest do
         msg = json.loads(line)
         with open(trace, 'a') as f: f.write(json.dumps(msg) + '\\n')
         method = msg.get('method')
+        if mode == 'error_' + method.replace('/', '_'):
+            send({'id': msg['id'], 'error': {'code': -32000, 'message': 'PRIVATE_RPC_SENTINEL', 'data': {'secret': 'PRIVATE_DATA_SENTINEL'}}})
+            continue
         if method == 'initialize': send({'id': 1, 'result': {}})
         elif method == 'thread/start':
-            profile = msg['params']['config']['default_permissions']
+            profile = msg['params'].get('config', {}).get('default_permissions', 'symphony-builder')
             role = 'reviewer' if profile == 'symphony-reviewer' else 'builder'
             result = {'thread': {'id': role}, 'activePermissionProfile': {'id': profile}}
             if mode == 'missing_profile': result.pop('activePermissionProfile')

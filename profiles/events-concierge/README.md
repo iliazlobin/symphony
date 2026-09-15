@@ -294,6 +294,12 @@ scheduler after editing its workflow, with active work settled and the existing
 control ledger preserved. The disposable probes use the same initialization limit;
 command and cancellation acceptance deadlines remain separate.
 
+Controlled startup errors identify `initialize`, `thread_start` or `turn_start` and
+retain the original failure reason. Logs record per-phase `elapsed_ms`, the worker
+role and available issue/thread identifiers without adding protocol payloads. Use
+these fields to locate a timeout before changing limits; a missing turn
+acknowledgement does not prove that model work never began.
+
 Validate the operational selection with fake authentication and no model calls:
 
 ```sh

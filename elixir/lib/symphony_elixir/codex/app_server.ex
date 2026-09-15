@@ -28,7 +28,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   @spec run(Path.t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def run(workspace, prompt, issue, opts \\ []) do
-    with {:ok, session} <- start_session(workspace, opts) do
+    with {:ok, session} <- start_session(workspace, Keyword.put(opts, :issue, issue)) do
       try do
         run_turn(session, prompt, issue, opts)
       after
@@ -42,6 +42,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     worker_host = Keyword.get(opts, :worker_host)
     controlled = Config.control_settings().enabled
     profile = Keyword.get(opts, :profile, :builder)
+    startup_context = %{controlled: controlled, profile: profile, issue: opts[:issue]}
     original_binding = DynamicTool.bind()
     dynamic_tool_binding = if controlled, do: Map.put(original_binding, :tool_specs, []), else: original_binding
 
@@ -53,7 +54,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
       with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host, profile),
            {:ok, thread_id} <-
-             do_start_session(port, expanded_workspace, session_policies, dynamic_tool_binding) do
+             do_start_session(port, expanded_workspace, session_policies, dynamic_tool_binding, startup_context) do
         {:ok,
          %{
            port: port,
@@ -111,7 +112,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     deadline = timeout_budget(Config.settings!().codex.turn_timeout_ms)
 
     try do
-      case start_turn(session, prompt, issue, opts, deadline) do
+      case startup_phase(Map.put(session, :issue, issue), :turn_start, fn -> start_turn(session, prompt, issue, opts, deadline) end) do
         {:ok, turn_id} ->
           session_id = "#{thread_id}-#{turn_id}"
           Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
@@ -352,12 +353,42 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp controlled_policies(result, _profile, _controlled), do: result
 
-  defp do_start_session(port, workspace, session_policies, dynamic_tool_binding) do
-    case send_initialize(port) do
-      :ok -> start_thread(port, workspace, session_policies, dynamic_tool_binding)
-      {:error, reason} -> {:error, reason}
+  defp do_start_session(port, workspace, session_policies, dynamic_tool_binding, context) do
+    with :ok <- startup_phase(context, :initialize, fn -> send_initialize(port) end) do
+      startup_phase(context, :thread_start, fn ->
+        start_thread(port, workspace, session_policies, dynamic_tool_binding)
+      end)
     end
   end
+
+  defp startup_phase(%{controlled: true} = context, phase, operation) do
+    started = System.monotonic_time(:millisecond)
+    result = operation.()
+    elapsed = System.monotonic_time(:millisecond) - started
+    fields = "phase=#{phase} elapsed_ms=#{elapsed} worker_role=#{context.profile}" <> startup_context(context) <> startup_thread(context)
+
+    case result do
+      {:error, reason} ->
+        Logger.warning("Codex startup failed #{fields} reason=#{startup_reason(reason)}")
+        {:error, {:startup_failed, phase, reason}}
+
+      success ->
+        Logger.info("Codex startup completed #{fields}")
+        success
+    end
+  end
+
+  defp startup_phase(_context, _phase, operation), do: operation.()
+
+  defp startup_thread(%{thread_id: thread_id}), do: " thread_id=#{thread_id}"
+  defp startup_thread(_context), do: ""
+
+  defp startup_context(%{issue: %{id: _, identifier: _} = issue}), do: " " <> issue_context(issue)
+  defp startup_context(_context), do: ""
+
+  defp startup_reason(reason) when is_atom(reason), do: reason
+  defp startup_reason(reason) when is_tuple(reason) and tuple_size(reason) > 0 and is_atom(elem(reason, 0)), do: elem(reason, 0)
+  defp startup_reason(_reason), do: :unknown
 
   defp start_thread(
          port,
