@@ -32,6 +32,10 @@ defmodule SymphonyElixir.GitHub.BoardTest do
       assert body["variables"] == %{"owner" => "example", "name" => "repo"}
       assert body["query"] =~ "includeClosedPrs: true"
       assert body["query"] =~ "CROSS_REFERENCED_EVENT"
+      assert body["query"] =~ "contexts(first: 20)"
+      assert body["query"] =~ "... on CheckRun"
+      assert body["query"] =~ "... on StatusContext"
+      assert body["query"] =~ "workflowRun { workflow { name } url runNumber event }"
       refute body["query"] =~ "mutation"
       assert settings.repo == "example/repo"
       send(owner, :read)
@@ -49,11 +53,133 @@ defmodule SymphonyElixir.GitHub.BoardTest do
     assert card.github_status == "available"
     assert [referenced, linked] = card.pull_requests
     assert %{number: 8, state: "merged", draft: false, relation: "referenced", review: "approved"} = referenced
-    assert %{number: 7, draft: true, relation: "linked", review: "unknown"} = linked
+    assert %{number: 7, draft: true, relation: "linked", review: "no_decision"} = linked
     assert Enum.all?(card.pull_requests, &(&1.head_sha == @sha and &1.checks == "success"))
     assert Enum.count(card.links, &(&1.kind == "pull_request")) == 2
     assert Enum.count(card.links, &(&1.kind == "checks" and String.ends_with?(&1.url, "/checks"))) == 2
     refute Enum.any?(card.links, &(&1.kind == "commit"))
+  end
+
+  test "current-head checks carry individual job durations and workflow identity with PR metadata" do
+    jobs = [check_run("Static checks"), check_run("Web", %{"completedAt" => "2026-09-15T00:01:10Z"})]
+    respond(payload(evidence([pr(7, %{"commits" => commits(contexts(jobs))})])))
+    assert [pull] = hd(Board.enrich(board(), settings()).tasks).pull_requests
+    assert %{head_ref: "codex/gh-6", base_ref: "codex/onboarding", author: "builder"} = pull
+    assert %{additions: 18, deletions: 3, changed_files: 2, mergeable: "mergeable"} = pull
+    assert pull.check_total == 2
+    assert pull.check_details_status == "available"
+
+    assert [
+             %{kind: "check_run", name: "Static checks", status: "completed", conclusion: "success", duration_ms: 145_000},
+             %{name: "Web", duration_ms: 70_000}
+           ] = pull.check_runs
+
+    assert Enum.all?(pull.check_runs, &(&1.workflow_name == "CI" and &1.run_number == 20 and &1.run_event == "pull_request"))
+    assert Enum.all?(pull.check_runs, &(&1.run_url == "https://github.com/example/repo/actions/runs/123"))
+    assert Enum.all?(pull.check_runs, &(&1.started_at == "2026-09-15T00:00:00Z"))
+    refute Map.has_key?(pull, :duration_ms)
+
+    respond(payload(evidence([pr(7, %{"headRefOid" => String.duplicate("b", 40), "commits" => commits(contexts(jobs))})])))
+    assert [%{checks: "stale", check_runs: [], check_total: nil, check_details_status: "stale"}] = hd(Board.enrich(board(), settings()).tasks).pull_requests
+  end
+
+  test "legacy statuses preserve their result without inventing timing or Actions metadata" do
+    for state <- ~w(SUCCESS FAILURE ERROR PENDING EXPECTED) do
+      context = %{"__typename" => "StatusContext", "context" => "external-ci", "state" => state, "targetUrl" => "http://ci.example.test/job/1"}
+      respond(payload(evidence([pr(7, %{"commits" => commits(contexts([context]))})])))
+      assert [%{check_runs: [run], check_total: 1, check_details_status: "available"}] = hd(Board.enrich(board(), settings()).tasks).pull_requests
+      assert %{kind: "status_context", name: "external-ci", url: "http://ci.example.test/job/1"} = run
+      assert %{started_at: nil, completed_at: nil, duration_ms: nil, workflow_name: nil, run_url: nil} = run
+      assert run.status == if(state in ~w(PENDING EXPECTED), do: "pending", else: "completed")
+      assert run.conclusion == if(state in ~w(PENDING EXPECTED), do: "unknown", else: String.downcase(state))
+    end
+  end
+
+  test "only valid completed job timestamps produce a duration and pending work cannot appear passed" do
+    for {changes, conclusion, duration} <- [
+          {%{"conclusion" => "SKIPPED"}, "skipped", 145_000},
+          {%{"conclusion" => "NEUTRAL"}, "neutral", 145_000},
+          {%{"conclusion" => "FUTURE_RESULT"}, "unknown", 145_000},
+          {%{"status" => "IN_PROGRESS", "conclusion" => "SUCCESS"}, "unknown", nil},
+          {%{"status" => "QUEUED", "startedAt" => nil, "completedAt" => nil}, "unknown", nil},
+          {%{"startedAt" => "invalid"}, "success", nil},
+          {%{"startedAt" => "2026-09-15T00:00:00"}, "success", nil},
+          {%{"completedAt" => "2026-09-14T23:59:59Z"}, "success", nil},
+          {%{"startedAt" => 10}, "success", nil},
+          {%{"completedAt" => String.duplicate("0", 65)}, "success", nil}
+        ] do
+      respond(payload(evidence([pr(7, %{"commits" => commits(contexts([check_run("job", changes)]))})])))
+      assert [%{check_runs: [run]}] = hd(Board.enrich(board(), settings()).tasks).pull_requests
+      assert run.conclusion == conclusion
+      assert run.duration_ms == duration
+    end
+  end
+
+  test "bounded and malformed check connections expose partial or unavailable details without synthesizing CI results" do
+    for {connection, status, count} <- [
+          {contexts([]), "available", 0},
+          {put_in(contexts([check_run("job")]), ["pageInfo", "hasNextPage"], true), "partial", 1},
+          {Map.put(contexts([check_run("job")]), "totalCount", 30), "partial", 1},
+          {Map.put(contexts([]), "totalCount", -1), "partial", 0},
+          {Map.put(contexts([]), "pageInfo", nil), "partial", 0},
+          {contexts(List.duplicate(check_run("matrix job"), 21)), "partial", 20},
+          {contexts([nil, %{}, check_run(""), check_run("job", %{"status" => "FUTURE_STATUS"}), check_run("valid")]), "partial", 1},
+          {nil, "unavailable", 0},
+          {%{"nodes" => "not a list"}, "unavailable", 0}
+        ] do
+      respond(payload(evidence([pr(7, %{"commits" => commits(connection, "FUTURE_STATE")})])))
+      assert [pull] = hd(Board.enrich(board(), settings()).tasks).pull_requests
+      assert pull.checks == "unknown"
+      assert pull.check_details_status == status
+      assert length(pull.check_runs) == count
+    end
+
+    for commits <- [nil, %{}, %{"nodes" => []}, %{"nodes" => [%{"commit" => %{"oid" => @sha, "statusCheckRollup" => nil}}]}] do
+      respond(payload(evidence([pr(7, %{"commits" => commits})])))
+      assert [%{checks: "unknown", check_total: nil, check_runs: [], check_details_status: "unavailable"}] = hd(Board.enrich(board(), settings()).tasks).pull_requests
+    end
+  end
+
+  test "unsafe provider links and malformed optional metadata are omitted while check facts remain visible" do
+    for url <- [
+          nil,
+          7,
+          "javascript:alert(1)",
+          "//evil.test/job",
+          "https://user:password@ci.example/job",
+          "https:///job",
+          "https://ci.example/a b",
+          "https://ci.example/a\\b",
+          "https://ci.example/a\n",
+          "https://[invalid/job",
+          String.duplicate("x", 2_049)
+        ] do
+      run = check_run("job", %{"detailsUrl" => url, "checkSuite" => %{"workflowRun" => %{"workflow" => %{"name" => []}, "url" => url, "runNumber" => -1, "event" => 4}}})
+
+      changes = %{
+        "commits" => commits(contexts([run])),
+        "headRefName" => [],
+        "baseRefName" => "",
+        "author" => %{"login" => 7},
+        "additions" => -1,
+        "deletions" => "3",
+        "changedFiles" => nil,
+        "mergeable" => "UNEXPECTED",
+        "reviewDecision" => "FUTURE_DECISION"
+      }
+
+      respond(payload(evidence([pr(7, changes)])))
+      assert [pull] = hd(Board.enrich(board(), settings()).tasks).pull_requests
+      assert %{head_ref: nil, base_ref: nil, author: nil, additions: nil, deletions: nil, changed_files: nil} = pull
+      assert %{mergeable: "unknown", review: "unknown"} = pull
+      assert [check] = pull.check_runs
+      assert %{url: nil, run_url: nil, workflow_name: nil, run_number: nil, run_event: nil, conclusion: "success"} = check
+    end
+
+    run = check_run("external", %{"checkSuite" => nil})
+    missing = pr(7, %{"author" => nil, "commits" => commits(contexts([run]))}) |> Map.delete("reviewDecision")
+    respond(payload(evidence([missing])))
+    assert [%{review: "unknown", author: nil, check_runs: [%{workflow_name: nil, run_url: nil}]}] = hd(Board.enrich(board(), settings()).tasks).pull_requests
   end
 
   test "CI evidence remains unknown or stale unless its commit matches the current PR head" do
@@ -263,7 +389,33 @@ defmodule SymphonyElixir.GitHub.BoardTest do
         "isDraft" => true,
         "reviewDecision" => "REVIEW_REQUIRED",
         "headRefOid" => @sha,
+        "headRefName" => "codex/gh-6",
+        "baseRefName" => "codex/onboarding",
+        "author" => %{"login" => "builder"},
+        "additions" => 18,
+        "deletions" => 3,
+        "changedFiles" => 2,
+        "mergeable" => "MERGEABLE",
         "commits" => %{"nodes" => [%{"commit" => %{"oid" => @sha, "statusCheckRollup" => %{"state" => "SUCCESS"}}}]}
+      },
+      changes
+    )
+  end
+
+  defp contexts(nodes), do: %{"nodes" => nodes, "totalCount" => length(nodes), "pageInfo" => %{"hasNextPage" => false}}
+  defp commits(contexts, state \\ "SUCCESS"), do: %{"nodes" => [%{"commit" => %{"oid" => @sha, "statusCheckRollup" => %{"state" => state, "contexts" => contexts}}}]}
+
+  defp check_run(name, changes \\ %{}) do
+    Map.merge(
+      %{
+        "__typename" => "CheckRun",
+        "name" => name,
+        "status" => "COMPLETED",
+        "conclusion" => "SUCCESS",
+        "detailsUrl" => "https://github.com/example/repo/actions/runs/123/job/456",
+        "startedAt" => "2026-09-15T00:00:00Z",
+        "completedAt" => "2026-09-15T00:02:25Z",
+        "checkSuite" => %{"workflowRun" => %{"workflow" => %{"name" => "CI"}, "url" => "https://github.com/example/repo/actions/runs/123", "runNumber" => 20, "event" => "pull_request"}}
       },
       changes
     )

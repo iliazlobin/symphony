@@ -4,6 +4,7 @@ defmodule SymphonyElixir.GitHub.Board do
   alias SymphonyElixir.GitHub.Client
 
   @issue_limit 50
+  @check_limit 20
   @unavailable "GitHub PR evidence unavailable. Issue and execution data remain visible."
   @partial "GitHub PR evidence is partial or changed during refresh; some relationships are not shown."
 
@@ -113,7 +114,20 @@ defmodule SymphonyElixir.GitHub.Board do
     }
     fragment BoardPullRequest on PullRequest {
       number title url state isDraft reviewDecision headRefOid repository { nameWithOwner }
-      commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } }
+      headRefName baseRefName author { login } additions deletions changedFiles mergeable
+      commits(last: 1) { nodes { commit { oid statusCheckRollup {
+        state contexts(first: #{@check_limit}) {
+          totalCount pageInfo { hasNextPage }
+          nodes {
+            __typename
+            ... on CheckRun {
+              name status conclusion detailsUrl startedAt completedAt
+              checkSuite { workflowRun { workflow { name } url runNumber event } }
+            }
+            ... on StatusContext { context state targetUrl }
+          }
+        }
+      } } } }
     }
     """
   end
@@ -180,24 +194,130 @@ defmodule SymphonyElixir.GitHub.Board do
         url: url,
         state: String.downcase(state),
         draft: draft,
-        review: review(pr["reviewDecision"]),
-        checks: checks(pr["commits"], sha),
+        review: review(Map.fetch(pr, "reviewDecision")),
+        head_ref: optional_text(pr["headRefName"]),
+        base_ref: optional_text(pr["baseRefName"]),
+        author: author(pr["author"]),
+        additions: nonnegative_integer(pr["additions"]),
+        deletions: nonnegative_integer(pr["deletions"]),
+        changed_files: nonnegative_integer(pr["changedFiles"]),
+        mergeable: enum(pr["mergeable"], ~w(MERGEABLE CONFLICTING UNKNOWN)),
         head_sha: sha,
         relation: relation
       }
+      |> Map.merge(checks(pr["commits"], sha))
     end
   end
 
   defp pull_request(_pr, _repo, _relation), do: nil
 
-  defp review(value) when value in ~w(APPROVED CHANGES_REQUESTED REVIEW_REQUIRED), do: String.downcase(value)
+  defp review({:ok, nil}), do: "no_decision"
+  defp review({:ok, value}), do: enum(value, ~w(APPROVED CHANGES_REQUESTED REVIEW_REQUIRED))
   defp review(_value), do: "unknown"
 
-  defp checks(%{"nodes" => [%{"commit" => %{"oid" => sha, "statusCheckRollup" => %{"state" => state}}}]}, sha)
-       when state in ~w(SUCCESS PENDING FAILURE ERROR EXPECTED), do: String.downcase(state)
+  defp checks(%{"nodes" => [%{"commit" => %{"oid" => sha, "statusCheckRollup" => rollup}}]}, sha) when is_map(rollup) do
+    {runs, total, status} = check_details(rollup["contexts"])
+    %{checks: enum(rollup["state"], ~w(SUCCESS PENDING FAILURE ERROR EXPECTED)), check_runs: runs, check_total: total, check_details_status: status}
+  end
 
-  defp checks(%{"nodes" => [%{"commit" => %{"oid" => oid}}]}, sha) when oid != sha, do: "stale"
-  defp checks(_commits, _sha), do: "unknown"
+  defp checks(%{"nodes" => [%{"commit" => %{"oid" => oid}}]}, sha) when oid != sha, do: empty_checks("stale", "stale")
+  defp checks(_commits, _sha), do: empty_checks("unknown", "unavailable")
+
+  defp empty_checks(state, status), do: %{checks: state, check_runs: [], check_total: nil, check_details_status: status}
+
+  defp check_details(%{"nodes" => nodes} = contexts) when is_list(nodes) do
+    runs = nodes |> Enum.take(@check_limit) |> Enum.map(&check_run/1) |> Enum.reject(&is_nil/1)
+    total = nonnegative_integer(contexts["totalCount"])
+    complete = contexts["pageInfo"] == %{"hasNextPage" => false} and total == length(nodes) and length(runs) == length(nodes)
+    {runs, total, if(complete, do: "available", else: "partial")}
+  end
+
+  defp check_details(_contexts), do: {[], nil, "unavailable"}
+
+  defp check_run(%{"__typename" => "CheckRun", "name" => name, "status" => status} = run)
+       when is_binary(name) and byte_size(name) in 1..1_024 and status in ~w(COMPLETED IN_PROGRESS PENDING QUEUED REQUESTED WAITING) do
+    started = timestamp(run["startedAt"])
+    completed = timestamp(run["completedAt"])
+
+    %{
+      kind: "check_run",
+      name: name,
+      status: String.downcase(status),
+      conclusion: if(status == "COMPLETED", do: enum(run["conclusion"], ~w(ACTION_REQUIRED CANCELLED FAILURE NEUTRAL SKIPPED STALE STARTUP_FAILURE SUCCESS TIMED_OUT)), else: "unknown"),
+      url: safe_url(run["detailsUrl"]),
+      started_at: started,
+      completed_at: completed,
+      duration_ms: duration(status, started, completed)
+    }
+    |> Map.merge(workflow(run["checkSuite"]))
+  end
+
+  defp check_run(%{"__typename" => "StatusContext", "context" => name, "state" => state} = context)
+       when is_binary(name) and byte_size(name) in 1..1_024 and state in ~w(SUCCESS PENDING FAILURE ERROR EXPECTED) do
+    pending = state in ~w(PENDING EXPECTED)
+
+    %{
+      kind: "status_context",
+      name: name,
+      status: if(pending, do: "pending", else: "completed"),
+      conclusion: if(pending, do: "unknown", else: String.downcase(state)),
+      url: safe_url(context["targetUrl"]),
+      started_at: nil,
+      completed_at: nil,
+      duration_ms: nil
+    }
+    |> Map.merge(workflow(nil))
+  end
+
+  defp check_run(_run), do: nil
+
+  defp workflow(%{"workflowRun" => %{"workflow" => %{"name" => name}} = run}) do
+    %{
+      workflow_name: optional_text(name),
+      run_url: safe_url(run["url"]),
+      run_number: nonnegative_integer(run["runNumber"]),
+      run_event: optional_text(run["event"])
+    }
+  end
+
+  defp workflow(_suite), do: %{workflow_name: nil, run_url: nil, run_number: nil, run_event: nil}
+
+  defp timestamp(value) when is_binary(value) and byte_size(value) <= 64 do
+    case DateTime.from_iso8601(value) do
+      {:ok, time, _offset} -> DateTime.to_iso8601(time)
+      _ -> nil
+    end
+  end
+
+  defp timestamp(_value), do: nil
+
+  defp duration("COMPLETED", started, completed) when is_binary(started) and is_binary(completed) do
+    {:ok, started, _} = DateTime.from_iso8601(started)
+    {:ok, completed, _} = DateTime.from_iso8601(completed)
+    milliseconds = DateTime.diff(completed, started, :millisecond)
+    if milliseconds >= 0, do: milliseconds
+  end
+
+  defp duration(_status, _started, _completed), do: nil
+
+  defp safe_url(value) when is_binary(value) and byte_size(value) <= 2_048 do
+    case URI.new(value) do
+      {:ok, %URI{scheme: scheme, host: host, userinfo: nil}} when scheme in ["https", "http"] and is_binary(host) ->
+        if host != "" and not String.match?(value, ~r/[\x00-\x20\x7f\\]/), do: value
+
+      _ ->
+        nil
+    end
+  end
+
+  defp safe_url(_value), do: nil
+  defp author(%{"login" => login}), do: optional_text(login)
+  defp author(_value), do: nil
+  defp optional_text(value) when is_binary(value) and byte_size(value) in 1..1_024, do: value
+  defp optional_text(_value), do: nil
+  defp nonnegative_integer(value) when is_integer(value) and value >= 0, do: value
+  defp nonnegative_integer(_value), do: nil
+  defp enum(value, allowed), do: if(value in allowed, do: String.downcase(value), else: "unknown")
 
   defp valid_number?(id), do: is_binary(id) and String.match?(id, ~r/^[1-9][0-9]{0,9}$/)
   defp base_links(task), do: Enum.filter(task.links, &(&1.kind in ["issue", "repository"]))
