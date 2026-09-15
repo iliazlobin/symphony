@@ -1,11 +1,13 @@
 """Guard the host configuration and task workspace boundary."""
 import importlib.util
 import hashlib
+import configparser
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("ec_profile", Path(__file__).resolve().parents[2] / "profiles/events-concierge/profile.py")
@@ -31,6 +33,28 @@ Keep scope bounded.
 
 
 class ProfileTests(unittest.TestCase):
+    def test_initialized_worker_config_disables_apps_and_preserves_role_permissions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            state, source = root / "state", root / "source"
+            source.mkdir()
+            base = "a" * 40
+            args = SimpleNamespace(state_dir=str(state), source=str(source), base_sha=base,
+                                   integration_branch="codex/pilot", port=8777)
+            with patch.object(profile, "run", side_effect=[base, profile.REMOTE, WORKFLOW]):
+                profile.initialize(args)
+            # The generated scalar sections are also valid INI when the TOML
+            # root keys get an explicit section; no Codex/auth calls are needed.
+            config = configparser.RawConfigParser(delimiters=("=",))
+            config.read_string("[root]\n" + (state / "codex/config.toml").read_text())
+            self.assertFalse(config.getboolean("features", "apps"))
+            self.assertFalse(config.getboolean("features", "multi_agent"))
+            self.assertEqual(config["root"]["approval_policy"], '"on-request"')
+            self.assertEqual(config["root"]["approvals_reviewer"], '"user"')
+            for role in ("builder", "reviewer"):
+                self.assertFalse(config.getboolean("permissions.symphony-" + role + ".network", "enabled"))
+                self.assertEqual(config["permissions.symphony-" + role + ".filesystem"]['":root"'], '"deny"')
+
     def sandbox_config(self, root):
         from worker_policy import render_policy
 

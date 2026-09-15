@@ -84,6 +84,8 @@ def permission_config() -> str:
         'inherit = "none"',
         '[features]',
         'multi_agent = false',
+        # Apps use the signed-in account outside the command network sandbox.
+        'apps = false',
     ]
     for name, access in (("symphony-builder", "write"), ("symphony-reviewer", "read")):
         sections += [
