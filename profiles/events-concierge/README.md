@@ -139,8 +139,8 @@ on the installed Mac Codex without model calls.
 mount operations. The disposable probe accepts `--apparmor-profile symphony-codex`
 only with the existing seccomp candidate; no worker AppArmor policy is installed or
 enabled by the service. Further scoped mount exceptions require explicit approval,
-then real container permission and cancellation canaries must pass. Dedicated worker
-login and the issue-to-PR pilot remain pending; Mac permission checks do not establish
+then real container permission and cancellation canaries must pass. An authenticated
+dedicated worker and a successful issue-to-PR pilot are required; Mac checks do not establish
 the Linux boundary. Keep ordinary dispatch disabled while these gates are unresolved.
 
 Retain failed workspaces and GitHub records. Do not delete the ledger or lock to reset

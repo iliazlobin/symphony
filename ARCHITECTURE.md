@@ -144,7 +144,7 @@ The Colima namespace/mount sandbox remains an activation blocker. Compatibility
 candidates are not an accepted live configuration until the container permission
 and cancellation canaries pass. Named role selection and command restrictions are
 verified against the installed Mac Codex; that does not establish the Linux container
-boundary. Dedicated worker authentication and the real issue-to-PR pilot remain pending.
+boundary. Dedicated worker authentication and a real issue-to-PR pilot are also required.
 
 The host publication broker can perform only the approved repository operations.
 Automatic merge requires explicit host enablement, issue opt-in, a clean review of
