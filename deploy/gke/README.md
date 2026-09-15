@@ -1,82 +1,63 @@
-# GKE controller bootstrap
+# Symphony on GKE
 
-This package starts **one paused, unconfigured controller and its existing observability dashboard**. It does not run GitHub tasks, Codex, a publisher, or the separate board/chat work. The empty memory tracker is an installation check, not an operational task queue. The current dashboard's “Live” badge means the service responds; it does not establish worker readiness or show the Mac's backlog.
+The project board and management chat are the single web interface. The local web task runs on port 8778; this package creates no second dashboard. The Mac controller and publisher remain the active task owner until the cloud runner, subscription authentication, recovery and accepted web revision pass their integration checks.
 
-## Package and boundaries
+## Ownership and retained resources
 
-- The image compiles the Elixir escript from the selected checkout, using a digest-pinned official Elixir 1.19.5 / OTP 28 base. Python provides the existing journal lock and the bootstrap checks. No credentials, Codex binary, Docker socket or Kubernetes API token are mounted.
-- The baked-in workflow is paused, has no tracker issues/hooks and uses `/bin/false` as its worker command. The entrypoint accepts no alternate workflow, strips inherited credentials/configuration, and refuses an existing journal unless it is empty and paused. It never resets or repairs state.
-- A single `Recreate` Deployment mounts a separate 10 GiB `ReadWriteOncePod` journal PVC. UID/GID 10001, read-only root, dropped capabilities, runtime seccomp and a bounded temporary directory are explicit. RWOP and the existing filesystem lock do not replace operator fencing after an uncertain node failure.
-- A ClusterIP Service and deny-all ingress/egress policy keep the bootstrap private. Access uses an authenticated Kubernetes port-forward; there is no public endpoint or identity gateway. No control token is supplied, so authenticated control APIs remain unavailable.
+The shared platform repository owns the private cluster, network, worker pool and `shared-retain` StorageClass. This repository owns the [image repository and state bucket](terraform/main.tf), namespace policies, retained 10 GiB RWOP journal and future application workloads. Keep the journal even while no cloud controller is deployed. Retained storage is not a backup or proof that an unreachable old process has stopped.
 
-## Prepare and build
-
-The package creates the dedicated `symphony` namespace with restricted Pod Security pinned to v1.35, and schedules the controller only on the existing `shared-dev` node pool. Reuse the platform-owned `shared-retain` GKE PD CSI StorageClass with `reclaimPolicy: Retain` and `volumeBindingMode: WaitForFirstConsumer`. Confirm network-policy enforcement, RWOP support, private Kubernetes access, Artifact Registry image-pull access, and shared-node **allocatable headroom** before applying. The controller requests 100m CPU/256 MiB and caps at 1 CPU/512 MiB; these are starting values for the empty bootstrap, not sizing for chat or workers. Platform IaC and application resources must have distinct ownership.
-
-For the first installation, the [application Terraform root](terraform/main.tf) creates only the private Artifact Registry repository, its repository-scoped node image-pull grant, and the protected state bucket. Shared cluster/network/node pools remain owned by platform IaC. Use the [pinned Terraform/provider versions](terraform/versions.tf), verify the active cloud identity and `iz27-platform-dev` project, then run from the repository root:
-
-```sh
-umask 077
-terraform -chdir=deploy/gke/terraform init
-terraform -chdir=deploy/gke/terraform plan -out=bootstrap.tfplan
-terraform -chdir=deploy/gke/terraform show bootstrap.tfplan
-terraform -chdir=deploy/gke/terraform apply bootstrap.tfplan
-```
-
-Review that initial plan for exactly those three additions and no unrelated changes before applying. This first apply uses local state because the destination bucket does not exist yet. After the apply succeeds, preserve a local recovery copy and activate the [GCS backend template](terraform/backend.tf.example):
-
-```sh
-cp deploy/gke/terraform/terraform.tfstate deploy/gke/terraform/terraform.tfstate.pre-gcs
-cp deploy/gke/terraform/backend.tf.example deploy/gke/terraform/backend.tf
-terraform -chdir=deploy/gke/terraform init -migrate-state
-terraform -chdir=deploy/gke/terraform state list
-terraform -chdir=deploy/gke/terraform plan -detailed-exitcode
-```
-
-`backend.tf` and local state/plan files are ignored. Migrate **only this new root's state** to `iz27-platform-dev-symphony-tfstate`, prefix `symphony/bootstrap`; never move or import shared platform state. Confirm all three resources in remote state and a no-change plan (exit 0). Retain the local recovery copy until migration and remote state access are verified. Existing installations use their configured backend; do not repeat this bootstrap or overwrite an existing `backend.tf`.
-
-From a clean checkout of the reviewed, published integration revision:
-
-```sh
-SOURCE_REVISION=$(git rev-parse HEAD)
-IMAGE=us-west1-docker.pkg.dev/iz27-platform-dev/symphony/controller
-python3 -B -m unittest discover -s deploy/gke -v
-git archive "$SOURCE_REVISION" | docker build --platform linux/amd64 \
-  --build-arg SOURCE_REVISION="$SOURCE_REVISION" \
-  -f deploy/gke/Dockerfile -t "$IMAGE:$SOURCE_REVISION" -
-```
-
-The archive supplies exactly the committed source, excluding local ignored files and credentials. Building is local; publishing and applying require the approved deployment workflow. After publishing, use its immutable digest in `controller.yaml`, or in a reviewed Kustomize overlay. The placeholder tag intentionally does not identify a deployable release. Keep source SHA, image digest and manifest revision together. Build again from the final published board/chat integration when that work is accepted; do not substitute an unreviewed worktree for a release.
-
-## Apply and inspect
-
-After selecting and verifying the approved Kubernetes context and reviewing the rendered changes:
-
-The [platform-dev overlay](../environments/platform-dev/kustomization.yaml) pins the private registry
-image digest and its published source revision. Use that overlay for this environment;
-the reusable base intentionally retains a non-deployable placeholder.
+The [platform-dev overlay](../environments/platform-dev/kustomization.yaml) currently manages the controller and worker namespaces, default-deny policies, worker identity and retained journal only:
 
 ```sh
 kubectl config current-context
 kubectl kustomize deploy/environments/platform-dev
 kubectl diff -k deploy/environments/platform-dev
 kubectl apply -k deploy/environments/platform-dev
-kubectl -n symphony rollout status deployment/symphony-controller
-kubectl -n symphony exec deployment/symphony-controller -- \
-  python3 -I /opt/symphony/entrypoint.py check
-kubectl -n symphony port-forward --address 127.0.0.1 service/symphony-controller 8877:8080
+kubectl -n symphony get pods,pvc,networkpolicy
 ```
 
-Open [the GKE bootstrap dashboard](http://127.0.0.1:8877/). Port 8877 keeps this separate from the Mac controller on 8777. Readiness requires both an empty paused journal and a responding HTTP endpoint. It is not a release acceptance check. Confirm private port-forward access and network-policy denial in the actual cluster; a manifest alone is not proof of enforcement. Do not add an Ingress, broaden policies, or copy Mac credentials to make this bootstrap operational.
+Use the existing platform private-access runbook and an explicitly verified Kubernetes context. Do not use `kubectl delete -k` as cleanup: namespace or PVC deletion can remove retained state. Never force-delete a worker or detach its volume to bypass uncertain ownership.
 
-The launcher prints its mode to container stdout. Existing application logs rotate under `/var/lib/symphony/log/` on the journal volume; they are **not yet exported to Cloud Logging**. Inspect them through authorized `kubectl exec` or a recovery mount. The two named volumes are the only writable paths. There is no liveness restart loop: an unhealthy instance becomes unready and requires diagnosis.
+## Infrastructure as code
 
-## Recovery and activation limits
+The [Terraform root](terraform/main.tf) creates the private Artifact Registry repository, repository-scoped node pull grant and protected state bucket. It uses [pinned Terraform/provider versions](terraform/versions.tf). No model credentials enter Terraform. Existing installations copy the [backend template](terraform/backend.tf.example) to ignored `backend.tf`, initialize the existing remote backend and review a saved plan:
 
-Before an upgrade or recovery, pause activity (the bootstrap already is), scale the Deployment to zero, and verify the previous Pod is stopped. Never force-delete an unreachable Pod or detach its volume and start a replacement until the platform owner confirms the old process cannot run. Retain the namespace, PVC and PV when removing the Deployment. Never use `kubectl delete -k deploy/gke` as cleanup: it would delete the namespace and PVC. `Retain` is not a backup: arrange and verify an approved disk snapshot/restore procedure before storing operational work.
+```sh
+umask 077
+test -e deploy/gke/terraform/backend.tf || cp deploy/gke/terraform/backend.tf.example deploy/gke/terraform/backend.tf
+terraform -chdir=deploy/gke/terraform init
+terraform -chdir=deploy/gke/terraform plan -out=reviewed.tfplan
+terraform -chdir=deploy/gke/terraform show reviewed.tfplan
+```
 
-A refused startup preserves the journal. Investigate its owner, prior mode and existing issues; do not delete the ledger or edit it to bypass the guard. This bootstrap deliberately cannot import the Mac's operational journal. Restore the last compatible image and preserved state after a failed upgrade; do not reset budgets or task ownership.
+For a fresh environment only, create the three application resources with local state before configuring the destination backend; preserve a recovery copy and use `terraform init -migrate-state` for this root only. Verify the three resources in remote state and a no-change plan. Never migrate shared-platform state. Runtime applies require scoped authorization; do not overwrite an existing backend configuration.
 
-Task activation requires a separately reviewed Kubernetes Job runner with exact Pod ownership, attach transport, bounded cancellation/recovery, trusted bootstrap, approved model authentication, independent reviewer/artifact identity, and publisher integration. Board/chat additionally needs its accepted image revision, private browser authentication, retained chat state and deliberately scoped egress. None of those capabilities is supplied by this bootstrap. Keep replicas at one and the empty tracker in place until those gates pass.
+## Runner and authentication implementation
 
-References: [official Elixir images](https://hub.docker.com/_/elixir), [Kubernetes persistent volumes and RWOP](https://kubernetes.io/docs/concepts/storage/persistent-volumes/), [network policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/), [Symphony architecture](../../ARCHITECTURE.md).
+These are standalone components under test, **not an enabled cloud task path**:
+
+- [`kubernetes_runner.py`](../../tools/kubernetes_runner.py) pins the cluster, namespace/PVC identities and image; journals launch intent; creates one bounded Job; validates admitted Pods; and checks the worker identity handshake before forwarding App Server input. Lost transport is not reattached. Cancellation retains exact terminal Job/Pod evidence; missing objects or an expired lease do not release ownership.
+- [`kubernetes_auth.py`](../../tools/kubernetes_auth.py) owns an exclusive subscription slot at `/var/lib/symphony-auth/slot-01` on a retained RWOP volume. It atomically moves the single current credential file into a fresh stage home after verified termination. Codex manages login and refresh. No credential snapshots, Mac-home copying, shared parallel refresh writers or API-key fallback are supported.
+- [`probe_kubernetes_permissions.py`](../../tools/probe_kubernetes_permissions.py) emits a disposable, ten-minute gVisor fixture and probes the exact running Pod with fake credentials and no model turns. It checks builder/reviewer command permissions, Git/tool usability, protected paths, process aliases and network denial. It is not a cancellation or end-to-end acceptance test.
+
+Install the [Python dependencies](../../tools/requirements.txt) in an isolated environment. Run each helper with `--help` for its bounded interface. The runner's configuration and intent must be private operator-owned files outside the checkout. `launch` additionally requires the reviewed fixed `/opt/symphony/worker_entrypoint.py`, immutable workspace staging and auth admission; that image entrypoint and controller integration are not implemented. Do not point the live `codex.command` at this adapter yet.
+
+The required entrypoint emits one identity line before Codex starts: `{"symphony_worker":{"owner":"<nonce>","generation":1,"job_uid":"<UID>","pod_uid":"<UID>"}}`. It must fence the exact auth claim, enforce `--expires-at` even without the controller, and stop Codex on heartbeat loss. The wrapper's successful exit establishes termination only. Candidate import must complete before `turn/completed` becomes visible to the existing candidate pipeline; the existing guardian must also gain explicit Kubernetes cancellation support. RWOP volumes cannot be mounted simultaneously by a staging Pod and a worker.
+
+Persistent credentials survive ordinary Pod replacement. **Codex 0.153.4 truncates `auth.json` during refresh**; a crash during that write can lose usable authentication. Block dispatch and enroll again; never restore stale tokens. The slot journal does not change that upstream storage behavior. [Pinned authentication storage implementation](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/login/src/auth/storage.rs)
+
+## Runtime blocker
+
+The real GKE Sandbox test fails at Codex `thread/start`, before model work: `bwrap: loopback: Failed RTM_NEWADDR`. This matches [gVisor issue 13438](https://github.com/google/gvisor/issues/13438). The pinned amd64 image starts on the dedicated node, but that does not establish Codex sandbox compatibility. There is no verified configuration-only fix. Installing system bubblewrap alone is not an accepted remedy; removing network isolation or granting privileged execution is not an acceptable workaround.
+
+Keep cloud admission and real credential enrollment disabled until a reviewed runtime fix passes the complete permission canary. The pool remains capped at one node and returns to zero when idle. Canary Pods contain disposable fake data only; terminate them gracefully, verify exact container exit, then remove the completed test resource. Preserve uncertain live-worker ownership and retained volumes.
+
+## Remaining integration gates
+
+- Keep admission, budgets, retries and task ownership in the existing controller. A Kubernetes Job is one bounded builder or reviewer stage, not another scheduler.
+- Persist exact Job and Pod identities before releasing model work. Use independent Pod deadlines, no automatic retries and terminal-process evidence before reusing a workspace or authentication slot.
+- Preserve the existing candidate pipeline's exact-revision and independent-review checks. Candidate import must complete before the controller receives successful completion. Controller loss or transport failure retains uncertain ownership.
+- Enroll a dedicated cloud subscription login after real gVisor permission canaries pass. Preserve Codex-managed refreshes in an exclusive retained slot, respecting the interrupted-write limit above; never clone a Mac login, restore stale credentials or fall back to API billing.
+- Integrate the web task's accepted published revision. Its local browser authentication must be reviewed for remote use; moving a container does not establish remote authorization.
+
+The worker pool is bounded to zero through one node for the pilot. Larger concurrency requires measured capacity, quota and cost review. The cloud task path remains disabled until the gates above are verified.

@@ -1,6 +1,7 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
+  namespace: symphony
   name: symphony-journal
   labels:
     app.kubernetes.io/name: symphony-controller

@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: symphony-workers
+  labels:
+    app.kubernetes.io/part-of: symphony
+    # GKE Sandbox cannot use the outer seccomp/NoNewPrivileges requirements of
+    # restricted. Jobs still require gVisor, non-root, dropped capabilities,
+    # read-only images and no API token, host mounts or privileged containers.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: v1.35
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: symphony-worker
+  namespace: symphony-workers
+automountServiceAccountToken: false
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: symphony-workers-default-deny
+  namespace: symphony-workers
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
