@@ -1,0 +1,14 @@
+**
+!elixir/
+!elixir/mix.exs
+!elixir/mix.lock
+!elixir/config/
+!elixir/config/**
+!elixir/lib/
+!elixir/lib/**
+!elixir/priv/
+!elixir/priv/**
+!deploy/
+!deploy/gke/
+!deploy/gke/WORKFLOW.md
+!deploy/gke/entrypoint.py
