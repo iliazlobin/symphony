@@ -177,6 +177,10 @@ def call_tool(config: dict, name: str, arguments: dict) -> dict:
 
 
 def mcp(config: dict, incoming=sys.stdin, outgoing=sys.stdout) -> None:
+    # Pin the initially validated path, then validate its current contents for
+    # every call. A long-lived MCP process must not retain obsolete gates/tokens.
+    config_path = config.get("_config_path")
+    config_path = Path(config_path).absolute() if config_path is not None else None
     initialized = False
     while True:
         line = incoming.readline(MAX_MESSAGE + 1)
@@ -212,8 +216,9 @@ def mcp(config: dict, incoming=sys.stdin, outgoing=sys.stdout) -> None:
                 result = {"tools": TOOLS}
             elif method == "tools/call":
                 try:
-                    result = call_tool(config, params["name"], params.get("arguments", {}))
-                except (ControlError, TypeError, KeyError) as exc:
+                    current_config = load_config(config_path) if config_path is not None else config
+                    result = call_tool(current_config, params["name"], params.get("arguments", {}))
+                except (ControlError, OSError, ValueError, TypeError, KeyError) as exc:
                     result = {"content": [{"type": "text", "text": str(exc)}], "isError": True}
             else:
                 response = {"jsonrpc": "2.0", "id": request["id"],

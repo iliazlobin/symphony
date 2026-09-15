@@ -119,6 +119,91 @@ class ControlTests(unittest.TestCase):
         with server() as (_, config), patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:1", "http_proxy": "http://127.0.0.1:1", "NO_PROXY": "", "no_proxy": ""}):
             self.assertEqual(control.request_json(config, "/api/v1/state"), {"revision": 4})
 
+    def test_long_lived_mcp_reloads_original_config_and_token_for_each_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            token = root / "token"
+            token.write_text("a" * 48)
+            token.chmod(0o600)
+            path = root / "config.json"
+            content = {"api_url": "http://127.0.0.1:8777", "token_file": str(token),
+                       "repository": "fixture/repo", "state_dir": tmp, "worker_launch_enabled": False}
+            path.write_text(json.dumps(content))
+            path.chmod(0o600)
+            initial = control.load_config(path)
+            status_call = {"method": "tools/call", "params": {"name": "symphony_status", "arguments": {}}}
+            command = {"action": "drain", "expected_revision": 4, "command_id": "same-command"}
+
+            def messages():
+                yield {"method": "initialize", "params": {}}
+                yield status_call
+                content.update(worker_launch_enabled=True, api_url="http://127.0.0.1:8778")
+                path.write_text(json.dumps(content))
+                token.write_text("b" * 48)
+                yield status_call
+                yield {"method": "tools/call", "params": {"name": "symphony_control", "arguments": command}}
+
+            rows = iter(json.dumps(dict(message, jsonrpc="2.0", id=index)) + "\n"
+                        for index, message in enumerate(messages(), 1))
+            incoming = SimpleNamespace(readline=lambda limit: next(rows, ""))
+            output = io.StringIO()
+            # A later ambient path change must not redirect this MCP session.
+            with patch.dict(os.environ, {"SYMPHONY_OPERATOR_CONFIG": str(root / "wrong.json")}), \
+                    patch.object(control, "request_json", return_value={"revision": 4}) as request:
+                control.mcp(initial, incoming, output)
+            replies = list(map(json.loads, output.getvalue().splitlines()))
+            old_status = json.loads(replies[1]["result"]["content"][0]["text"])
+            new_status = json.loads(replies[2]["result"]["content"][0]["text"])
+            self.assertFalse(old_status["worker_launch_enabled"])
+            self.assertTrue(new_status["worker_launch_enabled"])
+            self.assertFalse(replies[3]["result"]["isError"])
+            self.assertEqual([call.args[0]["_token"] for call in request.call_args_list],
+                             ["a" * 48] * 2 + ["b" * 48] * 3)
+            self.assertEqual([call.args[0]["api_url"] for call in request.call_args_list],
+                             ["http://127.0.0.1:8777"] * 2 + ["http://127.0.0.1:8778"] * 3)
+            self.assertEqual(request.call_args.args[2], command)
+
+    def test_mcp_config_reload_errors_do_not_use_stale_configuration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            token = root / "token"
+            token.write_text("a" * 48)
+            token.chmod(0o600)
+            path = root / "config.json"
+            content = {"api_url": "http://127.0.0.1:8777", "token_file": str(token), "repository": "fixture/repo"}
+            encoded = json.dumps(content)
+            path.write_text(encoded)
+            path.chmod(0o600)
+            initial = control.load_config(path)
+            status_call = {"method": "tools/call", "params": {"name": "symphony_status", "arguments": {}}}
+
+            def messages():
+                yield {"method": "initialize", "params": {}}
+                path.chmod(0o644)
+                yield status_call
+                path.chmod(0o600)
+                path.write_text("{")
+                yield status_call
+                path.write_text(encoded)
+                token.unlink()
+                yield {"method": "tools/call", "params": {"name": "symphony_control", "arguments": {
+                    "action": "drain", "expected_revision": 4, "command_id": "must-not-send"}}}
+                token.write_text("b" * 48)
+                token.chmod(0o600)
+                yield status_call
+
+            rows = iter(json.dumps(dict(message, jsonrpc="2.0", id=index)) + "\n"
+                        for index, message in enumerate(messages(), 1))
+            output = io.StringIO()
+            with patch.object(control, "request_json", return_value={"revision": 4}) as request:
+                control.mcp(initial, SimpleNamespace(readline=lambda limit: next(rows, "")), output)
+            replies = list(map(json.loads, output.getvalue().splitlines()))
+            self.assertEqual([reply["result"]["isError"] for reply in replies[1:]], [True, True, True, False])
+            self.assertEqual(request.call_count, 2)
+            self.assertTrue(all(call.args[0]["_token"] == "b" * 48 for call in request.call_args_list))
+            self.assertNotIn("a" * 48, output.getvalue())
+            self.assertNotIn("b" * 48, output.getvalue())
+
     def test_mcp_protocol_and_validation(self):
         messages = [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}},
