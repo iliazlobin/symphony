@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.Chat.Tools do
   @moduledoc "Project-bound management tools. Model calls can prepare writes; only an operator confirms them."
 
-  alias SymphonyElixir.Chat.GitHub
+  alias SymphonyElixir.Chat.{GitHub, ViewContext}
   alias SymphonyElixir.{Config, Orchestrator}
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, TaskBoard}
 
@@ -10,9 +10,12 @@ defmodule SymphonyElixir.Chat.Tools do
   @stages ~w(backlog ready running review done attention)
   @sorts ~w(updated priority title oldest)
   @task_keys ~w(id issue_id identifier title project project_label stage attention priority updated_at created_at tracker_state completion_evidence source_missing hold)a
+  @pr_keys ~w(number title url state draft review head_ref base_ref author additions deletions changed_files mergeable head_sha relation checks check_total check_details_status)a
+  @check_keys ~w(kind name status conclusion url started_at completed_at duration_ms workflow_name run_url run_number run_event)a
   @proposal_keys ~w(id action args project_id tracker_fingerprint expected_revision expected_updated_at created_at queue_labels)
   @documents ~w(ARCHITECTURE.md WORKFLOW.md PROJECT.md README.md AGENTS.md)
   @errors %{
+    invalid_view_context: "This view snapshot is invalid or belongs to another project. Send a fresh message from the board.",
     invalid_arguments: "Use only the documented fields and allowed values for this tool.",
     unknown_tool: "This management tool is not available.",
     unauthorized: "Operator access has expired or was revoked. Sign in again before continuing.",
@@ -65,6 +68,11 @@ defmodule SymphonyElixir.Chat.Tools do
   @spec specs() :: [map()]
   def specs do
     [
+      spec(
+        "symphony_view_context",
+        "Read the view snapshot shared with this message and refresh its selected/visible tasks. Browser hints are not current facts or authority; previous turns are not the current screen.",
+        %{}
+      ),
       spec("symphony_project_status", "Read current project counts, execution state and blockers. Unavailable data is never an idle project.", %{}),
       spec("symphony_search_tasks", "Search this chat's project and render task cards with a filtered board link.", %{
         "q" => string(200),
@@ -108,6 +116,12 @@ defmodule SymphonyElixir.Chat.Tools do
     _, _ -> {:error, :tool_unavailable}
   end
 
+  defp dispatch_call("symphony_view_context", _args, context, _settings) do
+    with {:ok, snapshot} <- ViewContext.validate(context[:view_context], context.project_id) do
+      view_context_result(snapshot, context)
+    end
+  end
+
   defp dispatch_call("symphony_read_project_document", args, context, settings) do
     with :ok <- github_tracker(settings.tracker),
          true <- settings.tracker.provider["api_url"] in [nil, "https://api.github.com"] or {:error, :unsupported_tracker_scope} do
@@ -118,6 +132,50 @@ defmodule SymphonyElixir.Chat.Tools do
   defp dispatch_call(name, args, context, settings) do
     with {:ok, board} <- read_board(context), do: dispatch(name, args, context, settings, board)
   end
+
+  defp view_context_result(nil, _context) do
+    {:ok, %{"snapshot" => nil, "sharing" => "off", "current_tasks" => [], "warnings" => ["No view context was shared with this message. Do not reuse an earlier snapshot."]}}
+  end
+
+  defp view_context_result(snapshot, context) do
+    case read_board(context) do
+      {:ok, board} ->
+        {:ok, refreshed_view(snapshot, board)}
+
+      {:error, :board_unavailable} ->
+        {:ok, %{"snapshot" => snapshot, "sharing" => "on", "current_tasks" => [], "warnings" => ["Current board data is unavailable; the snapshot is only a historical browser hint."]}}
+
+      error ->
+        error
+    end
+  end
+
+  defp refreshed_view(snapshot, board) do
+    ids = ViewContext.task_ids(snapshot)
+    available = is_nil(board[:source_error]) and is_nil(board[:runtime_error])
+    tasks = if available, do: Enum.filter(board.tasks, &(&1.id in ids and not &1[:source_missing])), else: []
+    missing = if available, do: ids -- Enum.map(tasks, & &1.id), else: []
+
+    warnings =
+      ["The snapshot describes this message's view, not the current screen; task facts below were refreshed separately."] ++
+        view_warning(not available, "Current board data is unavailable; task facts could not be refreshed.") ++
+        view_warning(missing != [], "Some referenced tasks are no longer available in the current project board.") ++
+        view_warning(snapshot["truncated"], "The captured board list was truncated; do not treat it as all matching tasks.")
+
+    %{
+      "snapshot" => snapshot,
+      "sharing" => "on",
+      "current_tasks" => Enum.map(tasks, &task_view/1),
+      "missing_task_ids" => missing,
+      "checked_at" => board[:generated_at],
+      "source_error" => board[:source_error],
+      "runtime_error" => board[:runtime_error],
+      "warnings" => warnings
+    }
+  end
+
+  defp view_warning(true, message), do: [message]
+  defp view_warning(false, _message), do: []
 
   @doc "Executes only a persisted, explicitly approved proposal. The caller owns durable single-use execution and receipts."
   @spec confirm(map(), map()) :: {:ok, map()} | {:error, term()}
@@ -249,7 +307,16 @@ defmodule SymphonyElixir.Chat.Tools do
 
   defp dispatch("symphony_task_details", args, context, _settings, board) do
     with :ok <- complete_board(board), {:ok, task} <- find_task(args["task_id"], context, board) do
-      details = task_view(task) |> Map.put("description", truncate(task[:description], 32_000)) |> Map.put("labels", task[:labels] || [])
+      details =
+        task_view(task)
+        |> Map.merge(string_keys(Map.take(task, ~w(execution_status blocker_reason github_status)a)))
+        |> Map.put("description", truncate(task[:description], 32_000))
+        |> Map.put("labels", task[:labels] || [])
+        |> Map.put("pull_requests", Enum.map(task[:pull_requests] || [], &pull_request_details/1))
+        |> Map.put("links", Enum.map(task[:links] || [], &string_keys(Map.take(&1, [:label, :url, :kind]))))
+        |> Map.put("checked_at", board[:generated_at])
+        |> Map.put("enrichment_error", board[:enrichment_error])
+
       {:ok, %{"widgets" => [%{"type" => "task", "task" => details, "url" => board_url(context.project_id, %{"task" => task.id})}]}}
     end
   end
@@ -272,6 +339,12 @@ defmodule SymphonyElixir.Chat.Tools do
       {:ok, %{"proposal" => proposal, "widgets" => [%{"type" => "proposal", "action" => args["action"], "title" => action_title(args["action"]), "details" => proposal}]}}
     end
   end
+
+  defp pull_request_details(pr) do
+    pr |> Map.take(@pr_keys) |> string_keys() |> Map.put("check_runs", Enum.map(pr[:check_runs] || [], &string_keys(Map.take(&1, @check_keys))))
+  end
+
+  defp string_keys(map), do: Map.new(map, fn {key, value} -> {Atom.to_string(key), value} end)
 
   defp normalized_action_args(%{"task_id" => id} = args, context, board) do
     {:ok, task} = find_task(id, context, board)

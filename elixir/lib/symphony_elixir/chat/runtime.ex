@@ -12,6 +12,8 @@ defmodule SymphonyElixir.Chat.Runtime do
   Codex owns its native history and automatic compaction in a dedicated home.
   """
 
+  alias SymphonyElixir.Chat.ViewContext
+
   @version "0.154.0"
   @model "gpt-6-astra"
   @max_line 4_194_304
@@ -180,11 +182,19 @@ defmodule SymphonyElixir.Chat.Runtime do
     state = %{state | thread_id: id}
 
     {turn, state} =
-      rpc(state, "turn/start", %{"threadId" => id, "model" => @model, "environments" => [], "approvalPolicy" => "never", "effort" => "medium", "input" => [%{"type" => "text", "text" => opts.text}]})
+      rpc(state, "turn/start", %{"threadId" => id, "model" => @model, "environments" => [], "approvalPolicy" => "never", "effort" => "medium", "input" => turn_input(opts)})
 
     turn_id = get_in(turn, ["turn", "id"])
     unless is_binary(turn_id) and turn_id != "", do: fail(:protocol_error)
     await_completion(%{state | turn_id: turn_id})
+  end
+
+  defp turn_input(opts) do
+    input = [%{"type" => "text", "text" => opts.text}]
+
+    if Map.has_key?(opts, :view_context),
+      do: input ++ [%{"type" => "text", "text" => ViewContext.prompt(opts.view_context)}],
+      else: input
   end
 
   defp thread_parameters(state, opts) do

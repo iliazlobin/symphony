@@ -84,7 +84,7 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     specs = Tools.specs()
 
     assert Enum.map(specs, & &1["name"]) ==
-             ~w(symphony_project_status symphony_search_tasks symphony_task_details symphony_read_project_document symphony_propose_action)
+             ~w(symphony_view_context symphony_project_status symphony_search_tasks symphony_task_details symphony_read_project_document symphony_propose_action)
 
     assert Enum.all?(specs, &(&1["inputSchema"]["additionalProperties"] == false))
     refute Jason.encode!(specs) =~ "github_api"
@@ -215,6 +215,98 @@ defmodule SymphonyElixir.Chat.ToolsTest do
       Application.put_env(:symphony_elixir, :chat_test_board, fun)
       assert {:error, :tool_unavailable} = Tools.call("symphony_project_status", %{}, ctx.context)
     end
+  end
+
+  test "view context refreshes selected and visible tasks without trusting browser facts", ctx do
+    snapshot = %{
+      "version" => 1,
+      "project_id" => ctx.context.project_id,
+      "selected_task_id" => "github:example/repo:1",
+      "visible_task_ids" => ["github:example/repo:2", "github:example/repo:99"],
+      "viewport_task_ids" => ["github:example/repo:2"],
+      "captured_at" => "2026-09-15T09:00:00Z",
+      "truncated" => true
+    }
+
+    board = put_in(ctx.board, [:tasks, Access.at(0), :title], "Updated after the screen snapshot")
+    Application.put_env(:symphony_elixir, :chat_test_board, board)
+    context = Map.put(ctx.context, :view_context, snapshot)
+    assert {:ok, result} = Tools.call("symphony_view_context", %{}, context)
+    assert Enum.map(result["current_tasks"], & &1["issue_id"]) == ["1", "2"]
+    assert hd(result["current_tasks"])["title"] == "Updated after the screen snapshot"
+    assert result["snapshot"]["selected_task_id"] == snapshot["selected_task_id"]
+    assert result["missing_task_ids"] == ["github:example/repo:99"]
+    assert Enum.any?(result["warnings"], &String.contains?(&1, "truncated"))
+    assert result["checked_at"] == board.generated_at
+    assert {:error, :invalid_arguments} = Tools.call("symphony_view_context", %{"project_id" => "other"}, context)
+    assert {:error, :invalid_view_context} = Tools.call("symphony_view_context", %{}, Map.put(ctx.context, :view_context, %{snapshot | "project_id" => "other"}))
+    assert {:error, :unauthorized} = Tools.call("symphony_view_context", %{}, %{context | auth: %{}})
+  end
+
+  test "disabled view sharing does not load a board or reuse earlier context", ctx do
+    Application.put_env(:symphony_elixir, :chat_test_board, fn -> flunk("disabled sharing loaded board") end)
+    assert {:ok, %{"sharing" => "off", "snapshot" => nil, "current_tasks" => []}} = Tools.call("symphony_view_context", %{}, ctx.context)
+  end
+
+  test "view retrieval distinguishes unavailable facts from missing tasks and rechecks access", ctx do
+    snapshot = %{"version" => 1, "project_id" => ctx.context.project_id, "visible_task_ids" => ["github:example/repo:1"]}
+    context = Map.put(ctx.context, :view_context, snapshot)
+
+    for board <- [:unavailable, %{ctx.board | source_error: "GitHub unavailable"}] do
+      Application.put_env(:symphony_elixir, :chat_test_board, board)
+      assert {:ok, result} = Tools.call("symphony_view_context", %{}, context)
+      assert result["current_tasks"] == []
+      assert Enum.any?(result["warnings"], &String.contains?(&1, "unavailable"))
+      assert (result["missing_task_ids"] || []) == []
+    end
+
+    Application.put_env(:symphony_elixir, :chat_test_board, fn ->
+      System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("n", 40))
+      ctx.board
+    end)
+
+    assert {:error, :unauthorized} = Tools.call("symphony_view_context", %{}, context)
+  end
+
+  test "task details preserve independent PR review, CI, links and partial evidence", ctx do
+    prs =
+      for {number, state, review, checks, status} <- [
+            {10, "merged", "approved", "success", "available"},
+            {11, "open", "changes_requested", "failure", "partial"},
+            {12, "open", "no_decision", "stale", "stale"}
+          ] do
+        %{
+          number: number,
+          title: "PR #{number}",
+          url: "https://github.com/example/repo/pull/#{number}",
+          state: state,
+          draft: false,
+          review: review,
+          checks: checks,
+          head_sha: String.duplicate(Integer.to_string(rem(number, 10)), 40),
+          relation: "linked",
+          check_total: 2,
+          check_details_status: status,
+          check_runs: [%{kind: "check_run", name: "tests", status: "completed", conclusion: checks, url: "https://github.com/example/repo/actions/runs/#{number}", duration_ms: 1200}],
+          secret: "do not expose internal fields"
+        }
+      end
+
+    links = [%{kind: "checks", label: "Actions", url: "https://github.com/example/repo/actions"}]
+    board = update_in(ctx.board, [:tasks, Access.at(0)], &Map.merge(&1, %{pull_requests: prs, links: links, github_status: "partial"}))
+    board = %{board | enrichment_error: "Only part of GitHub evidence was available"}
+    Application.put_env(:symphony_elixir, :chat_test_board, board)
+    assert {:ok, %{"widgets" => [%{"task" => task}]}} = Tools.call("symphony_task_details", %{"task_id" => "1"}, ctx.context)
+    assert Enum.map(task["pull_requests"], & &1["number"]) == [10, 11, 12]
+    assert Enum.map(task["pull_requests"], & &1["review"]) == ["approved", "changes_requested", "no_decision"]
+    assert Enum.map(task["pull_requests"], & &1["check_details_status"]) == ["available", "partial", "stale"]
+    assert get_in(task, ["pull_requests", Access.at(1), "check_runs", Access.at(0), "conclusion"]) == "failure"
+    assert get_in(task, ["pull_requests", Access.at(1), "check_runs", Access.at(0), "url"]) =~ "/runs/11"
+    assert task["links"] == [%{"kind" => "checks", "label" => "Actions", "url" => "https://github.com/example/repo/actions"}]
+    assert task["github_status"] == "partial"
+    assert task["enrichment_error"] == board.enrichment_error
+    assert task["checked_at"] == board.generated_at
+    refute Jason.encode!(task) =~ "do not expose"
   end
 
   test "a native action produces a preview and never a command", ctx do
