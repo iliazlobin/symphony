@@ -23,6 +23,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:auth, BrowserAuth.context(session, socket))
       |> assign(:csrf_token, Plug.CSRFProtection.get_csrf_token())
       |> assign(:lanes, @lanes)
+      |> assign(:url_filters, %{})
+      |> assign(:linked_task, nil)
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -36,7 +38,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
   @impl true
   def handle_params(params, _uri, socket) do
     dialog = if params["panel"] == "settings", do: :settings, else: nil
-    {:noreply, assign(socket, :dialog, dialog)}
+    filters = url_filters(params)
+    socket = socket |> assign(:dialog, dialog) |> assign(:url_filters, filters) |> assign(:linked_task, params["task"])
+    {:noreply, open_linked_task(socket)}
   end
 
   @impl true
@@ -67,7 +71,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     current = selected && Enum.find(result.tasks, &(&1.id == selected.id))
     socket = socket |> assign(:board, result) |> assign(:selected, current) |> assign(:loading, false)
     socket = if selected && is_nil(current) && socket.assigns.dialog == :task, do: socket |> assign(:dialog, nil) |> assign(:notice, "Task no longer available in this board."), else: socket
-    {:noreply, socket}
+    {:noreply, open_linked_task(socket)}
   end
 
   def handle_async(:board, {:exit, _reason}, socket) do
@@ -87,7 +91,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def handle_event("new-task", _params, socket), do: {:noreply, assign(socket, :dialog, :new_task)}
 
   def handle_event("close-dialog", _params, socket) do
-    {:noreply, socket |> assign(:dialog, nil) |> assign(:pending_command, nil) |> push_patch(to: "/")}
+    socket = socket |> assign(:dialog, nil) |> assign(:pending_command, nil) |> assign(:linked_task, nil)
+    {:noreply, push_patch(socket, to: board_path(socket.assigns.url_filters))}
+  end
+
+  def handle_event("board-filters", params, socket) do
+    filters = url_filters(params)
+    {:noreply, socket |> assign(:url_filters, filters) |> push_patch(to: board_path(filters), replace: true)}
   end
 
   def handle_event("refresh", _params, socket), do: {:noreply, refresh_board(socket)}
@@ -168,9 +178,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     ~H"""
     <section id="task-board-app" class="dashboard-shell" phx-hook="TaskBoard"
-      data-scope={scope(@board)} data-projects={Jason.encode!(@board.projects)}>
+      data-scope={scope(@board)} data-projects={Jason.encode!(@board.projects)} data-url-filters={Jason.encode!(@url_filters)}>
       <header class="board-header">
-        <a href="/" class="brand">∿ Symphony</a><span class="header-subtitle">Task board</span>
+        <a href="/" class="brand">∿ Symphony</a><nav class="workspace-tabs" aria-label="Workspace"><a href="/" aria-current="page">Board</a><a href={chat_path(@url_filters)}>Chat</a></nav>
         <span class="header-spacer"></span>
         <div id="board-search" phx-update="ignore"><input type="search" data-board-search aria-label="Search tasks" placeholder="Search tasks…" /></div>
         <button id="settings-button" class="button button-quiet" phx-click="open-settings">Settings</button>
@@ -212,7 +222,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <h2><span class={"lane-dot lane-dot-#{stage}"}></span>{label}<span class="lane-count" data-lane-count>{Enum.count(@board.tasks, &(&1.stage == stage))}</span></h2>
             <div class="lane-cards" data-lane-cards>
               <article :for={task <- Enum.filter(@board.tasks, &(&1.stage == stage))} id={card_id(task)} class="task-card" draggable="true"
-                data-task-id={task.id} data-project={task.project} data-priority={priority(task.priority)} data-attention={not is_nil(task.attention)}
+                data-task-id={task.id} data-project={task.project} data-priority={priority(task.priority)} data-attention={to_string(not is_nil(task.attention))}
                 data-title={task.title} data-identifier={task.identifier} data-created={task.created_at || ""} data-updated={task.updated_at || ""}>
                 <div class="card-top"><a :if={safe_url(task.url)} href={safe_url(task.url)} target="_blank" rel="noopener noreferrer"
                   aria-label={"Open #{task.identifier} in the issue tracker"}>{task.identifier}</a><span :if={!safe_url(task.url)}>{task.identifier}</span>
@@ -308,6 +318,26 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp orchestrator, do: Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator
   defp load_payload, do: Presenter.state_payload(orchestrator(), Endpoint.config(:snapshot_timeout_ms) || 15_000)
+
+  defp url_filters(params),
+    do: params |> Map.take(["project", "status", "priority", "q", "sort"]) |> Map.reject(fn {_key, value} -> not is_binary(value) or byte_size(value) > 2_000 or value == "" end)
+
+  defp board_path(filters), do: if(filters == %{}, do: "/", else: "/?" <> URI.encode_query(filters))
+  defp chat_path(%{"project" => project}), do: "/chat?" <> URI.encode_query(%{"project" => project |> String.split(",") |> List.first()})
+  defp chat_path(_filters), do: "/chat"
+
+  defp open_linked_task(%{assigns: %{linked_task: id}} = socket) when is_binary(id) do
+    projects = String.split(socket.assigns.url_filters["project"] || "", ",", trim: true)
+    task = Enum.find(socket.assigns.board.tasks, &(&1.id == id and (projects == [] or &1.project in projects)))
+
+    cond do
+      task -> socket |> assign(:selected, task) |> assign(:dialog, :task)
+      socket.assigns.loading -> socket
+      true -> socket |> assign(:selected, nil) |> assign(:dialog, nil) |> assign(:notice, "That task is not available in this project board.")
+    end
+  end
+
+  defp open_linked_task(socket), do: socket
   defp scope(board), do: Enum.map_join(board.projects, ",", & &1.id)
   defp card_id(task), do: "task-" <> Base.url_encode64(task.id, padding: false)
   defp session_id(task), do: task.runtime && (task.runtime[:session_id] || task.runtime["session_id"])

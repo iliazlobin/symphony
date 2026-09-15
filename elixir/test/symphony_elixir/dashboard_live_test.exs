@@ -189,6 +189,27 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert conn.resp_body =~ "TaskBoard"
   end
 
+  test "chat references open a task popup with project filters and preserve them on close" do
+    params = %{"project" => "github:example/fixture", "status" => "ready", "q" => "Ready", "sort" => "priority", "task" => "github:example/fixture:2"}
+    {:ok, view, _} = live(build_conn(), "/?" <> URI.encode_query(params))
+    render_async(view)
+    assert has_element?(view, "#board-dialog h2", "Ready fixture")
+    assert has_element?(view, "#task-board-app[data-url-filters]")
+    render_click(view, "close-dialog")
+    assert_patch(view, "/?" <> URI.encode_query(Map.delete(params, "task")))
+    refute has_element?(view, "#board-dialog")
+    render_patch(view, "/?project=other&task=github%3Aexample%2Ffixture%3A2")
+    refute has_element?(view, "#board-dialog")
+    assert render(view) =~ "not available in this project board"
+  end
+
+  test "filter updates create reproducible board URLs and discard malformed filter values" do
+    {view, _} = board_view()
+    render_click(view, "board-filters", %{"project" => "github:example/fixture", "status" => "running", "q" => "Fixture", "sort" => "updated", "priority" => %{"bad" => "shape"}})
+    assert_patch(view, "/?" <> URI.encode_query(%{"project" => "github:example/fixture", "status" => "running", "q" => "Fixture", "sort" => "updated"}))
+    assert has_element?(view, "a[href='/chat?project=github%3Aexample%2Ffixture']")
+  end
+
   defp board_view do
     {:ok, view, _html} = live(build_conn(), "/")
     {view, render_async(view)}

@@ -30,7 +30,30 @@
         this.el.querySelector("[data-board-search]").value = this.prefs.query;
         this.el.querySelector("[data-board-sort]").value = this.prefs.sort;
       };
-      this.save = () => { if (this.key) storage.set(this.key, JSON.stringify(this.prefs)); };
+      this.urlKey = null;
+      this.readURL = () => {
+        const encoded = this.el.dataset.urlFilters || "{}";
+        if (this.urlKey === encoded) return;
+        const initial = this.urlKey === null;
+        this.urlKey = encoded;
+        const filters = parse(encoded, {});
+        if (initial && !Object.keys(filters).length) return;
+        for (const key of ["project", "status", "priority"]) this.prefs[key] = typeof filters[key] === "string" ? filters[key].split(",").filter(Boolean) : [];
+        this.prefs.query = typeof filters.q === "string" ? filters.q : "";
+        this.prefs.sort = ["manual", "priority", "updated", "oldest", "title"].includes(filters.sort) ? filters.sort : "manual";
+        this.el.querySelector("[data-board-search]").value = this.prefs.query;
+        this.el.querySelector("[data-board-sort]").value = this.prefs.sort;
+      };
+      this.save = () => {
+        if (this.key) storage.set(this.key, JSON.stringify(this.prefs));
+        clearTimeout(this.urlTimer);
+        this.urlTimer = setTimeout(() => {
+          const filters = {project: this.prefs.project.join(","), status: this.prefs.status.join(","), priority: this.prefs.priority.join(","), q: this.prefs.query, sort: this.prefs.sort};
+          for (const key of Object.keys(filters)) if (!filters[key] || (key === "sort" && filters[key] === "manual")) delete filters[key];
+          const current = parse(this.el.dataset.urlFilters || "{}", {});
+          if (Object.keys({...filters, ...current}).some(key => filters[key] !== current[key])) this.pushEvent("board-filters", filters);
+        }, 180);
+      };
       this.closeFilter = () => {
         if (!this.popup) return;
         const key = this.popup;
@@ -63,6 +86,7 @@
       };
       this.apply = () => {
         this.load();
+        this.readURL();
         const cards = [...this.el.querySelectorAll("[data-task-id]")];
         let visible = 0;
         for (const card of cards) {
@@ -134,7 +158,7 @@
       this.apply();
     },
     updated() { this.apply(); if (this.popup) this.drawOptions(this.popup); },
-    destroyed() { this.abort.abort(); }
+    destroyed() { this.abort.abort(); clearTimeout(this.urlTimer); }
   };
   const BoardDialog = {
     mounted() {
@@ -173,5 +197,50 @@
       });
     }
   };
-  window.SymphonyHooks = {TaskBoard, BoardDialog};
+  const ChatWorkspace = {
+    mounted() {
+      this.abort = new AbortController();
+      this.chatId = this.el.dataset.chatId;
+      this.atBottom = true;
+      this.running = this.el.dataset.running === "true";
+      const on = (name, handler) => this.el.addEventListener(name, handler, {signal: this.abort.signal});
+      this.scroll = () => {
+        const scroller = this.el.querySelector("#chat-scroll");
+        if (scroller && this.atBottom) scroller.scrollTop = scroller.scrollHeight;
+      };
+      this.resizeComposer = () => {
+        const input = this.el.querySelector("#chat-message-input");
+        if (input) { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 190) + "px"; }
+      };
+      // Scroll does not bubble; capture the retained conversation scroll container.
+      this.el.addEventListener("scroll", event => {
+        if (event.target.id === "chat-scroll") this.atBottom = event.target.scrollHeight - event.target.scrollTop - event.target.clientHeight < 90;
+      }, {capture: true, signal: this.abort.signal});
+      on("input", event => { if (event.target.id === "chat-message-input") this.resizeComposer(); });
+      on("keydown", event => {
+        if (event.target.id === "chat-message-input" && event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+          event.preventDefault();
+          if (this.el.dataset.running !== "true" && event.target.value.trim()) event.target.form.requestSubmit();
+        }
+      });
+      on("click", event => {
+        const starter = event.target.closest("[data-chat-prompt]");
+        const input = this.el.querySelector("#chat-message-input");
+        if (starter && input && !input.disabled) { input.value = starter.dataset.chatPrompt; input.dispatchEvent(new Event("input", {bubbles: true})); input.focus(); this.resizeComposer(); }
+      });
+      this.handleEvent("chat-message-sent", () => {
+        const input = this.el.querySelector("#chat-message-input");
+        if (input) { input.value = ""; input.focus(); }
+        this.atBottom = true; this.resizeComposer(); requestAnimationFrame(this.scroll);
+      });
+      requestAnimationFrame(this.scroll);
+    },
+    updated() {
+      if (this.chatId !== this.el.dataset.chatId) { this.chatId = this.el.dataset.chatId; this.atBottom = true; }
+      this.resizeComposer();
+      requestAnimationFrame(this.scroll);
+    },
+    destroyed() { this.abort.abort(); }
+  };
+  window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace};
 })();

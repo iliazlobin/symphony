@@ -84,6 +84,18 @@ defmodule SymphonyElixir.BrowserControlsTest do
     end
   end
 
+  test "chat login returns to chat while untrusted return URLs cannot redirect", ctx do
+    for {destination, expected} <- [{"/chat", "/chat"}, {"https://evil.example", "/?panel=settings"}, {"//evil.example", "/?panel=settings"}, {"/chat?next=//evil.example", "/?panel=settings"}] do
+      {conn, csrf} = browser_page()
+      logged_in = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => ctx.token, "return_to" => destination})
+      assert redirected_to(logged_in) == expected
+    end
+
+    {conn, csrf} = browser_page()
+    rejected = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => "wrong", "return_to" => "/chat"})
+    assert redirected_to(rejected) == "/chat"
+  end
+
   test "authorization rejects missing context, expiry, token rotation and unavailable token", ctx do
     assert BrowserAuth.authorized?(ctx.authorization)
     refute BrowserAuth.authorized?(%{})

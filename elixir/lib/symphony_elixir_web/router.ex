@@ -29,6 +29,7 @@ defmodule SymphonyElixirWeb.Router do
     post("/operator/session", BrowserSessionController, :create)
     post("/operator/session/logout", BrowserSessionController, :delete)
     live("/", DashboardLive, :index)
+    live("/chat", ChatLive, :index)
   end
 
   scope "/", SymphonyElixirWeb do
