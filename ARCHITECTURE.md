@@ -7,6 +7,14 @@ services and cloud infrastructure remain separate from this orchestration runtim
 New installations start paused with worker launch disabled. The operator enables
 coding after validating the scoped container policies and a bounded delivery pilot.
 
+The separate [GKE bootstrap package](deploy/gke/README.md) installs a paused controller
+with an empty tracker and retained journal in the existing private cluster. Its
+Terraform root owns the Symphony image repository, scoped image-pull grant and state
+bucket; the shared platform repository owns node pools, networking and storage classes.
+This bootstrap does not execute tasks or replace the Mac runtime. Kubernetes execution,
+subscription authentication, publication and the accepted board/chat revision require
+their own integration and runtime verification.
+
 ## System boundary
 
 ```mermaid

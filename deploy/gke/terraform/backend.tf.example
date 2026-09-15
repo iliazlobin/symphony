@@ -1,0 +1,8 @@
+# Copy to backend.tf only after the reviewed initial creation plan is applied.
+# Migrate only this new root's state; never import or move shared platform state.
+terraform {
+  backend "gcs" {
+    bucket = "iz27-platform-dev-symphony-tfstate"
+    prefix = "symphony/bootstrap"
+  }
+}

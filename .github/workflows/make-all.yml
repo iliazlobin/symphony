@@ -47,3 +47,7 @@ jobs:
       - name: Verify Python tooling
         working-directory: .
         run: '"$RUNNER_TEMP/symphony-tooling/bin/python" -m unittest discover -s tools/tests -v'
+
+      - name: Verify GKE bootstrap boundaries
+        working-directory: .
+        run: python3 -B -m unittest discover -s deploy/gke -v

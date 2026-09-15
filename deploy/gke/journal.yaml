@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: symphony-journal
+  labels:
+    app.kubernetes.io/name: symphony-controller
+    app.kubernetes.io/part-of: symphony
+spec:
+  accessModes: [ReadWriteOncePod]
+  # Reuse the platform-owned GKE PD CSI class; do not delete retained data on teardown.
+  storageClassName: shared-retain
+  resources:
+    requests:
+      storage: 10Gi
