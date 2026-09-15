@@ -52,11 +52,15 @@ The archive supplies exactly the committed source, excluding local ignored files
 
 After selecting and verifying the approved Kubernetes context and reviewing the rendered changes:
 
+The [platform-dev overlay](../environments/platform-dev/kustomization.yaml) pins the private registry
+image digest and its published source revision. Use that overlay for this environment;
+the reusable base intentionally retains a non-deployable placeholder.
+
 ```sh
 kubectl config current-context
-kubectl kustomize deploy/gke
-kubectl diff -k deploy/gke
-kubectl apply -k deploy/gke
+kubectl kustomize deploy/environments/platform-dev
+kubectl diff -k deploy/environments/platform-dev
+kubectl apply -k deploy/environments/platform-dev
 kubectl -n symphony rollout status deployment/symphony-controller
 kubectl -n symphony exec deployment/symphony-controller -- \
   python3 -I /opt/symphony/entrypoint.py check
