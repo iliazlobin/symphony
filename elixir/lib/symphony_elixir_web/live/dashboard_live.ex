@@ -261,9 +261,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <.pull_request :for={pr <- Enum.take(pull_requests(task), 2)} pr={pr} compact={true} />
                   <button :if={length(pull_requests(task)) > 2} class="card-more-links" phx-click="open-task" phx-value-id={task.id}>View all {length(pull_requests(task))} pull requests</button>
                 </div>
-                <div :if={task_links(task, ["repo", "candidate"]) != []} class="card-reference-links"><a :for={link <- task_links(task, ["repo", "candidate"])} href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
+                <div :if={task_links(task, ["repo", "candidate", "checks"]) != []} class="card-reference-links"><a :for={link <- task_links(task, ["repo", "candidate", "checks"])} href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
                 <p :if={current_activity(task, @payload)} class="card-activity">{current_activity(task, @payload)}</p>
-                <div class="card-bottom"><span>{age(task.updated_at)}</span>
+                <div class="card-bottom"><span>{updated_at(task.updated_at)}</span>
                   <select :if={!@read_only} class="move-select" data-move-task={task.id} aria-label={"Move #{task.identifier}"}>
                     <option value="">Move…</option><option :for={{value, title} <- @lanes} :if={value != task.stage} value={value}>{title}</option>
                   </select></div>
@@ -379,8 +379,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
     cond do
       runtime_unavailable?(board, payload) -> "Execution unavailable"
       board.control["enabled"] == false -> "Execution controls disabled"
-      is_binary(board.control["mode"]) -> "Execution: " <> display(board.control["mode"])
+      is_binary(board.control["mode"]) -> "Controller: #{display(board.control["mode"])} · #{active_count(payload)}"
       true -> "Execution unavailable"
+    end
+  end
+
+  defp active_count(payload) do
+    case payload[:running] do
+      running when is_list(running) -> if Enum.all?(running, &is_map/1), do: "#{length(running)} active", else: "active unknown"
+      _ -> "active unknown"
     end
   end
 
@@ -517,6 +524,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp age(nil), do: "Updated time unknown"
   defp age(value), do: value |> to_string() |> String.replace("T", " ") |> String.replace("Z", " UTC")
+  defp updated_at(nil), do: "Updated time unknown"
+  defp updated_at(value), do: "Updated " <> age(value)
   defp dialog_title(:settings, _, _), do: "Settings"
   defp dialog_title(:new_task, _, _), do: "New task"
   defp dialog_title(:task, task, _), do: task.title

@@ -231,7 +231,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
           links: [
             %{kind: "repository", label: "Repository", url: "https://github.com/example/fixture"},
             %{kind: "commit", label: "Verified candidate", url: candidate},
-            %{kind: "pull_request", label: "Linked PR", url: "https://github.com/example/fixture/pull/12"}
+            %{kind: "pull_request", label: "Linked PR", url: "https://github.com/example/fixture/pull/12"},
+            %{kind: "checks", label: "PR #12 checks", url: "https://github.com/example/fixture/pull/12/checks"}
           ]
         })
       )
@@ -242,7 +243,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     card = "[data-task-id='github:example/fixture:2']"
     assert has_element?(view, "#board-context", "Live GitHub")
     assert has_element?(view, ".board-source-state", "GitHub checked")
-    assert has_element?(view, ".board-runtime-state", "Execution: Paused")
+    assert has_element?(view, ".board-runtime-state", "Controller: Paused · 1 active")
     assert has_element?(view, "#board-context a[href='https://github.com/example/fixture/issues']")
     assert has_element?(view, card, "Issue: Open")
     assert has_element?(view, card, "Execution: Paused")
@@ -254,6 +255,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, card, "Merged")
     assert has_element?(view, card <> " .card-reference-links a[href='https://github.com/example/fixture']", "Repository")
     assert has_element?(view, card <> " .card-reference-links a[href='#{candidate}']", "Verified candidate")
+    assert has_element?(view, card <> " .card-reference-links a[href='https://github.com/example/fixture/pull/12/checks']", "PR #12 checks")
+    assert has_element?(view, card <> " .card-bottom", "Updated 2026-09-14")
     assert has_element?(view, ".status-badge-live", "Live updates connected")
     open_task(view, "2")
     assert has_element?(view, "#board-dialog a[href='#{candidate}']", "Verified candidate")
@@ -354,7 +357,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
   test "standalone board refreshes runtime activity and totals through outage and recovery", ctx do
     {view, _} = board_view()
     refute render(view) =~ "fixture_snapshot_unavailable"
-    assert has_element?(view, ".board-runtime-state", "Execution: Paused")
+    assert has_element?(view, ".board-runtime-state", "Controller: Paused · 1 active")
 
     payload =
       ctx.board.runtime
@@ -382,10 +385,17 @@ defmodule SymphonyElixir.DashboardLiveTest do
       |> put_in([:codex_totals, :total_tokens], 654)
 
     refresh(view, ctx.runtime, %{fresh | runtime: recovered})
-    assert has_element?(view, ".board-runtime-state", "Execution: Paused")
+    assert has_element?(view, ".board-runtime-state", "Controller: Paused · 1 active")
     assert has_element?(view, "[data-task-id='github:example/fixture:3'] .card-activity", "Recovered worker activity")
     assert has_element?(view, "#board-dialog", "Total tokens: 654")
     refute has_element?(view, ".board-warning", "controller_unavailable")
+
+    idle = %{fresh | runtime: Map.put(recovered, :running, []), control: Map.put(fresh.control, "mode", "running")}
+    refresh(view, ctx.runtime, idle)
+    assert has_element?(view, ".board-runtime-state", "Controller: Running · 0 active")
+    refresh(view, ctx.runtime, %{idle | runtime: Map.delete(idle.runtime, :running)})
+    assert has_element?(view, ".board-runtime-state", "Controller: Running · active unknown")
+    refute has_element?(view, ".board-runtime-state", "0 active")
   end
 
   defp board_view do
