@@ -33,7 +33,8 @@ defmodule SymphonyElixir.ControlLedgerTest do
   end
 
   setup do
-    root = "/private/tmp/symphony-control-test-#{System.unique_integer([:positive])}"
+    {:ok, temporary_root} = SymphonyElixir.PathSafety.canonicalize(System.tmp_dir!())
+    root = Path.join(temporary_root, "symphony-control-test-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf(root) end)
 

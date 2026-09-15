@@ -1041,22 +1041,32 @@ defmodule SymphonyElixir.CoreTest do
       started_at: DateTime.utc_now()
     }
 
-    :sys.replace_state(pid, fn _ ->
-      initial_state
-      |> Map.put(:running, %{issue_id => running_entry})
-      |> Map.put(:claimed, MapSet.new([issue_id]))
-      |> Map.put(:retry_attempts, %{})
-    end)
+    caller = self()
 
-    send(pid, {:DOWN, ref, :process, self(), :normal})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+    # Observe the callback's scheduling interval inside the real owner. Startup,
+    # polling and test-process scheduling must not consume the asserted delay.
+    state =
+      :sys.replace_state(pid, fn _ ->
+        seeded =
+          initial_state
+          |> Map.put(:running, %{issue_id => running_entry})
+          |> Map.put(:claimed, MapSet.new([issue_id]))
+          |> Map.put(:retry_attempts, %{})
+
+        before_ms = System.monotonic_time(:millisecond)
+        {:noreply, scheduled} = Orchestrator.handle_info({:DOWN, ref, :process, caller, :normal}, seeded)
+        after_ms = System.monotonic_time(:millisecond)
+        send(caller, {:continuation_scheduled, before_ms, after_ms})
+        scheduled
+      end)
 
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
     assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
     assert is_integer(due_at_ms)
-    assert_due_in_range(due_at_ms, 500, 1_100)
+    assert_received {:continuation_scheduled, before_ms, after_ms}
+    assert due_at_ms >= before_ms + 1_000
+    assert due_at_ms <= after_ms + 1_000
   end
 
   test "abnormal worker exit increments retry attempt progressively" do

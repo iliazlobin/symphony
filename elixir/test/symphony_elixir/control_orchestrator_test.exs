@@ -6,7 +6,8 @@ defmodule SymphonyElixir.ControlOrchestratorTest do
   @endpoint Endpoint
 
   setup do
-    root = "/private/tmp/symphony-control-otp-#{System.unique_integer([:positive])}"
+    {:ok, temporary_root} = SymphonyElixir.PathSafety.canonicalize(System.tmp_dir!())
+    root = Path.join(temporary_root, "symphony-control-otp-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     workflow = root <> "/WORKFLOW.md"
 
