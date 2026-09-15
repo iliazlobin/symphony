@@ -45,7 +45,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     original_binding = DynamicTool.bind()
     dynamic_tool_binding = if controlled, do: Map.put(original_binding, :tool_specs, []), else: original_binding
 
-    with :ok <- validate_controlled_host(controlled, worker_host),
+    with :ok <- validate_controlled_profile(controlled, profile),
+         :ok <- validate_controlled_host(controlled, worker_host),
          {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
          {:ok, port} <- start_port(expanded_workspace, worker_host, dynamic_tool_binding, profile) do
       metadata = port_metadata(port, worker_host)
@@ -331,6 +332,11 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
+  defp validate_controlled_profile(true, profile) when profile not in [:builder, :reviewer],
+    do: {:error, :invalid_controlled_worker_profile}
+
+  defp validate_controlled_profile(_controlled, _profile), do: :ok
+
   defp validate_controlled_host(true, host) when not is_nil(host), do: {:error, :controlled_workers_require_local_host}
   defp validate_controlled_host(_controlled, _host), do: :ok
 
@@ -341,12 +347,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp controlled_policies({:ok, policies}, profile, true) do
-    sandbox = if profile == :reviewer, do: "read-only", else: "workspace-write"
-    turn_policy = if profile == :reviewer, do: %{"type" => "readOnly"}, else: policies.turn_sandbox_policy
-
-    {:ok,
-     %{policies | approval_policy: "never", thread_sandbox: sandbox, turn_sandbox_policy: turn_policy}
-     |> Map.put(:profile, profile)}
+    {:ok, policies |> Map.put(:approval_policy, "never") |> Map.put(:profile, profile)}
   end
 
   defp controlled_policies(result, _profile, _controlled), do: result
@@ -370,24 +371,26 @@ defmodule SymphonyElixir.Codex.AppServer do
       "params" =>
         %{
           "approvalPolicy" => approval_policy,
-          "sandbox" => thread_sandbox,
           "cwd" => workspace,
           "dynamicTools" => dynamic_tool_binding.tool_specs
         }
+        |> legacy_sandbox_parameter(not is_nil(policies[:profile]), "sandbox", thread_sandbox)
         |> Map.merge(profile_parameters(policies[:profile], :thread))
     })
 
     case await_response(port, @thread_start_id) do
-      {:ok, %{"thread" => thread_payload}} ->
-        case thread_payload do
-          %{"id" => thread_id} -> {:ok, thread_id}
-          _ -> {:error, {:invalid_thread_payload, thread_payload}}
+      {:ok, %{"thread" => thread_payload} = response} ->
+        with :ok <- verify_permission_profile(response, policies[:profile]) do
+          parse_thread_payload(thread_payload)
         end
 
       other ->
         other
     end
   end
+
+  defp parse_thread_payload(%{"id" => thread_id}), do: {:ok, thread_id}
+  defp parse_thread_payload(payload), do: {:error, {:invalid_thread_payload, payload}}
 
   defp start_turn(session, prompt, issue, opts, deadline) do
     %{port: port, thread_id: thread_id, workspace: workspace} = session
@@ -407,9 +410,9 @@ defmodule SymphonyElixir.Codex.AppServer do
           ],
           "cwd" => workspace,
           "title" => "#{issue.identifier}: #{issue.title}",
-          "approvalPolicy" => approval_policy,
-          "sandboxPolicy" => turn_sandbox_policy
+          "approvalPolicy" => approval_policy
         }
+        |> legacy_sandbox_parameter(Map.get(session, :controlled, false), "sandboxPolicy", turn_sandbox_policy)
         |> Map.merge(profile_parameters(if(Map.get(session, :controlled), do: session.profile), :turn))
         |> maybe_output_schema(opts[:output_schema])
     })
@@ -1102,10 +1105,35 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp expired?({:deadline, _} = deadline), do: remaining_ms(deadline) == 0
   defp expired?(_timeout), do: false
 
+  # Legacy sandbox fields replace the selected named profile. Controlled sessions
+  # select the installed policy once and retain it across every turn.
+  defp legacy_sandbox_parameter(params, true, _key, _policy), do: params
+  defp legacy_sandbox_parameter(params, false, key, policy), do: Map.put(params, key, policy)
+
+  defp verify_permission_profile(_response, nil), do: :ok
+
+  defp verify_permission_profile(response, profile) do
+    expected = permission_profile(profile)
+
+    case response["activePermissionProfile"] do
+      %{"id" => ^expected} -> :ok
+      _ -> {:error, {:permission_profile_mismatch, expected}}
+    end
+  end
+
+  defp permission_profile(:builder), do: "symphony-builder"
+  defp permission_profile(:reviewer), do: "symphony-reviewer"
+
   defp profile_parameters(nil, _phase), do: %{}
 
   defp profile_parameters(profile, :thread) do
-    %{"model" => "gpt-6-astra", "config" => %{"model_reasoning_effort" => profile_effort(profile)}}
+    %{
+      "model" => "gpt-6-astra",
+      "config" => %{
+        "model_reasoning_effort" => profile_effort(profile),
+        "default_permissions" => permission_profile(profile)
+      }
+    }
   end
 
   defp profile_parameters(profile, :turn), do: %{"model" => "gpt-6-astra", "effort" => profile_effort(profile)}

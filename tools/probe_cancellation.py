@@ -76,7 +76,7 @@ def identity(pid):
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def probe(binary, native_terminate=False, container_image=None, seccomp_policy=None):
+def probe(binary, native_terminate=False, container_image=None, seccomp_policy=None, apparmor_profile=None):
     repository = Path(__file__).resolve().parents[1]
     source = (repository / "elixir/lib/symphony_elixir/process_group.ex").read_text()
     guardian = re.search(r'@guardian ~S"""\n(.*?)\n  """', source, re.S)
@@ -105,6 +105,8 @@ def probe(binary, native_terminate=False, container_image=None, seccomp_policy=N
                            "--workspace", str(workspace), "--codex-home", str(home), "--image", container_image]
                 if seccomp_policy:
                     command += ["--seccomp-policy", str(Path(seccomp_policy).resolve())]
+                if apparmor_profile:
+                    command += ["--apparmor-profile", apparmor_profile]
             process = subprocess.Popen(
                 ["/opt/homebrew/bin/python3", "-I", "-u", "-c", guardian_source,
                  str(root / (mode + ".lock"))] + command,
@@ -193,7 +195,8 @@ if __name__ == "__main__":
     parser.add_argument("--native-terminate", action="store_true")
     parser.add_argument("--container-image", help="Verified immutable image ID; probes exact container wrapper and guardian")
     parser.add_argument("--seccomp-policy", help="Explicit inactive compatibility policy for disposable containers only")
+    parser.add_argument("--apparmor-profile", help="Explicit worker-only AppArmor compatibility profile")
     arguments = parser.parse_args()
-    observed = probe(arguments.codex, arguments.native_terminate, arguments.container_image, arguments.seccomp_policy)
+    observed = probe(arguments.codex, arguments.native_terminate, arguments.container_image, arguments.seccomp_policy, arguments.apparmor_profile)
     print(json.dumps(observed, indent=2))
     raise SystemExit(0 if all(result["cancelled"] for result in observed.values()) else 1)

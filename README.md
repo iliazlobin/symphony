@@ -8,6 +8,8 @@ work instead of supervising coding agents.
 The local profile uses GitHub Issues, one bounded container builder followed by a
 fresh reviewer, and a host publication broker. New ledgers start paused; workspaces,
 budgets and review handoffs persist. Authenticated local controls manage execution.
+Controlled threads select and verify separate named builder/reviewer permission
+profiles without overriding them with legacy sandbox fields.
 An approved documentation-only merge policy is available behind explicit host and
 issue gates; deployments require the user. Live workers remain disabled until their
 isolation, cancellation and pilot checks pass. Upstream demonstration workflows below

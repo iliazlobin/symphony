@@ -2387,6 +2387,15 @@ inspect an isolated checkout of the candidate SHA with read-only tools. Review
 results MUST name that SHA. A verdict is evidence only; it grants no publication,
 merge, infrastructure, migration or deployment authority.
 
+Controlled `thread/start` requests MUST set `config.default_permissions` to
+`symphony-builder` or `symphony-reviewer` for the assigned role. The returned
+`activePermissionProfile.id` MUST exactly match that selection before any turn
+starts; missing, malformed or different profile metadata MUST fail startup.
+Unknown controlled roles MUST be rejected before launching a process. Controlled
+requests MUST omit the legacy `thread/start.sandbox` and `turn/start.sandboxPolicy`
+fields so they do not replace the installed named policy. The legacy policy path
+remains unchanged when `control.enabled` is false.
+
 Worker events MUST carry the reserved run identifier and match both the in-memory
 worker and durable active reservation. A valid handoff persists candidate/review
 metadata and an `owner_review` hold before the worker exits. Later completion,

@@ -148,12 +148,41 @@ defmodule SymphonyElixir.ControlledWorkerTest do
     threads = Enum.filter(calls, &(&1["method"] == "thread/start"))
     assert length(threads) == 2
     [builder, reviewer] = threads
-    assert builder["params"]["sandbox"] == "workspace-write"
-    assert reviewer["params"]["sandbox"] == "read-only"
+    assert builder["params"]["config"]["default_permissions"] == "symphony-builder"
+    assert reviewer["params"]["config"]["default_permissions"] == "symphony-reviewer"
+    assert Enum.all?(threads, &(not Map.has_key?(&1["params"], "sandbox")))
+    turns = Enum.filter(calls, &(&1["method"] == "turn/start"))
+    assert length(turns) == 2
+    assert Enum.all?(turns, &(not Map.has_key?(&1["params"], "sandboxPolicy")))
+    assert Enum.all?(threads ++ turns, &(&1["params"]["approvalPolicy"] == "never"))
     assert Enum.all?(threads, &(&1["params"]["dynamicTools"] == []))
     assert builder["params"]["config"]["model_reasoning_effort"] == "medium"
     assert reviewer["params"]["config"]["model_reasoning_effort"] == "high"
     assert Enum.all?(threads, &(&1["params"]["model"] == "gpt-6-astra"))
+  end
+
+  test "controlled startup rejects missing, malformed and different active permission profiles before any turn", %{root: root} do
+    workspace = Path.join(root, "issue")
+    File.mkdir_p!(workspace)
+
+    for role <- [:builder, :reviewer], mode <- ["missing_profile", "malformed_profile", "wrong_profile"] do
+      fake = fake_server(root, mode)
+      controlled_workflow(root, fake)
+      expected = "symphony-#{role}"
+      assert {:error, {:permission_profile_mismatch, ^expected}} = AppServer.run(workspace, "Must not execute", issue(), profile: role)
+    end
+
+    calls = File.read!(Path.join(root, "trace")) |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1)
+    refute Enum.any?(calls, &(&1["method"] == "turn/start"))
+  end
+
+  test "unknown controlled roles are rejected before launching a process", %{root: root} do
+    workspace = Path.join(root, "issue")
+    File.mkdir_p!(workspace)
+    fake = fake_server(root, "candidate")
+    controlled_workflow(root, fake)
+    assert {:error, :invalid_controlled_worker_profile} = AppServer.start_session(workspace, profile: :publisher)
+    refute File.exists?(Path.join(root, "trace"))
   end
 
   test "handoff rejects dirty source, wrong SHA, branch, malformed checks and symlinks", %{root: root} do
@@ -253,8 +282,13 @@ defmodule SymphonyElixir.ControlledWorkerTest do
         method = msg.get('method')
         if method == 'initialize': send({'id': 1, 'result': {}})
         elif method == 'thread/start':
-            role = 'reviewer' if msg['params'].get('sandbox') == 'read-only' else 'builder'
-            send({'id': 2, 'result': {'thread': {'id': role}}})
+            profile = msg['params']['config']['default_permissions']
+            role = 'reviewer' if profile == 'symphony-reviewer' else 'builder'
+            result = {'thread': {'id': role}, 'activePermissionProfile': {'id': profile}}
+            if mode == 'missing_profile': result.pop('activePermissionProfile')
+            if mode == 'malformed_profile': result['activePermissionProfile'] = 'invalid'
+            if mode == 'wrong_profile': result['activePermissionProfile'] = {'id': ':workspace'}
+            send({'id': 2, 'result': result})
         elif method == 'turn/start':
             if mode == 'ack_storm':
                 for n in range(100):

@@ -30,8 +30,10 @@ The source commit must contain the reviewed application `AGENTS.md`,
 `~/Library/Application Support/Symphony/events-concierge`: configuration, an API token,
 control ledger, retained workspaces, worker home, managed rules and publication receipts.
 Runtime copies are pinned inputs, not another documentation home. Initialization refuses
-to overwrite existing state. Leave the integration branch unset until it is decided;
-publication and automatic merge must remain disabled while that decision is open.
+to overwrite existing state. The initial [pilot](https://github.com/iliazlobin/events-concierge/issues/6)
+targets a draft PR into `codex/symphony-onboarding` from the
+[pinned baseline](https://github.com/iliazlobin/events-concierge/tree/cae67523a6e125682f3a87a0bb4ec95d85a633ee).
+This pilot target does not select a permanent release branch or enable automatic merge.
 
 ## Operate
 
@@ -125,14 +127,21 @@ Record the verified immutable image ID in the private host configuration. This a
 does not authorize worker launch. Each builder/reviewer has separate runtime state;
 only its reviewed configuration, managed rules and dedicated authentication are mounted.
 
-**Current activation blockers:** the Colima probe cannot execute Codex's inner
-namespace/mount sandbox. The optional `--seccomp-policy
-profiles/events-concierge/seccomp-codex.json` canary advances past namespace creation
-but still receives a mount permission denial with AppArmor enabled. It is not enabled
-by the service and is not an accepted workaround. Controlled App Server requests still
-use legacy sandbox fields; adopting the tested stricter named permission profiles
-requires the pending explicit approval. Dedicated worker login, integration branch
-selection and the real issue-to-PR pilot also remain prerequisites.
+Controlled threads select `symphony-builder` or `symphony-reviewer` through
+`config.default_permissions`. Startup requires the same `activePermissionProfile.id`
+in Codex's response. Missing or unexpected metadata stops execution before any turn.
+The client omits legacy sandbox overrides; builder tools can write the checkout,
+reviewer tools cannot, and both deny command network access and outside-file/`.env`
+reads. `tools/probe_permissions.py` verifies those restrictions and named role selection
+on the installed Mac Codex without model calls.
+
+**Activation prerequisites:** Docker's AppArmor policy blocks Codex's inner sandbox
+mount operations. The disposable probe accepts `--apparmor-profile symphony-codex`
+only with the existing seccomp candidate; no worker AppArmor policy is installed or
+enabled by the service. Further scoped mount exceptions require explicit approval,
+then real container permission and cancellation canaries must pass. Dedicated worker
+login and the issue-to-PR pilot remain pending; Mac permission checks do not establish
+the Linux boundary. Keep ordinary dispatch disabled while these gates are unresolved.
 
 Retain failed workspaces and GitHub records. Do not delete the ledger or lock to reset
 budgets or force ownership. Restart conservatively holds interrupted work. Resolve any

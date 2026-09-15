@@ -113,6 +113,29 @@ os.killpg=signal_unreaped
             with self.assertRaises(ValueError):
                 WORKER.create_command(workspace, home, "sha256:" + "a" * 64, "builder", root / "a.cid", "not-an-owner", "/docker")
 
+    def test_apparmor_candidate_never_disables_outer_isolation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace, home = root / "workspace", root / "home"
+            workspace.mkdir()
+            home.mkdir()
+            (home / "config.toml").write_text('model="fixture"\n')
+            args = (workspace, home, "sha256:" + "a" * 64, "reviewer", root / "a.cid", "b" * 32, "/docker")
+            policy = ROOT / "profiles/events-concierge/seccomp-codex.json"
+            for name, seccomp in (("unconfined", policy), ("docker-default", policy), ("symphony-codex", None)):
+                with self.assertRaises(ValueError):
+                    WORKER.create_command(*args, seccomp_policy=seccomp, apparmor_profile=name)
+            command = WORKER.create_command(*args, seccomp_policy=policy, apparmor_profile="symphony-codex")
+            self.assertIn("apparmor=symphony-codex", command)
+            self.assertIn("seccomp=" + str(policy), command)
+            self.assertIn("no-new-privileges", command)
+            self.assertEqual(command[command.index("--cap-drop") + 1], "ALL")
+            self.assertNotIn("--cap-add", command)
+            self.assertIn("--read-only", command)
+            self.assertIn(f"type=bind,src={workspace},dst={workspace},readonly", command)
+            default = WORKER.create_command(*args)
+            self.assertFalse(any(value.startswith("apparmor=") for value in default))
+
     def test_guardian_removes_only_owned_container_before_allowing_next_command(self):
         self._guardian_case(matching=True)
 

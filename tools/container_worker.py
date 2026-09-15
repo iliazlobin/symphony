@@ -14,7 +14,7 @@ import subprocess
 OWNER_LABEL = "com.openai.symphony.owner"
 
 
-def create_command(workspace, codex_home, image, role, cidfile, owner, docker, seccomp_policy=None):
+def create_command(workspace, codex_home, image, role, cidfile, owner, docker, seccomp_policy=None, apparmor_profile=None):
     workspace = Path(workspace).resolve(strict=True)
     codex_home = Path(codex_home).resolve(strict=True)
     cidfile = Path(cidfile).resolve()
@@ -57,6 +57,10 @@ def create_command(workspace, codex_home, image, role, cidfile, owner, docker, s
         if policy != expected or not policy.is_file():
             raise ValueError("Only the reviewed repository seccomp compatibility candidate is supported")
         compatibility = ["--security-opt", "seccomp=" + str(policy)]
+    if apparmor_profile is not None:
+        if apparmor_profile != "symphony-codex" or seccomp_policy is None:
+            raise ValueError("Only the reviewed worker AppArmor profile is supported")
+        compatibility += ["--security-opt", "apparmor=" + apparmor_profile]
     return [
         docker, "create", "--name", "symphony-" + owner,
         "--label", OWNER_LABEL + "=" + owner, "--cidfile", str(cidfile),
@@ -79,6 +83,7 @@ def main():
     parser.add_argument("--codex-home", required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--seccomp-policy", help="Explicit compatibility canary policy; not enabled by the service profile")
+    parser.add_argument("--apparmor-profile", help="Explicit worker-only AppArmor compatibility profile")
     args = parser.parse_args()
     docker = shutil.which("docker")
     if not docker:
@@ -87,7 +92,7 @@ def main():
         args.workspace, args.codex_home, args.image,
         os.environ.get("SYMPHONY_WORKER_ROLE", "builder"),
         os.environ["SYMPHONY_CONTAINER_CIDFILE"],
-        os.environ["SYMPHONY_CONTAINER_OWNER"], docker, args.seccomp_policy,
+        os.environ["SYMPHONY_CONTAINER_OWNER"], docker, args.seccomp_policy, args.apparmor_profile,
     )
     stage_home = Path(args.codex_home).resolve().parent / "stage-state" / os.environ["SYMPHONY_CONTAINER_OWNER"] / os.environ.get("SYMPHONY_WORKER_ROLE", "builder")
     stage_home.mkdir(parents=True, mode=0o700, exist_ok=False)

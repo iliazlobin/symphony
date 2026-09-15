@@ -58,7 +58,8 @@ commands to the native API and owns no scheduling state.
   upstream execution. [`CandidatePipeline`](elixir/lib/symphony_elixir/candidate_pipeline.ex)
   performs the bounded builder/reviewer sequence and validates its results.
 - [`Codex.AppServer`](elixir/lib/symphony_elixir/codex/app_server.ex) implements
-  the Codex stdio protocol. [`ProcessGroup`](elixir/lib/symphony_elixir/process_group.ex)
+  the Codex stdio protocol and verifies the named permission profile before each
+  controlled thread can run. [`ProcessGroup`](elixir/lib/symphony_elixir/process_group.ex)
   owns the host guardian and workspace lock.
   [`container_worker.py`](tools/container_worker.py) creates and attaches the
   guardian-owned container using an immutable local image ID.
@@ -127,7 +128,11 @@ cloud or control credentials, a Docker socket, or the personal home directory. T
 container root filesystem is read-only, capabilities are dropped, resources are
 bounded, and the reviewer checkout is mounted read-only. Codex permission policies
 must separately protect the mounted authentication and session state from coding
-tools; container mounts alone do not provide that separation.
+tools; container mounts alone do not provide that separation. Controlled threads select
+`symphony-builder` or `symphony-reviewer` and require that exact profile in the startup
+response. Builder tools may write the checkout; reviewer tools are read-only. Both
+profiles deny command network access and reads of outside files and `.env` files.
+Legacy sandbox fields are omitted so subsequent turns retain the named policy.
 
 Live worker launch has a separate disabled-by-default host gate. Container cancellation,
 credential isolation and a bounded real pilot must pass before activation. The native
@@ -135,12 +140,11 @@ Mac process-group path cannot contain real Codex commands that detach into other
 groups; its fixture tests do not establish the container boundary. Implementation and
 local unit coverage do not imply accepted live operation.
 
-The current Colima canary cannot run Codex's inner namespace/mount sandbox. A narrowly
-extended seccomp candidate gets past namespace creation but still receives a mount
-permission denial; AppArmor is enabled, but the exact denying rule is unverified.
-The service does not enable that candidate. Controlled App Server requests still use
-the legacy sandbox fields; the stricter named permission-profile integration is
-pending explicit approval. Neither limitation is bypassed by enabling the host gate.
+The Colima namespace/mount sandbox remains an activation blocker. Compatibility
+candidates are not an accepted live configuration until the container permission
+and cancellation canaries pass. Named role selection and command restrictions are
+verified against the installed Mac Codex; that does not establish the Linux container
+boundary. Dedicated worker authentication and the real issue-to-PR pilot remain pending.
 
 The host publication broker can perform only the approved repository operations.
 Automatic merge requires explicit host enablement, issue opt-in, a clean review of
