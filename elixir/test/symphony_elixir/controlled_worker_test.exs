@@ -129,7 +129,14 @@ defmodule SymphonyElixir.ControlledWorkerTest do
     fake = fake_server(root, "candidate")
     controlled_workflow(root, fake, control_base_sha: base_sha)
 
-    assert :ok = AgentRunner.run(issue(), self(), run_id: "run-123")
+    git_calls = trace_git_calls(fn -> assert :ok = AgentRunner.run(issue(), self(), run_id: "run-123") end)
+    {clones, other_git_calls} = Enum.split_with(git_calls, fn {command, _opts} -> String.contains?(command, "--no-hardlinks") end)
+    assert [{clone_command, clone_opts}] = clones
+    assert clone_command =~ "--local"
+    assert clone_command =~ "--no-checkout"
+    assert clone_opts[:timeout_ms] == 120_000
+    assert other_git_calls != []
+    assert Enum.all?(other_git_calls, fn {_command, opts} -> opts[:timeout_ms] == 30_000 end)
     assert_receive {:worker_runtime_info, "42", "run-123", %{workspace_path: ^workspace}}
     assert_receive {:codex_worker_update, "42", "run-123", %{event: :session_started}}
     assert_receive {:worker_candidate_ready, "42", candidate}, 1_000
@@ -249,6 +256,37 @@ defmodule SymphonyElixir.ControlledWorkerTest do
     content = File.read!(path) |> String.replace("\n---\n", section, global: false)
     File.write!(path, content)
     WorkflowStore.force_reload()
+  end
+
+  defp trace_git_calls(callback) do
+    collect = fn collect, calls ->
+      receive do
+        {:trace, _pid, :call, {ProcessGroup, :run, [command, opts]}} -> collect.(collect, [{command, opts} | calls])
+        {:collect, caller} -> send(caller, {:git_calls, Enum.reverse(calls)})
+      end
+    end
+
+    tracer = spawn(fn -> collect.(collect, []) end)
+    Code.ensure_loaded!(ProcessGroup)
+    :erlang.trace_pattern({ProcessGroup, :run, 2}, true, [])
+    :erlang.trace(self(), true, [:call, {:tracer, tracer}])
+
+    try do
+      callback.()
+    after
+      :erlang.trace(self(), false, [:call])
+      :erlang.trace_pattern({ProcessGroup, :run, 2}, false, [])
+      reference = :erlang.trace_delivered(self())
+
+      try do
+        assert_receive {:trace_delivered, _pid, ^reference}
+      after
+        send(tracer, {:collect, self()})
+      end
+    end
+
+    assert_receive {:git_calls, calls}
+    calls
   end
 
   defp issue, do: %Issue{id: "42", identifier: "EC-42", title: "Fixture candidate", description: "Keep behavior", state: "In Progress", labels: []}

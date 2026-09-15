@@ -88,6 +88,8 @@ baseline comes from operator configuration, not the builder's handoff file.
 A fresh reviewer thread has a separate checkout mounted read-only. Builder and
 reviewer token usage count toward the same issue ceiling. Host hooks and candidate
 verification remain trusted operations outside the coding containers.
+Copying the independent review repository allows 120 seconds; other candidate Git
+commands allow 30 seconds. The remaining issue deadline still bounds the pipeline.
 Before host Git commands or hooks execute, a guard inside the workspace lock rejects
 Git metadata indirection and executable configuration, including file filters. Managed
 task checkouts must be standalone clones with ordinary Git metadata; submodules and

@@ -173,7 +173,7 @@ defmodule SymphonyElixir.CandidatePipeline do
     suffix = :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
     review_workspace = Path.join(Config.local_workspace_root(), Path.basename(workspace) <> "-review-" <> suffix)
 
-    with {:ok, _} <- git(workspace, ["clone", "--local", "--no-hardlinks", "--no-checkout", "--", workspace, review_workspace]),
+    with {:ok, _} <- git(workspace, ["clone", "--local", "--no-hardlinks", "--no-checkout", "--", workspace, review_workspace], 120_000),
          {:ok, _} <- git(review_workspace, ["checkout", "--detach", candidate_sha]),
          :ok <- verify_revision(review_workspace, candidate_sha, false) do
       {:ok, review_workspace}
@@ -204,7 +204,7 @@ defmodule SymphonyElixir.CandidatePipeline do
   defp valid_finding?(_finding), do: false
   defp nonempty?(value), do: is_binary(value) and String.trim(value) != ""
 
-  defp git(workspace, args) do
+  defp git(workspace, args, timeout_ms \\ 30_000) do
     command = Workspace.guarded_git_command(workspace, args)
 
     env =
@@ -214,7 +214,7 @@ defmodule SymphonyElixir.CandidatePipeline do
         {~c"GIT_CONFIG_COUNT", ~c"0"}
       ] ++ Enum.map(~w(GIT_CONFIG_PARAMETERS GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES), &{String.to_charlist(&1), false})
 
-    case ProcessGroup.run(command, cd: workspace, timeout_ms: 30_000, env: env) do
+    case ProcessGroup.run(command, cd: workspace, timeout_ms: timeout_ms, env: env) do
       {:ok, {output, 0}} -> {:ok, String.trim_trailing(output, "\n")}
       {:ok, {output, status}} -> {:error, {:candidate_git_failed, status, output}}
       {:error, _} = error -> error
