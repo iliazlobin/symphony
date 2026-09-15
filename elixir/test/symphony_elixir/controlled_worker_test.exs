@@ -39,7 +39,7 @@ defmodule SymphonyElixir.ControlledWorkerTest do
       configure_startup(fixture, fake, controlled)
 
       error = %{
-        "code" => -32000,
+        "code" => -32_000,
         "message" => "PRIVATE_RPC_SENTINEL",
         "data" => %{"secret" => "PRIVATE_DATA_SENTINEL"}
       }
