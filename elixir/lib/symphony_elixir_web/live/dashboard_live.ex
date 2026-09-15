@@ -297,9 +297,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <div id="board-search" phx-update="ignore"><input type="search" data-board-search aria-label="Search tasks" placeholder="Search tasks…" /></div>
         <button id="settings-button" class="button button-quiet" phx-click="open-settings">Settings</button>
         <button :if={!@read_only} id="new-task-button" class="button button-primary" phx-click="new-task">+ New task</button>
+        <button id="open-chat-button" class="button button-quiet" phx-click="open-chat" aria-expanded={to_string(@chat_open)} aria-controls="management-chat-dock">Chat</button>
       </header>
 
-      <nav class="board-view-tabs workspace-tabs" aria-label="Workspace"><a href="/" aria-current="page">Board</a><button id="open-chat-button" phx-click="open-chat" aria-expanded={to_string(@chat_open)} aria-controls="management-chat-dock">Chat</button></nav>
       <div id="board-toolbar" class="board-toolbar" phx-update="ignore">
         <div class="toolbar-primary">
           <div class="filter-combo project-combo" data-filter="project">

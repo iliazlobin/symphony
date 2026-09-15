@@ -100,8 +100,6 @@ input, select {
 .header-spacer { flex: 1; }
 #board-search { flex: 0 1 230px; min-width: 130px; }
 #board-search input { width: 100%; border-color: transparent; padding: 5px 8px; background: var(--soft); font-size: 12px; border-radius: 5px; }
-.board-view-tabs { padding: 8px 24px 0; background: var(--panel); }
-.board-view-tabs a { font-size: 12px; }
 .board-toolbar { padding: 8px 24px; background: var(--panel); border-bottom: 1px solid var(--line); position: relative; z-index: 5; }
 .toolbar-primary { display: flex; align-items: center; gap: 8px; }
 .project-combo { flex: 0 1 240px; }
@@ -315,7 +313,7 @@ summary { cursor: pointer; color: var(--accent); }
   .board-context-state { align-items: start; gap: 6px 10px; }
   .board-header { padding: 10px 14px; gap: 8px; }
   #board-search { order: 3; flex: 1 1 100%; }
-  .board-view-tabs { padding-left: 14px; }
+  .board-header .header-divider, .board-header .board-heading { display: none; }
   .board-toolbar { padding: 8px 14px; }
   .toolbar-primary { gap: 3px; }
   .toolbar-primary .header-spacer { display: none; }

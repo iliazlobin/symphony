@@ -325,6 +325,7 @@ The observability UI now runs on a minimal Phoenix stack:
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
+Open **Chat** at the right of the board header to show the conversation panel.
 The board and full-page chat share `ChatPanel`. The dock retains board filters and
 selected task links. **Share this view** attaches a validated, project-bound snapshot
 to each message; the selected-card checkbox removes its explicit selection. Snapshot
