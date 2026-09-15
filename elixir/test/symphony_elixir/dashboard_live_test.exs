@@ -95,10 +95,12 @@ defmodule SymphonyElixir.DashboardLiveTest do
 
     open_task(view, "2")
     assert has_element?(view, "dialog#board-dialog h2", "Ready fixture")
+    assert has_element?(view, "#task-board-app[data-selected-task='github:example/fixture:2']")
     assert has_element?(view, "#board-dialog", "Acceptance for fixture 2")
     assert has_element?(view, "#lane-running [data-task-id='github:example/fixture:3']")
     render_click(view, "close-dialog")
     refute has_element?(view, "#board-dialog")
+    refute has_element?(view, "#task-board-app[data-selected-task]")
     assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:2']")
   end
 
@@ -232,7 +234,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
 
     prs = [
       %{number: 12, title: "Fix retries", url: "https://github.com/example/fixture/pull/12", state: "open", draft: true, review: "CHANGES_REQUESTED", checks: "failure"},
-      %{number: 11, title: "Initial fix", url: "https://github.com/example/fixture/pull/11", state: "merged", draft: false, review: "APPROVED", checks: "success"}
+      %{number: 11, title: "Initial fix", url: "https://github.com/example/fixture/pull/11", state: "merged", draft: false, review: "APPROVED", checks: "success"},
+      %{number: 10, title: "Additional fix", url: "https://github.com/example/fixture/pull/10", state: "open", draft: false, review: "REVIEW_REQUIRED", checks: "failure"}
     ]
 
     board =
@@ -268,12 +271,14 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, card, "GitHub review: Changes requested")
     assert has_element?(view, card, "CI: Failure")
     assert has_element?(view, card, "Merged")
+    assert has_element?(view, card <> " .card-pr-summary button", "View all 3 pull requests")
     assert has_element?(view, card <> " .card-reference-links a[href='https://github.com/example/fixture']", "Repository")
     assert has_element?(view, card <> " .card-reference-links a[href='#{candidate}']", "Verified candidate")
     assert has_element?(view, card <> " .card-reference-links a[href='https://github.com/example/fixture/pull/12/checks']", "PR #12 checks")
-    assert has_element?(view, card <> " .card-bottom", "Updated 2026-09-14")
+    assert has_element?(view, card <> " .card-bottom time[datetime='2026-09-14T11:00:00Z']", "Updated Sep 14")
     assert has_element?(view, ".status-badge-live", "Live updates connected")
-    open_task(view, "2")
+    view |> element(card <> " .card-pr-summary button") |> render_click()
+    assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/pull/10']", "Additional fix")
     assert has_element?(view, "#board-dialog a[href='#{candidate}']", "Verified candidate")
     assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/issues/2']")
     assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/pull/12']", "Fix retries")

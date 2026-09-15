@@ -95,6 +95,7 @@
       };
       this.applyAppearance = () => {
         this.el.dataset.density = this.prefs.density;
+        this.el.dataset.singleProject = String(this.prefs.project.length === 1 || this.options("project").length === 1);
         const theme = this.prefs.theme === "system" ? (this.darkMode.matches ? "dark" : "light") : this.prefs.theme;
         this.el.dataset.theme = theme;
         this.el.style.colorScheme = theme;

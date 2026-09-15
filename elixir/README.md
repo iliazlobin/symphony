@@ -476,6 +476,12 @@ you.
 
 The optional HTTP service serves a LiveView Kanban board with searchable project,
 status and priority filters, per-lane sorting, and browser-local manual order.
+The compact board follows the Linear board shown in OpenAI's Symphony demo while
+retaining this fork's GitHub workflow. Project selection stays in the top bar;
+**Filter** opens status and priority selectors. **Display** controls sorting, card
+detail, light/dark appearance and visible columns. Hidden columns remain available
+in the restore rail; selecting a status reveals its column. Display preferences are
+saved only in this browser and do not change scheduling or issue state.
 Card details and Settings open as native dialogs with Close and Escape. Task
 descriptions render Markdown headings, lists, code, tables and safe external links;
 embedded HTML and interactive attributes are omitted, and images show their alt text.
@@ -483,8 +489,9 @@ Relative links remain text; open the source issue for repository-relative naviga
 Tracker issues, current runtime and durable holds own the displayed stages; stale sources
 are marked. A terminal issue does not verify a merge or deployment.
 
-GitHub cards show the PR branch, commit, changed-file counts and current-head CI summary.
-Expand checks on a card or open its popup for individual job results, durations and
+Compact cards show blockers and a short PR/CI summary. Detailed cards and task popups
+include the PR branch, commit and changed-file counts. Expand checks on a detailed
+card or open its popup for individual job results, durations and
 workflow/log links. Partial or stale check data stays explicit. Job durations are
 independent; passing CI and conflict-free branches do not establish merge approval.
 

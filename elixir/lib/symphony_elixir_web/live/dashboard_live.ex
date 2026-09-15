@@ -189,41 +189,49 @@ defmodule SymphonyElixirWeb.DashboardLive do
     assigns = assign(assigns, authorized: BrowserAuth.authorized?(assigns.auth), read_only: read_only?(assigns.board))
 
     ~H"""
-    <section id="task-board-app" class="dashboard-shell" phx-hook="TaskBoard"
-      data-scope={scope(@board)} data-projects={Jason.encode!(@board.projects)} data-url-filters={Jason.encode!(@url_filters)}>
+    <section id="task-board-app" class="dashboard-shell" phx-hook="TaskBoard" data-density="compact" data-theme="light"
+      data-scope={scope(@board)} data-projects={Jason.encode!(@board.projects)} data-url-filters={Jason.encode!(@url_filters)} data-selected-task={@dialog == :task && @selected && @selected.id}>
       <header class="board-header">
-        <a href="/" class="brand">∿ Symphony</a><nav class="workspace-tabs" aria-label="Workspace"><a href="/" aria-current="page">Board</a><a href={chat_path(@url_filters)}>Chat</a></nav>
+        <a href="/" class="brand"><span class="brand-mark" aria-hidden="true">∿</span> Symphony</a>
+        <span class="header-divider" aria-hidden="true">/</span><span class="board-heading">Projects</span>
         <span class="header-spacer"></span>
         <div id="board-search" phx-update="ignore"><input type="search" data-board-search aria-label="Search tasks" placeholder="Search tasks…" /></div>
         <button id="settings-button" class="button button-quiet" phx-click="open-settings">Settings</button>
         <button :if={!@read_only} id="new-task-button" class="button button-primary" phx-click="new-task">+ New task</button>
       </header>
 
-      <div id="board-context" class="board-context" aria-label="Board data and execution status">
-        <div class="board-context-state">
-          <strong :if={Map.get(@board, :data_mode)}>{Map.get(@board, :data_mode)}</strong>
-          <span class="board-source-state" data-unavailable={to_string(not is_nil(@board.source_error))}>{source_status(@board, @loading)}</span>
-          <span class="board-runtime-state" data-unavailable={to_string(runtime_unavailable?(@board, @payload))}>{execution_status(@board, @payload)}</span>
-          <span :if={@read_only} class="evidence-badge">Read-only</span>
-        </div>
-        <div :if={context_links(@board) != []} class="board-context-links">
-          <a :for={link <- context_links(@board)} href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a>
-        </div>
-        <p :if={Map.get(@board, :source_note)} class="board-source-note">{Map.get(@board, :source_note)}</p>
-      </div>
-
+      <nav class="board-view-tabs workspace-tabs" aria-label="Workspace"><a href="/" aria-current="page">Board</a><a href={chat_path(@url_filters)}>Chat</a></nav>
       <div id="board-toolbar" class="board-toolbar" phx-update="ignore">
-        <div class="filter-row">
-          <div :for={key <- ["project", "status", "priority"]} class="filter-combo" data-filter={key}>
+        <div class="toolbar-primary">
+          <div class="filter-combo project-combo" data-filter="project">
+            <div class="combo-control"><input id="filter-project" role="combobox" aria-label="Project filter"
+              autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="options-project"
+              placeholder="Project: All" /><button type="button" data-filter-toggle="project" aria-label="Open project filter">⌄</button></div>
+            <div id="options-project" class="combo-options" role="listbox" aria-label="Project options" aria-multiselectable="true" hidden></div>
+          </div>
+          <span class="header-spacer"></span>
+          <button type="button" class="button button-quiet toolbar-button" data-toggle-filters aria-expanded="false" aria-controls="board-filter-panel">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M7 12h10M10 17h4" /></svg>Filter</button>
+          <details class="board-menu display-menu">
+            <summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9m4 0h3M4 17h3m4 0h9M13 4v6M7 14v6" /></svg>Display</summary>
+            <div class="board-menu-panel">
+              <label class="display-field"><span>Sort by</span><select data-board-sort aria-label="Sort cards">
+                <option value="manual">Manual order</option><option value="priority">Priority first</option>
+                <option value="updated">Recently updated</option><option value="oldest">Oldest first</option><option value="title">Title A–Z</option>
+              </select></label>
+              <label class="display-field"><span>Cards</span><select data-board-density aria-label="Card details"><option value="compact">Compact</option><option value="details">Detailed</option></select></label>
+              <label class="display-field"><span>Appearance</span><select data-board-theme aria-label="Board appearance"><option value="light">Light</option><option value="dark">Dark</option><option value="system">System</option></select></label>
+              <fieldset class="display-columns"><legend>Visible columns</legend><label :for={{id, label} <- @lanes}><input type="checkbox" data-visible-lane={id} checked={id != "done"} />{label}</label></fieldset>
+            </div>
+          </details>
+        </div>
+        <div id="board-filter-panel" class="filter-row" data-filter-panel hidden>
+          <div :for={key <- ["status", "priority"]} class="filter-combo" data-filter={key}>
             <div class="combo-control"><input id={"filter-#{key}"} role="combobox" aria-label={"#{String.capitalize(key)} filter"}
               autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls={"options-#{key}"}
               placeholder={"#{String.capitalize(key)}: All"} /><button type="button" data-filter-toggle={key} aria-label={"Open #{key} filter"}>⌄</button></div>
             <div id={"options-#{key}"} class="combo-options" role="listbox" aria-label={"#{String.capitalize(key)} options"} aria-multiselectable="true" hidden></div>
           </div>
-          <label class="sort-control"><span>Sort</span><select data-board-sort aria-label="Sort cards">
-            <option value="manual">Manual order</option><option value="priority">Priority first</option>
-            <option value="updated">Recently updated</option><option value="oldest">Oldest first</option><option value="title">Title A–Z</option>
-          </select></label>
           <button type="button" class="button button-quiet" data-clear-filters>Clear filters</button>
         </div>
         <div data-filter-chips class="filter-chips" aria-label="Selected filters"></div>
@@ -245,7 +253,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
         </select></label></div>
         <div class="kanban-board">
           <section :for={{stage, label} <- @lanes} id={"lane-#{stage}"} class="kanban-lane" data-stage={stage} aria-label={"#{label} lane"}>
-            <h2><span class={"lane-dot lane-dot-#{stage}"}></span>{label}<span class="lane-count" data-lane-count>{Enum.count(@board.tasks, &(&1.stage == stage))}</span></h2>
+            <div class="lane-heading"><h2><span class={"lane-dot lane-dot-#{stage}"} aria-hidden="true"></span>{label}<span class="lane-count" data-lane-count>{Enum.count(@board.tasks, &(&1.stage == stage))}</span></h2>
+              <details class="board-menu lane-menu"><summary aria-label={"#{label} column options"}>···</summary><div class="board-menu-panel"><button type="button" data-hide-lane={stage}>Hide column</button></div></details>
+              <button :if={!@read_only && stage == "backlog"} class="lane-add" phx-click="new-task" aria-label="Create a task in GitHub">+</button>
+            </div>
             <div class="lane-cards" data-lane-cards>
               <article :for={task <- Enum.filter(@board.tasks, &(&1.stage == stage))} id={card_id(task)} class="task-card" draggable={to_string(!@read_only)}
                 data-task-id={task.id} data-project={task.project} data-priority={priority(task.priority)} data-attention={to_string(not is_nil(task.attention))}
@@ -253,17 +264,23 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <div class="card-top"><a :if={safe_url(task.url)} href={safe_url(task.url)} target="_blank" rel="noopener noreferrer"
                   aria-label={"Open #{task.identifier} in the issue tracker"}>{task.identifier}</a><span :if={!safe_url(task.url)}>{task.identifier}</span>
                   <span class="priority" data-priority={priority(task.priority)}>{priority(task.priority)}</span></div>
-                <button id={"open-#{card_id(task)}"} class="card-title" phx-click="open-task" phx-value-id={task.id}>{task.title}</button>
+                <button id={"open-#{card_id(task)}"} class="card-title" phx-click="open-task" phx-value-id={task.id}><span class={"lane-dot lane-dot-#{stage}"} aria-hidden="true"></span><span>{task.title}</span></button>
                 <div class="card-project">{task.project_label}</div>
                 <div class="card-evidence"><span class="evidence-badge">Issue: {display(Map.get(task, :tracker_state))}</span><span>{task_execution(task)}</span></div>
                 <span :if={blocker(task)} class="attention-badge">{blocker(task)}</span>
+                <div :if={pull_requests(task) != []} class="card-pr-summary"><span :for={pr <- Enum.take(pull_requests(task), 2)}>
+                  <a :if={safe_url(field(pr, :url))} href={safe_url(field(pr, :url))} target="_blank" rel="noopener noreferrer">PR #{field(pr, :number)}</a>
+                  <span class="pr-state" data-pr-state={String.downcase(pr_state(pr))}>{pr_state(pr)}</span>
+                  <span class="compact-ci" title={ci_summary(pr)}>CI: {display(field(pr, :checks))}</span>
+                  <span :if={field(pr, :check_details_status) in ["partial", "stale", "unavailable"]} class="compact-ci-note">Check details: {field(pr, :check_details_status)}</span>
+                </span><button :if={length(pull_requests(task)) > 2} class="card-more-links" phx-click="open-task" phx-value-id={task.id}>View all {length(pull_requests(task))} pull requests</button></div>
                 <div :if={pull_requests(task) != []} class="card-pull-requests">
                   <.pull_request :for={pr <- Enum.take(pull_requests(task), 2)} pr={pr} compact={true} />
                   <button :if={length(pull_requests(task)) > 2} class="card-more-links" phx-click="open-task" phx-value-id={task.id}>View all {length(pull_requests(task))} pull requests</button>
                 </div>
                 <div :if={task_links(task, ["repo", "candidate", "checks"]) != []} class="card-reference-links"><a :for={link <- task_links(task, ["repo", "candidate", "checks"])} href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
                 <p :if={current_activity(task, @payload)} class="card-activity">{current_activity(task, @payload)}</p>
-                <div class="card-bottom"><span>{updated_at(task.updated_at)}</span>
+                <div class="card-bottom"><time datetime={task.updated_at} title={updated_at(task.updated_at)}>{compact_updated_at(task.updated_at)}</time>
                   <select :if={!@read_only} class="move-select" data-move-task={task.id} aria-label={"Move #{task.identifier}"}>
                     <option value="">Move…</option><option :for={{value, title} <- @lanes} :if={value != task.stage} value={value}>{title}</option>
                   </select></div>
@@ -271,7 +288,25 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
             <p class="lane-empty" data-lane-empty>No tasks</p>
           </section>
+          <section class="hidden-lanes" data-hidden-lanes aria-label="Hidden columns">
+            <h2><span aria-hidden="true">▾</span> Hidden columns</h2>
+            <button :for={{stage, label} <- @lanes} type="button" class="hidden-lane" data-show-lane={stage} aria-label={"Show #{label} column"} hidden={stage != "done"}>
+              <span class={"lane-dot lane-dot-#{stage}"} aria-hidden="true"></span><span>{label}</span><span class="lane-count" data-hidden-count={stage}>{Enum.count(@board.tasks, &(&1.stage == stage))}</span>
+            </button>
+          </section>
         </div>
+      </div>
+      <div id="board-context" class="board-context" aria-label="Board data and execution status">
+        <div class="board-context-state">
+          <strong :if={Map.get(@board, :data_mode)}>{Map.get(@board, :data_mode)}</strong>
+          <span class="board-source-state" data-unavailable={to_string(not is_nil(@board.source_error))}>{source_status(@board, @loading)}</span>
+          <span class="board-runtime-state" data-unavailable={to_string(runtime_unavailable?(@board, @payload))}>{execution_status(@board, @payload)}</span>
+          <span :if={@read_only} class="evidence-badge">Read-only</span>
+        </div>
+        <div :if={context_links(@board) != []} class="board-context-links">
+          <a :for={link <- context_links(@board)} href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a>
+        </div>
+        <p :if={Map.get(@board, :source_note)} class="board-source-note">{Map.get(@board, :source_note)}</p>
       </div>
       <footer class="board-footer"><span class="status-stack"><span class="status-badge-live">Live updates connected</span><span class="status-badge-offline">Disconnected · last-known state</span></span>
         <span>Manual order is a browser preference; scheduling follows repository policy.</span></footer>
@@ -659,6 +694,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp age(value), do: value |> to_string() |> String.replace("T", " ") |> String.replace("Z", " UTC")
   defp updated_at(nil), do: "Updated time unknown"
   defp updated_at(value), do: "Updated " <> age(value)
+
+  defp compact_updated_at(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _} -> "Updated " <> Calendar.strftime(datetime, "%b %-d")
+      _ -> "Updated time unknown"
+    end
+  end
+
+  defp compact_updated_at(_), do: "Updated time unknown"
   defp dialog_title(:settings, _, _), do: "Settings"
   defp dialog_title(:new_task, _, _), do: "New task"
   defp dialog_title(:task, task, _), do: task.title
