@@ -7,14 +7,18 @@
 
   const TaskBoard = {
     mounted() {
-      this.prefs = {project: [], status: [], priority: [], query: "", sort: "manual", order: {}, lane: "ready"};
+      this.prefs = {project: [], status: [], priority: [], query: "", sort: "manual", order: {}, lane: "ready", density: "compact", theme: "light", hiddenLanes: ["done"]};
+      this.filtersOpen = false;
+      this.revealedLanes = new Set();
       this.popup = null;
       this.activeOption = 0;
       this.drag = null;
       this.scope = null;
       this.abort = new AbortController();
+      this.darkMode = window.matchMedia("(prefers-color-scheme: dark)");
       const on = (name, handler) => this.el.addEventListener(name, handler, {signal: this.abort.signal});
       this.options = key => key === "project" ? parse(this.el.dataset.projects, []).map(p => [p.id, p.label]) : key === "status" ? [...lanes, ["attention", "Needs input"]] : [["P1", "P1 · High"], ["P2", "P2 · Normal"], ["P3", "P3 · Low"], ["P4", "P4 · Lowest"], ["—", "Unspecified"]];
+      this.filterValues = (key, values) => Array.isArray(values) ? [...new Set(values.filter(value => this.options(key).some(([id]) => id === value)))] : [];
       this.load = () => {
         const scope = this.el.dataset.scope;
         if (!scope || this.scope === scope) return;
@@ -22,11 +26,16 @@
         this.key = "symphony.board.v1:" + scope;
         const parsed = parse(storage.get(this.key), {});
         const saved = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-        for (const k of ["project", "status", "priority"]) this.prefs[k] = Array.isArray(saved[k]) ? saved[k].filter(v => typeof v === "string") : [];
+        for (const k of ["project", "status", "priority"]) this.prefs[k] = this.filterValues(k, saved[k]);
         this.prefs.query = typeof saved.query === "string" ? saved.query : "";
         this.prefs.sort = ["manual", "priority", "updated", "oldest", "title"].includes(saved.sort) ? saved.sort : "manual";
         this.prefs.lane = lanes.some(([id]) => id === saved.lane) ? saved.lane : "ready";
-        this.prefs.order = saved.order && typeof saved.order === "object" && !Array.isArray(saved.order) ? saved.order : {};
+        this.prefs.order = Object.fromEntries(lanes.map(([stage]) => [stage, Array.isArray(saved.order?.[stage]) ? saved.order[stage].filter(id => typeof id === "string") : []]));
+        this.prefs.density = ["compact", "details"].includes(saved.density) ? saved.density : "compact";
+        this.prefs.theme = ["light", "dark", "system"].includes(saved.theme) ? saved.theme : "light";
+        this.prefs.hiddenLanes = Array.isArray(saved.hiddenLanes) ? [...new Set(saved.hiddenLanes.filter(id => lanes.some(([stage]) => stage === id)))] : ["done"];
+        if (this.prefs.hiddenLanes.length === lanes.length) this.prefs.hiddenLanes = this.prefs.hiddenLanes.filter(id => id !== "ready");
+        this.filtersOpen = this.prefs.status.length > 0 || this.prefs.priority.length > 0;
         this.el.querySelector("[data-board-search]").value = this.prefs.query;
         this.el.querySelector("[data-board-sort]").value = this.prefs.sort;
       };
@@ -36,9 +45,11 @@
         if (this.urlKey === encoded) return;
         const initial = this.urlKey === null;
         this.urlKey = encoded;
-        const filters = parse(encoded, {});
+        const parsed = parse(encoded, {});
+        const filters = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
         if (initial && !Object.keys(filters).length) return;
-        for (const key of ["project", "status", "priority"]) this.prefs[key] = typeof filters[key] === "string" ? filters[key].split(",").filter(Boolean) : [];
+        for (const key of ["project", "status", "priority"]) this.prefs[key] = this.filterValues(key, typeof filters[key] === "string" ? filters[key].split(",") : []);
+        if (this.prefs.status.length || this.prefs.priority.length) this.filtersOpen = true;
         this.prefs.query = typeof filters.q === "string" ? filters.q : "";
         this.prefs.sort = ["manual", "priority", "updated", "oldest", "title"].includes(filters.sort) ? filters.sort : "manual";
         this.el.querySelector("[data-board-search]").value = this.prefs.query;
@@ -50,7 +61,8 @@
         this.urlTimer = setTimeout(() => {
           const filters = {project: this.prefs.project.join(","), status: this.prefs.status.join(","), priority: this.prefs.priority.join(","), q: this.prefs.query, sort: this.prefs.sort};
           for (const key of Object.keys(filters)) if (!filters[key] || (key === "sort" && filters[key] === "manual")) delete filters[key];
-          const current = parse(this.el.dataset.urlFilters || "{}", {});
+          const parsed = parse(this.el.dataset.urlFilters || "{}", {});
+          const current = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
           if (Object.keys({...filters, ...current}).some(key => filters[key] !== current[key])) this.pushEvent("board-filters", filters);
         }, 180);
       };
@@ -60,6 +72,43 @@
         this.popup = null;
         this.el.querySelector("#filter-" + key).value = "";
         this.drawOptions(key);
+      };
+      this.closeMenus = (except = null, restoreFocus = false) => {
+        let closed = false;
+        this.el.querySelectorAll("details.board-menu[open]").forEach(menu => {
+          if (menu === except || menu.closest("dialog")) return;
+          const focused = menu.contains(document.activeElement);
+          menu.open = false; closed = true;
+          if (restoreFocus && focused) menu.querySelector("summary")?.focus({preventScroll: true});
+        });
+        return closed;
+      };
+      this.setFiltersOpen = (open, restoreFocus = false) => {
+        const panel = this.el.querySelector("[data-filter-panel]");
+        const focused = panel?.contains(document.activeElement);
+        if (!open && this.popup && this.popup !== "project") this.closeFilter();
+        this.filtersOpen = open;
+        if (panel) panel.hidden = !open;
+        const toggle = this.el.querySelector("[data-toggle-filters]");
+        toggle?.setAttribute("aria-expanded", String(open));
+        if (!open && (restoreFocus || focused)) toggle?.focus({preventScroll: true});
+      };
+      this.applyAppearance = () => {
+        this.el.dataset.density = this.prefs.density;
+        const theme = this.prefs.theme === "system" ? (this.darkMode.matches ? "dark" : "light") : this.prefs.theme;
+        this.el.dataset.theme = theme;
+        this.el.style.colorScheme = theme;
+        const density = this.el.querySelector("[data-board-density]"), selection = this.el.querySelector("[data-board-theme]");
+        if (density) density.value = this.prefs.density;
+        if (selection) selection.value = this.prefs.theme;
+        this.el.querySelector("[data-board-sort]").value = this.prefs.sort;
+        this.setFiltersOpen(this.filtersOpen);
+      };
+      this.setLaneVisible = (stage, visible) => {
+        if (!lanes.some(([id]) => id === stage)) return;
+        if (visible) this.prefs.hiddenLanes = this.prefs.hiddenLanes.filter(id => id !== stage);
+        else if (!this.revealedLanes.has(stage) && this.prefs.hiddenLanes.length < lanes.length - 1 && !this.prefs.hiddenLanes.includes(stage)) this.prefs.hiddenLanes.push(stage);
+        this.apply(); this.save();
       };
       this.drawOptions = key => {
         const input = this.el.querySelector("#filter-" + key), list = this.el.querySelector("#options-" + key);
@@ -72,7 +121,7 @@
         else input.removeAttribute("aria-activedescendant");
         return options;
       };
-      this.openFilter = key => { if (this.popup !== key) this.closeFilter(); this.popup = key; this.activeOption = 0; this.drawOptions(key); };
+      this.openFilter = key => { this.closeMenus(); if (this.popup !== key) this.closeFilter(); this.popup = key; this.activeOption = 0; this.drawOptions(key); };
       this.toggle = (key, value) => {
         this.prefs[key] = this.prefs[key].includes(value) ? this.prefs[key].filter(v => v !== value) : [...this.prefs[key], value];
         this.el.querySelector("#filter-" + key).value = "";
@@ -87,14 +136,25 @@
       this.apply = () => {
         this.load();
         this.readURL();
+        this.applyAppearance();
         const cards = [...this.el.querySelectorAll("[data-task-id]")];
-        let visible = 0;
+        const linkedTask = this.el.dataset.selectedTask || new URLSearchParams(window.location.search).get("task");
+        this.revealedLanes = new Set(this.prefs.status.filter(stage => lanes.some(([id]) => id === stage)));
+        let matched = 0;
         for (const card of cards) {
           const d = card.dataset, stage = card.closest("[data-stage]").dataset.stage;
           const matches = (!this.prefs.project.length || this.prefs.project.includes(d.project)) && (!this.prefs.priority.length || this.prefs.priority.includes(d.priority)) && (!this.prefs.status.length || this.prefs.status.includes(stage) || (this.prefs.status.includes("attention") && d.attention === "true")) && (!this.prefs.query || [d.title, d.identifier].join(" ").toLowerCase().includes(this.prefs.query.toLowerCase()));
-          card.hidden = !matches; if (matches) visible++;
+          card.hidden = !matches;
+          if (matches) matched++;
+          if ((matches && this.prefs.status.includes("attention") && d.attention === "true") || d.taskId === linkedTask) this.revealedLanes.add(stage);
         }
-        this.el.querySelector("[data-result-count]").textContent = `${visible} of ${cards.length} tasks`;
+        const hidden = new Set(this.prefs.hiddenLanes.filter(stage => !this.revealedLanes.has(stage)));
+        const hiddenTasks = cards.filter(card => !card.hidden && hidden.has(card.closest("[data-stage]").dataset.stage)).length;
+        const visible = matched - hiddenTasks;
+        this.el.querySelector("[data-result-count]").textContent = `${visible} of ${cards.length} tasks${hiddenTasks ? ` · ${hiddenTasks} in hidden columns` : ""}`;
+        this.el.querySelector(".kanban-board")?.style.setProperty("--visible-lanes", String(lanes.length - hidden.size));
+        const rail = this.el.querySelector("[data-hidden-lanes]");
+        if (rail) rail.hidden = hidden.size === 0;
         for (const [stage] of lanes) {
           const lane = this.el.querySelector(`[data-stage="${stage}"]`), container = lane.querySelector("[data-lane-cards]");
           const items = [...container.children];
@@ -104,30 +164,69 @@
           items.sort((a,b) => this.prefs.sort === "priority" ? priorityRank(a.dataset.priority) - priorityRank(b.dataset.priority) : this.prefs.sort === "updated" ? date(b.dataset.updated) - date(a.dataset.updated) : this.prefs.sort === "oldest" ? (date(a.dataset.created) || Infinity) - (date(b.dataset.created) || Infinity) : this.prefs.sort === "title" ? a.dataset.title.localeCompare(b.dataset.title) : rank(a.dataset.taskId) - rank(b.dataset.taskId));
           items.forEach(item => container.append(item));
           const count = items.filter(item => !item.hidden).length;
+          lane.hidden = hidden.has(stage);
+          const checkbox = this.el.querySelector(`[data-visible-lane="${stage}"]`), hideButton = lane.querySelector(`[data-hide-lane="${stage}"]`);
+          const cannotHide = this.revealedLanes.has(stage) || (!this.prefs.hiddenLanes.includes(stage) && this.prefs.hiddenLanes.length === lanes.length - 1);
+          if (checkbox) { checkbox.checked = !lane.hidden; checkbox.disabled = !lane.hidden && cannotHide; }
+          if (hideButton) hideButton.disabled = cannotHide;
+          const showButton = this.el.querySelector(`[data-show-lane="${stage}"]`), hiddenCount = this.el.querySelector(`[data-hidden-count="${stage}"]`);
+          if (showButton) showButton.hidden = !lane.hidden;
+          if (hiddenCount) hiddenCount.textContent = count;
           lane.querySelector("[data-lane-count]").textContent = count;
           lane.querySelector("[data-lane-empty]").hidden = count !== 0;
-          lane.querySelector("[data-lane-empty]").textContent = visible ? "No matching tasks" : "No tasks match";
+          lane.querySelector("[data-lane-empty]").textContent = matched ? "No matching tasks" : "No tasks match";
         }
+        const linkedStage = cards.find(card => card.dataset.taskId === linkedTask)?.closest("[data-stage]").dataset.stage;
+        const mobileContext = JSON.stringify([this.prefs.project, this.prefs.status, this.prefs.priority, this.prefs.query, linkedTask, linkedStage]);
+        const contextChanged = this.mobileContext !== mobileContext;
+        this.mobileContext = mobileContext;
+        if (contextChanged && linkedStage) this.prefs.lane = linkedStage;
+        else if (contextChanged && this.prefs.status.length === 1 && lanes.some(([stage]) => stage === this.prefs.status[0])) this.prefs.lane = this.prefs.status[0];
         const current = this.el.querySelector(`[data-stage="${this.prefs.lane}"]`);
-        if (!current || (current.querySelectorAll(".task-card:not([hidden])").length === 0 && visible)) this.prefs.lane = lanes.find(([s]) => this.el.querySelector(`[data-stage="${s}"] .task-card:not([hidden])`))?.[0] || "ready";
+        if (!current || current.hidden || (contextChanged && !linkedStage && visible && !current.querySelector(".task-card:not([hidden])"))) this.prefs.lane = lanes.find(([stage]) => !hidden.has(stage) && this.el.querySelector(`[data-stage="${stage}"] .task-card:not([hidden])`))?.[0] || lanes.find(([stage]) => !hidden.has(stage))[0];
         this.el.querySelectorAll("[data-stage]").forEach(el => el.dataset.mobileActive = String(el.dataset.stage === this.prefs.lane));
         const mobile = this.el.querySelector("[data-mobile-lane]"); mobile.value = this.prefs.lane;
-        for (const option of mobile.options) option.textContent = `${lanes.find(([s]) => s === option.value)[1]} (${this.el.querySelector(`[data-stage="${option.value}"] [data-lane-count]`).textContent})`;
+        for (const option of mobile.options) option.textContent = `${lanes.find(([s]) => s === option.value)[1]} (${this.el.querySelector(`[data-stage="${option.value}"] [data-lane-count]`).textContent})${hidden.has(option.value) ? " · hidden" : ""}`;
         this.el.querySelector("[data-filter-chips]").innerHTML = ["project", "status", "priority"].flatMap(key => this.prefs[key].map(value => { const label = this.options(key).find(([id]) => id === value)?.[1] || value; return `<button type="button" class="filter-chip" data-remove-key="${key}" data-remove-value="${escapeText(value)}" aria-label="Remove ${key} filter ${escapeText(label)}">${escapeText(label)} <span aria-hidden="true">×</span></button>`; })).join("");
-        for (const key of ["project", "status", "priority"]) this.el.querySelector("#filter-" + key).placeholder = `${key[0].toUpperCase() + key.slice(1)}: ${this.prefs[key].length ? this.prefs[key].length + " selected" : "All"}`;
+        for (const key of ["project", "status", "priority"]) {
+          const selectedProject = key === "project" && this.prefs.project.length === 1 ? this.options(key).find(([id]) => id === this.prefs.project[0])?.[1] : null;
+          this.el.querySelector("#filter-" + key).placeholder = selectedProject || `${key[0].toUpperCase() + key.slice(1)}: ${this.prefs[key].length ? this.prefs[key].length + " selected" : "All"}`;
+        }
       };
       on("focusin", event => { const key = event.target.closest("[data-filter]")?.dataset.filter; if (key && event.target.matches("input")) this.openFilter(key); });
       on("input", event => { const key = event.target.closest("[data-filter]")?.dataset.filter; if (key) { this.popup = key; this.activeOption = 0; this.drawOptions(key); } else if (event.target.matches("[data-board-search]")) { this.prefs.query = event.target.value; this.apply(); this.save(); } });
       on("keydown", event => {
+        if (event.target.closest("dialog")) return;
+        if (event.key === "Escape") {
+          if (this.popup) { const key = this.popup; this.el.querySelector("#filter-" + key)?.focus({preventScroll: true}); this.closeFilter(); }
+          else if (this.closeMenus(null, true)) { /* Keep Escape within the open menu. */ }
+          else if (this.filtersOpen) this.setFiltersOpen(false, true);
+          else return;
+          event.preventDefault(); event.stopPropagation(); return;
+        }
         const key = event.target.closest("[data-filter]")?.dataset.filter;
         if (!key || !event.target.matches("input")) return;
         if (["ArrowDown", "ArrowUp"].includes(event.key)) { event.preventDefault(); if (this.popup !== key) this.openFilter(key); else { this.activeOption += event.key === "ArrowDown" ? 1 : -1; this.drawOptions(key); } }
         else if (event.key === "Enter" && this.popup === key) { event.preventDefault(); const choice = this.drawOptions(key)[this.activeOption]; if (choice) this.toggle(key, choice[0]); }
-        else if (["Escape", "Tab"].includes(event.key)) this.closeFilter();
+        else if (event.key === "Tab") this.closeFilter();
       });
       on("click", event => {
+        const menu = event.target.closest("details.board-menu");
+        if (menu && event.target.closest("summary")) { this.closeFilter(); this.closeMenus(menu); }
         const button = event.target.closest("button"); if (!button) return;
-        if (button.dataset.filterToggle) { const key = button.dataset.filterToggle; if (this.popup === key) this.closeFilter(); else { this.openFilter(key); this.el.querySelector("#filter-" + key).focus(); } }
+        if (button.hasAttribute("data-toggle-filters")) { this.closeMenus(); this.setFiltersOpen(!this.filtersOpen); }
+        else if (button.dataset.hideLane) {
+          const stage = button.dataset.hideLane;
+          this.closeMenus(); this.setLaneVisible(stage, false);
+          this.el.querySelector(`[data-show-lane="${stage}"]:not([hidden])`)?.focus({preventScroll: true});
+        }
+        else if (button.dataset.showLane) {
+          const stage = button.dataset.showLane;
+          this.prefs.lane = stage; this.setLaneVisible(stage, true);
+          const lane = this.el.querySelector(`[data-stage="${stage}"]`);
+          (lane?.querySelector("details.board-menu > summary") || lane?.querySelector(".card-title") || this.el.querySelector("[data-mobile-lane]"))?.focus({preventScroll: true});
+        }
+        else if (button.dataset.filterToggle) { const key = button.dataset.filterToggle; if (this.popup === key) this.closeFilter(); else { this.openFilter(key); this.el.querySelector("#filter-" + key).focus(); } }
         else if (button.dataset.key) this.toggle(button.dataset.key, button.dataset.value);
         else if (button.dataset.removeKey) { this.prefs[button.dataset.removeKey] = this.prefs[button.dataset.removeKey].filter(v => v !== button.dataset.removeValue); this.apply(); this.save(); }
         else if (button.hasAttribute("data-clear-filters")) { this.prefs.project = []; this.prefs.status = []; this.prefs.priority = []; this.prefs.query = ""; this.el.querySelector("[data-board-search]").value = ""; this.closeFilter(); this.apply(); this.save(); }
@@ -135,10 +234,13 @@
       });
       on("change", event => {
         if (event.target.hasAttribute("data-board-sort")) { this.prefs.sort = event.target.value; this.apply(); this.save(); }
-        else if (event.target.hasAttribute("data-mobile-lane")) { this.prefs.lane = event.target.value; this.apply(); this.save(); }
+        else if (event.target.hasAttribute("data-board-density") && ["compact", "details"].includes(event.target.value)) { this.prefs.density = event.target.value; this.apply(); this.save(); }
+        else if (event.target.hasAttribute("data-board-theme") && ["light", "dark", "system"].includes(event.target.value)) { this.prefs.theme = event.target.value; this.apply(); this.save(); }
+        else if (event.target.dataset.visibleLane) this.setLaneVisible(event.target.dataset.visibleLane, event.target.checked);
+        else if (event.target.hasAttribute("data-mobile-lane")) { this.prefs.lane = event.target.value; this.setLaneVisible(event.target.value, true); }
         else if (event.target.dataset.moveTask && event.target.value) { const stage = event.target.value; event.target.value = ""; this.pushEvent("move-task", {id: event.target.dataset.moveTask, stage}); }
       });
-      on("dragstart", event => { const card = event.target.closest("[data-task-id]"); if (!card || event.target.closest("select,a")) return; this.drag = card; card.classList.add("dragging"); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", card.dataset.taskId); });
+      on("dragstart", event => { const card = event.target.closest("[data-task-id]"); if (!card || card.getAttribute("draggable") !== "true" || event.target.closest("select,a,button,summary")) { event.preventDefault(); return; } this.drag = card; card.classList.add("dragging"); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", card.dataset.taskId); });
       const clearDrop = () => this.el.querySelectorAll(".drop-target,.drop-before,.drop-after").forEach(el => el.classList.remove("drop-target", "drop-before", "drop-after"));
       on("dragover", event => { const lane = event.target.closest("[data-stage]"); if (!this.drag || !lane) return; event.preventDefault(); clearDrop(); lane.classList.add("drop-target"); const target = event.target.closest("[data-task-id]"); if (target && target !== this.drag) target.classList.add(event.clientY > target.getBoundingClientRect().top + target.offsetHeight / 2 ? "drop-after" : "drop-before"); });
       on("drop", event => {
@@ -154,10 +256,22 @@
         card.classList.remove("dragging"); this.drag = null; clearDrop();
       });
       on("dragend", () => { this.drag?.classList.remove("dragging"); this.drag = null; clearDrop(); });
-      document.addEventListener("click", event => { if (this.popup && !event.target.closest("[data-filter]")) this.closeFilter(); }, {signal: this.abort.signal});
+      document.addEventListener("click", event => {
+        if (this.popup && !event.target.closest("[data-filter]")) this.closeFilter();
+        this.closeMenus(event.target.closest("details.board-menu"), true);
+      }, {signal: this.abort.signal});
+      this.darkMode.addEventListener("change", () => this.applyAppearance(), {signal: this.abort.signal});
       this.apply();
     },
-    updated() { this.apply(); if (this.popup) this.drawOptions(this.popup); },
+    beforeUpdate() { this.openMenuKeys = [...this.el.querySelectorAll("details.board-menu[open]")].map(menu => menu.closest("[data-stage]")?.dataset.stage || "display"); },
+    updated() {
+      this.apply();
+      if (this.popup) this.drawOptions(this.popup);
+      for (const menu of this.el.querySelectorAll("details.board-menu")) {
+        const lane = menu.closest("[data-stage]");
+        if (!lane?.hidden && this.openMenuKeys?.includes(lane?.dataset.stage || "display")) menu.open = true;
+      }
+    },
     destroyed() { this.abort.abort(); clearTimeout(this.urlTimer); }
   };
   const BoardDialog = {
@@ -191,9 +305,10 @@
       const previous = this.previous;
       requestAnimationFrame(() => {
         const replacement = [...document.querySelectorAll("[data-task-id]")].find(card => card.dataset.taskId === this.taskId)?.querySelector(".card-title");
-        const canRestore = previous?.isConnected && previous !== document.body && previous !== document.documentElement;
+        const visible = target => target?.isConnected && target !== document.body && target !== document.documentElement && !target.closest("[hidden]") && target.getClientRects().length > 0;
+        const canRestore = visible(previous);
         const target = canRestore ? previous : (previous?.id ? document.getElementById(previous.id) : null);
-        (target || replacement || document.getElementById("settings-button"))?.focus({preventScroll: true});
+        [target, replacement, document.getElementById("settings-button"), document.querySelector("[data-toggle-filters]")].find(visible)?.focus({preventScroll: true});
       });
     }
   };
