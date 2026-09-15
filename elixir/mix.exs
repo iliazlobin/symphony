@@ -32,6 +32,8 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.LogFile,
           SymphonyElixir.Workspace,
           SymphonyElixirWeb.DashboardLive,
+          # Settings rendering extracted from DashboardLive; exercised by LiveView tests.
+          SymphonyElixirWeb.SettingsPanel,
           SymphonyElixirWeb.ChatLive,
           # Rendering moved from ChatLive into the shared board/standalone component.
           SymphonyElixirWeb.ChatPanel,

@@ -73,7 +73,7 @@ commands to the native API and owns no scheduling state.
   scheduling authority. It polls, reconciles eligibility, reserves attempts,
   starts supervised workers and handles completion, deadlines and retries.
 - [`ControlLedger`](elixir/lib/symphony_elixir/control_ledger.ex) retains operating
-  mode, issue holds, attempts, runtime/token totals and candidate handoffs.
+  mode, the concurrency override, issue holds, attempts, runtime/token totals and candidate handoffs.
   The orchestrator owns writes; an OS advisory lock rejects a second owner.
 - [`AgentRunner`](elixir/lib/symphony_elixir/agent_runner.ex) selects controlled or
   upstream execution. [`CandidatePipeline`](elixir/lib/symphony_elixir/candidate_pipeline.ex)
@@ -92,6 +92,11 @@ commands to the native API and owns no scheduling state.
   [`BrowserAuth`](elixir/lib/symphony_elixir_web/browser_auth.ex) gates local operator
   sessions; `BoardActions` forwards only existing commands with native project,
   revision and idempotency checks. The same checks apply to chat control actions.
+  Concurrency changes persist in the ledger and affect admission only: they never
+  interrupt existing work or reset budgets. The workflow's configured concurrency
+  remains the ceiling and default, including after reload or restart; restoring the
+  default clears only the override. The control snapshot owns the reported effective
+  value and read-only budget settings, including in the read-only preview.
 - [`ReadOnlyBoard`](elixir/lib/symphony_elixir_web/read_only_board.ex) supports a
   separate local UI against a configured controller. The
   [`web launcher`](tools/symphony_web.py) starts only the web dependencies and reads

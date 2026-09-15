@@ -50,7 +50,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     def send_message_with_context(project, id, text, client_id, context, auth) do
       update(project, id, auth, fn chat ->
         user = %{"id" => client_id, "role" => "user", "text" => text, "widgets" => [], "view_context" => context}
-        assistant = %{"id" => "response", "role" => "assistant", "text" => "", "status" => "streaming", "widgets" => []}
+        assistant = %{"id" => "response-" <> client_id, "role" => "assistant", "text" => "", "status" => "streaming", "widgets" => []}
         chat |> Map.put("status", "running") |> Map.update!("messages", &(&1 ++ [user, assistant]))
       end)
     end
@@ -371,6 +371,47 @@ defmodule SymphonyElixir.ChatLiveTest do
     stored = GenServer.call(FixtureStore, :all) |> Map.values() |> Enum.find(&(&1["project_id"] == "beta" and String.starts_with?(&1["id"], "new-")))
     assert Enum.find(stored["messages"], &(&1["role"] == "user"))["view_context"] == nil
     assert render(view) =~ "Beta project"
+  end
+
+  test "saved chat preferences affect the next message without rewriting history or blocking composer overrides", ctx do
+    context = view_context()
+    view = embedded_view(ctx, context)
+    assert has_element?(view, "#chat-app[data-project=alpha][data-event-target]")
+    render_submit(view, "send-message", %{"message" => "First snapshot"})
+    render_click(view, "stop-response")
+
+    render_hook(view, "context-preferences", %{"project_id" => "alpha", "share_context" => false, "include_selected" => false})
+    refute has_element?(view, "input[name=share_context][checked]")
+    render_submit(view, "send-message", %{"message" => "Saved sharing preference"})
+    render_click(view, "stop-response")
+
+    render_change(view, "context-options", %{"share_context" => "true", "include_selected" => "false"})
+    render_submit(view, "send-message", %{"message" => "Override for this message"})
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    [first, second, third] = Enum.filter(chat["messages"], &(&1["role"] == "user"))
+    assert first["view_context"] == context
+    assert second["view_context"] == nil
+    assert third["view_context"] == Map.put(context, "selected_task_id", nil)
+  end
+
+  test "chat preferences reject stale project events and malformed boolean values", ctx do
+    view = embedded_view(ctx, view_context())
+
+    for params <- [
+          %{"project_id" => "beta", "share_context" => false, "include_selected" => false},
+          %{"project_id" => "alpha", "share_context" => "false", "include_selected" => false},
+          %{"project_id" => "alpha", "share_context" => false}
+        ] do
+      render_hook(view, "context-preferences", params)
+      assert has_element?(view, "input[name=share_context][checked]")
+    end
+
+    send(view.pid, {:project, "beta"})
+    assert has_element?(view, "#chat-app[data-project=beta]")
+    render_hook(view, "context-preferences", %{"project_id" => "alpha", "share_context" => false, "include_selected" => false})
+    assert has_element?(view, "input[name=share_context][checked]")
+    render_hook(view, "context-preferences", %{"project_id" => "beta", "share_context" => false, "include_selected" => true})
+    refute has_element?(view, "input[name=share_context][checked]")
   end
 
   test "embedded typed links update the board without transferring conversation or accepting a foreign project", ctx do

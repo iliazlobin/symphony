@@ -493,7 +493,26 @@ retaining this fork's GitHub workflow. Project selection stays in the top bar;
 detail, light/dark appearance and visible columns. Hidden columns remain available
 in the restore rail; selecting a status reveals its column. Display preferences are
 saved only in this browser and do not change scheduling or issue state.
-Card details and Settings open as native dialogs with Close and Escape. Task
+Card details and Settings open as native dialogs with Close and Escape. Settings has
+three sections: **Execution** for native controls, concurrency and read-only budgets;
+**AI & chat** for browser-local project context defaults and read-only model presets;
+and **Connections** for tracker/controller/chat storage status and operator login.
+Concurrency changes are confirmed native `set_concurrency` commands, persisted in the
+control ledger with revision and replay checks. Limits must be 1 through the workflow's
+`agent.max_concurrent_agents` ceiling; restoring the default removes the override.
+Successful changes affect new admissions, preserve active work and consumed budgets,
+and survive restart. Reloading a lower ceiling clamps a saved higher override.
+Changing control budgets still requires reviewed configuration and restart.
+
+Chat context preferences apply to the next message and future visits in this browser
+for the selected project. Save persists the choices; Cancel discards edits; Restore
+defaults stages both choices as enabled until Save. Composer switches are temporary
+overrides. Earlier messages are unchanged. The read-only preview permits these local
+preferences but never enables controller commands or chat execution. Missing controller
+settings remain “Not reported”; model presets and chat storage health do not verify
+model-account access. Display preferences stay in Display.
+
+Task
 descriptions render Markdown headings, lists, code, tables and safe external links;
 embedded HTML and interactive attributes are omitted, and images show their alt text.
 Relative links remain text; open the source issue for repository-relative navigation.
@@ -509,7 +528,7 @@ independent; passing CI and conflict-free branches do not establish merge approv
 Local browser controls use a CSRF-protected operator-token login at
 `POST /operator/session` and logout at `POST /operator/session/logout`. Tokens are
 filtered from request logs and not stored in the session cookie; a signed
-eight-hour proof gates native pause/drain/resume/cancel/retry calls. Host, actual
+eight-hour proof gates native pause/drain/resume/cancel/retry/concurrency calls. Host, actual
 peer, websocket origin, tracker identity, command revision and replay are checked.
 The read dashboard/API remain local observability surfaces, not a remote-auth
 boundary. See the [operator guide](../profiles/events-concierge/README.md#operate)

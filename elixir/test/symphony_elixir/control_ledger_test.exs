@@ -11,7 +11,7 @@ defmodule SymphonyElixir.ControlLedgerTest do
     def handle_call(:snapshot, _, ledger), do: {:reply, ControlLedger.snapshot(ledger), ledger}
 
     def handle_call({:command, params}, _, ledger) do
-      case ControlLedger.command(ledger, params) do
+      case ControlLedger.command(ledger, params, 5) do
         {:ok, next, reply, replay} -> {:reply, {:ok, reply, replay}, next}
         error -> {:reply, error, ledger}
       end
@@ -68,6 +68,47 @@ defmodule SymphonyElixir.ControlLedgerTest do
     pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
     assert %{"mode" => "draining", "revision" => 2} = GenServer.call(pid, :snapshot)
     assert {:error, :not_admitted} = GenServer.call(pid, {:reserve, "7"})
+  end
+
+  test "concurrency overrides survive restart and receipts retain the exact requested limit", ctx do
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    assert ControlLedger.effective_concurrency(nil, 5) == 5
+    set = Map.put(command("set_concurrency", 0), "limit", 3)
+    assert {:ok, %{"limit" => 3, "revision" => 1}, false} = GenServer.call(pid, {:command, set})
+    assert {:error, :command_id_conflict} = GenServer.call(pid, {:command, %{set | "limit" => 2}})
+    assert {:error, :revision_conflict} = GenServer.call(pid, {:command, Map.put(set, "command_id", "stale")})
+    assert {:error, :concurrency_limit_exceeded} = GenServer.call(pid, {:command, Map.put(command("set_concurrency", 1), "limit", 6)})
+    ledger = :sys.get_state(pid)
+    assert ControlLedger.effective_concurrency(ledger, 5) == 3
+    assert ControlLedger.effective_concurrency(ledger, 2) == 2
+    stop_supervised!(Owner)
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    assert %{"concurrency_override" => 3, "revision" => 1} = GenServer.call(pid, :snapshot)
+    assert {:ok, %{"limit" => 3}, true} = GenServer.call(pid, {:command, set})
+    assert {:ok, %{"limit" => nil}, false} = GenServer.call(pid, {:command, Map.put(command("set_concurrency", 1), "limit", nil)})
+    assert %{"concurrency_override" => nil} = GenServer.call(pid, :snapshot)
+    assert ControlLedger.effective_concurrency(:sys.get_state(pid), 4) == 4
+  end
+
+  test "legacy state loads without override; malformed overrides and settings commands fail closed", ctx do
+    legacy = %{"version" => 1, "revision" => 0, "mode" => "paused", "issues" => %{}, "commands" => %{}}
+    File.write!(ctx.settings.state_path, Jason.encode!(legacy))
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    assert ControlLedger.effective_concurrency(:sys.get_state(pid), 5) == 5
+
+    for params <-
+          [command("set_concurrency", 0), Map.put(command("set_concurrency", 0, "7"), "limit", 1), Map.put(command("pause", 0), "limit", 1)] ++
+            Enum.map([0, -1, "2", 1.5, true], &Map.put(command("set_concurrency", 0), "limit", &1)) do
+      assert {:error, :invalid_command} = GenServer.call(pid, {:command, params})
+    end
+
+    assert %{"revision" => 0} = GenServer.call(pid, :snapshot)
+    stop_supervised!(Owner)
+
+    for invalid <- [0, -1, "2", false, %{}] do
+      File.write!(ctx.settings.state_path, Jason.encode!(Map.put(legacy, "concurrency_override", invalid)))
+      assert {:error, :invalid_control_state} = ControlLedger.open(ctx.settings, ctx.workspace)
+    end
   end
 
   test "cancel and manual retry preserve total attempt budget and fence stale completions", ctx do

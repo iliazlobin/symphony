@@ -1440,11 +1440,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp available_slots(%State{} = state) do
-    max(
-      (state.max_concurrent_agents || Config.settings!().agent.max_concurrent_agents) -
-        map_size(state.running),
-      0
-    )
+    ceiling = state.max_concurrent_agents || Config.settings!().agent.max_concurrent_agents
+    max(ControlLedger.effective_concurrency(state.control, ceiling) - map_size(state.running), 0)
   end
 
   @spec request_refresh() :: map() | :unavailable
@@ -1588,6 +1585,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp apply_control_effect(state, %{"action" => "cancel", "issue_id" => id}), do: terminate_running_issue(state, id, false)
   defp apply_control_effect(state, %{"action" => "retry", "issue_id" => id}), do: state |> release_issue_claim(id) |> schedule_tick(0)
+  defp apply_control_effect(state, %{"action" => "set_concurrency"}), do: schedule_tick(state, 0)
   defp apply_control_effect(state, %{"action" => "resume"}), do: schedule_tick(state, 0)
   defp apply_control_effect(state, _command), do: state
 
@@ -1612,7 +1610,8 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_call(:control_snapshot, _from, state) do
     state = refresh_runtime_config(state)
     payload = if state.control, do: ControlLedger.snapshot(state.control), else: %{"enabled" => false}
-    {:reply, Map.put(payload, "fault", state.control_fault), state}
+    payload = payload |> Map.put("fault", state.control_fault) |> Map.put("settings", runtime_settings(state))
+    {:reply, payload, state}
   end
 
   def handle_call({:guarded_control_command, command, expected_tracker}, from, state) do
@@ -1652,7 +1651,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_call({:control_receipt, command, scope}, _from, state) do
     state = refresh_runtime_config(state)
-    fingerprint = command |> Map.take(["action", "issue_id", "expected_revision"]) |> Jason.encode!()
+    fingerprint = ControlLedger.command_fingerprint(command)
 
     result =
       cond do
@@ -1677,18 +1676,8 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_call({:control_command, _command}, _from, %{control_fault: fault} = state) when not is_nil(fault), do: {:reply, {:error, :control_unavailable}, state}
 
   def handle_call({:control_command, command}, _from, state) do
-    case ControlLedger.command(state.control, command) do
-      {:ok, ledger, result, replayed} ->
-        state = %{state | control: ledger}
-        state = if replayed, do: state, else: apply_control_effect(state, command)
-        {:reply, {:ok, Map.put(result, "replayed", replayed)}, state}
-
-      {:error, {:control_persistence, _} = reason} ->
-        {:reply, {:error, :control_unavailable}, control_failure(state, reason)}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-    end
+    state = refresh_runtime_config(state)
+    run_control_command(state, command)
   end
 
   @impl true
@@ -1783,6 +1772,23 @@ defmodule SymphonyElixir.Orchestrator do
        requested_at: DateTime.utc_now(),
        operations: ["poll", "reconcile"]
      }, state}
+  end
+
+  defp run_control_command(%{control_fault: fault} = state, _command) when not is_nil(fault), do: {:reply, {:error, :control_unavailable}, state}
+
+  defp run_control_command(state, command) do
+    case ControlLedger.command(state.control, command, state.max_concurrent_agents) do
+      {:ok, ledger, result, replayed} ->
+        state = %{state | control: ledger}
+        state = if replayed, do: state, else: apply_control_effect(state, command)
+        {:reply, {:ok, Map.put(result, "replayed", replayed)}, state}
+
+      {:error, {:control_persistence, _} = reason} ->
+        {:reply, {:error, :control_unavailable}, control_failure(state, reason)}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   defp blocked_issue_state(%{issue: %Issue{state: state}}), do: state
@@ -1915,6 +1921,22 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp record_session_completion_totals(state, _running_entry), do: state
+
+  defp runtime_settings(state) do
+    ceiling = state.max_concurrent_agents
+    budgets = if state.control, do: state.control.settings, else: Config.control_settings()
+
+    %{
+      "concurrency" => %{
+        "effective" => ControlLedger.effective_concurrency(state.control, ceiling),
+        "default" => ceiling,
+        "ceiling" => ceiling,
+        "override" => if(state.control, do: state.control.data["concurrency_override"], else: nil)
+      },
+      "budgets" => Map.new([:max_attempts, :max_total_runtime_ms, :max_total_tokens], &{Atom.to_string(&1), budgets[&1]}),
+      "base_sha" => budgets[:base_sha]
+    }
+  end
 
   defp refresh_runtime_config(%State{} = state) do
     config = Config.settings!()
