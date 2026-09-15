@@ -1,6 +1,6 @@
 # Events Concierge on the Mac
 
-This profile connects GitHub Issues to one builder and a separate reviewer. Symphony
+This profile connects each GitHub Issue to a builder and a separate reviewer. Symphony
 owns scheduling; the native API owns controls; the small MCP client forwards those
 controls. See the [architecture](../../ARCHITECTURE.md) for boundaries and code ownership.
 
@@ -54,6 +54,25 @@ Use GitHub for task intent and PR review, a management chat for status and autho
 controls, and the local dashboard for monitoring. The initial mode is paused. Worker
 launch has a separate host gate; resume cannot bypass the activation prerequisites
 in [Verification and recovery](#verification-and-recovery).
+
+**Task concurrency.** In the private `WORKFLOW.md` identified by `workflow_path`,
+`agent.max_concurrent_agents` accepts an integer from `1` (default) through `5`. Each issue
+runs its builder and then its reviewer, in independent task/review workspaces;
+the setting caps overlapping issue pipelines, not the number of tasks in the queue.
+Budgets remain per issue, while
+Codex account usage limits are shared. The host publisher still processes handoffs
+serially. Drain, wait for active work and cleanup to finish, then change the setting
+and restart the scheduler with its existing ledger. New installations remain paused
+with worker launch disabled; changing concurrency does not enable execution.
+
+Each active stage is capped at 2 CPUs and 4 GiB; these are limits, not reservations
+or guaranteed throughput. Five active stages have combined caps of 10 CPUs and
+20 GiB, with additional resources needed for existing services, host operations,
+cleanup and VM overhead. Leave headroom for macOS and other applications. The scheduler
+does not check CPU or memory capacity before admission: supporting five slots does
+not establish that five workloads fit on a particular Mac. Validate capacity before
+raising the live limit; retain one otherwise. A Colima resize requires approval for
+the shared-VM restart and verification of affected services afterward.
 
 **GitHub — task and PR interface.** Create or edit work in
 [Issues](https://github.com/iliazlobin/events-concierge/issues), using the

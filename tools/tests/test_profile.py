@@ -44,6 +44,10 @@ class ProfileTests(unittest.TestCase):
                                    integration_branch="codex/pilot", port=8777)
             with patch.object(profile, "run", side_effect=[base, profile.REMOTE, WORKFLOW]):
                 profile.initialize(args)
+            installed = json.loads((state / "config.json").read_text())
+            self.assertIs(installed["worker_launch_enabled"], False)
+            workflow = profile.yaml.safe_load((state / "WORKFLOW.md").read_text().split("---\n", 2)[1])
+            self.assertEqual(workflow["agent"]["max_concurrent_agents"], 1)
             # The generated scalar sections are also valid INI when the TOML
             # root keys get an explicit section; no Codex/auth calls are needed.
             config = configparser.RawConfigParser(delimiters=("=",))
@@ -132,6 +136,14 @@ class ProfileTests(unittest.TestCase):
         for changed in (WORKFLOW.replace("enabled: true", "enabled: false"), WORKFLOW.replace("initial_mode: paused", "initial_mode: running"), WORKFLOW.replace("max_concurrent_agents: 1", "max_concurrent_agents: 8"), WORKFLOW.replace("iliazlobin/events-concierge", "example/other")):
             with self.assertRaises(profile.ControlError):
                 profile.validate_workflow(changed + "\ninitial_mode: paused\nmax_concurrent_agents: 1\nenabled: true")
+
+    def test_workflow_accepts_only_integer_one_to_five_task_slots(self):
+        for slots in ("1", "2", "3", "4", "5"):
+            with self.subTest(slots=slots):
+                profile.validate_workflow(WORKFLOW.replace("max_concurrent_agents: 1", "max_concurrent_agents: " + slots))
+        for slots in ("true", "false", "yes", "on", "1.0", "5.0", "2.5", "'1'", "'5'", "0", "-1", "6", "8", "null", "[]", "{}"):
+            with self.subTest(slots=slots), self.assertRaisesRegex(profile.ControlError, "one to five task slots"):
+                profile.validate_workflow(WORKFLOW.replace("max_concurrent_agents: 1", "max_concurrent_agents: " + slots))
 
     def test_private_state_rejects_directory_symlink(self):
         with tempfile.TemporaryDirectory() as tmp:

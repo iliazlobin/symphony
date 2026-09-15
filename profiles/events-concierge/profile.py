@@ -62,14 +62,15 @@ def validate_workflow(workflow: str) -> None:
     try:
         settings = yaml.safe_load(pieces[1])
         tracker, controls = settings["tracker"], settings["control"]
+        concurrency = settings["agent"]["max_concurrent_agents"]
         valid = (tracker["kind"] == "github" and tracker["provider"]["repo"] == REPOSITORY
                  and tracker["required_labels"] == ["symphony:ready"]
                  and tracker["active_states"] == ["open"] and tracker["terminal_states"] == ["closed"]
                  and controls["enabled"] is True and controls["initial_mode"] == "paused"
                  and controls["base_sha"] == "$SYMPHONY_BASE_SHA"
-                 and settings["agent"]["max_concurrent_agents"] == 1)
+                 and type(concurrency) is int and 1 <= concurrency <= 5)
         if not valid:
-            raise ControlError("Workflow does not enforce the approved paused, single-worker GitHub profile")
+            raise ControlError("Workflow must enforce the approved paused GitHub profile with one to five task slots")
     except (KeyError, TypeError, yaml.YAMLError) as exc:
         raise ControlError("Workflow front matter is missing or invalid") from exc
 
