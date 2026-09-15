@@ -5,6 +5,49 @@ defmodule SymphonyElixir.Chat.GitHub do
   alias SymphonyElixir.GitHub.Client
   alias SymphonyElixir.Orchestrator
 
+  @doc "Reads one already-validated filename from a pinned default-branch revision, within a five-second budget."
+  @spec read_document(String.t(), map(), map()) :: {:ok, map()} | {:error, term()}
+  def read_document(document, tracker, context) do
+    task = Task.async(fn -> read_document_now(document, tracker, context) end)
+
+    case Task.yield(task, 5_000) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      _ -> {:error, :document_unavailable}
+    end
+  end
+
+  defp read_document_now(document, tracker, context) do
+    repo = tracker.provider["repo"]
+
+    with {:ok, [%{"sha" => revision}]} <- request("GET", "/repos/#{repo}/commits", %{"per_page" => 1}, nil, tracker, context),
+         true <- (is_binary(revision) and String.match?(revision, ~r/^[0-9a-f]{40}$/)) or {:error, :invalid_revision},
+         {:ok, payload} <- request("GET", "/repos/#{repo}/contents/#{document}", %{"ref" => revision}, nil, tracker, context),
+         {:ok, text} <- decode_document(payload, document) do
+      url = "https://github.com/#{repo}/blob/#{revision}/#{document}"
+      reference = %{"label" => document, "url" => url, "revision" => revision}
+      {:ok, %{"document" => Map.merge(reference, %{"path" => document, "text" => text}), "references" => [reference]}}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :invalid_revision}
+    end
+  rescue
+    _ -> {:error, :document_unavailable}
+  catch
+    _, _ -> {:error, :document_unavailable}
+  end
+
+  defp decode_document(%{"type" => "file", "path" => document, "encoding" => "base64", "content" => encoded}, document)
+       when is_binary(encoded) and byte_size(encoded) <= 180_000 do
+    with {:ok, text} <- Base.decode64(encoded, ignore: :whitespace),
+         true <- byte_size(text) <= 131_072 and String.valid?(text) and not String.contains?(text, <<0>>) do
+      {:ok, text}
+    else
+      _ -> {:error, :invalid_document}
+    end
+  end
+
+  defp decode_document(_payload, _document), do: {:error, :invalid_document}
+
   @spec confirm(map(), map(), map()) :: {:ok, map()} | {:error, term()}
   def confirm(%{"action" => "create_task"} = proposal, tracker, context) do
     with {:ok, existing} <- find_marker(proposal, tracker, context) do

@@ -82,7 +82,10 @@ defmodule SymphonyElixir.Chat.ToolsTest do
 
   test "tool schemas expose only bounded project actions, no shell or arbitrary URLs" do
     specs = Tools.specs()
-    assert Enum.map(specs, & &1["name"]) == ~w(symphony_project_status symphony_search_tasks symphony_task_details symphony_propose_action)
+
+    assert Enum.map(specs, & &1["name"]) ==
+             ~w(symphony_project_status symphony_search_tasks symphony_task_details symphony_read_project_document symphony_propose_action)
+
     assert Enum.all?(specs, &(&1["inputSchema"]["additionalProperties"] == false))
     refute Jason.encode!(specs) =~ "github_api"
   end
@@ -600,6 +603,136 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     context = %{ctx.context | tracker_fingerprint: fingerprint, auth: %{ctx.context.auth | tracker_fingerprint: fingerprint}}
     args = %{"action" => "edit_task", "task_id" => "1", "priority" => 2}
     assert {:error, :priority_label_reserved} = Tools.call("symphony_propose_action", args, context)
+  end
+
+  test "project documents use a pinned default-branch revision without relying on a healthy board", ctx do
+    revision = String.duplicate("a", 40)
+    Application.put_env(:symphony_elixir, :chat_test_board, fn -> raise "No board read should be needed" end)
+
+    for document <- ~w(ARCHITECTURE.md WORKFLOW.md PROJECT.md README.md AGENTS.md) do
+      script([
+        fn "GET", "/repos/example/repo/commits", %{"per_page" => 1}, nil, _ ->
+          {:ok, %{status: 200, body: [%{"sha" => revision}]}}
+        end,
+        fn "GET", path, %{"ref" => ^revision}, nil, _ ->
+          assert path == "/repos/example/repo/contents/#{document}"
+          {:ok, %{status: 200, body: document_payload(document, "# Project\nA committed explanation.")}}
+        end
+      ])
+
+      assert {:ok, result} = Tools.call("symphony_read_project_document", %{"document" => document}, ctx.context)
+      assert result["document"]["text"] =~ "A committed explanation."
+      assert [%{"revision" => ^revision, "url" => url}] = result["references"]
+      assert url == "https://github.com/example/repo/blob/#{revision}/#{document}"
+      assert_finished()
+    end
+  end
+
+  test "document reads cannot select arbitrary paths, URLs, projects or revisions", ctx do
+    for args <- [
+          %{},
+          %{"document" => "../AGENTS.md"},
+          %{"document" => ".env"},
+          %{"document" => "https://evil.example"},
+          %{"document" => "README.md", "ref" => "main"},
+          %{"document" => "README.md", "project" => "other"}
+        ] do
+      assert {:error, :invalid_arguments} = Tools.call("symphony_read_project_document", args, ctx.context)
+    end
+
+    invalid = %{ctx.context | project_id: "github:other/repo"}
+    assert {:error, :project_mismatch} = Tools.call("symphony_read_project_document", %{"document" => "README.md"}, invalid)
+  end
+
+  test "document decoding rejects malformed, oversized and non-UTF8 content", ctx do
+    valid = document_payload("README.md", "Valid")
+
+    payloads = [
+      nil,
+      Map.put(valid, "encoding", "none"),
+      Map.put(valid, "path", ".env"),
+      Map.put(valid, "type", "dir"),
+      Map.put(valid, "content", "%%%"),
+      Map.put(valid, "content", String.duplicate("a", 180_001)),
+      document_payload("README.md", String.duplicate("a", 131_073)),
+      document_payload("README.md", <<255>>),
+      document_payload("README.md", <<0>>)
+    ]
+
+    for payload <- payloads do
+      document_script(payload)
+      assert {:error, :invalid_document} = Tools.call("symphony_read_project_document", %{"document" => "README.md"}, ctx.context)
+      assert_finished()
+    end
+  end
+
+  test "document lookup rejects invalid revisions and revoked auth before reading content", ctx do
+    args = %{"document" => "README.md"}
+
+    for body <- [[], %{}, [%{"sha" => "main"}], [%{"sha" => "../private"}], [%{"sha" => 42}]] do
+      script([fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: body}} end])
+      assert {:error, :invalid_revision} = Tools.call("symphony_read_project_document", args, ctx.context)
+      assert_finished()
+    end
+
+    script([
+      fn "GET", _, _, _, _ ->
+        System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("r", 40))
+        {:ok, %{status: 200, body: [%{"sha" => String.duplicate("a", 40)}]}}
+      end
+    ])
+
+    assert {:error, :unauthorized} = Tools.call("symphony_read_project_document", args, ctx.context)
+    assert_finished()
+  end
+
+  test "unavailable and crashing document reads are scrubbed", ctx do
+    args = %{"document" => "README.md"}
+    script([fn "GET", _, _, _, _ -> {:ok, %{status: 404, body: %{}}} end])
+    assert {:error, {:github_rejected, 404}} = Tools.call("symphony_read_project_document", args, ctx.context)
+
+    for failure <- [fn _, _, _, _, _ -> raise "private-token" end, fn _, _, _, _, _ -> throw("private-token") end] do
+      Application.put_env(:symphony_elixir, :chat_github_request, failure)
+      assert {:error, :document_unavailable} = Tools.call("symphony_read_project_document", args, ctx.context)
+    end
+  end
+
+  @tag timeout: 10_000
+  test "the entire document lookup has a five-second deadline", ctx do
+    owner = self()
+
+    script([
+      fn "GET", _, _, _, _ ->
+        send(owner, {:document_reader, self()})
+        receive do: (:finish -> {:error, :unexpected})
+      end
+    ])
+
+    assert {:error, :document_unavailable} = Tools.call("symphony_read_project_document", %{"document" => "README.md"}, ctx.context)
+    assert_receive {:document_reader, reader}
+    refute Process.alive?(reader)
+    assert_finished()
+  end
+
+  test "tool errors preserve safe recovery guidance without exposing unknown exception details" do
+    assert %{"code" => "cancel_task_before_edit", "message" => message} = Tools.error_message(:cancel_task_before_edit)
+    assert message =~ "Cancel"
+    assert Tools.error_message(:task_changed)["message"] =~ "fresh proposal"
+    assert Tools.error_message({:github_rejected, 403})["code"] == "github_rejected"
+
+    for reason <- [:unexpected, "private-token", {:failed, "private-token"}, {:github_rejected, "private-token"}] do
+      assert %{"code" => "tool_unavailable"} = error = Tools.error_message(reason)
+      refute Jason.encode!(error) =~ "private-token"
+    end
+  end
+
+  defp document_payload(path, text), do: %{"type" => "file", "path" => path, "encoding" => "base64", "content" => Base.encode64(text)}
+
+  defp document_script(payload) do
+    script([
+      fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: [%{"sha" => String.duplicate("a", 40)}]}} end,
+      fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: payload}} end
+    ])
   end
 
   defp http_server(status) do
