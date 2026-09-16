@@ -243,9 +243,9 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     assert {:error, :unauthorized} = Tools.call("symphony_view_context", %{}, %{context | auth: %{}})
   end
 
-  test "disabled view sharing does not load a board or reuse earlier context", ctx do
-    Application.put_env(:symphony_elixir, :chat_test_board, fn -> flunk("disabled sharing loaded board") end)
-    assert {:ok, %{"sharing" => "off", "snapshot" => nil, "current_tasks" => []}} = Tools.call("symphony_view_context", %{}, ctx.context)
+  test "an absent board snapshot does not load a board or reuse earlier context", ctx do
+    Application.put_env(:symphony_elixir, :chat_test_board, fn -> flunk("an absent snapshot loaded board") end)
+    assert {:ok, %{"context_status" => "unavailable", "snapshot" => nil, "current_tasks" => []}} = Tools.call("symphony_view_context", %{}, ctx.context)
   end
 
   test "view retrieval distinguishes unavailable facts from missing tasks and rechecks access", ctx do
@@ -307,6 +307,11 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     assert task["enrichment_error"] == board.enrichment_error
     assert task["checked_at"] == board.generated_at
     refute Jason.encode!(task) =~ "do not expose"
+
+    assert {:ok, %{"widgets" => [search]}} = Tools.call("symphony_search_tasks", %{}, ctx.context)
+    assert search["checked_at"] == board.generated_at
+    assert Enum.find(search["tasks"], &(&1["issue_id"] == "1"))["pull_requests"] == task["pull_requests"]
+    refute Jason.encode!(search) =~ "do not expose"
   end
 
   test "a native action produces a preview and never a command", ctx do

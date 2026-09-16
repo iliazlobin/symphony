@@ -136,7 +136,7 @@ defmodule SymphonyElixir.Chat.Tools do
   end
 
   defp view_context_result(nil, _context) do
-    {:ok, %{"snapshot" => nil, "sharing" => "off", "current_tasks" => [], "warnings" => ["No view context was shared with this message. Do not reuse an earlier snapshot."]}}
+    {:ok, %{"snapshot" => nil, "context_status" => "unavailable", "current_tasks" => [], "warnings" => ["No current board snapshot is available for this message. Do not reuse an earlier snapshot."]}}
   end
 
   defp view_context_result(snapshot, context) do
@@ -145,7 +145,7 @@ defmodule SymphonyElixir.Chat.Tools do
         {:ok, refreshed_view(snapshot, board)}
 
       {:error, :board_unavailable} ->
-        {:ok, %{"snapshot" => snapshot, "sharing" => "on", "current_tasks" => [], "warnings" => ["Current board data is unavailable; the snapshot is only a historical browser hint."]}}
+        {:ok, %{"snapshot" => snapshot, "context_status" => "available", "current_tasks" => [], "warnings" => ["Current board data is unavailable; the snapshot is only a historical browser hint."]}}
 
       error ->
         error
@@ -166,7 +166,7 @@ defmodule SymphonyElixir.Chat.Tools do
 
     %{
       "snapshot" => snapshot,
-      "sharing" => "on",
+      "context_status" => "available",
       "current_tasks" => Enum.map(tasks, &task_view/1),
       "missing_task_ids" => missing,
       "checked_at" => board[:generated_at],
@@ -298,11 +298,12 @@ defmodule SymphonyElixir.Chat.Tools do
 
       widget = %{
         "type" => "tasks",
-        "tasks" => tasks |> Enum.take(args["limit"] || 20) |> Enum.map(&task_view/1),
+        "tasks" => tasks |> Enum.take(args["limit"] || 20) |> Enum.map(&task_with_pull_requests/1),
         "total" => length(tasks),
         "filters" => filters,
         "url" => board_url(context.project_id, filters),
-        "project_id" => context.project_id
+        "project_id" => context.project_id,
+        "checked_at" => board[:generated_at]
       }
 
       {:ok, %{"widgets" => [widget]}}
@@ -312,11 +313,10 @@ defmodule SymphonyElixir.Chat.Tools do
   defp dispatch("symphony_task_details", args, context, _settings, board) do
     with :ok <- complete_board(board), {:ok, task} <- find_task(args["task_id"], context, board) do
       details =
-        task_view(task)
+        task_with_pull_requests(task)
         |> Map.merge(string_keys(Map.take(task, ~w(execution_status blocker_reason github_status)a)))
         |> Map.put("description", truncate(task[:description], 32_000))
         |> Map.put("labels", task[:labels] || [])
-        |> Map.put("pull_requests", Enum.map(task[:pull_requests] || [], &pull_request_details/1))
         |> Map.put("links", Enum.map(task[:links] || [], &string_keys(Map.take(&1, [:label, :url, :kind]))))
         |> Map.put("checked_at", board[:generated_at])
         |> Map.put("enrichment_error", board[:enrichment_error])
@@ -347,6 +347,8 @@ defmodule SymphonyElixir.Chat.Tools do
   defp pull_request_details(pr) do
     pr |> Map.take(@pr_keys) |> string_keys() |> Map.put("check_runs", Enum.map(pr[:check_runs] || [], &string_keys(Map.take(&1, @check_keys))))
   end
+
+  defp task_with_pull_requests(task), do: task_view(task) |> Map.put("pull_requests", Enum.map(task[:pull_requests] || [], &pull_request_details/1))
 
   defp string_keys(map), do: Map.new(map, fn {key, value} -> {Atom.to_string(key), value} end)
 
