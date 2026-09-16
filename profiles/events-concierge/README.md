@@ -83,7 +83,9 @@ candidate diff, independent review and check evidence in
 review handoff; it does not mean the task is merged or deployed. Task creation and
 queue-label changes are available in GitHub and the optional web chat.
 
-**Web board.** Open [Symphony](http://127.0.0.1:8777/). Real tracker issues,
+**Web board.** Open [Symphony](http://127.0.0.1:8778/), or the `api_url` of an existing
+profile configured with another port. The same application serves the board, chat and
+controller API. Real tracker issues,
 runtime activity and durable holds appear in Backlog, Ready, Running, Review and
 Done. Top autocomplete filters select project, status and priority; search and
 sorting apply within each lane. Manual drag ordering is saved in this browser and
@@ -109,8 +111,7 @@ has **Execution**, **AI & chat**, and **Connections** tabs:
   tracker write permissions or worker readiness. No probe starts a model or worker.
 
 Older controllers that do not report settings show unavailable values, not frontend
-configuration defaults. The port 8778 read-only preview never exposes execution edits;
-only browser preferences are editable there.
+configuration defaults.
 
 Tracker/control failures retain last-known cards with an explicit warning. The board
 refreshes tracker data every 30 seconds; runtime messages also update over LiveView.
@@ -120,21 +121,6 @@ Cards link the issue, repository and related pull requests. PR draft/merge state
 GitHub review and checks for the current PR head remain separate from the worker's
 candidate review. The source strip shows refresh failures and controller mode;
 “Live updates connected” describes the browser connection only.
-
-To try updated web code against live work without replacing the installed controller,
-run this from the Symphony checkout with its pinned Elixir runtime and Python dependencies:
-
-```sh
-python3 tools/symphony_web.py --port 8778
-```
-
-Open [the local live board](http://127.0.0.1:8778/) and leave that terminal running;
-Ctrl-C stops this view. It reads the existing operator profile, GitHub and the
-controller's status APIs. It never starts coding workers, opens the controller's
-ledger or enables browser commands. Chat is unavailable in this read-only view.
-Use `--config /absolute/path/to/config.json` for another configured profile.
-The profile binds the repository to the controller address; the current controller
-API does not attest repository identity in its response.
 
 **New task** opens the configured GitHub issue form. Create the issue and manage its
 intake labels in GitHub, then refresh the board. Moving across lanes cannot fabricate
@@ -207,9 +193,8 @@ review the issue after changes.
 | --- | --- |
 | Current view, project status, filtered task search, task details with all fetched PRs/CI, committed project documents | Create or edit a task, add issue feedback, queue/unqueue, pause/drain/resume, cancel/retry |
 
-The read-only preview on port 8778 shows the panel's availability state but does not
-start a chat runtime. A signed-in dedicated management account and an explicitly
-installed controller revision are required for live model responses.
+A signed-in dedicated management account and an explicitly installed controller
+revision with management chat enabled are required for live model responses.
 
 **External management agent — controls through MCP.** Ask a connected agent:
 
@@ -303,7 +288,7 @@ watcher alongside the installed service. `symphony_control.py status` includes t
 publication receipts and confirmed PR links.
 
 **HTTP — programmatic interface.** The base URL is the local `api_url` in operator
-configuration, normally `http://127.0.0.1:8777`. Existing CLI/MCP clients handle the
+configuration, normally `http://127.0.0.1:8778`. Existing CLI/MCP clients handle the
 private token; custom clients must follow the
 [control API contract](../../SPEC.md#b2-native-control-api).
 

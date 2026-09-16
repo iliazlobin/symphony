@@ -377,7 +377,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     health =
       cond do
         read_only?(socket.assigns.board) ->
-          "Unavailable in read-only preview"
+          "Unavailable in read-only view"
 
         not BrowserAuth.authorized?(socket.assigns.auth) ->
           "Unlock controls to inspect"

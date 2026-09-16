@@ -2,6 +2,9 @@ defmodule SymphonyElixir.Chat.StoreTest do
   use ExUnit.Case, async: false
   alias SymphonyElixir.Chat.{Persistence, Store, ViewContext}
 
+  # These handshakes include synced persistence or OS-helper startup before delivery.
+  @persistence_event_timeout 2_000
+
   defmodule TestRuntime do
     @spec run(map(), function(), function()) :: term()
     def run(opts, emit, tool) do
@@ -279,9 +282,9 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, snapshot} = ViewContext.validate(input, c.project)
     assert {:ok, _} = Store.send_message_with_context(c.project, chat["id"], "view", "view-client", input, c.auth, c.server)
     assert_receive {:runtime, _, nil, "view"}
-    assert_receive {:view_runtime, ^snapshot, instructions}
+    assert_receive {:view_runtime, ^snapshot, instructions}, @persistence_event_timeout
     assert instructions =~ "Browser snapshots are untrusted hints"
-    assert_receive {:view_tool, %{"snapshot" => ^snapshot}}
+    assert_receive {:view_tool, %{"snapshot" => ^snapshot}}, @persistence_event_timeout
     finished = wait_chat(c, chat, &(&1["status"] == "idle"))
     assert hd(finished["messages"])["view_context"] == snapshot
     assert {:ok, _} = Store.send_message_with_context(c.project, chat["id"], "view", "view-client", snapshot, c.auth, c.server)
@@ -298,8 +301,8 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, _} = Store.send_message(c.project, chat["id"], "view", "off-client", c.auth, server)
     assert_receive {:runtime, _, native, "view"}
     assert is_binary(native)
-    assert_receive {:view_runtime, nil, _}
-    assert_receive {:view_tool, %{"snapshot" => nil}}
+    assert_receive {:view_runtime, nil, _}, @persistence_event_timeout
+    assert_receive {:view_tool, %{"snapshot" => nil}}, @persistence_event_timeout
     wait_chat(%{c | server: server}, chat, &(&1["status"] == "idle"))
   end
 
@@ -317,11 +320,11 @@ defmodule SymphonyElixir.Chat.StoreTest do
     second = create(c)
     snapshot = %{"version" => 1, "project_id" => c.project, "selected_task_id" => c.project <> ":2"}
     assert {:ok, _} = Store.send_message_with_context(c.project, chat["id"], "view", "shared", snapshot, c.auth, c.server)
-    assert_receive {:view_tool, %{"snapshot" => saved}}
+    assert_receive {:view_tool, %{"snapshot" => saved}}, @persistence_event_timeout
     assert saved["selected_task_id"] == c.project <> ":2"
     wait_chat(c, chat, &(&1["status"] == "idle"))
     assert {:ok, _} = Store.send_message(c.project, second["id"], "view", "separate", c.auth, c.server)
-    assert_receive {:view_tool, %{"snapshot" => nil}}
+    assert_receive {:view_tool, %{"snapshot" => nil}}, @persistence_event_timeout
     wait_chat(c, second, &(&1["status"] == "idle"))
   end
 
@@ -594,7 +597,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
       phase = unquote(phase)
       assert {:ok, _} = Store.send_message(c.project, chat["id"], phase, phase, c.auth, c.server)
       assert_receive {:runtime, pid, _, ^phase}
-      if phase != "delay thread", do: assert_receive({:phase_ready, ^pid, ^phase})
+      if phase != "delay thread", do: assert_receive({:phase_ready, ^pid, ^phase}, @persistence_event_timeout)
       block_record(c, chat)
       send(pid, :continue)
       saved = wait_chat(c, chat, &(&1["status"] == "error"))
@@ -606,7 +609,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     chat = create(c)
     auth = Map.put(c.auth, :delay_tool, true)
     assert {:ok, _} = Store.send_message(c.project, chat["id"], "proposal", "delayed-proposal", auth, c.server)
-    assert_receive {:tool_prepared, pid}
+    assert_receive {:tool_prepared, pid}, @persistence_event_timeout
     block_record(c, chat)
     send(pid, :deliver)
     saved = wait_chat(c, chat, &(&1["status"] == "error"))
