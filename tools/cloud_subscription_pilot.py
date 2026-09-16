@@ -21,6 +21,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from urllib.parse import urlsplit
 
@@ -104,11 +105,23 @@ def private_read(path):
 
 
 def private_write(path, value):
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "w") as stream:
-        json.dump(value, stream, sort_keys=True)
-        stream.flush()
-        os.fsync(stream.fileno())
+    # PID1 alone writes boot.json; the sole exec owner of run.lock alone writes
+    # complete.json, all under its private directory. Publish only complete JSON
+    # so PID1's exists/read check cannot observe an empty or partially written file.
+    if path.exists() or path.is_symlink():
+        raise PilotError("Refusing to replace existing private pilot state")
+    content = json.dumps(value, sort_keys=True).encode()
+    descriptor, temporary = tempfile.mkstemp(prefix=".pilot-publish-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        AUTH._sync(path.parent)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def identity():
@@ -387,21 +400,32 @@ def idle(args):
     while time.time() < boot["expires_at"]:
         if (PRIVATE / "complete.json").exists():
             result = private_read(PRIVATE / "complete.json")
-            return 0 if result == {"success": True} else 1
-        if not healthy_watchdog(PRIVATE / "run.lock", time.time(), started=started):
+            return record_stop("completed", 0 if result == {"success": True} else 1)
+        if not healthy_watchdog(PRIVATE / "run.lock", started=started):
             # PID1 exits, so the runtime stops every container process. This
             # independently bounds an exec client's death or stuck heartbeat.
-            return 1
+            return record_stop("watchdog", 1)
         started = started or (PRIVATE / "run.lock").exists()
         time.sleep(0.2)
-    return 1
+    return record_stop("deadline", 1)
 
 
-def healthy_watchdog(path, now, *, started=False):
+def record_stop(reason, exit_code):
+    # PID1 logs only fixed lifecycle categories, never exec/authentication output.
+    if reason not in ("completed", "watchdog", "deadline") or exit_code not in (0, 1):
+        raise PilotError("Invalid pilot stop category")
+    print(json.dumps({"pilot_stop": reason, "exit_code": exit_code}, sort_keys=True), flush=True)
+    return exit_code
+
+
+def healthy_watchdog(path, now=None, *, started=False):
     try:
         info = path.lstat()
     except FileNotFoundError:
         return not started  # A missing heartbeat after launch is never healthy.
+    # The exec process can refresh mtime concurrently. Sampling time before lstat
+    # can make a new heartbeat appear to be in the future and kill a healthy Pod.
+    now = time.time() if now is None else now
     return (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
             and not info.st_mode & 0o077 and info.st_nlink == 1
             and 0 <= now - info.st_mtime <= 30)

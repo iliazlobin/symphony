@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from collections import deque
 from unittest.mock import Mock, patch
@@ -131,6 +132,29 @@ class CloudSubscriptionPilotTests(unittest.TestCase):
             alias = path.with_name("alias")
             alias.symlink_to(path)
             self.assertFalse(PILOT.healthy_watchdog(alias, 1020))
+
+    def test_watchdog_samples_time_after_concurrent_heartbeat_stat(self):
+        events = []
+        path = Mock()
+        def stat_after_heartbeat():
+            events.append("lstat")
+            return SimpleNamespace(st_mode=0o100600, st_uid=os.getuid(), st_nlink=1, st_mtime=1000.001)
+        def sampled_clock():
+            events.append("time")
+            return 1000.002 if events[0] == "lstat" else 1000.0
+        path.lstat.side_effect = stat_after_heartbeat
+        with patch.object(PILOT.time, "time", side_effect=sampled_clock):
+            self.assertTrue(PILOT.healthy_watchdog(path, started=True))
+        self.assertEqual(events, ["lstat", "time"])
+
+    def test_pid1_stop_categories_never_include_arbitrary_output(self):
+        for reason, code in (("completed", 0), ("completed", 1), ("watchdog", 1), ("deadline", 1)):
+            output = io.StringIO()
+            with patch.object(PILOT.sys, "stdout", output):
+                self.assertEqual(PILOT.record_stop(reason, code), code)
+            self.assertEqual(json.loads(output.getvalue()), {"pilot_stop": reason, "exit_code": code})
+        with self.assertRaises(PILOT.PilotError):
+            PILOT.record_stop("PRIVATE OUTPUT", 1)
 
     def test_protocol_timeout_and_server_requests_do_not_gain_approval(self):
         client = PILOT.AppServer.__new__(PILOT.AppServer)
@@ -299,6 +323,36 @@ class CloudSubscriptionPilotTests(unittest.TestCase):
             path.chmod(0o644)
             with self.assertRaises(PILOT.PilotError):
                 PILOT.private_read(path)
+
+    def test_completion_marker_is_published_only_after_complete_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "complete.json"
+            real_replace = os.replace
+            observed = []
+            def publish(temporary, destination):
+                self.assertFalse(path.exists())
+                self.assertEqual(PILOT.private_read(Path(temporary)), {"success": True})
+                observed.append("complete_json_before_publication")
+                real_replace(temporary, destination)
+                self.assertEqual(PILOT.private_read(path), {"success": True})
+            with patch.object(PILOT.os, "replace", side_effect=publish):
+                PILOT.private_write(path, {"success": True})
+            self.assertEqual(observed, ["complete_json_before_publication"])
+            self.assertEqual(list(Path(directory).iterdir()), [path])
+
+    def test_failed_private_write_keeps_old_state_and_never_exposes_partial_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "complete.json"
+            PILOT.private_write(path, {"success": True})
+            with self.assertRaises(PILOT.PilotError):
+                PILOT.private_write(path, {"success": False})
+            self.assertEqual(PILOT.private_read(path), {"success": True})
+            other = path.with_name("boot.json")
+            with patch.object(PILOT.os, "fsync", side_effect=OSError("injected pre-publication failure")):
+                with self.assertRaises(OSError):
+                    PILOT.private_write(other, {"safe": "complete"})
+            self.assertFalse(other.exists())
+            self.assertEqual(list(Path(directory).iterdir()), [path])
 
 
 if __name__ == "__main__":
