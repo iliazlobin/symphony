@@ -57,7 +57,7 @@ def recovery_snapshots():
     state.update(ready=False, started=False, lastState={}, state={"terminated": {
         "exitCode": 1, "reason": "Error", "containerID": state["containerID"],
         "startedAt": "2026-09-15T00:00:02Z", "finishedAt": "2026-09-15T00:01:00Z"}})
-    entry = {"insertId": "native-entry", "timestamp": "2026-09-15T00:01:01Z", "receiveTimestamp": "2026-09-15T00:01:03Z",
+    entry = {"insertId": "native-entry", "timestamp": "2026-09-15T00:01:01Z", "receiveTimestamp": "2026-09-15T00:01:03.630019736Z",
              "logName": "projects/iz27-platform-dev/logs/cloudaudit.googleapis.com%2Factivity",
              "resource": {"type": "k8s_cluster", "labels": {
                  "project_id": "iz27-platform-dev", "cluster_name": "platform-dev", "location": "us-west1-a"}},
