@@ -141,12 +141,13 @@ def job_manifest(image, owner, stage, generation, expires_at, now=None):
                      "template": {"metadata": {"labels": labels}, "spec": pod}}}
 
 
-def identity(obj, kind, name, uid, typed_pod_list_item=False):
+def identity(obj, kind, name, uid, typed_pod_list_item=False, archived_terminal=False):
     meta = obj.get("metadata", {})
     known_kind = obj.get("kind") == kind or (
         typed_pod_list_item and kind == "Pod" and "kind" not in obj)
     require(UID.fullmatch(uid or "") and known_kind and meta.get("name") == name
-            and meta.get("uid") == uid and meta.get("resourceVersion") and not meta.get("deletionTimestamp"),
+            and meta.get("uid") == uid and meta.get("resourceVersion")
+            and (not meta.get("deletionTimestamp") or (archived_terminal and kind == "Pod")),
             "Object identity, revision or non-deletion state is unverified")
     if kind != "Namespace":
         require(meta.get("namespace") == NAMESPACE, "Unexpected namespace")
@@ -203,7 +204,8 @@ def validate(manifest, namespace, pvc, job, pods, namespace_uid, pvc_uid, job_ui
     require(isinstance(meta.get("name"), str) and RUNNER.NAME.fullmatch(meta["name"]), "Invalid Pod name")
     # Native typed PodList items can omit TypeMeta; the validated envelope fixes
     # their type. An explicit conflicting kind is never accepted.
-    identity(pod, "Pod", meta.get("name"), meta.get("uid"), typed_pod_list_item=not archived)
+    identity(pod, "Pod", meta.get("name"), meta.get("uid"), typed_pod_list_item=not archived,
+             archived_terminal=archived)
     require(meta.get("labels", {}).get("app") == APP
             and meta["labels"].get(OWNER) == manifest["metadata"]["labels"][OWNER]
             and meta["labels"].get("batch.kubernetes.io/controller-uid") == job_uid
@@ -254,12 +256,21 @@ def audit_receipt(manifest, namespace, pvc, job, pods, namespace_uid, pvc_uid, j
                 "project_id": "iz27-platform-dev", "cluster_name": "platform-dev", "location": "us-west1-a"}}
             and payload.get("@type") == "type.googleapis.com/google.cloud.audit.AuditLog"
             and payload.get("serviceName") == "k8s.io"
-            and payload.get("methodName") == "io.k8s.core.v1.pods.patch"
+            and payload.get("methodName") in ("io.k8s.core.v1.pods.patch", "io.k8s.core.v1.pods.delete")
             and type(payload.get("status", {}).get("code")) is int and payload["status"]["code"] == 0
             and payload.get("resourceName") == f"core/v1/namespaces/{NAMESPACE}/pods/{admission.get('pod_name')}"
             and pod.get("@type") == "core.k8s.io/v1.Pod"
             and pod.get("apiVersion") == "v1" and pod.get("kind") == "Pod",
             "Original successful GKE Pod response provenance is unverified")
+    if payload["methodName"] == "io.k8s.core.v1.pods.delete":
+        metadata = pod.get("metadata", {})
+        require(metadata.get("deletionTimestamp")
+                and type(metadata.get("deletionGracePeriodSeconds")) is int
+                and metadata["deletionGracePeriodSeconds"] == 0,
+                "Only a completed terminal Pod deletion response is accepted")
+    else:
+        require(not pod.get("metadata", {}).get("deletionTimestamp"),
+                "The archived patch path requires a non-deleting terminal Pod")
     observed = validate(manifest, namespace, pvc, job, pods, namespace_uid, pvc_uid, job_uid,
                         terminal=True, archived_terminal_pod=pod)
     require(observed == admission, "Archived Pod differs from its exact saved admission")
@@ -270,6 +281,9 @@ def audit_receipt(manifest, namespace, pvc, job, pods, namespace_uid, pvc_uid, j
     received_at = AUTH.evidence_timestamp(entry.get("receiveTimestamp"))
     finished_at = AUTH.evidence_timestamp(pod["status"]["containerStatuses"][0]["state"]["terminated"]["finishedAt"])
     require(finished_at <= audit_at <= received_at, "Audit timestamp precedes the observed termination")
+    if pod["metadata"].get("deletionTimestamp"):
+        require(AUTH.evidence_timestamp(pod["metadata"]["deletionTimestamp"]) <= audit_at,
+                "Audit record precedes the terminal deletion")
     return value
 
 

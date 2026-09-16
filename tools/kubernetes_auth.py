@@ -172,7 +172,7 @@ def archived_terminal_evidence(pod, job, claim):
     conditions = [c for c in job_status.get("conditions", [])
                   if c.get("type") in ("Complete", "Failed") and c.get("status") == "True"]
     if (pod.get("kind") != "Pod" or pod.get("apiVersion") != "v1"
-            or not meta.get("name") or not meta.get("resourceVersion") or meta.get("deletionTimestamp")
+            or not meta.get("name") or not meta.get("resourceVersion")
             or meta.get("namespace") != job_meta.get("namespace")
             or meta.get("labels", {}).get("batch.kubernetes.io/controller-uid") != claim["job_uid"]
             or job_meta.get("deletionTimestamp")
@@ -216,6 +216,9 @@ def archived_terminal_evidence(pod, job, claim):
     if not created <= evidence_timestamp(terminated.get("startedAt")) <= evidence_timestamp(
             terminated.get("finishedAt")) <= terminal_at:
         raise AuthSlotError("Archived container lifetime is inconsistent")
+    if meta.get("deletionTimestamp") and evidence_timestamp(meta["deletionTimestamp"]) < evidence_timestamp(
+            terminated["finishedAt"]):
+        raise AuthSlotError("Deletion preceded verified container termination")
 
 
 def terminal_job_evidence(receipt, claim):

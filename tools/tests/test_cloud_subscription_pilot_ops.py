@@ -256,6 +256,8 @@ class PilotOpsTests(unittest.TestCase):
             lambda e: e["protoPayload"].update(status={}),
             lambda e: e["protoPayload"]["response"].pop("@type"),
             lambda e: e["protoPayload"].update(response={"kind": "Patch"}),
+            lambda e: e["protoPayload"]["response"]["metadata"].update(
+                deletionTimestamp="2026-09-15T00:01:01Z", deletionGracePeriodSeconds=0),
         ]
         for mutate in mutations:
             values = recovery_snapshots()
@@ -287,7 +289,7 @@ class PilotOpsTests(unittest.TestCase):
     def test_archive_rejects_modified_container_or_incomplete_stop(self):
         for mutate in (
             lambda p: p["metadata"].update(uid=PVC_UID),
-            lambda p: p["metadata"].update(deletionTimestamp="2026-09-15T00:01:01Z"),
+            lambda p: p["metadata"].update(deletionTimestamp="2026-09-15T00:00:59Z"),
             lambda p: p["spec"].update(hostNetwork=True),
             lambda p: p["status"].update(phase="Unknown"),
             lambda p: p["status"].update(reason="NodeLost"),
@@ -331,6 +333,34 @@ class PilotOpsTests(unittest.TestCase):
         ):
             values = recovery_snapshots()
             mutate(values)
+            with self.assertRaises((OPS.OpsError, OPS.AUTH.AuthSlotError)):
+                OPS.audit_receipt(**values)
+
+    def test_terminal_delete_audit_retains_actual_exit_evidence(self):
+        values = recovery_snapshots()
+        payload = values["audit"][0]["protoPayload"]
+        payload["methodName"] = "io.k8s.core.v1.pods.delete"
+        payload["response"]["metadata"].update(
+            deletionTimestamp="2026-09-15T00:01:01Z", deletionGracePeriodSeconds=0)
+        result = OPS.audit_receipt(**values)
+        self.assertEqual(result["pods"]["items"], [])
+        self.assertIs(result["archived_terminal_pod"], payload["response"])
+
+    def test_delete_alone_or_future_deletion_never_releases_ownership(self):
+        for mutate in (
+            lambda p: p["status"].update(phase="Running"),
+            lambda p: p["status"]["containerStatuses"][0].update(state={"running": {"startedAt": "2026-09-15T00:00:00Z"}}),
+            lambda p: p["metadata"].update(deletionGracePeriodSeconds=20),
+            lambda p: p["metadata"].update(deletionGracePeriodSeconds=False),
+            lambda p: p["metadata"].update(deletionTimestamp="2026-09-15T00:01:20Z"),
+            lambda p: p["status"]["containerStatuses"][0]["state"]["terminated"].update(reason="ContainerStatusUnknown"),
+        ):
+            values = recovery_snapshots()
+            payload = values["audit"][0]["protoPayload"]
+            payload["methodName"] = "io.k8s.core.v1.pods.delete"
+            payload["response"]["metadata"].update(
+                deletionTimestamp="2026-09-15T00:01:01Z", deletionGracePeriodSeconds=0)
+            mutate(payload["response"])
             with self.assertRaises((OPS.OpsError, OPS.AUTH.AuthSlotError)):
                 OPS.audit_receipt(**values)
 
