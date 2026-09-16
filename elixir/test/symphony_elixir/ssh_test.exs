@@ -1,5 +1,5 @@
 defmodule SymphonyElixir.SSHTest do
-  use ExUnit.Case, async: false
+  use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.SSH
 
@@ -193,7 +193,4 @@ defmodule SymphonyElixir.SSHTest do
       wait_for_trace!(trace_file, attempts - 1)
     end
   end
-
-  defp restore_env(key, nil), do: System.delete_env(key)
-  defp restore_env(key, value), do: System.put_env(key, value)
 end
