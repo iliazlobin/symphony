@@ -7,6 +7,9 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
   @endpoint Endpoint
   @project "github:example/integration"
 
+  # These handshakes include synced persistence or OS-helper startup before delivery.
+  @persistence_event_timeout 2_000
+
   # Only routes the optional server argument to this test's isolated real Store.
   # Conversation state, tool dispatch, persistence, previews and receipts are real.
   defmodule StoreClient do
@@ -214,7 +217,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     render_submit(view, "send-message", %{"message" => "Review work"})
     refute has_element?(view, ".chat-notice"), render(view) |> Floki.parse_document!() |> Floki.find(".chat-notice") |> Floki.text()
     assert_receive {:model_started, _, nil, "Review work"}
-    assert_receive {:real_tool_results, [status, search, details]}
+    assert_receive {:real_tool_results, [status, search, details]}, @persistence_event_timeout
     assert [%{"type" => "status"}] = status["widgets"]
     assert [%{"type" => "tasks", "tasks" => [%{"issue_id" => "2"}]}] = search["widgets"]
     assert [%{"type" => "task", "task" => %{"description" => "Depends on: none"}}] = details["widgets"]
@@ -247,7 +250,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
   test "create previews get durable IDs, execute only after confirmation and show real receipts", ctx do
     {view, _} = chat_view(ctx)
     render_submit(view, "send-message", %{"message" => "Create a task"})
-    assert_receive {:real_proposal, %{"proposal" => proposal}}
+    assert_receive {:real_proposal, %{"proposal" => proposal}}, @persistence_event_timeout
     chat = wait_chat(ctx, &(&1["status"] == "idle"))
     assert proposal["id"] == hd(chat["proposals"])["id"]
     assert String.match?(proposal["id"], ~r/^[a-f0-9]{32}$/)
@@ -268,7 +271,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
   test "queue preview retains routing labels and confirmation reaches the owner guard once", ctx do
     {view, _} = chat_view(ctx)
     render_submit(view, "send-message", %{"message" => "Queue task"})
-    assert_receive {:real_proposal, %{"proposal" => proposal}}
+    assert_receive {:real_proposal, %{"proposal" => proposal}}, @persistence_event_timeout
     wait_chat(ctx, &(&1["status"] == "idle"))
     assert proposal["queue_labels"] == ["ready"]
     assert has_element?(view, ".chat-widget-proposal", "ready")
@@ -361,13 +364,21 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     render_change(view, "context-options", %{"share_context" => "true", "include_selected" => "false"})
     render_submit(view, "send-message", %{"message" => "Use this view"})
     expected = Map.put(snapshot, "selected_task_id", nil)
-    assert_receive {:view_seen, ^expected, %{"sharing" => "on", "snapshot" => ^expected, "current_tasks" => [%{"issue_id" => "2"}]}}
+
+    assert_receive {:view_seen, ^expected,
+                    %{
+                      "sharing" => "on",
+                      "snapshot" => ^expected,
+                      "current_tasks" => [%{"issue_id" => "2"}]
+                    }},
+                   @persistence_event_timeout
+
     chat = wait_chat(ctx, &(&1["status"] == "idle"))
     user = Enum.find(chat["messages"], &(&1["role"] == "user"))
     assert user["view_context"] == expected
     render_change(view, "context-options", %{"share_context" => "false"})
     render_submit(view, "send-message", %{"message" => "Use this view"})
-    assert_receive {:view_seen, nil, %{"sharing" => "off", "snapshot" => nil, "current_tasks" => []}}
+    assert_receive {:view_seen, nil, %{"sharing" => "off", "snapshot" => nil, "current_tasks" => []}}, @persistence_event_timeout
     chat = wait_chat(ctx, &(&1["status"] == "idle" and length(&1["messages"]) == 4))
     assert chat["messages"] |> Enum.filter(&(&1["role"] == "user")) |> List.last() |> Map.fetch!("view_context") == nil
     assert Agent.get(ctx.requests, & &1) == []

@@ -4,6 +4,9 @@ defmodule SymphonyElixir.Chat.PersistenceTest do
   import Bitwise
   alias SymphonyElixir.Chat.Persistence
 
+  # These handshakes include synced persistence or OS-helper startup before delivery.
+  @persistence_event_timeout 2_000
+
   setup do
     {:ok, root} = SymphonyElixir.PathSafety.canonicalize(Path.join(System.tmp_dir!(), "chat-persistence-#{System.unique_integer([:positive])}"))
 
@@ -45,7 +48,7 @@ defmodule SymphonyElixir.Chat.PersistenceTest do
         end
       end)
 
-    assert_receive :locked
+    assert_receive :locked, @persistence_event_timeout
     assert {:error, :chat_storage_locked} = Persistence.open(c.root)
     Process.exit(pid, :kill)
     assert_receive {:DOWN, ^monitor, :process, ^pid, :killed}
