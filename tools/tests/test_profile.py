@@ -45,6 +45,7 @@ class ProfileTests(unittest.TestCase):
             with patch.object(profile, "run", side_effect=[base, profile.REMOTE, WORKFLOW]):
                 profile.initialize(args)
             installed = json.loads((state / "config.json").read_text())
+            self.assertEqual(installed["api_url"], "http://127.0.0.1:8777")
             self.assertIs(installed["worker_launch_enabled"], False)
             workflow = profile.yaml.safe_load((state / "WORKFLOW.md").read_text().split("---\n", 2)[1])
             self.assertEqual(workflow["agent"]["max_concurrent_agents"], 1)

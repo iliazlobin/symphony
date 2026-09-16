@@ -307,13 +307,11 @@ codex:
 
 ## Web board and chat
 
-For a separate read-only view of a configured Mac controller, run
-`python3 tools/symphony_web.py --port 8778` from the repository root. It serves this
-checkout's UI with live GitHub issues, linked PR evidence and GET-only controller
-status. The launcher uses the existing host GitHub login and private operator
-profile; credentials stay in the host process. It starts no scheduler, ledger
-owner, coding worker or chat runtime. The [operator guide](../profiles/events-concierge/README.md#operate)
-describes access and limits.
+The normal Symphony application serves the board, chat and controller API together.
+The Mac profile defaults to [port 8778](http://127.0.0.1:8778/); existing profiles use
+their configured `api_url`. The [operator guide](../profiles/events-concierge/README.md#operate)
+describes service startup, access and limits. Run one controller for each retained
+ledger; a second web process is not required.
 
 The observability UI now runs on a minimal Phoenix stack:
 
@@ -507,8 +505,7 @@ Changing control budgets still requires reviewed configuration and restart.
 Chat context preferences apply to the next message and future visits in this browser
 for the selected project. Save persists the choices; Cancel discards edits; Restore
 defaults stages both choices as enabled until Save. Composer switches are temporary
-overrides. Earlier messages are unchanged. The read-only preview permits these local
-preferences but never enables controller commands or chat execution. Missing controller
+overrides. Earlier messages are unchanged. Missing controller
 settings remain “Not reported”; model presets and chat storage health do not verify
 model-account access. Display preferences stay in Display.
 

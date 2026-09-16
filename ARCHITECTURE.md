@@ -16,7 +16,7 @@ chat state, as defined by the [package contract](deploy/gke/README.md#required-a
 The [Linux application image](deploy/gke/application.Dockerfile) builds the combined
 board, chat and Settings; its offline [integration probe](tools/probe_gke_application.py)
 exercises the normal application and retained conversations across restart.
-Local ports and the read-only preview launcher do not identify the deployed product.
+Local ports do not identify the deployed product.
 Kubernetes execution and durable subscription authentication must pass
 runtime verification before replacing the Mac task owner. The standalone
 [runner](tools/kubernetes_runner.py) and [auth-slot journal](tools/kubernetes_auth.py)
@@ -99,11 +99,7 @@ commands to the native API and owns no scheduling state.
   interrupt existing work or reset budgets. The workflow's configured concurrency
   remains the ceiling and default, including after reload or restart; restoring the
   default clears only the override. The control snapshot owns the reported effective
-  value and read-only budget settings, including in the read-only preview.
-- [`ReadOnlyBoard`](elixir/lib/symphony_elixir_web/read_only_board.ex) supports a
-  separate local UI against a configured controller. The
-  [`web launcher`](tools/symphony_web.py) starts only the web dependencies and reads
-  live GitHub and controller status; it owns no scheduler or execution state.
+  value and read-only budget settings.
   GitHub PR relationships, review decisions and current-head checks enrich cards
   without changing task admission, lifecycle stages or deployment claims.
 - [`Chat.Store`](elixir/lib/symphony_elixir/chat/store.ex) owns project-bound conversations,

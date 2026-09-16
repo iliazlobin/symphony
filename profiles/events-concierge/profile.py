@@ -305,7 +305,7 @@ def main() -> int:
     init.add_argument("--source", required=True)
     init.add_argument("--base-sha", required=True)
     init.add_argument("--integration-branch", help="Leave unset while the owner selects the target; publication stays blocked")
-    init.add_argument("--port", type=int, default=8777)
+    init.add_argument("--port", type=int, default=8778)
     for action in ("workspace-create", "before-run", "codex-server", "run", "install-rules", "login", "doctor"):
         sub.add_parser(action)
     args = parser.parse_args()

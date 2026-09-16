@@ -2465,12 +2465,9 @@ failure MUST NOT remove otherwise valid issue data or imply successful checks.
 Bounded or changed relationship data MUST be marked incomplete. Native candidate
 review and GitHub review are separate evidence.
 
-A standalone read-only web process MAY bind to an existing operator profile and
-read its controller via GET-only loopback requests. It MUST NOT start the scheduler,
-own the control ledger, inherit browser command authority or start a model runtime.
-The current API's repository identity is supplied by the trusted profile binding,
-not attested by the controller response. Browser refresh MUST update runtime data
-and mark unavailable or retained observations explicitly.
+The board and controller share one application endpoint and runtime owner. Browser
+refresh MUST update runtime data and mark unavailable or retained observations
+explicitly.
 
 Local operator login/logout uses CSRF-protected browser POST routes. Authorization
 requires the actual loopback peer and host, a same-origin connection and a signed,

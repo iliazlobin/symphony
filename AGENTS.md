@@ -19,7 +19,7 @@ profile is the first consumer; application code and GCP infrastructure live sepa
   socket into a coding worker. Retain failed workspaces and uncertain cleanup state.
 - Cloud application releases must include the shared Phoenix board/chat implementation
   and its runtime/state requirements in [the package contract](deploy/gke/README.md#required-application-package).
-  A local port or the read-only `tools/symphony_web.py` preview is not that package.
+  A local port or static board render does not establish that the full package is present.
 - GitHub owns instructions, workflows, code, issues and PR evidence. Notion explains
   the system and links published revisions. Update canonical files instead of creating
   duplicate trackers or report bundles.

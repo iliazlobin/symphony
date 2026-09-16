@@ -7,7 +7,7 @@ defmodule SymphonyElixirWeb.SettingsPanel do
     ~H"""
     <div class="settings-scope">
       <strong :for={project <- @board.projects}>{project.label}</strong>
-      <span class="settings-badge">{if @read_only, do: "Read-only preview", else: "Local controller"}</span>
+      <span class="settings-badge">{if @read_only, do: "Read-only view", else: "Local controller"}</span>
     </div>
     <nav class="settings-tabs" aria-label="Settings sections">
       <button :for={{id, label} <- [{"execution", "Execution"}, {"ai", "AI & chat"}, {"connections", "Connections"}]}
@@ -65,7 +65,7 @@ defmodule SymphonyElixirWeb.SettingsPanel do
         <p :if={!@project_id} class="settings-help">Select one project to set chat preferences.</p>
       </div>
       <div class="settings-section"><div class="settings-section-title"><h3>Model presets</h3><span class="settings-badge">Read-only</span></div>
-        <p :if={@read_only} class="settings-help">The connected controller does not report its model presets. Chat is unavailable in this read-only preview.</p>
+        <p :if={@read_only} class="settings-help">The connected controller does not report its model presets. Chat is unavailable in this read-only view.</p>
         <div :if={!@read_only}>
           <dl class="settings-values">
             <div><dt>Builder</dt><dd>gpt-6-astra · medium</dd></div>
