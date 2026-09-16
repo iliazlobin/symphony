@@ -10,7 +10,12 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
   def login(conn, _params) do
     if BrowserAuth.google_enabled?() do
       assigns = %{csrf_token: Plug.CSRFProtection.get_csrf_token(), error: Phoenix.Flash.get(conn.assigns.flash, :error)}
-      conn |> no_store() |> html(BrowserLoginHTML.render(assigns) |> Safe.to_iodata() |> IO.iodata_to_binary())
+
+      # Form POSTs inherit this policy: no-referrer would replace their Origin with null.
+      conn
+      |> no_store()
+      |> put_resp_header("referrer-policy", "same-origin")
+      |> html(BrowserLoginHTML.render(assigns) |> Safe.to_iodata() |> IO.iodata_to_binary())
     else
       redirect(conn, to: "/?panel=settings")
     end
