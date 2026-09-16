@@ -8,11 +8,13 @@ defmodule SymphonyElixirWeb.Endpoint do
   @session_options [
     store: :cookie,
     key: "_symphony_elixir_key",
-    signing_salt: "symphony-session"
+    signing_salt: "symphony-session",
+    http_only: true,
+    same_site: "Strict"
   ]
 
   socket("/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [session: @session_options]],
+    websocket: [check_origin: :conn, connect_info: [:peer_data, :uri, session: @session_options]],
     longpoll: false
   )
 

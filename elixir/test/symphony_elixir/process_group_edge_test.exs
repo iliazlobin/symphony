@@ -17,6 +17,18 @@ defmodule SymphonyElixir.ProcessGroupEdgeTest do
     assert :ok = ProcessGroup.close(make_ref())
   end
 
+  test "a quiet running command times out and releases its workspace after cleanup", context do
+    started = Path.join(context.workspace, "started")
+    command = "touch " <> shell_escape(started) <> "; exec sleep 30"
+
+    assert {:error, :command_timeout} = ProcessGroup.run(command, cd: context.workspace, timeout_ms: 1_000)
+    assert File.exists?(started)
+
+    # The guardian retains the workspace lock until its owned child is reaped.
+    # A successor must wait for that cleanup instead of inheriting a live child.
+    assert {:ok, {"reused\n", 0}} = ProcessGroup.run("echo reused", cd: context.workspace, timeout_ms: 3_000)
+  end
+
   test "verified cleanup uses its recorded endpoint and removes only the owned container", context do
     {command, env, trace} = fixture(context, "matching")
     assert {:ok, {"", 0}} = ProcessGroup.run(command, cd: context.workspace, env: env, timeout_ms: 3_000)

@@ -15,6 +15,7 @@ defmodule SymphonyElixir.ControlOrchestratorTest do
       tracker: %{kind: "memory", active_states: ["open"], terminal_states: ["closed"], required_labels: ["ready"]},
       workspace: %{root: root <> "/workspaces"},
       polling: %{interval_ms: 60_000},
+      agent: %{max_concurrent_agents: 3},
       observability: %{dashboard_enabled: false},
       control: %{
         enabled: true,
@@ -28,13 +29,77 @@ defmodule SymphonyElixir.ControlOrchestratorTest do
 
     File.write!(workflow, "---\n" <> Jason.encode!(config) <> "\n---\nTask")
     Workflow.set_workflow_file_path(workflow)
-    issue = %Issue{id: "7", identifier: "GH-7", title: "Controlled fixture", state: "open", labels: ["ready"]}
+    issue = %Issue{id: "7", identifier: "GH-7", title: "Controlled fixture", state: "open", labels: ["ready"], dispatchable: true}
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
     supervisor = start_supervised!({Task.Supervisor, []})
     name = Module.concat(__MODULE__, "Runtime#{System.unique_integer([:positive])}")
     pid = start_supervised!({Orchestrator, name: name, task_supervisor: supervisor})
     on_exit(fn -> File.rm_rf(root) end)
-    %{pid: pid, issue: issue, supervisor: supervisor}
+    %{pid: pid, issue: issue, supervisor: supervisor, workflow: workflow, config: config}
+  end
+
+  test "concurrency settings retain active work and budgets while lowering admission capacity", ctx do
+    {worker, run} = seed_owned_worker(ctx)
+
+    :sys.replace_state(ctx.pid, fn state ->
+      {:ok, ledger} = ControlLedger.tokens(state.control, ctx.issue.id, run, 37)
+      %{state | control: ledger}
+    end)
+
+    before = Orchestrator.control_snapshot(ctx.pid)
+    set = %{"command_id" => "settings", "expected_revision" => 1, "action" => "set_concurrency", "limit" => 1, "issue_id" => nil}
+    assert {:ok, %{"revision" => 2, "limit" => 1}} = Orchestrator.control_command(set, ctx.pid)
+    assert Process.alive?(worker)
+    snapshot = Orchestrator.control_snapshot(ctx.pid)
+    assert snapshot["issues"] == before["issues"]
+    assert snapshot["settings"]["concurrency"] == %{"effective" => 1, "default" => 3, "ceiling" => 3, "override" => 1}
+    assert snapshot["settings"]["budgets"] == %{"max_attempts" => 2, "max_total_runtime_ms" => 5_000, "max_total_tokens" => 100}
+    assert snapshot["fault"] == nil
+    assert {:ok, %{"limit" => 1}} = Orchestrator.control_receipt_guarded(set, Orchestrator.tracker_fingerprint(), ctx.pid)
+    assert {:error, :command_id_conflict} = Orchestrator.control_receipt_guarded(%{set | "limit" => 2}, Orchestrator.tracker_fingerprint(), ctx.pid)
+    other = %{ctx.issue | id: "8", identifier: "GH-8"}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [ctx.issue, other])
+    send(ctx.pid, :run_poll_cycle)
+    assert %{"issues" => issues} = Orchestrator.control_snapshot(ctx.pid)
+    assert Map.keys(issues) == ["7"]
+    assert Process.alive?(worker)
+  end
+
+  test "changed admission ceiling clamps retained overrides and validates commands against fresh config", ctx do
+    set = %{"command_id" => "settings", "expected_revision" => 0, "action" => "set_concurrency", "limit" => 3}
+    assert {:ok, _} = Orchestrator.control_command(set, ctx.pid)
+    updated = put_in(ctx.config, [:agent, :max_concurrent_agents], 2)
+    File.write!(ctx.workflow, "---\n" <> Jason.encode!(updated) <> "\n---\nTask")
+    Workflow.set_workflow_file_path(ctx.workflow)
+    assert {:error, :concurrency_limit_exceeded} = Orchestrator.control_command(%{set | "command_id" => "too-high", "expected_revision" => 1}, ctx.pid)
+    assert %{"fault" => nil, "settings" => %{"concurrency" => %{"effective" => 2, "override" => 3, "ceiling" => 2}}} = Orchestrator.control_snapshot(ctx.pid)
+    assert {:ok, %{"replayed" => true}} = Orchestrator.control_command(set, ctx.pid)
+    reset = %{set | "command_id" => "reset", "expected_revision" => 1, "limit" => nil}
+    assert {:ok, _} = Orchestrator.control_command(reset, ctx.pid)
+    assert %{"settings" => %{"concurrency" => %{"effective" => 2, "override" => nil}}} = Orchestrator.control_snapshot(ctx.pid)
+  end
+
+  test "failed settings persistence keeps its previous receipt and blocks admission", ctx do
+    path = :sys.get_state(ctx.pid).control.path
+    File.rename!(path, path <> ".saved")
+    File.mkdir!(path)
+    set = %{"command_id" => "failed-settings", "expected_revision" => 0, "action" => "set_concurrency", "limit" => 1}
+    assert {:error, :control_unavailable} = Orchestrator.control_command(set, ctx.pid)
+    snapshot = Orchestrator.control_snapshot(ctx.pid)
+    assert snapshot["revision"] == 0
+    assert snapshot["settings"]["concurrency"]["override"] == nil
+    assert is_binary(snapshot["fault"])
+    assert {:error, :control_unavailable} = Orchestrator.control_command(set, ctx.pid)
+  end
+
+  test "routed settings API validates limits and retains idempotent receipts", ctx do
+    token = start_control_endpoint(ctx.pid)
+    set = %{"command_id" => "api-settings", "expected_revision" => 0, "action" => "set_concurrency", "limit" => 4}
+    assert %{"error" => %{"code" => "concurrency_limit_exceeded"}} = json_response(post(api_conn(token), "/api/v1/control", set), 400)
+    set = %{set | "limit" => 2}
+    assert %{"limit" => 2, "replayed" => false} = json_response(post(api_conn(token), "/api/v1/control", set), 200)
+    assert %{"limit" => 2, "replayed" => true} = json_response(post(api_conn(token), "/api/v1/control", set), 200)
+    assert %{"error" => %{"code" => "command_id_conflict"}} = json_response(post(api_conn(token), "/api/v1/control", %{set | "limit" => nil}), 409)
   end
 
   test "paused poll and queued retry cannot launch an agent", %{pid: pid, issue: issue} do
@@ -50,6 +115,74 @@ defmodule SymphonyElixir.ControlOrchestratorTest do
     assert %{"issues" => %{}} = Orchestrator.control_snapshot(pid)
     assert :sys.get_state(pid).running == %{}
     refute MapSet.member?(:sys.get_state(pid).claimed, issue.id)
+  end
+
+  test "tracker edits serialize behind a current cancelled hold and reject stale ownership", c do
+    scope = Orchestrator.tracker_fingerprint()
+    parent = self()
+
+    callback = fn ->
+      send(parent, :tracker_write)
+      {:ok, :saved}
+    end
+
+    guarded = fn fingerprint, revision -> Orchestrator.tracker_action_guarded(fingerprint, revision, c.issue.id, callback, c.pid) end
+    assert {:error, :tracker_changed} = guarded.("foreign", 0)
+    assert {:error, :task_must_be_cancelled} = guarded.(scope, 0)
+    assert {:ok, %{"revision" => 1}} = Orchestrator.control_command(%{"command_id" => "hold-for-edit", "expected_revision" => 0, "action" => "cancel", "issue_id" => c.issue.id}, c.pid)
+    assert {:error, :revision_conflict} = guarded.(scope, 0)
+    refute_receive :tracker_write
+    assert {:ok, :saved} = guarded.(scope, 1)
+    assert_receive :tracker_write
+    assert {:error, :invalid_command} = Orchestrator.tracker_action_guarded(scope, 1, c.issue.id, nil, c.pid)
+    assert {:error, :write_outcome_unknown} = Orchestrator.tracker_action_guarded(scope, 1, c.issue.id, fn -> raise "provider disconnected" end, c.pid)
+    assert {:error, :write_outcome_unknown} = Orchestrator.tracker_action_guarded(scope, 1, c.issue.id, fn -> throw(:uncertain) end, c.pid)
+    :sys.replace_state(c.pid, fn state -> %{state | retry_attempts: %{c.issue.id => %{}}} end)
+    assert {:error, :task_still_active} = guarded.(scope, 1)
+    :sys.replace_state(c.pid, fn state -> %{state | retry_attempts: %{}, control_fault: :failed} end)
+    assert {:error, :control_unavailable} = guarded.(scope, 1)
+  end
+
+  test "native retry cannot pass a tracker edit in progress", c do
+    scope = Orchestrator.tracker_fingerprint()
+    assert {:ok, _} = Orchestrator.control_command(%{"command_id" => "hold", "expected_revision" => 0, "action" => "cancel", "issue_id" => c.issue.id}, c.pid)
+    parent = self()
+
+    edit =
+      Task.async(fn ->
+        Orchestrator.tracker_action_guarded(
+          scope,
+          1,
+          c.issue.id,
+          fn ->
+            send(parent, :editing)
+
+            receive do
+              :complete_edit -> {:ok, :saved}
+            end
+          end,
+          c.pid
+        )
+      end)
+
+    assert_receive :editing
+    retry = Task.async(fn -> Orchestrator.control_command(%{"command_id" => "retry", "expected_revision" => 1, "action" => "retry", "issue_id" => c.issue.id}, c.pid) end)
+    refute Task.yield(retry, 20)
+    send(c.pid, :complete_edit)
+    assert {:ok, :saved} = Task.await(edit)
+    assert {:ok, %{"revision" => 2}} = Task.await(retry)
+    assert %{"issues" => %{"7" => %{"hold" => nil}}} = Orchestrator.control_snapshot(c.pid)
+  end
+
+  test "uncertain native commands can be reconciled with a read-only exact receipt", c do
+    scope = Orchestrator.tracker_fingerprint()
+    command = %{"command_id" => "receipt", "expected_revision" => 0, "action" => "cancel", "issue_id" => c.issue.id}
+    assert {:error, :command_not_found} = Orchestrator.control_receipt_guarded(command, scope, c.pid)
+    assert {:ok, _} = Orchestrator.control_command(command, c.pid)
+    assert {:ok, %{"command_id" => "receipt", "revision" => 1}} = Orchestrator.control_receipt_guarded(command, scope, c.pid)
+    assert {:error, :command_id_conflict} = Orchestrator.control_receipt_guarded(Map.put(command, "action", "retry"), scope, c.pid)
+    assert {:error, :tracker_changed} = Orchestrator.control_receipt_guarded(command, "foreign", c.pid)
+    assert %{"revision" => 1} = Orchestrator.control_snapshot(c.pid)
   end
 
   test "cancel targets owned execution and stale deadline cannot stop another run", ctx do
