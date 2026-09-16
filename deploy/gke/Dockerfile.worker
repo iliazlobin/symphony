@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1
+# Cloud-only compatibility layer. The reviewed local Mac worker image is unchanged.
+# The source archive's network.c is byte-identical to Codex 0.153.4's vendored copy.
+FROM us-west1-docker.pkg.dev/iz27-platform-dev/symphony/worker@sha256:8266a9c488238f0ce8cbb68ae4172db7197e26e112694d2e3620b861acb2dc1e AS bubblewrap-build
+USER root
+WORKDIR /build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential libcap-dev ninja-build patch pkg-config xz-utils \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir meson==1.0.1
+ADD --checksum=sha256:69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6 \
+    https://github.com/containers/bubblewrap/releases/download/v0.11.2/bubblewrap-0.11.2.tar.xz /build/bubblewrap-0.11.2.tar.xz
+COPY deploy/gke/bubblewrap-loopback-idempotent.patch deploy/gke/bubblewrap-source.json /build/
+RUN tar -xJf bubblewrap-0.11.2.tar.xz \
+    && echo '1cfe04fcc38d33d5197feb96fc503d3fd51d234fb9392699a00bf4780ed6e9f0  bubblewrap-0.11.2/network.c' | sha256sum --check --strict \
+    && patch --batch --forward --fuzz=0 -p1 -d bubblewrap-0.11.2 < bubblewrap-loopback-idempotent.patch \
+    && echo 'b144206b5b2a9fb12c9150851e7e2dc5ae17590362ade0c67f8cd25715ebafe9  bubblewrap-0.11.2/network.c' | sha256sum --check --strict \
+    && meson setup build bubblewrap-0.11.2 --buildtype=release --prefix=/usr/local \
+       -Dsupport_setuid=false -Dselinux=disabled -Dman=disabled -Dtests=false \
+       -Dbash_completion=disabled -Dzsh_completion=disabled \
+    && meson compile -C build \
+    && test "$(build/bwrap --version)" = 'bubblewrap 0.11.2' \
+    && install -m 0755 -D build/bwrap /out/usr/local/bin/bwrap \
+    && install -m 0644 -D bubblewrap-0.11.2/COPYING /out/usr/local/share/doc/symphony-bubblewrap/COPYING \
+    && install -m 0644 -D bubblewrap-0.11.2/LICENSE /out/usr/local/share/doc/symphony-bubblewrap/LICENSE \
+    && install -m 0644 -D bubblewrap-source.json /out/usr/local/share/doc/symphony-bubblewrap/source.json \
+    && install -m 0644 -D bubblewrap-loopback-idempotent.patch /out/usr/local/share/doc/symphony-bubblewrap/loopback-idempotent.patch \
+    && install -m 0644 -D bubblewrap-0.11.2.tar.xz /out/usr/local/share/doc/symphony-bubblewrap/bubblewrap-0.11.2.tar.xz
+
+FROM us-west1-docker.pkg.dev/iz27-platform-dev/symphony/worker@sha256:8266a9c488238f0ce8cbb68ae4172db7197e26e112694d2e3620b861acb2dc1e
+USER root
+ARG TARGETARCH
+ARG SOURCE_REVISION
+RUN test "$TARGETARCH" = amd64 \
+    && printf '%s' "$SOURCE_REVISION" | grep -Eq '^[0-9a-f]{40}$' \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends libcap2 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir PyYAML==6.0.3
+COPY --from=bubblewrap-build /out/ /
+COPY tools/cloud_subscription_pilot.py tools/kubernetes_auth.py tools/symphony_control.py /opt/symphony/tools/
+COPY profiles/events-concierge/profile.py /opt/symphony/profiles/events-concierge/profile.py
+RUN test "$(/usr/local/bin/bwrap --version)" = 'bubblewrap 0.11.2' \
+    && test "$(stat -c %a /usr/local/bin/bwrap)" = 755 \
+    && test "$(codex --version)" = 'codex-cli 0.153.4' \
+    && python -I /opt/symphony/tools/cloud_subscription_pilot.py --help >/dev/null \
+    && python -I -c 'import runpy; ns = runpy.run_path("/opt/symphony/tools/cloud_subscription_pilot.py"); assert b"forced_login_method = \"chatgpt\"" in ns["configuration"]()'
+LABEL org.opencontainers.image.source="https://github.com/iliazlobin/symphony" \
+      org.opencontainers.image.revision="$SOURCE_REVISION" \
+      org.opencontainers.image.title="Symphony GKE coding worker" \
+      dev.symphony.bubblewrap.patch="loopback-idempotent-v1"
+USER 10001:10001
+WORKDIR /workspace
+CMD ["codex", "app-server"]
