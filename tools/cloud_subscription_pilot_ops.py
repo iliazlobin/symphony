@@ -149,7 +149,8 @@ def validate(manifest, namespace, pvc, job, pods, namespace_uid, pvc_uid, job_ui
     expires_at = int(args[7])
     canonical = job_manifest(container["image"], args[1], args[3], int(args[5]), expires_at,
                              now=expires_at - manifest["spec"]["activeDeadlineSeconds"])
-    require(manifest == canonical, "Saved manifest differs from the bounded pilot generator")
+    require(RUNNER.canonical(manifest) == RUNNER.canonical(canonical),
+            "Saved manifest differs from the bounded pilot generator")
     identity(namespace, "Namespace", NAMESPACE, namespace_uid)
     identity(pvc, "PersistentVolumeClaim", PVC, pvc_uid)
     require(pvc.get("apiVersion") == "v1" and pvc.get("status", {}).get("phase") == "Bound"
@@ -255,7 +256,7 @@ def main():
             result = globals()[action](**values, **args)
         print(json.dumps(result, sort_keys=True))
         return 0
-    except (OpsError, AUTH.AuthSlotError, KeyError, TypeError, ValueError, OSError):
+    except (OpsError, AUTH.AuthSlotError, IndexError, KeyError, TypeError, ValueError, OSError):
         parser.exit(1, "Pilot manifest or runtime snapshot failed validation; retain ownership.\n")
 
 

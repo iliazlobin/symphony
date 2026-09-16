@@ -149,6 +149,18 @@ class PilotOpsTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(OPS.OpsError):
                 OPS.validate(**values)
 
+    def test_saved_manifest_cannot_redefine_security_contract(self):
+        values = snapshots()
+        values["manifest"]["spec"]["template"]["spec"]["hostNetwork"] = True
+        values["job"]["spec"]["template"]["spec"]["hostNetwork"] = True
+        values["pods"]["items"][0]["spec"]["hostNetwork"] = True
+        with self.assertRaises(OPS.OpsError):
+            OPS.validate(**values)
+        values = snapshots()
+        values["manifest"]["spec"]["parallelism"] = True
+        with self.assertRaises(OPS.OpsError):
+            OPS.validate(**values)
+
     def test_snapshots_private_and_not_symlinks(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "snapshot.json"
