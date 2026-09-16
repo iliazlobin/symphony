@@ -159,7 +159,7 @@ defmodule SymphonyElixir.SSHTest do
 
   test "remote_shell_command/1 escapes embedded single quotes" do
     assert SSH.remote_shell_command("printf 'hello'") ==
-             "bash -lc 'printf '\"'\"'hello'\"'\"''"
+             "bash -lc 'unset SYMPHONY_GOOGLE_CLIENT_ID SYMPHONY_GOOGLE_CLIENT_SECRET && printf '\"'\"'hello'\"'\"''"
   end
 
   defp install_fake_ssh!(test_root, trace_file, script \\ nil) do

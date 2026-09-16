@@ -7,16 +7,18 @@ defmodule SymphonyElixir.BrowserSecretIsolationTest do
   @secret "SYMP_TEST_BROWSER_CLIENT_SECRET"
   @client "SYMP_TEST_BROWSER_CLIENT_ID"
   @public "SYMP_TEST_BROWSER_PUBLIC_VALUE"
+  @reserved ["SYMPHONY_GOOGLE_CLIENT_ID", "SYMPHONY_GOOGLE_CLIENT_SECRET"]
 
   setup do
     {:ok, root} = PathSafety.canonicalize(Path.dirname(Workflow.workflow_file_path()))
     workspace = Path.join(root, "workspaces/task")
     File.mkdir_p!(workspace)
 
-    previous = Map.new([@secret, @client, @public, "PATH"], &{&1, System.get_env(&1)})
+    previous = Map.new([@secret, @client, @public, "PATH"] ++ @reserved, &{&1, System.get_env(&1)})
     System.put_env(@secret, "fixture-secret")
     System.put_env(@client, "fixture-client")
     System.put_env(@public, "visible")
+    Enum.each(@reserved, &System.put_env(&1, "fixture-reserved"))
     on_exit(fn -> Enum.each(previous, fn {name, value} -> restore_env(name, value) end) end)
 
     config = %{
@@ -30,7 +32,7 @@ defmodule SymphonyElixir.BrowserSecretIsolationTest do
   end
 
   test "configured references are removed from guardian descendants even if options attempt to restore them", ctx do
-    assert MapSet.new(Config.browser_auth_secret_environment_names()) == MapSet.new([@secret, @client])
+    assert MapSet.new(Config.browser_auth_secret_environment_names()) == MapSet.new([@secret, @client] ++ @reserved)
     env = [{String.to_charlist(@secret), ~c"override-secret"}, {String.to_charlist(@client), ~c"override-client"}]
 
     assert {:ok, {"unset:unset:visible\n", 0}} =
@@ -38,6 +40,17 @@ defmodule SymphonyElixir.BrowserSecretIsolationTest do
 
     assert System.get_env(@secret) == "fixture-secret"
     assert System.get_env(@client) == "fixture-client"
+  end
+
+  test "reserved launcher credentials stay private without Google settings and across workflow reloads", ctx do
+    probe = "printf '%s:%s\\n' \"${SYMPHONY_GOOGLE_CLIENT_ID-unset}\" \"${SYMPHONY_GOOGLE_CLIENT_SECRET-unset}\""
+    env = Enum.map(@reserved, &{String.to_charlist(&1), ~c"attempted-override"})
+
+    for config <- [ctx.config, Map.delete(ctx.config, "browser_auth"), Map.put(ctx.config, "browser_auth", %{"provider" => "local_token"})] do
+      configure(config)
+      assert {:ok, {"unset:unset\n", 0}} = ProcessGroup.run(probe, cd: ctx.workspace, env: env, timeout_ms: 3_000)
+      assert System.get_env("SYMPHONY_GOOGLE_CLIENT_SECRET") == "fixture-reserved"
+    end
   end
 
   test "unmanaged workspace hooks cannot inherit browser credentials", ctx do
@@ -132,9 +145,11 @@ defmodule SymphonyElixir.BrowserSecretIsolationTest do
 
   test "environment names cannot inject shell syntax and literal client IDs are not secret references", ctx do
     configure(Map.put(ctx.config, "browser_auth", %{"provider" => "local_token", "client_id" => "public-client", "client_secret" => "$bad; injected"}))
-    assert Config.browser_auth_secret_environment_names() == []
-    assert ProcessGroup.shell_command("printf ok") == "printf ok"
-    assert ProcessGroup.command_environment([{"PUBLIC", "ok"}, {"REMOVED", false}]) == [{"PUBLIC", "ok"}, {"REMOVED", nil}]
+    assert Config.browser_auth_secret_environment_names() == @reserved
+    assert ProcessGroup.shell_command("printf ok") == "unset SYMPHONY_GOOGLE_CLIENT_ID SYMPHONY_GOOGLE_CLIENT_SECRET && printf ok"
+
+    assert ProcessGroup.command_environment([{"PUBLIC", "ok"}, {"REMOVED", false}]) ==
+             [{"PUBLIC", "ok"}, {"REMOVED", nil}] ++ Enum.map(@reserved, &{&1, nil})
   end
 
   defp configure(config) do

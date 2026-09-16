@@ -247,8 +247,8 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
   test "create previews get durable IDs, execute only after confirmation and show real receipts", ctx do
     {view, _} = chat_view(ctx)
     render_submit(view, "send-message", %{"message" => "Create a task"})
-    assert_receive {:real_proposal, %{"proposal" => proposal}}
     chat = wait_chat(ctx, &(&1["status"] == "idle"))
+    assert_received {:real_proposal, %{"proposal" => proposal}}
     assert proposal["id"] == hd(chat["proposals"])["id"]
     assert String.match?(proposal["id"], ~r/^[a-f0-9]{32}$/)
     assert has_element?(view, ".chat-widget-proposal", "Clarify retry behavior")
@@ -268,8 +268,8 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
   test "queue preview retains routing labels and confirmation reaches the owner guard once", ctx do
     {view, _} = chat_view(ctx)
     render_submit(view, "send-message", %{"message" => "Queue task"})
-    assert_receive {:real_proposal, %{"proposal" => proposal}}
     wait_chat(ctx, &(&1["status"] == "idle"))
+    assert_received {:real_proposal, %{"proposal" => proposal}}
     assert proposal["queue_labels"] == ["ready"]
     assert has_element?(view, ".chat-widget-proposal", "ready")
     assert Agent.get(ctx.requests, & &1) == []

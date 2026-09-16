@@ -269,12 +269,38 @@ def install_rules(config: dict) -> dict:
     return {"installed": True, "codex_home": config["codex_home"]}
 
 
+def google_oauth_environment(config: dict) -> dict:
+    """Load only a configured Google web client's credentials for the controller."""
+    if "google_oauth_client_file" not in config:
+        return {}
+    try:
+        location = config["google_oauth_client_file"]
+        if not isinstance(location, str) or not Path(location).is_absolute():
+            raise ValueError("Invalid credential path")
+        path = Path(location)
+        if stat.S_IMODE(path.lstat().st_mode) != 0o600:
+            raise ValueError("Invalid credential permissions")
+        document = json.loads(read_private(path))
+        client = document["web"]
+        client_id, secret = client["client_id"], client["client_secret"]
+        if (not isinstance(client_id, str) or len(client_id) > 512
+                or not re.fullmatch(r"[A-Za-z0-9._-]+\.apps\.googleusercontent\.com", client_id)
+                or not isinstance(secret, str) or not 1 <= len(secret) <= 4096
+                or any(char.isspace() or ord(char) < 32 or ord(char) > 126 for char in secret)):
+            raise ValueError("Invalid web client")
+    except (OSError, ValueError, TypeError, KeyError, ControlError):
+        # No JSON contents, paths or underlying exception text enter diagnostics.
+        raise ControlError("Google OAuth client file must be an owned regular mode-0600 file containing a valid web client") from None
+    return {"SYMPHONY_GOOGLE_CLIENT_ID": client_id, "SYMPHONY_GOOGLE_CLIENT_SECRET": secret}
+
+
 def start_service(config: dict) -> None:
     validate_workflow(read_private(Path(config["workflow_path"])))
     binary = ROOT / "elixir/bin/symphony"
     if not binary.is_file():
         raise ControlError("Build Symphony first: cd elixir && mix build")
     env = dict(os.environ)
+    env.update(google_oauth_environment(config))
     # Host-owned auth is never serialized to workflow/config files.
     token = os.environ.get("GITHUB_TOKEN") or run("gh", "auth", "token")
     env.update({

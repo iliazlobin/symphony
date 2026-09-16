@@ -183,10 +183,8 @@ defmodule SymphonyElixir.ProcessGroup do
   @doc "Removes browser credentials that a login profile may have reintroduced."
   @spec shell_command(String.t()) :: String.t()
   def shell_command(command) do
-    case SymphonyElixir.Config.browser_auth_secret_environment_names() do
-      [] -> command
-      names -> "unset " <> Enum.join(names, " ") <> " && " <> command
-    end
+    names = SymphonyElixir.Config.browser_auth_secret_environment_names()
+    "unset " <> Enum.join(names, " ") <> " && " <> command
   end
 
   @spec run(String.t(), keyword()) :: {:ok, {String.t(), integer()}} | {:error, term()}
