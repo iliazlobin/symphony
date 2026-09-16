@@ -427,6 +427,11 @@ real public origin, never an arbitrary forwarded header. Keep the OAuth secret o
 of source files, images, browser code and worker environments. macOS launch agents
 do not inherit interactive shell exports.
 
+Keep the login page's `Referrer-Policy: same-origin` response header intact when
+configuring a proxy. It preserves the origin on the sign-in form's POST; forcing
+`no-referrer` there makes browsers send `Origin: null`, which Symphony rejects.
+Authorization redirects and callbacks retain `no-referrer`.
+
 For HTTPS terminated by a reverse proxy, `trusted_proxy_ips` may list exact transport
 peer IP addresses. Only those peers may normalize the request's scheme and port to
 the fixed `public_origin`, and the request host must already match it. No forwarded

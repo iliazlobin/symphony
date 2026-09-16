@@ -54,6 +54,7 @@ defmodule SymphonyElixir.GoogleBrowserTest do
     assert html_response(login, 200) =~ "Sign in with Google"
     refute login.resp_body =~ "Operator token"
     assert Plug.Conn.get_resp_header(login, "cache-control") == ["no-store"]
+    assert Plug.Conn.get_resp_header(login, "referrer-policy") == ["same-origin"]
     assert_raise Plug.CSRFProtection.InvalidCSRFTokenError, fn -> post(local_conn(), "/auth/google", %{}) end
     assert {:error, :google_required} = BrowserAuth.authenticate(local_conn(), String.duplicate("x", 32))
   end
@@ -61,7 +62,9 @@ defmodule SymphonyElixir.GoogleBrowserTest do
   test "Google start uses fixed callback, encrypted Lax cookie and one-use server state" do
     login = get(local_conn(), "/login")
     csrf = csrf(login)
-    started = post(browser_recycle(login), "/auth/google", %{"_csrf_token" => csrf, "return_to" => "https://evil.example"})
+    browser = browser_recycle(login) |> Plug.Conn.put_req_header("origin", "http://localhost")
+    started = post(browser, "/auth/google", %{"_csrf_token" => csrf, "return_to" => "https://evil.example"})
+    assert Plug.Conn.get_resp_header(started, "referrer-policy") == ["no-referrer"]
     location = redirected_to(started)
     assert String.starts_with?(location, "https://accounts.google.com/o/oauth2/v2/auth?")
     query = URI.decode_query(URI.parse(location).query)
@@ -79,6 +82,7 @@ defmodule SymphonyElixir.GoogleBrowserTest do
     assert {:error, :expired} = BrowserSessions.take_flow(flow)
     rejected = get(browser_recycle(started), "/auth/google/callback?state=wrong&code=fake")
     assert redirected_to(rejected) == "/login"
+    assert Plug.Conn.get_resp_header(rejected, "referrer-policy") == ["no-referrer"]
   end
 
   test "logout revokes session and pending flow before disconnect and old cookies cannot return" do
@@ -97,10 +101,11 @@ defmodule SymphonyElixir.GoogleBrowserTest do
   test "wrong origin login and logout preserve current authentication" do
     {conn, marker} = signed_in()
     login = get(browser_recycle(conn), "/login")
-    foreign = browser_recycle(login) |> Plug.Conn.put_req_header("origin", "https://evil.example")
 
-    for path <- ["/auth/google", "/operator/session/logout"] do
+    for origin <- ["https://evil.example", "http://localhost:8778", "null"],
+        path <- ["/auth/google", "/operator/session/logout"] do
       # CSRF token itself is valid; origin check is a separate invariant.
+      foreign = browser_recycle(login) |> Plug.Conn.put_req_header("origin", origin)
       result = post(foreign, path, %{"_csrf_token" => csrf(login)})
       assert result.status == 403
       assert {:ok, _} = BrowserSessions.session(marker["id"])
@@ -175,6 +180,7 @@ defmodule SymphonyElixir.GoogleBrowserTest do
     callback = "/auth/google/callback?" <> URI.encode_query(%{"state" => query["state"], "code" => "fixture"})
     completed = get(browser_recycle(started), callback)
     assert redirected_to(completed) == "/"
+    assert Plug.Conn.get_resp_header(completed, "referrer-policy") == ["no-referrer"]
     marker = Plug.Conn.get_session(completed, BrowserAuth.session_key())
     assert BrowserAuth.authorized?(BrowserAuth.conn_context(completed))
     assert {:ok, %{identity: %{"sub" => "subject123"}}} = BrowserSessions.session(marker["id"])
