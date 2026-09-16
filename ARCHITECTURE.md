@@ -21,9 +21,9 @@ Kubernetes execution and durable subscription authentication must pass
 runtime verification before replacing the Mac task owner. The standalone
 [runner](tools/kubernetes_runner.py) and [auth-slot journal](tools/kubernetes_auth.py)
 are not wired into the live candidate pipeline. The patched cloud worker image passes
-the real GKE gVisor permission and lifetime canaries. Subscription enrollment, a real
-model task and replacement-worker authentication remain unverified; cloud admission
-remains disabled. The [bounded pilot](deploy/gke/README.md#worker-sandbox-and-subscription-pilot)
+the real GKE gVisor permission and lifetime canaries. The standalone subscription
+pilot has verified enrollment, provider-backed authentication and a real model task
+across worker Pod replacement without another login. Cloud admission remains disabled. The [bounded pilot](deploy/gke/README.md#worker-sandbox-and-subscription-pilot)
 owns those acceptance steps.
 
 ## System boundary
