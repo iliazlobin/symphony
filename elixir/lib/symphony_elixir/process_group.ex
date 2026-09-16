@@ -155,11 +155,37 @@ defmodule SymphonyElixir.ProcessGroup do
           :stderr_to_stdout,
           args: ["-I", "-u", "-c", @guardian, lock_path, "/bin/sh", "-c", command],
           cd: workspace,
-          env: Keyword.get(opts, :env, [])
+          env: port_environment(Keyword.get(opts, :env, []))
         ]
 
         port_opts = if opts[:line], do: port_opts ++ [line: opts[:line]], else: port_opts
         {:ok, Port.open({:spawn_executable, python}, port_opts)}
+    end
+  end
+
+  @doc "Removes browser identity credentials before a port or its descendants start."
+  @spec port_environment(list()) :: list()
+  def port_environment(environment \\ []) do
+    names = SymphonyElixir.Config.browser_auth_secret_environment_names()
+    Enum.reject(environment, fn {name, _value} -> to_string(name) in names end) ++ Enum.map(names, &{String.to_charlist(&1), false})
+  end
+
+  @spec command_environment(list()) :: list()
+  def command_environment(environment \\ []) do
+    environment
+    |> port_environment()
+    |> Enum.map(fn
+      {name, value} when value in [false, nil] -> {to_string(name), nil}
+      {name, value} -> {to_string(name), to_string(value)}
+    end)
+  end
+
+  @doc "Removes browser credentials that a login profile may have reintroduced."
+  @spec shell_command(String.t()) :: String.t()
+  def shell_command(command) do
+    case SymphonyElixir.Config.browser_auth_secret_environment_names() do
+      [] -> command
+      names -> "unset " <> Enum.join(names, " ") <> " && " <> command
     end
   end
 

@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.ControlApiController do
   use Phoenix.Controller, formats: [:json]
   alias Plug.Conn
   alias SymphonyElixir.{Config, Orchestrator}
-  alias SymphonyElixirWeb.Endpoint
+  alias SymphonyElixirWeb.{BrowserAuth, Endpoint}
   @conflict_reasons [:revision_conflict, :command_id_conflict, :issue_running, :budget_exhausted]
 
   @spec show(Conn.t(), map()) :: Conn.t()
@@ -47,10 +47,17 @@ defmodule SymphonyElixirWeb.ControlApiController do
       end
 
     cond do
-      conn.host not in ["localhost", "127.0.0.1", "::1"] or get_req_header(conn, "origin") != [] -> conn |> error(403, :local_client_required) |> halt()
-      not is_binary(token) or byte_size(token) < 32 -> conn |> error(503, :control_auth_unconfigured) |> halt()
-      not Plug.Crypto.secure_compare(token, supplied) -> conn |> error(401, :unauthorized) |> halt()
-      true -> conn
+      not BrowserAuth.local_request?(conn) or get_req_header(conn, "origin") != [] ->
+        conn |> error(403, :local_client_required) |> halt()
+
+      not is_binary(token) or byte_size(token) < 32 ->
+        conn |> error(503, :control_auth_unconfigured) |> halt()
+
+      not Plug.Crypto.secure_compare(token, supplied) ->
+        conn |> error(401, :unauthorized) |> halt()
+
+      true ->
+        conn
     end
   end
 

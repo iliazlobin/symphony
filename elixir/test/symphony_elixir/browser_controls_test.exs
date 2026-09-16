@@ -176,7 +176,7 @@ defmodule SymphonyElixir.BrowserControlsTest do
     refute logged_in.resp_body =~ ctx.token
     refute inspect(logged_in.resp_cookies) =~ ctx.token
     assert logged_in.resp_cookies["_symphony_elixir_key"].http_only
-    assert logged_in.resp_cookies["_symphony_elixir_key"].same_site == "Strict"
+    assert logged_in.resp_cookies["_symphony_elixir_key"].same_site == "Lax"
     socket_id = Plug.Conn.get_session(logged_in, "live_socket_id")
     :ok = Endpoint.subscribe(socket_id)
 
@@ -251,7 +251,8 @@ defmodule SymphonyElixir.BrowserControlsTest do
     good = local_conn() |> Plug.Conn.put_req_header("origin", "http://localhost")
     refute Transport.check_origin(good, Phoenix.LiveView.Socket, Endpoint, check_origin: :conn).halted
     assert {"/live", Phoenix.LiveView.Socket, opts} = List.keyfind(Endpoint.__sockets__(), "/live", 0)
-    assert opts[:websocket][:check_origin] == :conn
+    assert opts[:websocket][:check_origin] == nil
+    assert Endpoint.config(:check_origin) == :conn
   end
 
   test "browser commands use native owner revision, replay and issue holds", ctx do

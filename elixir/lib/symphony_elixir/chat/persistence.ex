@@ -115,7 +115,7 @@ defmodule SymphonyElixir.Chat.Persistence do
     python = System.find_executable("python3")
 
     if is_binary(python) and not match?({:ok, %{type: :symlink}}, File.lstat(path)) do
-      port = Port.open({:spawn_executable, python}, [:binary, :exit_status, :use_stdio, args: ["-u", "-c", @lock_script, path], line: 128])
+      port = Port.open({:spawn_executable, python}, [:binary, :exit_status, :use_stdio, args: ["-u", "-c", @lock_script, path], env: SymphonyElixir.ProcessGroup.port_environment(), line: 128])
 
       receive do
         {^port, {:data, {:eol, "READY"}}} ->

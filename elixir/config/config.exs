@@ -1,7 +1,7 @@
 import Config
 
 config :phoenix, :json_library, Jason
-config :phoenix, :filter_parameters, ["password", "operator_token"]
+config :phoenix, :filter_parameters, ["password", "operator_token", "code", "state", "id_token", "access_token", "refresh_token", "client_secret", "code_verifier"]
 
 config :symphony_elixir, SymphonyElixirWeb.Endpoint,
   adapter: Bandit.PhoenixAdapter,
@@ -13,7 +13,7 @@ config :symphony_elixir, SymphonyElixirWeb.Endpoint,
   pubsub_server: SymphonyElixir.PubSub,
   live_view: [signing_salt: "symphony-live-view"],
   secret_key_base: String.duplicate("s", 64),
-  check_origin: false,
+  check_origin: :conn,
   server: false
 
 if config_env() == :test do

@@ -9,15 +9,17 @@ defmodule SymphonyElixirWeb.Endpoint do
     store: :cookie,
     key: "_symphony_elixir_key",
     signing_salt: "symphony-session",
+    encryption_salt: "symphony-browser-encryption",
     http_only: true,
-    same_site: "Strict"
+    same_site: "Lax"
   ]
 
   socket("/live", Phoenix.LiveView.Socket,
-    websocket: [check_origin: :conn, connect_info: [:peer_data, :uri, session: @session_options]],
+    websocket: [connect_info: [:peer_data, :uri, session: @session_options]],
     longpoll: false
   )
 
+  plug(SymphonyElixirWeb.BrowserOrigin)
   plug(Plug.RequestId)
   plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])
 

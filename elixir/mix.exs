@@ -34,6 +34,8 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixirWeb.DashboardLive,
           # Settings rendering extracted from DashboardLive; exercised by LiveView tests.
           SymphonyElixirWeb.SettingsPanel,
+          # Pure login renderer; both branches are exercised by rendering and HTTP tests.
+          SymphonyElixirWeb.BrowserLoginHTML,
           SymphonyElixirWeb.ChatLive,
           # Rendering moved from ChatLive into the shared board/standalone component.
           SymphonyElixirWeb.ChatPanel,
@@ -75,6 +77,7 @@ defmodule SymphonyElixir.MixProject do
   defp deps do
     [
       {:bandit, "~> 1.8"},
+      {:assent, "~> 0.3.1"},
       {:earmark_parser, "~> 1.4.46"},
       {:html_entities, "~> 0.5.2"},
       {:floki, ">= 0.30.0", only: :test},

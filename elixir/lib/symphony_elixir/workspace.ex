@@ -547,7 +547,7 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        System.cmd("sh", ["-lc", ProcessGroup.shell_command(command)], cd: workspace, stderr_to_stdout: true, env: ProcessGroup.command_environment())
       end)
 
     case Task.yield(task, timeout_ms) do

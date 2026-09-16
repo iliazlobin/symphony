@@ -50,7 +50,7 @@ defmodule SymphonyElixir.Chat.Process do
       :hide,
       args: ["-I", "-u", "-c", @guardian, executable | args],
       cd: workspace,
-      env: environment
+      env: SymphonyElixir.ProcessGroup.port_environment(environment)
     ])
   end
 end

@@ -105,8 +105,8 @@ has **Execution**, **AI & chat**, and **Connections** tabs:
   defaults** stages enabled choices until **Save preferences**. Existing messages stay
   unchanged. Model presets are read-only.
 - **Connections:** refresh tracker/controller/chat-storage health, inspect recorded
-  usage, or unlock/lock the operator session. Health does not verify model sign-in,
-  tracker write permissions or worker readiness. No probe starts a model or worker.
+  usage, or sign in/out with the configured browser provider. Health does not verify
+  model sign-in, tracker write permissions or worker readiness. No probe starts a model or worker.
 
 Older controllers that do not report settings show unavailable values, not frontend
 configuration defaults. The port 8778 read-only preview never exposes execution edits;
@@ -143,24 +143,31 @@ moving a held Backlog card to Ready offers native retry. Cancel can stop work cl
 since the card was displayed; retry clears a hold without resetting budgets or
 providing a missing answer. Other transitions explain the owning workflow action.
 
-**Local operator controls.** In Settings → Connections, unlock with the token from the private
-`token_file` beside the operator configuration. The password form posts only to the
-loopback service; never put the token in a URL. The signed browser session expires
-after eight hours and becomes invalid when the token changes. Tracker configuration
-changes disable controls in an open page until you reload it.
-**Lock controls** clears this browser session and disconnects its sockets. Pause, drain,
-resume, cancel and retry use native revisions, idempotency and project checks; each
-consequential action has a confirmation. A cancel receipt is not proof of worker cleanup.
+**Browser sign-in.** With the [Google provider configured](../../elixir/README.md#browser-sign-in),
+open the exact configured origin and choose **Sign in with Google**. Only explicitly
+allowed accounts can read the board and chat or manage work. Machine API clients
+retain their separate local authentication.
+**Settings → Connections → Sign out** ends the Symphony session. Restarting the
+controller also signs browsers out; saved conversations remain. Google sign-in does
+not provide the separate Codex subscription login or GitHub service credentials.
 
-The board and read APIs retain the local observability access model. Google sign-in,
-remote access, additional project services, delivery of answers into running workers,
-automatic repairs and web publication actions remain separate implementation work.
-Do not expose this local listener as an authenticated GCP application.
+Existing installations use `local_token` until the provider is configured. In that
+mode, Settings → Connections accepts the private `token_file` beside the operator
+configuration. The password form posts only to the loopback service; never put the
+token in a URL. The eight-hour session becomes invalid when the token changes, and
+**Lock controls** ends it. This mode is not a remote access boundary.
+
+**Operator controls.** Pause, drain, resume, cancel and retry retain native revisions,
+idempotency and project checks; consequential actions require confirmation. Tracker
+configuration changes disable controls in an open page until reload. A cancel receipt
+is not proof of worker cleanup. Google browser configuration does not deploy a cloud
+controller or change task ownership. Additional project services, delivery of answers
+into running workers, automatic repairs and web publication remain separate work.
 
 **Web chat.** After [dedicated runtime setup](../../elixir/README.md#web-board-and-chat),
 select one project on the board and open **Chat** in the right-side panel. A task
-popup also offers **Discuss this task**. Unlock with the local operator token. Use
-**New chat** for a separate topic; **History** opens searchable history with rename
+popup also offers **Discuss this task**. Sign in through the configured browser provider.
+Use **New chat** for a separate topic; **History** opens searchable history with rename
 and archive actions. Project changes clear the current selection and draft. A chat
 stays with its original project. This service currently supplies one configured
 project; additional controllers are not aggregated yet.

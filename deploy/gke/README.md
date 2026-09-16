@@ -13,7 +13,7 @@ The [application Dockerfile](application.Dockerfile) builds the shared board, ma
 
 `tools/symphony_web.py` is a read-only local preview that explicitly disables chat. It is not the application deployment entrypoint. A port number, static board render or healthy observability endpoint is not evidence that the full package is present.
 
-**Release acceptance:** verify that the built Linux image includes the board/chat modules, `/` and `/chat` routes, embedded assets and supervised chat store. Run the existing dashboard, chat, persistence, workflow-integration and browser-control tests, plus a no-model Codex version/initialization smoke test inside that image. After cloud authentication and access are implemented, verify task/PR views, chat/context/actions and conversation persistence through restart from the deployed browser. The current `BrowserAuth` is loopback-only; establish the reviewed remote identity/session boundary before exposing management actions. Keep cloud activation blocked if any required component is absent.
+**Release acceptance:** verify that the built Linux image includes the board/chat modules, `/` and `/chat` routes, embedded assets and supervised chat store. Run the existing dashboard, chat, persistence, workflow-integration and browser-control tests, plus a no-model Codex version/initialization smoke test inside that image. After cloud authentication and access are implemented, verify task/PR views, chat/context/actions and conversation persistence through restart from the deployed browser. Configure Google browser identity for the deployed public origin and verify sign-in, allowlist rejection, expiry and sign-out before exposing management actions. Local-token mode remains loopback-only. Keep cloud activation blocked if any required component is absent.
 
 ## Build and integration check
 
@@ -33,7 +33,40 @@ The [package probe](../../tools/probe_gke_application.py) starts the actual appl
 
 The image entrypoint is `serve --workflow /config/WORKFLOW.md --state-root /var/lib/symphony`. An operator supplies the explicit GitHub workflow and a retained writable state mount. The [entrypoint](application_entrypoint.py) requires enabled controls starting paused, an already-paused journal without active claims, enabled chat with one concurrent writer, a dedicated retained chat home, and loopback HTTP access. The pilot also requires `codex.command: /bin/false`, no workspace hooks and no SSH workers, so resuming controls cannot enable coding execution. It never rewrites an active journal or imports a Mac home. `chat.state_path`, `chat.codex_home` and `control.state_path` must remain distinct under the retained mount; keep their absolute paths stable across replacement. Use a regular read-only file mount for the workflow. Mounted configuration links are deliberately rejected.
 
-The management-chat subscription login and authenticated model test remain separate acceptance gates; the worker pilot uses its own authentication slot. Browser sessions are renewed after application restart; durable conversations remain. Docker published-port traffic does not satisfy the current loopback peer check, so the protocol probe runs inside the container. Do not expose this pilot through ingress or change the browser boundary to bypass that check.
+The management-chat subscription login and authenticated model test remain separate acceptance gates; the worker pilot uses its own authentication slot. Browser sessions are renewed after application restart; durable conversations remain. Docker published-port traffic does not satisfy the current loopback peer check, so the protocol probe runs inside the container. The pilot retains that boundary. A remote Google-enabled release needs the HTTPS origin, ingress and browser acceptance described below; changing the provider does not make the current pilot an ingress deployment.
+
+## Google browser access
+
+Use the same application's [Google OpenID Connect configuration](../../elixir/README.md#browser-sign-in)
+for the deployed board and chat. The Google OAuth client identifies the web application;
+its email and subject allowlists identify operators. The application performs identity
+validation itself; an ingress or IAP identity header is not a substitute. Codex
+subscription authentication and GitHub service credentials remain independent.
+
+- Configure `browser_auth.provider: google` and one stable HTTPS `public_origin`.
+  Register `<public_origin>/auth/google/callback` on a Google **Web application**
+  OAuth client. The callback host must match the browser's address exactly.
+- Deliver client ID and secret only to the controller through private runtime
+  configuration. Keep them out of images, Git, browser JavaScript and coding workers.
+  Use exact allowed emails; Workspace accounts also require explicit Google subjects.
+- Keep one application owner with retained conversation/model state. Browser grants
+  are bounded and in memory, so replacement signs users out. Existing sessions do
+  not survive a rolling switch across independent replicas; this is not a shared
+  session service or authorization for multiple controller owners.
+- Keep backend networking private and expose only the reviewed HTTPS application
+  route. If a proxy terminates TLS, list only its exact backend transport addresses
+  in `browser_auth.trusted_proxy_ips` and restrict backend traffic to those peers.
+  The request host must match `public_origin`; only scheme and port are normalized
+  to that fixed origin, with no forwarded-header trust. Control API/CLI tokens retain
+  their separate local restrictions and must not be exposed through ingress.
+- Verify Google login on the actual HTTPS address, rejection of an unlisted account,
+  authenticated board and chat reads, CSRF-protected actions, sign-out, and renewed
+  login after restart with durable conversations retained. Test model subscription
+  access separately. A local test or configured OAuth client is not deployed evidence.
+
+The current loopback pilot and its entrypoint remain unchanged. This configuration
+contract supplies browser identity in the application; ingress, client provisioning,
+secret injection and the cloud release still require their deployment changes.
 
 ## Ownership and retained resources
 

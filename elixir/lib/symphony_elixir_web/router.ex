@@ -14,6 +14,14 @@ defmodule SymphonyElixirWeb.Router do
     plug(:put_secure_browser_headers)
   end
 
+  pipeline :browser_identity do
+    plug(SymphonyElixirWeb.BrowserAccess, :browser)
+  end
+
+  pipeline :api_identity do
+    plug(SymphonyElixirWeb.BrowserAccess, :api)
+  end
+
   scope "/", SymphonyElixirWeb do
     get("/dashboard.css", StaticAssetController, :dashboard_css)
     get("/dashboard.js", StaticAssetController, :dashboard_js)
@@ -26,13 +34,24 @@ defmodule SymphonyElixirWeb.Router do
   scope "/", SymphonyElixirWeb do
     pipe_through(:browser)
 
+    get("/login", BrowserSessionController, :login)
+    post("/auth/google", BrowserSessionController, :google)
+    get("/auth/google/callback", BrowserSessionController, :callback)
     post("/operator/session", BrowserSessionController, :create)
     post("/operator/session/logout", BrowserSessionController, :delete)
-    live("/", DashboardLive, :index)
-    live("/chat", ChatLive, :index)
   end
 
   scope "/", SymphonyElixirWeb do
+    pipe_through([:browser, :browser_identity])
+
+    live_session :browser, on_mount: [{SymphonyElixirWeb.BrowserAccess, :default}] do
+      live("/", DashboardLive, :index)
+      live("/chat", ChatLive, :index)
+    end
+  end
+
+  scope "/", SymphonyElixirWeb do
+    pipe_through(:api_identity)
     get("/api/v1/control", ControlApiController, :show)
     post("/api/v1/control", ControlApiController, :update)
     match(:*, "/api/v1/control", ObservabilityApiController, :method_not_allowed)
