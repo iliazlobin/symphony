@@ -1,0 +1,16 @@
+{
+  "name": "bubblewrap",
+  "version": "0.11.2",
+  "source_url": "https://github.com/containers/bubblewrap/releases/download/v0.11.2/bubblewrap-0.11.2.tar.xz",
+  "source_sha256": "69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6",
+  "upstream_commit": "1b80120ef26a28e065e67f89bfef873f13bdd317",
+  "codex_source": "https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/vendor/bubblewrap/network.c",
+  "network_source_sha256": "1cfe04fcc38d33d5197feb96fc503d3fd51d234fb9392699a00bf4780ed6e9f0",
+  "network_patched_sha256": "b144206b5b2a9fb12c9150851e7e2dc5ae17590362ade0c67f8cd25715ebafe9",
+  "patch": "bubblewrap-loopback-idempotent.patch",
+  "reason": "gVisor preassigns 127.0.0.1/8 in new network namespaces. Remove only NLM_F_EXCL from the exact loopback-address creation request; keep network namespace isolation, loopback setup and all error checks.",
+  "upstream_issue": "https://github.com/google/gvisor/issues/13438",
+  "upstream_fix": "https://github.com/google/gvisor/pull/13532",
+  "license": "LGPL-2.0-or-later",
+  "removal_condition": "The deployed GKE runtime passes the full unmodified bubblewrap and Codex permission canaries."
+}

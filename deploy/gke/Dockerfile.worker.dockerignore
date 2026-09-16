@@ -1,0 +1,8 @@
+# Stream only the reviewed build inputs, never auth, workspaces or local settings.
+**
+!deploy/
+!deploy/gke/
+!deploy/gke/Dockerfile.worker
+!deploy/gke/Dockerfile.worker.dockerignore
+!deploy/gke/bubblewrap-loopback-idempotent.patch
+!deploy/gke/bubblewrap-source.json
