@@ -30,7 +30,7 @@ defmodule SymphonyElixirWeb.ControlApiController do
       case Orchestrator.control_command(params, orchestrator()) do
         {:ok, payload} -> json(conn, payload)
         {:error, reason} when reason in @conflict_reasons -> error(conn, 409, reason)
-        {:error, :invalid_command} -> error(conn, 400, :invalid_command)
+        {:error, reason} when reason in [:invalid_command, :concurrency_limit_exceeded] -> error(conn, 400, reason)
         {:error, reason} -> error(conn, 503, reason)
       end
     end

@@ -21,6 +21,15 @@ do not define this profile's authorization policy.
 - [Mac service and recovery guide](profiles/events-concierge/README.md)
 - [Control configuration and API contract](SPEC.md#appendix-b-controlled-local-execution)
 
+### Web operation in this fork
+
+The local service includes a Kanban task board and optional project-specific Astra
+chat with streaming replies, saved conversations, task widgets and filtered board
+links. Chat uses bounded management tools to read work and preview authorized
+changes; coding remains with the scheduler's workers. An authenticated local browser
+can invoke native operator controls; GitHub remains the task and publication record. See the
+[operator guide](profiles/events-concierge/README.md#operate) for setup and limits.
+
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](https://player.vimeo.com/video/1186371009?h=5626e4b899)
 
 _In this [demo video](https://player.vimeo.com/video/1186371009?h=5626e4b899), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise Codex; they can manage the work at a higher level._

@@ -1,0 +1,491 @@
+(() => {
+  "use strict";
+  const lanes = [["backlog", "Backlog"], ["ready", "Ready"], ["running", "Running"], ["review", "Review"], ["done", "Done"]];
+  const parse = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };
+  const escapeText = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[c]));
+  const storage = { get(key) { try { return localStorage.getItem(key); } catch { return null; } }, set(key, value) { try { localStorage.setItem(key, value); } catch { /* Preferences are optional. */ } } };
+  const chatPreferenceKey = project => "symphony.chat.preferences.v1:" + project;
+  const chatPreferences = project => {
+    const saved = parse(storage.get(chatPreferenceKey(project)), null);
+    return {share_context: typeof saved?.share_context === "boolean" ? saved.share_context : true,
+      include_selected: typeof saved?.include_selected === "boolean" ? saved.include_selected : true};
+  };
+
+  const TaskBoard = {
+    mounted() {
+      this.prefs = {project: [], status: [], priority: [], query: "", sort: "manual", order: {}, lane: "ready", density: "compact", theme: "light", hiddenLanes: ["done"]};
+      this.filtersOpen = false;
+      this.revealedLanes = new Set();
+      this.popup = null;
+      this.activeOption = 0;
+      this.drag = null;
+      this.scope = null;
+      this.abort = new AbortController();
+      this.darkMode = window.matchMedia("(prefers-color-scheme: dark)");
+      const on = (name, handler) => this.el.addEventListener(name, handler, {signal: this.abort.signal});
+      this.options = key => key === "project" ? parse(this.el.dataset.projects, []).map(p => [p.id, p.label]) : key === "status" ? [...lanes, ["attention", "Needs input"]] : [["P1", "P1 · High"], ["P2", "P2 · Normal"], ["P3", "P3 · Low"], ["P4", "P4 · Lowest"], ["—", "Unspecified"]];
+      this.filterValues = (key, values) => Array.isArray(values) ? [...new Set(values.filter(value => this.options(key).some(([id]) => id === value)))] : [];
+      this.load = () => {
+        const scope = this.el.dataset.scope;
+        if (!scope || this.scope === scope) return;
+        this.scope = scope;
+        this.key = "symphony.board.v1:" + scope;
+        const parsed = parse(storage.get(this.key), {});
+        const saved = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+        for (const k of ["project", "status", "priority"]) this.prefs[k] = this.filterValues(k, saved[k]);
+        this.prefs.query = typeof saved.query === "string" ? saved.query : "";
+        this.prefs.sort = ["manual", "priority", "updated", "oldest", "title"].includes(saved.sort) ? saved.sort : "manual";
+        this.prefs.lane = lanes.some(([id]) => id === saved.lane) ? saved.lane : "ready";
+        this.prefs.order = Object.fromEntries(lanes.map(([stage]) => [stage, Array.isArray(saved.order?.[stage]) ? saved.order[stage].filter(id => typeof id === "string") : []]));
+        this.prefs.density = ["compact", "details"].includes(saved.density) ? saved.density : "compact";
+        this.prefs.theme = ["light", "dark", "system"].includes(saved.theme) ? saved.theme : "light";
+        this.prefs.hiddenLanes = Array.isArray(saved.hiddenLanes) ? [...new Set(saved.hiddenLanes.filter(id => lanes.some(([stage]) => stage === id)))] : ["done"];
+        if (this.prefs.hiddenLanes.length === lanes.length) this.prefs.hiddenLanes = this.prefs.hiddenLanes.filter(id => id !== "ready");
+        this.filtersOpen = this.prefs.status.length > 0 || this.prefs.priority.length > 0;
+        this.el.querySelector("[data-board-search]").value = this.prefs.query;
+        this.el.querySelector("[data-board-sort]").value = this.prefs.sort;
+      };
+      this.urlKey = null;
+      this.readURL = () => {
+        const encoded = this.el.dataset.urlFilters || "{}";
+        if (this.urlKey === encoded) return;
+        const initial = this.urlKey === null;
+        this.urlKey = encoded;
+        const parsed = parse(encoded, {});
+        const filters = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+        if (initial && !Object.keys(filters).length) return;
+        for (const key of ["project", "status", "priority"]) this.prefs[key] = this.filterValues(key, typeof filters[key] === "string" ? filters[key].split(",") : []);
+        if (this.prefs.status.length || this.prefs.priority.length) this.filtersOpen = true;
+        this.prefs.query = typeof filters.q === "string" ? filters.q : "";
+        this.prefs.sort = ["manual", "priority", "updated", "oldest", "title"].includes(filters.sort) ? filters.sort : "manual";
+        this.el.querySelector("[data-board-search]").value = this.prefs.query;
+        this.el.querySelector("[data-board-sort]").value = this.prefs.sort;
+      };
+      this.save = () => {
+        if (this.key) storage.set(this.key, JSON.stringify(this.prefs));
+        clearTimeout(this.urlTimer);
+        this.urlTimer = setTimeout(() => {
+          const filters = {project: this.prefs.project.join(","), status: this.prefs.status.join(","), priority: this.prefs.priority.join(","), q: this.prefs.query, sort: this.prefs.sort};
+          for (const key of Object.keys(filters)) if (!filters[key] || (key === "sort" && filters[key] === "manual")) delete filters[key];
+          const parsed = parse(this.el.dataset.urlFilters || "{}", {});
+          const current = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+          if (Object.keys({...filters, ...current}).some(key => filters[key] !== current[key])) this.pushEvent("board-filters", filters);
+        }, 180);
+      };
+      this.closeFilter = () => {
+        if (!this.popup) return;
+        const key = this.popup;
+        this.popup = null;
+        this.el.querySelector("#filter-" + key).value = "";
+        this.drawOptions(key);
+      };
+      this.closeMenus = (except = null, restoreFocus = false) => {
+        let closed = false;
+        this.el.querySelectorAll("details.board-menu[open]").forEach(menu => {
+          if (menu === except || menu.closest("dialog")) return;
+          const focused = menu.contains(document.activeElement);
+          menu.open = false; closed = true;
+          if (restoreFocus && focused) menu.querySelector("summary")?.focus({preventScroll: true});
+        });
+        return closed;
+      };
+      this.setFiltersOpen = (open, restoreFocus = false) => {
+        const panel = this.el.querySelector("[data-filter-panel]");
+        const focused = panel?.contains(document.activeElement);
+        if (!open && this.popup && this.popup !== "project") this.closeFilter();
+        this.filtersOpen = open;
+        if (panel) panel.hidden = !open;
+        const toggle = this.el.querySelector("[data-toggle-filters]");
+        toggle?.setAttribute("aria-expanded", String(open));
+        if (!open && (restoreFocus || focused)) toggle?.focus({preventScroll: true});
+      };
+      this.applyAppearance = () => {
+        this.el.dataset.density = this.prefs.density;
+        this.el.dataset.singleProject = String(this.prefs.project.length === 1 || this.options("project").length === 1);
+        const theme = this.prefs.theme === "system" ? (this.darkMode.matches ? "dark" : "light") : this.prefs.theme;
+        this.el.dataset.theme = theme;
+        this.el.style.colorScheme = theme;
+        const density = this.el.querySelector("[data-board-density]"), selection = this.el.querySelector("[data-board-theme]");
+        if (density) density.value = this.prefs.density;
+        if (selection) selection.value = this.prefs.theme;
+        this.el.querySelector("[data-board-sort]").value = this.prefs.sort;
+        this.setFiltersOpen(this.filtersOpen);
+      };
+      this.setLaneVisible = (stage, visible) => {
+        if (!lanes.some(([id]) => id === stage)) return;
+        if (visible) this.prefs.hiddenLanes = this.prefs.hiddenLanes.filter(id => id !== stage);
+        else if (!this.revealedLanes.has(stage) && this.prefs.hiddenLanes.length < lanes.length - 1 && !this.prefs.hiddenLanes.includes(stage)) this.prefs.hiddenLanes.push(stage);
+        this.apply(); this.save();
+      };
+      this.drawOptions = key => {
+        const input = this.el.querySelector("#filter-" + key), list = this.el.querySelector("#options-" + key);
+        const options = this.options(key).filter(([, label]) => label.toLowerCase().includes(input.value.toLowerCase()));
+        this.activeOption = Math.min(Math.max(0, this.activeOption), Math.max(0, options.length - 1));
+        input.setAttribute("aria-expanded", String(this.popup === key));
+        list.hidden = this.popup !== key;
+        list.innerHTML = options.length ? options.map(([value, label], i) => `<button type="button" role="option" class="combo-option" id="option-${key}-${i}" data-key="${key}" data-value="${escapeText(value)}" data-active="${i === this.activeOption}" aria-selected="${this.prefs[key].includes(value)}"><span>${escapeText(label)}</span><span aria-hidden="true">${this.prefs[key].includes(value) ? "✓" : ""}</span></button>`).join("") : '<p class="option-empty">No matches</p>';
+        if (this.popup === key && options.length) input.setAttribute("aria-activedescendant", `option-${key}-${this.activeOption}`);
+        else input.removeAttribute("aria-activedescendant");
+        return options;
+      };
+      this.openFilter = key => { this.closeMenus(); if (this.popup !== key) this.closeFilter(); this.popup = key; this.activeOption = 0; this.drawOptions(key); };
+      this.toggle = (key, value) => {
+        this.prefs[key] = this.prefs[key].includes(value) ? this.prefs[key].filter(v => v !== value) : [...this.prefs[key], value];
+        this.el.querySelector("#filter-" + key).value = "";
+        this.activeOption = 0; this.drawOptions(key); this.apply(); this.save();
+        this.el.querySelector("#filter-" + key).focus();
+      };
+      this.announce = message => {
+        let status = this.el.querySelector("[data-board-announcement]");
+        if (!status) { status = document.createElement("p"); status.dataset.boardAnnouncement = ""; status.className = "board-notice"; status.setAttribute("role", "status"); this.el.querySelector(".board-content").prepend(status); }
+        status.textContent = message;
+      };
+      this.captureContext = () => {
+        if (this.el.dataset.chatOpen !== "true" || !this.el.dataset.chatProject) { this.contextKey = null; return; }
+        const project = this.el.dataset.chatProject;
+        const cards = [...this.el.querySelectorAll(".task-card[data-task-id]")].filter(card =>
+          card.dataset.project === project && !card.closest("[hidden]") && card.getClientRects().length > 0);
+        const board = this.el.querySelector(".board-main").getBoundingClientRect();
+        const laneArea = this.el.querySelector(".kanban-board").getBoundingClientRect();
+        const dock = this.el.querySelector("#management-chat-dock").getBoundingClientRect();
+        const taskOpen = this.el.querySelector("#board-dialog[open]");
+        const inViewport = card => {
+          const rect = card.getBoundingClientRect();
+          return !taskOpen && rect.bottom > Math.max(0, board.top, laneArea.top) && rect.top < Math.min(window.innerHeight, board.bottom, laneArea.bottom) &&
+            rect.right > Math.max(0, board.left, laneArea.left) && rect.left < Math.min(window.innerWidth, board.right, laneArea.right, dock.left);
+        };
+        // Keep on-screen cards within the bounded list even on a large, scrolled board.
+        const viewport = cards.filter(inViewport).slice(0, 50);
+        const visible = [...new Set([...viewport, ...cards])].slice(0, 50);
+        const snapshot = {
+          version: 1, project_id: project,
+          filters: {project: this.prefs.project, status: this.prefs.status, priority: this.prefs.priority, q: this.prefs.query, sort: this.prefs.sort},
+          selected_task_id: this.el.dataset.selectedTask || null,
+          visible_task_ids: visible.map(card => card.dataset.taskId), viewport_task_ids: viewport.map(card => card.dataset.taskId),
+          hidden_columns: lanes.filter(([stage]) => this.el.querySelector(`[data-stage="${stage}"]`).hidden).map(([stage]) => stage),
+          board_checked_at: this.el.dataset.boardCheckedAt || null, truncated: cards.length > 50
+        };
+        const key = JSON.stringify([snapshot, this.el.dataset.contextRevision]);
+        if (key !== this.contextKey) {
+          this.contextKey = key;
+          this.pushEvent("board-view-context", {...snapshot, captured_at: new Date().toISOString()});
+        }
+      };
+      this.scheduleContext = () => {
+        clearTimeout(this.contextTimer);
+        this.contextTimer = setTimeout(this.captureContext, 100);
+      };
+      this.apply = () => {
+        this.load();
+        this.readURL();
+        this.applyAppearance();
+        const cards = [...this.el.querySelectorAll("[data-task-id]")];
+        const linkedTask = this.el.dataset.selectedTask || new URLSearchParams(window.location.search).get("task");
+        this.revealedLanes = new Set(this.prefs.status.filter(stage => lanes.some(([id]) => id === stage)));
+        let matched = 0;
+        for (const card of cards) {
+          const d = card.dataset, stage = card.closest("[data-stage]").dataset.stage;
+          const matches = (!this.prefs.project.length || this.prefs.project.includes(d.project)) && (!this.prefs.priority.length || this.prefs.priority.includes(d.priority)) && (!this.prefs.status.length || this.prefs.status.includes(stage) || (this.prefs.status.includes("attention") && d.attention === "true")) && (!this.prefs.query || [d.title, d.identifier].join(" ").toLowerCase().includes(this.prefs.query.toLowerCase()));
+          card.hidden = !matches;
+          if (matches) matched++;
+          if ((matches && this.prefs.status.includes("attention") && d.attention === "true") || d.taskId === linkedTask) this.revealedLanes.add(stage);
+        }
+        const hidden = new Set(this.prefs.hiddenLanes.filter(stage => !this.revealedLanes.has(stage)));
+        const hiddenTasks = cards.filter(card => !card.hidden && hidden.has(card.closest("[data-stage]").dataset.stage)).length;
+        const visible = matched - hiddenTasks;
+        this.el.querySelector("[data-result-count]").textContent = `${visible} of ${cards.length} tasks${hiddenTasks ? ` · ${hiddenTasks} in hidden columns` : ""}`;
+        this.el.querySelector(".kanban-board")?.style.setProperty("--visible-lanes", String(lanes.length - hidden.size));
+        const rail = this.el.querySelector("[data-hidden-lanes]");
+        if (rail) rail.hidden = hidden.size === 0;
+        for (const [stage] of lanes) {
+          const lane = this.el.querySelector(`[data-stage="${stage}"]`), container = lane.querySelector("[data-lane-cards]");
+          const items = [...container.children];
+          const rank = id => { const order = this.prefs.order[stage]; const index = Array.isArray(order) ? order.indexOf(id) : -1; return index < 0 ? 100000 : index; };
+          const date = value => Date.parse(value) || 0;
+          const priorityRank = value => /^P[1-9]\d*$/.test(value) ? Number(value.slice(1)) : Number.MAX_SAFE_INTEGER;
+          items.sort((a,b) => this.prefs.sort === "priority" ? priorityRank(a.dataset.priority) - priorityRank(b.dataset.priority) : this.prefs.sort === "updated" ? date(b.dataset.updated) - date(a.dataset.updated) : this.prefs.sort === "oldest" ? (date(a.dataset.created) || Infinity) - (date(b.dataset.created) || Infinity) : this.prefs.sort === "title" ? a.dataset.title.localeCompare(b.dataset.title) : rank(a.dataset.taskId) - rank(b.dataset.taskId));
+          items.forEach(item => container.append(item));
+          const count = items.filter(item => !item.hidden).length;
+          lane.hidden = hidden.has(stage);
+          const checkbox = this.el.querySelector(`[data-visible-lane="${stage}"]`), hideButton = lane.querySelector(`[data-hide-lane="${stage}"]`);
+          const cannotHide = this.revealedLanes.has(stage) || (!this.prefs.hiddenLanes.includes(stage) && this.prefs.hiddenLanes.length === lanes.length - 1);
+          if (checkbox) { checkbox.checked = !lane.hidden; checkbox.disabled = !lane.hidden && cannotHide; }
+          if (hideButton) hideButton.disabled = cannotHide;
+          const showButton = this.el.querySelector(`[data-show-lane="${stage}"]`), hiddenCount = this.el.querySelector(`[data-hidden-count="${stage}"]`);
+          if (showButton) showButton.hidden = !lane.hidden;
+          if (hiddenCount) hiddenCount.textContent = count;
+          lane.querySelector("[data-lane-count]").textContent = count;
+          lane.querySelector("[data-lane-empty]").hidden = count !== 0;
+          lane.querySelector("[data-lane-empty]").textContent = matched ? "No matching tasks" : "No tasks match";
+        }
+        const linkedStage = cards.find(card => card.dataset.taskId === linkedTask)?.closest("[data-stage]").dataset.stage;
+        const mobileContext = JSON.stringify([this.prefs.project, this.prefs.status, this.prefs.priority, this.prefs.query, linkedTask, linkedStage]);
+        const contextChanged = this.mobileContext !== mobileContext;
+        this.mobileContext = mobileContext;
+        if (contextChanged && linkedStage) this.prefs.lane = linkedStage;
+        else if (contextChanged && this.prefs.status.length === 1 && lanes.some(([stage]) => stage === this.prefs.status[0])) this.prefs.lane = this.prefs.status[0];
+        const current = this.el.querySelector(`[data-stage="${this.prefs.lane}"]`);
+        if (!current || current.hidden || (contextChanged && !linkedStage && visible && !current.querySelector(".task-card:not([hidden])"))) this.prefs.lane = lanes.find(([stage]) => !hidden.has(stage) && this.el.querySelector(`[data-stage="${stage}"] .task-card:not([hidden])`))?.[0] || lanes.find(([stage]) => !hidden.has(stage))[0];
+        this.el.querySelectorAll("[data-stage]").forEach(el => el.dataset.mobileActive = String(el.dataset.stage === this.prefs.lane));
+        const mobile = this.el.querySelector("[data-mobile-lane]"); mobile.value = this.prefs.lane;
+        for (const option of mobile.options) option.textContent = `${lanes.find(([s]) => s === option.value)[1]} (${this.el.querySelector(`[data-stage="${option.value}"] [data-lane-count]`).textContent})${hidden.has(option.value) ? " · hidden" : ""}`;
+        this.el.querySelector("[data-filter-chips]").innerHTML = ["project", "status", "priority"].flatMap(key => this.prefs[key].map(value => { const label = this.options(key).find(([id]) => id === value)?.[1] || value; return `<button type="button" class="filter-chip" data-remove-key="${key}" data-remove-value="${escapeText(value)}" aria-label="Remove ${key} filter ${escapeText(label)}">${escapeText(label)} <span aria-hidden="true">×</span></button>`; })).join("");
+        for (const key of ["project", "status", "priority"]) {
+          const selectedProject = key === "project" && this.prefs.project.length === 1 ? this.options(key).find(([id]) => id === this.prefs.project[0])?.[1] : null;
+          this.el.querySelector("#filter-" + key).placeholder = selectedProject || `${key[0].toUpperCase() + key.slice(1)}: ${this.prefs[key].length ? this.prefs[key].length + " selected" : "All"}`;
+        }
+        this.scheduleContext();
+      };
+      on("focusin", event => { const key = event.target.closest("[data-filter]")?.dataset.filter; if (key && event.target.matches("input")) this.openFilter(key); });
+      on("input", event => { const key = event.target.closest("[data-filter]")?.dataset.filter; if (key) { this.popup = key; this.activeOption = 0; this.drawOptions(key); } else if (event.target.matches("[data-board-search]")) { this.prefs.query = event.target.value; this.apply(); this.save(); } });
+      on("keydown", event => {
+        if (event.target.closest("dialog")) return;
+        if (event.key === "Escape") {
+          if (this.popup) { const key = this.popup; this.el.querySelector("#filter-" + key)?.focus({preventScroll: true}); this.closeFilter(); }
+          else if (this.closeMenus(null, true)) { /* Keep Escape within the open menu. */ }
+          else if (this.filtersOpen) this.setFiltersOpen(false, true);
+          else return;
+          event.preventDefault(); event.stopPropagation(); return;
+        }
+        const key = event.target.closest("[data-filter]")?.dataset.filter;
+        if (!key || !event.target.matches("input")) return;
+        if (["ArrowDown", "ArrowUp"].includes(event.key)) { event.preventDefault(); if (this.popup !== key) this.openFilter(key); else { this.activeOption += event.key === "ArrowDown" ? 1 : -1; this.drawOptions(key); } }
+        else if (event.key === "Enter" && this.popup === key) { event.preventDefault(); const choice = this.drawOptions(key)[this.activeOption]; if (choice) this.toggle(key, choice[0]); }
+        else if (event.key === "Tab") this.closeFilter();
+      });
+      on("click", event => {
+        const menu = event.target.closest("details.board-menu");
+        if (menu && event.target.closest("summary")) { this.closeFilter(); this.closeMenus(menu); }
+        const button = event.target.closest("button"); if (!button) return;
+        if (button.hasAttribute("data-toggle-filters")) { this.closeMenus(); this.setFiltersOpen(!this.filtersOpen); }
+        else if (button.dataset.hideLane) {
+          const stage = button.dataset.hideLane;
+          this.closeMenus(); this.setLaneVisible(stage, false);
+          this.el.querySelector(`[data-show-lane="${stage}"]:not([hidden])`)?.focus({preventScroll: true});
+        }
+        else if (button.dataset.showLane) {
+          const stage = button.dataset.showLane;
+          this.prefs.lane = stage; this.setLaneVisible(stage, true);
+          const lane = this.el.querySelector(`[data-stage="${stage}"]`);
+          (lane?.querySelector("details.board-menu > summary") || lane?.querySelector(".card-title") || this.el.querySelector("[data-mobile-lane]"))?.focus({preventScroll: true});
+        }
+        else if (button.dataset.filterToggle) { const key = button.dataset.filterToggle; if (this.popup === key) this.closeFilter(); else { this.openFilter(key); this.el.querySelector("#filter-" + key).focus(); } }
+        else if (button.dataset.key) this.toggle(button.dataset.key, button.dataset.value);
+        else if (button.dataset.removeKey) { this.prefs[button.dataset.removeKey] = this.prefs[button.dataset.removeKey].filter(v => v !== button.dataset.removeValue); this.apply(); this.save(); }
+        else if (button.hasAttribute("data-clear-filters")) { this.prefs.project = []; this.prefs.status = []; this.prefs.priority = []; this.prefs.query = ""; this.el.querySelector("[data-board-search]").value = ""; this.closeFilter(); this.apply(); this.save(); }
+        else if (button.dataset.copy) navigator.clipboard?.writeText(button.dataset.copy).then(() => { button.textContent = "Copied"; }).catch(() => { button.textContent = "Copy unavailable"; });
+      });
+      on("change", event => {
+        if (event.target.hasAttribute("data-board-sort")) { this.prefs.sort = event.target.value; this.apply(); this.save(); }
+        else if (event.target.hasAttribute("data-board-density") && ["compact", "details"].includes(event.target.value)) { this.prefs.density = event.target.value; this.apply(); this.save(); }
+        else if (event.target.hasAttribute("data-board-theme") && ["light", "dark", "system"].includes(event.target.value)) { this.prefs.theme = event.target.value; this.apply(); this.save(); }
+        else if (event.target.dataset.visibleLane) this.setLaneVisible(event.target.dataset.visibleLane, event.target.checked);
+        else if (event.target.hasAttribute("data-mobile-lane")) { this.prefs.lane = event.target.value; this.setLaneVisible(event.target.value, true); }
+        else if (event.target.dataset.moveTask && event.target.value) { const stage = event.target.value; event.target.value = ""; this.pushEvent("move-task", {id: event.target.dataset.moveTask, stage}); }
+      });
+      on("dragstart", event => { const card = event.target.closest("[data-task-id]"); if (!card || card.getAttribute("draggable") !== "true" || event.target.closest("select,a,button,summary")) { event.preventDefault(); return; } this.drag = card; card.classList.add("dragging"); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", card.dataset.taskId); });
+      const clearDrop = () => this.el.querySelectorAll(".drop-target,.drop-before,.drop-after").forEach(el => el.classList.remove("drop-target", "drop-before", "drop-after"));
+      on("dragover", event => { const lane = event.target.closest("[data-stage]"); if (!this.drag || !lane) return; event.preventDefault(); clearDrop(); lane.classList.add("drop-target"); const target = event.target.closest("[data-task-id]"); if (target && target !== this.drag) target.classList.add(event.clientY > target.getBoundingClientRect().top + target.offsetHeight / 2 ? "drop-after" : "drop-before"); });
+      on("drop", event => {
+        const lane = event.target.closest("[data-stage]"); if (!this.drag || !lane) return; event.preventDefault();
+        const card = this.drag, target = event.target.closest("[data-task-id]"), stage = lane.dataset.stage;
+        if (stage !== card.closest("[data-stage]").dataset.stage) this.pushEvent("move-task", {id: card.dataset.taskId, stage});
+        else if (this.prefs.sort !== "manual") this.announce("Choose Manual order to reorder cards. This does not change dispatch priority.");
+        else if (target !== card) {
+          const container = lane.querySelector("[data-lane-cards]");
+          if (target) container.insertBefore(card, target.classList.contains("drop-after") ? target.nextSibling : target); else container.append(card);
+          this.prefs.order[stage] = [...container.children].map(el => el.dataset.taskId); this.save(); this.announce("Card order saved in this browser. Dispatch order is unchanged.");
+        }
+        card.classList.remove("dragging"); this.drag = null; clearDrop();
+      });
+      on("dragend", () => { this.drag?.classList.remove("dragging"); this.drag = null; clearDrop(); });
+      document.addEventListener("click", event => {
+        if (this.popup && !event.target.closest("[data-filter]")) this.closeFilter();
+        this.closeMenus(event.target.closest("details.board-menu"), true);
+      }, {signal: this.abort.signal});
+      this.darkMode.addEventListener("change", () => this.applyAppearance(), {signal: this.abort.signal});
+      this.el.addEventListener("scroll", this.scheduleContext, {capture: true, passive: true, signal: this.abort.signal});
+      on("symphony:capture-context", this.captureContext);
+      window.addEventListener("scroll", this.scheduleContext, {passive: true, signal: this.abort.signal});
+      window.addEventListener("resize", this.scheduleContext, {passive: true, signal: this.abort.signal});
+      this.apply();
+    },
+    beforeUpdate() { this.openMenuKeys = [...this.el.querySelectorAll("details.board-menu[open]")].map(menu => menu.closest("[data-stage]")?.dataset.stage || "display"); },
+    updated() {
+      this.apply();
+      if (this.popup) this.drawOptions(this.popup);
+      for (const menu of this.el.querySelectorAll("details.board-menu")) {
+        const lane = menu.closest("[data-stage]");
+        if (!lane?.hidden && this.openMenuKeys?.includes(lane?.dataset.stage || "display")) menu.open = true;
+      }
+    },
+    destroyed() { this.abort.abort(); clearTimeout(this.urlTimer); clearTimeout(this.contextTimer); }
+  };
+  const BoardDialog = {
+    mounted() {
+      this.previous = document.activeElement;
+      this.taskId = this.previous?.closest("[data-task-id]")?.dataset.taskId;
+      this.bodyOverflow = document.body.style.overflow;
+      this.abort = new AbortController();
+      this.closeDialog = () => this.el.dataset.eventTarget ? this.pushEventTo(this.el, "close-dialog", {}) : this.pushEvent("close-dialog", {});
+      this.showDialog = () => {
+        const nonmodal = this.el.dataset.nonmodal === "true";
+        if (this.nonmodal !== nonmodal && this.el.open) this.el.close();
+        this.nonmodal = nonmodal;
+        document.body.style.overflow = nonmodal ? this.bodyOverflow : "hidden";
+        if (!this.el.open) { if (nonmodal) this.el.show(); else this.el.showModal(); }
+      };
+      this.closeSelector = this.el.dataset.closeSelector || "#close-dialog";
+      this.el.addEventListener("cancel", event => { event.preventDefault(); this.closeDialog(); }, {signal: this.abort.signal});
+      this.el.addEventListener("keydown", event => {
+        if (this.nonmodal) {
+          if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); this.closeDialog(); }
+          return;
+        }
+        if (event.key !== "Tab") return;
+        const controls = [...this.el.querySelectorAll('button, a[href], input, select, textarea, summary, [tabindex]')]
+          .filter(control => !control.disabled && control.tabIndex >= 0 && control.getClientRects().length);
+        const first = controls[0], last = controls[controls.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }, {signal: this.abort.signal});
+      this.el.addEventListener("click", event => { if (event.target !== this.el) return; const rect = this.el.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) this.closeDialog(); }, {signal: this.abort.signal});
+      this.showDialog();
+      this.el.querySelector(this.closeSelector)?.focus();
+    },
+    updated() {
+      this.showDialog();
+      if (!this.nonmodal && !this.el.contains(document.activeElement)) this.el.querySelector(this.closeSelector)?.focus({preventScroll: true});
+    },
+    destroyed() {
+      this.abort.abort();
+      if (this.el.open) this.el.close();
+      document.body.style.overflow = this.bodyOverflow;
+      const previous = this.previous;
+      requestAnimationFrame(() => {
+        const replacement = [...document.querySelectorAll("[data-task-id]")].find(card => card.dataset.taskId === this.taskId)?.querySelector(".card-title");
+        const visible = target => target?.isConnected && target !== document.body && target !== document.documentElement && !target.closest("[hidden]") && target.getClientRects().length > 0;
+        const canRestore = visible(previous);
+        const target = canRestore ? previous : (previous?.id ? document.getElementById(previous.id) : null);
+        [target, replacement, document.getElementById("settings-button"), document.querySelector("[data-toggle-filters]")].find(visible)?.focus({preventScroll: true});
+      });
+    }
+  };
+  const ChatPreferences = {
+    mounted() {
+      this.abort = new AbortController();
+      this.project = null;
+      this.status = message => { const node = this.el.querySelector("[data-chat-prefs-status]"); if (node) node.textContent = message; };
+      this.draw = () => {
+        this.el.querySelectorAll("[data-chat-pref]").forEach(input => {
+          if (Object.hasOwn(this.draft, input.dataset.chatPref)) input.checked = this.draft[input.dataset.chatPref];
+          input.disabled = !this.project;
+        });
+        this.el.querySelectorAll("[data-chat-prefs-save], [data-chat-prefs-reset]").forEach(button => button.disabled = !this.project);
+      };
+      this.load = () => {
+        const project = this.el.dataset.project || null;
+        if (this.project !== project || !this.draft) {
+          this.project = project;
+          this.draft = project ? chatPreferences(project) : {share_context: true, include_selected: true};
+          this.status(project ? "" : "Select a project to save chat preferences.");
+        }
+        this.draw();
+      };
+      this.save = () => {
+        if (!this.project || this.project !== this.el.dataset.project) return;
+        try { localStorage.setItem(chatPreferenceKey(this.project), JSON.stringify(this.draft)); }
+        catch { this.status("Could not save in this browser. Check browser storage permissions and try again."); return; }
+        window.dispatchEvent(new CustomEvent("symphony:chat-preferences", {detail: {project_id: this.project, ...this.draft}}));
+        this.status("Saved in this browser. Applies to the next message and future visits.");
+      };
+      this.el.addEventListener("change", event => {
+        const key = event.target.dataset.chatPref;
+        if (Object.hasOwn(this.draft, key)) { this.draft[key] = event.target.checked; this.status("Unsaved changes."); }
+      }, {signal: this.abort.signal});
+      this.el.addEventListener("click", event => {
+        if (event.target.closest("[data-chat-prefs-save]")) { event.preventDefault(); this.save(); }
+        else if (event.target.closest("[data-chat-prefs-reset]")) {
+          event.preventDefault(); this.draft = {share_context: true, include_selected: true}; this.draw(); this.status("Defaults restored. Save to apply.");
+        } else if (event.target.closest("[data-chat-prefs-cancel]")) {
+          this.draft = chatPreferences(this.project); this.draw(); this.status("");
+        }
+      }, {signal: this.abort.signal});
+      this.el.addEventListener("submit", event => { event.preventDefault(); this.save(); }, {signal: this.abort.signal});
+      this.load();
+    },
+    updated() { this.load(); },
+    destroyed() { this.abort.abort(); }
+  };
+  const ChatWorkspace = {
+    mounted() {
+      this.abort = new AbortController();
+      this.chatId = this.el.dataset.chatId;
+      this.atBottom = true;
+      this.running = this.el.dataset.running === "true";
+      const on = (name, handler) => this.el.addEventListener(name, handler, {signal: this.abort.signal});
+      this.applyPreferences = preferences => {
+        if (!preferences.project_id || preferences.project_id !== this.el.dataset.project || !this.el.dataset.eventTarget) return;
+        this.pushEventTo(this.el.dataset.eventTarget, "context-preferences", preferences);
+      };
+      this.loadPreferences = () => {
+        const project = this.el.dataset.project || null;
+        if (this.preferenceProject !== project) {
+          this.preferenceProject = project;
+          if (project) this.applyPreferences({project_id: project, ...chatPreferences(project)});
+        }
+      };
+      window.addEventListener("symphony:chat-preferences", event => this.applyPreferences(event.detail || {}), {signal: this.abort.signal});
+      window.addEventListener("storage", event => {
+        const project = this.el.dataset.project;
+        if (project && event.key === chatPreferenceKey(project)) this.applyPreferences({project_id: project, ...chatPreferences(project)});
+      }, {signal: this.abort.signal});
+      this.scroll = () => {
+        const scroller = this.el.querySelector("#chat-scroll");
+        if (scroller && this.atBottom) scroller.scrollTop = scroller.scrollHeight;
+      };
+      this.resizeComposer = () => {
+        const input = this.el.querySelector("#chat-message-input");
+        if (input) { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 190) + "px"; }
+      };
+      // Scroll does not bubble; capture the retained conversation scroll container.
+      this.el.addEventListener("scroll", event => {
+        if (event.target.id === "chat-scroll") this.atBottom = event.target.scrollHeight - event.target.scrollTop - event.target.clientHeight < 90;
+      }, {capture: true, signal: this.abort.signal});
+      on("input", event => { if (event.target.id === "chat-message-input") this.resizeComposer(); });
+      // Queue the current view before LiveView sends this form's message event.
+      on("submit", event => {
+        if (event.target.id === "chat-composer") this.el.dispatchEvent(new CustomEvent("symphony:capture-context", {bubbles: true}));
+      });
+      on("keydown", event => {
+        if (event.target.id === "chat-message-input" && event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+          event.preventDefault();
+          if (this.el.dataset.running !== "true" && event.target.value.trim()) event.target.form.requestSubmit();
+        }
+      });
+      on("click", event => {
+        const boardLink = event.target.closest('a[phx-click="board-link"]');
+        if (boardLink && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) event.preventDefault();
+        else if (boardLink) event.stopPropagation();
+        const starter = event.target.closest("[data-chat-prompt]");
+        const input = this.el.querySelector("#chat-message-input");
+        if (starter && input && !input.disabled) { input.value = starter.dataset.chatPrompt; input.dispatchEvent(new Event("input", {bubbles: true})); input.focus(); this.resizeComposer(); }
+      });
+      this.handleEvent("chat-message-sent", () => {
+        const input = this.el.querySelector("#chat-message-input");
+        if (input) { input.value = ""; input.focus(); }
+        this.atBottom = true; this.resizeComposer(); requestAnimationFrame(this.scroll);
+      });
+      this.loadPreferences();
+      requestAnimationFrame(this.scroll);
+    },
+    updated() {
+      if (this.chatId !== this.el.dataset.chatId) { this.chatId = this.el.dataset.chatId; this.atBottom = true; }
+      this.loadPreferences();
+      this.resizeComposer();
+      requestAnimationFrame(this.scroll);
+    },
+    destroyed() { this.abort.abort(); }
+  };
+  window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace, ChatPreferences};
+})();

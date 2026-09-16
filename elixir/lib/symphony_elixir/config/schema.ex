@@ -227,6 +227,30 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Chat do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:state_path, :string)
+      field(:codex_home, :string)
+      field(:executable, :string)
+      field(:timeout_ms, :integer, default: 300_000)
+      field(:max_concurrent, :integer, default: 2)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:enabled, :state_path, :codex_home, :executable, :timeout_ms, :max_concurrent], empty_values: [])
+      |> validate_number(:timeout_ms, greater_than_or_equal_to: 1_000, less_than_or_equal_to: 900_000)
+      |> validate_number(:max_concurrent, greater_than: 0, less_than_or_equal_to: 8)
+    end
+  end
+
   defmodule Hooks do
     @moduledoc false
     use Ecto.Schema
@@ -329,6 +353,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:chat, Chat, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:control, Control, on_replace: :update, defaults_to_struct: true)
@@ -424,6 +449,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
+    |> cast_embed(:chat, with: &Chat.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:control, with: &Control.changeset/2)
