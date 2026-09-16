@@ -105,6 +105,8 @@ defmodule SymphonyElixir.Chat.PersistenceTest do
       Jason.encode!(Map.put(c.chat, "context", ["not a reference"])),
       Jason.encode!(Map.put(c.chat, "archived", "false")),
       Jason.encode!(Map.put(c.chat, "status", "invented")),
+      Jason.encode!(Map.put(c.chat, "kind", "unknown")),
+      Jason.encode!(Map.put(c.chat, "kind", "board_action")),
       Jason.encode!(Map.put(c.chat, "messages", [Map.put(message(), "role", "system")])),
       Jason.encode!(Map.put(c.chat, "messages", [Map.put(message(), "widgets", [nil])])),
       Jason.encode!(Map.put(c.chat, "proposals", [Map.put(proposal(), "args", [])])),

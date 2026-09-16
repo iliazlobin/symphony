@@ -317,7 +317,7 @@ describes access and limits.
 
 The observability UI now runs on a minimal Phoenix stack:
 
-- LiveView for the dashboard at `/`
+- LiveView for the dashboard at `/`, including authenticated GitHub task forms
 - Optional authenticated management chat in the board's right-side panel and at `/chat`;
   streaming uses LiveView's existing connection
 - JSON API for operational debugging under `/api/v1/*`
@@ -335,7 +335,14 @@ confirmations own all writes. See [management conversations](../ARCHITECTURE.md#
 for the context, storage and tool boundary, and the [operator guide](../profiles/events-concierge/README.md#operate)
 for supported actions and examples.
 
-Enable management chat in the selected workflow's YAML front matter:
+Task forms share the durable action journal and GitHub tools with chat. Configure
+`chat.state_path` to enable saved form previews, receipts and recovery; `chat.enabled`
+can remain `false` when model conversations are not needed. The forms use the existing
+operator login and require configured GitHub routing labels. Creation saves an
+unqueued issue; editing or queue-label changes require a cancelled, idle task.
+Only a separate native Retry releases that hold, subject to normal admission gates.
+
+Enable model conversations in the selected workflow's YAML front matter:
 
 ```yaml
 chat:
@@ -368,7 +375,8 @@ home must have no user configuration, agent instructions, hooks, plugins or user
 skills. Native generated system skills are tolerated but disabled. The backend
 creates empty conversation workspaces and supplies only typed management tools.
 The browser uses the existing local operator login; model credentials stay on the
-host. A disabled store exposes no chat history. See the
+host. Disabled model chat exposes no conversation history; configured task-action storage
+remains available to authenticated board forms. See the
 [operator guide](../profiles/events-concierge/README.md#operate) for the user flow.
 
 Conversation JSON and the native Codex home both need durable private storage to
@@ -377,7 +385,8 @@ before moving or restoring either; preserve both together. A second store owner,
 corrupt records or failed writes block operation without overwriting recovery data.
 Browser reconnect does not stop a turn; service restart leaves interrupted turns
 available to continue and uncertain writes available for read-only reconciliation.
-The file store is bounded to 500 conversations and 8 MiB per conversation. Archive
+The file store is bounded to 500 records across conversations and board actions,
+and 8 MiB per record. Board action history is separate from chat history. Archive
 hides a chat from the active list; it does not delete its retained records.
 Once a conversation reaches 400 messages, start another chat for further turns.
 
