@@ -278,10 +278,13 @@ defmodule SymphonyElixir.Codex.AppServer do
     dynamic_tool_binding.secret_environment_names
     |> valid_environment_names()
     |> Enum.map(fn name -> {String.to_charlist(name), false} end)
+    |> ProcessGroup.port_environment()
   end
 
   defp tracker_secret_unset_command(dynamic_tool_binding) do
-    case dynamic_tool_binding.secret_environment_names |> valid_environment_names() do
+    names = dynamic_tool_binding.secret_environment_names ++ Config.browser_auth_secret_environment_names()
+
+    case names |> valid_environment_names() |> Enum.uniq() do
       [] -> nil
       names -> "unset " <> Enum.join(names, " ")
     end

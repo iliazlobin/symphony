@@ -367,8 +367,10 @@ Never copy another Codex home's authentication, configuration or history. The ne
 home must have no user configuration, agent instructions, hooks, plugins or user
 skills. Native generated system skills are tolerated but disabled. The backend
 creates empty conversation workspaces and supplies only typed management tools.
-The browser uses the existing local operator login; model credentials stay on the
-host. A disabled store exposes no chat history. See the
+The browser uses [Google or local operator sign-in](#browser-sign-in); model
+credentials stay on the host. These are separate logins: Google grants access to
+Symphony, while the dedicated Codex home supplies model access. A disabled store
+exposes no chat history. See the
 [operator guide](../profiles/events-concierge/README.md#operate) for the user flow.
 
 Conversation JSON and the native Codex home both need durable private storage to
@@ -383,8 +385,89 @@ Once a conversation reaches 400 messages, start another chat for further turns.
 
 The current backend serves one configured project; the picker and immutable chat
 scope prepare the interface for additional controllers without mixing their data.
-This listener remains loopback-only. Cloud identity, remote ingress, multi-replica
-storage and cloud sign-in are not supplied by this feature.
+The default listener remains local. Google browser identity is available through the
+configuration below; remote ingress, multi-replica storage and cloud model sign-in
+remain separate deployment work.
+
+## Browser sign-in
+
+Use Google for browser access to the board, chat and Settings. Read APIs require
+separate local machine authentication in Google mode.
+This uses OpenID Connect on OAuth 2.0 and grants access only to explicitly configured
+operators. It requests identity, not access to Drive, Gmail or other Google data.
+GitHub service credentials and Codex subscription authentication stay separate.
+
+1. Create a **Web application** OAuth client in the Google project selected for this
+   service. Configure its consent audience and any required test users. Register the
+   exact callback `<public_origin>/auth/google/callback`; for local use this can be
+   `http://localhost:8778/auth/google/callback`.
+2. Set the client ID and secret in the controller's private service environment,
+   then configure the selected `WORKFLOW.md`:
+
+   ```yaml
+   browser_auth:
+     provider: google
+     public_origin: http://localhost:8778
+     client_id: $SYMPHONY_GOOGLE_CLIENT_ID
+     client_secret: $SYMPHONY_GOOGLE_CLIENT_SECRET
+     allowed_emails:
+       - owner@gmail.com
+   ```
+
+3. Restart the controller and open that **exact origin**. `localhost` and
+   `127.0.0.1` are different origins. Select **Sign in with Google**, use the allowed
+   account and verify the board, chat and Settings load. **Settings → Connections →
+   Sign out** ends the Symphony browser session; it does not sign out of Google or
+   the Codex model account.
+
+`public_origin` is an origin only, with no path, credentials, query or fragment.
+HTTP is accepted only on a loopback host; remote origins require HTTPS. Register
+separate exact redirect URIs for each intended environment and use the service's
+real public origin, never an arbitrary forwarded header. Keep the OAuth secret out
+of source files, images, browser code and worker environments. macOS launch agents
+do not inherit interactive shell exports.
+
+For HTTPS terminated by a reverse proxy, `trusted_proxy_ips` may list exact transport
+peer IP addresses. Only those peers may normalize the request's scheme and port to
+the fixed `public_origin`, and the request host must already match it. No forwarded
+header chooses the origin or identity. Terminate TLS at that proxy and restrict the
+backend so only trusted proxies can reach it. Loopback HTTP still requires a real
+loopback peer; proxy configuration cannot relax it. Direct TLS requests must match
+the configured scheme, host and port without normalization.
+
+`allowed_emails` contains exact addresses, with no wildcard or domain-wide grants.
+A verified Gmail address is accepted. For Google Workspace accounts, also configure
+`allowed_subjects` with the account's independently verified Google `sub` value;
+Workspace acceptance requires both the exact email and subject. Gmail operators may
+also use this list to pin their subject. The subject list narrows access and never
+replaces the email allowlist. Google accounts using other email providers are refused.
+All allowed accounts share operator authority and the configured project's histories;
+this is not a multi-tenant role system.
+
+Google mode requires browser sign-in for the whole board and chat. OAuth callbacks
+validate state, nonce, PKCE and Google-signed identity claims. Browser cookies contain
+an opaque reference to a bounded in-memory grant; no Google access or refresh token
+is retained in the cookie. Sign-out and restart invalidate browser sessions without
+erasing conversations. Identity configuration changes invalidate existing grants.
+Restart after provider, public-origin or private service-environment changes, then
+open the configured address; the socket origin policy is loaded at startup.
+Token-based local API/CLI clients
+keep their existing authentication. The operator-token browser form is unavailable
+in Google mode.
+
+If Google returns `redirect_uri_mismatch`, compare the registered callback, configured
+origin and browser address exactly. If access is refused after Google login, check
+the verified email/subject allowlists; do not broaden them merely to bypass an error.
+Missing client environment variables or invalid settings must be corrected in the
+service configuration. A failed model response after successful Google login belongs
+to the [separate Codex runtime setup](#web-board-and-chat).
+
+Existing installations default to `browser_auth.provider: local_token`. This mode
+retains the CSRF-protected `POST /operator/session` token form and
+`POST /operator/session/logout`, loopback host and actual-peer checks, websocket
+origin validation and eight-hour token-bound sessions. It does not protect an
+externally exposed listener. Switching to Google requires configuration and restart;
+this source change alone does not configure a Google client or change the deployment.
 
 ## Project Layout
 
@@ -525,13 +608,9 @@ card or open its popup for individual job results, durations and
 workflow/log links. Partial or stale check data stays explicit. Job durations are
 independent; passing CI and conflict-free branches do not establish merge approval.
 
-Local browser controls use a CSRF-protected operator-token login at
-`POST /operator/session` and logout at `POST /operator/session/logout`. Tokens are
-filtered from request logs and not stored in the session cookie; a signed
-eight-hour proof gates native pause/drain/resume/cancel/retry/concurrency calls. Host, actual
-peer, websocket origin, tracker identity, command revision and replay are checked.
-The read dashboard/API remain local observability surfaces, not a remote-auth
-boundary. See the [operator guide](../profiles/events-concierge/README.md#operate)
+Browser controls use the [configured sign-in provider](#browser-sign-in).
+Authentication does not bypass tracker identity, command revision, replay or
+worker-launch checks. See the [operator guide](../profiles/events-concierge/README.md#operate)
 for commands, limitations and the existing GitHub task workflow.
 
 ## License

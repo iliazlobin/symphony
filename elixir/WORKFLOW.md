@@ -30,6 +30,15 @@ hooks:
 agent:
   max_concurrent_agents: 10
   max_turns: 20
+browser_auth:
+  # Existing installs retain local token login. For Google setup, see README.md.
+  provider: local_token
+  # provider: google
+  # public_origin: http://localhost:8778
+  # client_id: $SYMPHONY_GOOGLE_CLIENT_ID
+  # client_secret: $SYMPHONY_GOOGLE_CLIENT_SECRET
+  # allowed_emails: [owner@gmail.com]
+  # allowed_subjects: ["verified-google-sub"] # Required for Workspace accounts.
 chat:
   # Optional management chat; see README.md for its dedicated runtime setup.
   enabled: false

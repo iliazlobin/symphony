@@ -346,7 +346,10 @@ defmodule SymphonyElixirWeb.ChatPanel do
     assign(socket, :notice, error_message(reason))
   end
 
-  defp error_message(reason) when reason in [:unauthorized, :forbidden], do: "Your session is locked or has expired. Unlock chat to continue."
+  defp error_message(reason) when reason in [:unauthorized, :forbidden] do
+    if BrowserAuth.google_enabled?(), do: "Sign in with Google to continue.", else: "Your session is locked or has expired. Unlock chat to continue."
+  end
+
   defp error_message(reason) when reason in [:not_found, :chat_not_found, :project_mismatch, :unknown_project, :project_not_found], do: "This conversation is not available in the selected project."
   defp error_message(reason) when reason in [:busy, :chat_busy, :already_running], do: "Wait for the current response or action to finish before continuing."
   defp error_message(reason) when reason in [:stale_revision, :stale_proposal], do: "The task changed since this action was prepared. Ask for a fresh proposal."
@@ -437,6 +440,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
     assigns =
       assign(assigns,
         authorized: BrowserAuth.authorized?(assigns.auth),
+        google_auth: BrowserAuth.google_enabled?(),
         running: running?(assigns.chat),
         executing: executing?(assigns.chat),
         busy: busy?(assigns.chat),
@@ -476,13 +480,17 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
       <div :if={!@loading && !@authorized && is_nil(@unavailable)} class="chat-empty chat-login">
         <span class="chat-orbit" aria-hidden="true">∿</span><h1>Your project conversations</h1>
-        <p>Unlock this browser to read chat history and manage work.</p>
-        <form action="/operator/session" method="post" class="chat-login-form">
+        <p>{if @google_auth, do: "Sign in to read chat history and manage work.", else: "Unlock this browser to read chat history and manage work."}</p>
+        <form :if={@google_auth} action="/auth/google" method="post" class="chat-login-form">
+          <input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={if @embedded, do: "/?assistant=1", else: "/chat"} />
+          <button class="button button-primary">Sign in with Google</button>
+        </form>
+        <form :if={!@google_auth} action="/operator/session" method="post" class="chat-login-form">
           <input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={if @embedded, do: "/?assistant=1", else: "/chat"} />
           <label class="field">Operator token<input type="password" name="operator_token" autocomplete="off" required /></label>
           <button class="button button-primary">Unlock chat</button>
         </form>
-        <p class="muted">Use the local operator token configured for this service.</p>
+        <p class="muted">{if @google_auth, do: "Use a Google account authorized for this Symphony service.", else: "Use the local operator token configured for this service."}</p>
       </div>
 
       <div :if={!@loading && @authorized && is_nil(@unavailable)} class="chat-workspace" data-inspector={to_string(@inspector)}>

@@ -7,7 +7,7 @@ work instead of supervising coding agents.
 
 The local profile uses GitHub Issues, one bounded container builder followed by a
 fresh reviewer, and a host publication broker. New ledgers start paused; workspaces,
-budgets and review handoffs persist. Authenticated local controls manage execution.
+budgets and review handoffs persist. Authenticated controls manage execution.
 Controlled threads select and verify separate named builder/reviewer permission
 profiles without overriding them with legacy sandbox fields.
 An approved documentation-only merge policy is available behind explicit host and
@@ -26,8 +26,11 @@ do not define this profile's authorization policy.
 The local service includes a Kanban task board and optional project-specific Astra
 chat with streaming replies, saved conversations, task widgets and filtered board
 links. Chat uses bounded management tools to read work and preview authorized
-changes; coding remains with the scheduler's workers. An authenticated local browser
-can invoke native operator controls; GitHub remains the task and publication record. See the
+changes; coding remains with the scheduler's workers. Browser access supports Google
+sign-in with an explicit operator allowlist; existing local installations retain
+operator-token login until configured. Google sign-in does not sign in the model or
+change worker permissions. Authenticated browsers invoke native operator controls;
+GitHub remains the task and publication record. See the
 [operator guide](profiles/events-concierge/README.md#operate) for setup and limits.
 
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](https://player.vimeo.com/video/1186371009?h=5626e4b899)

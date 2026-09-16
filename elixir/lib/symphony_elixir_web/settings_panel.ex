@@ -2,8 +2,12 @@ defmodule SymphonyElixirWeb.SettingsPanel do
   @moduledoc "Project settings with explicit controller, browser and runtime ownership."
   use Phoenix.Component
 
+  alias SymphonyElixirWeb.BrowserAuth
+
   @spec content(map()) :: Phoenix.LiveView.Rendered.t()
   def content(assigns) do
+    assigns = assign(assigns, :google_auth, BrowserAuth.google_enabled?())
+
     ~H"""
     <div class="settings-scope">
       <strong :for={project <- @board.projects}>{project.label}</strong>
@@ -17,7 +21,7 @@ defmodule SymphonyElixirWeb.SettingsPanel do
     <section id="settings-execution" hidden={@tab != "execution"} aria-label="Execution settings">
       <div class="settings-section"><h3>Execution</h3><p class="muted">{@execution_status}</p>
         <p :if={@read_only} class="settings-help">This board is read-only. Controller changes are unavailable here.</p>
-        <p :if={!@read_only && !@authorized} class="settings-help">Unlock operator controls in Connections to make changes.</p>
+        <p :if={!@read_only && !@authorized} class="settings-help">{if @google_auth, do: "Sign in through Connections to make changes.", else: "Unlock operator controls in Connections to make changes."}</p>
         <div :if={!@read_only} class="dialog-actions">
           <button :for={{action, label} <- [{"drain", "Drain"}, {"pause", "Pause"}, {"resume", "Resume"}]}
             class="button" disabled={!@can_control} phx-click="prepare-command" phx-value-action={action}>{label}</button>
@@ -39,7 +43,7 @@ defmodule SymphonyElixirWeb.SettingsPanel do
             <button class="button button-quiet" type="button" phx-click="reset-concurrency">Use workflow default</button></div>
         </form>
         <p :if={!@settings_available} class="settings-help">This controller does not report editable settings. Update the controller to enable this feature.</p>
-        <p :if={@settings_available && !@can_edit && !@read_only} class="settings-help">Settings are locked or controller state is unavailable. Refresh and unlock controls before editing.</p>
+        <p :if={@settings_available && !@can_edit && !@read_only} class="settings-help">{if @google_auth, do: "Settings are locked or controller state is unavailable. Refresh and sign in before editing.", else: "Settings are locked or controller state is unavailable. Refresh and unlock controls before editing."}</p>
         <p class="settings-help">Lowering the limit lets active tasks finish. Raising it may admit queued work within the workflow ceiling. Budgets are unchanged.</p>
       </div>
       <div class="settings-section"><div class="settings-section-title"><h3>Per-task limits</h3><span class="settings-badge">Read-only</span></div>
@@ -89,12 +93,16 @@ defmodule SymphonyElixirWeb.SettingsPanel do
         <p class="settings-help">{@source_status}. Reading issues does not verify permission to write them. Refresh does not start workers or call a model.</p>
         <p :for={project <- @board.projects}><a :if={project.url} href={project.url} target="_blank" rel="noopener noreferrer">{project.label} ↗</a></p>
       </div>
-      <div class="settings-section"><h3>Operator session</h3>
+      <div class="settings-section"><h3>{if @google_auth, do: "Google sign-in", else: "Operator session"}</h3>
         <%= cond do %>
-          <% @read_only -> %><p class="settings-help">Controls are unavailable in this read-only view. Browser preferences can still be saved.</p>
+          <% @read_only && !(@google_auth && @authorized) -> %><p class="settings-help">Controls are unavailable in this read-only view. Browser preferences can still be saved.</p>
           <% @authorized -> %>
-            <p class="settings-help">Local controls unlocked.</p>
-            <form action="/operator/session/logout" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} /><button class="button button-quiet">Lock controls</button></form>
+            <p class="settings-help">{if @google_auth, do: "Signed in to Symphony with Google.", else: "Local controls unlocked."}</p>
+            <form action="/operator/session/logout" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} /><button class="button button-quiet">{if @google_auth, do: "Sign out", else: "Lock controls"}</button></form>
+          <% @google_auth -> %>
+            <p class="settings-help">Sign in with an authorized Google account to manage work.</p>
+            <form action="/auth/google" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value="/?panel=settings" />
+              <button class="button button-primary">Sign in with Google</button></form>
           <% true -> %>
             <p class="settings-help">Unlock controls on this local host with your existing operator token.</p>
             <form action="/operator/session" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} />

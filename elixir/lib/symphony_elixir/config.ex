@@ -42,6 +42,21 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec browser_auth_settings() :: map()
+  def browser_auth_settings, do: settings!().browser_auth
+
+  @spec browser_auth_secret_environment_names() :: [String.t()]
+  def browser_auth_secret_environment_names do
+    browser_auth_settings()
+    |> Map.take(["client_id", "client_secret"])
+    |> Map.values()
+    |> Enum.flat_map(fn
+      "$" <> name -> if String.match?(name, ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/), do: [name], else: []
+      _ -> []
+    end)
+    |> Enum.uniq()
+  end
+
   @spec control_settings() :: map()
   def control_settings do
     settings = settings!().control |> Map.from_struct()

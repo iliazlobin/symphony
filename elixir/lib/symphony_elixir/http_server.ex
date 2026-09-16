@@ -28,7 +28,8 @@ defmodule SymphonyElixir.HttpServer do
           endpoint_opts = [
             server: true,
             http: [ip: ip, port: port],
-            url: [host: normalize_host(host)],
+            url: browser_url(host),
+            check_origin: browser_origins(),
             orchestrator: orchestrator,
             snapshot_timeout_ms: snapshot_timeout_ms,
             secret_key_base: secret_key_base()
@@ -81,6 +82,24 @@ defmodule SymphonyElixir.HttpServer do
   defp normalize_host(host) when host in ["", nil], do: "127.0.0.1"
   defp normalize_host(host) when is_binary(host), do: host
   defp normalize_host(host), do: to_string(host)
+
+  defp browser_url(host) do
+    case SymphonyElixirWeb.BrowserIdentity.settings() do
+      {:ok, config} -> [host: config.uri.host, scheme: config.uri.scheme, port: config.uri.port]
+      _ -> [host: normalize_host(host)]
+    end
+  end
+
+  defp browser_origins do
+    if SymphonyElixirWeb.BrowserIdentity.enabled?() do
+      case SymphonyElixirWeb.BrowserIdentity.settings() do
+        {:ok, config} -> [config.origin]
+        _ -> []
+      end
+    else
+      :conn
+    end
+  end
 
   defp secret_key_base do
     Base.encode64(:crypto.strong_rand_bytes(@secret_key_bytes), padding: false)

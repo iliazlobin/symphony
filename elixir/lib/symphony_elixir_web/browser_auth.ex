@@ -1,15 +1,27 @@
 defmodule SymphonyElixirWeb.BrowserAuth do
-  @moduledoc "Local browser authorization for bounded operator controls. Remote identity is not supported."
+  @moduledoc "Browser authorization for bounded controls using local tokens or configured Google identity."
 
   alias Phoenix.LiveView
   alias Plug.Conn
   alias SymphonyElixir.{Config, Orchestrator}
 
+  alias SymphonyElixirWeb.{BrowserIdentity, BrowserSessions}
+
   @session_key "symphony_operator"
   @max_age_seconds 8 * 60 * 60
   @loopback_hosts ["localhost", "127.0.0.1", "::1"]
 
-  @type context :: %{marker: term(), host: term(), peer_ip: term(), tracker_fingerprint: term()}
+  @type context :: %{
+          required(:marker) => term(),
+          required(:host) => term(),
+          required(:peer_ip) => term(),
+          required(:tracker_fingerprint) => term(),
+          optional(:scheme) => term(),
+          optional(:port) => term()
+        }
+
+  @spec google_enabled?() :: boolean()
+  def google_enabled?, do: BrowserIdentity.enabled?()
 
   @spec session_key() :: String.t()
   def session_key, do: @session_key
@@ -18,18 +30,32 @@ defmodule SymphonyElixirWeb.BrowserAuth do
   def context(session, socket) do
     uri = LiveView.get_connect_info(socket, :uri)
     peer = LiveView.get_connect_info(socket, :peer_data)
+    uri = SymphonyElixirWeb.BrowserOrigin.socket_uri(uri, peer)
 
     %{
       marker: session[@session_key],
       host: if(is_map(uri), do: Map.get(uri, :host)),
       peer_ip: if(is_map(peer), do: Map.get(peer, :address)),
+      scheme: if(is_map(uri), do: Map.get(uri, :scheme)),
+      port: if(is_map(uri), do: Map.get(uri, :port)),
       tracker_fingerprint: Orchestrator.tracker_fingerprint()
     }
   end
 
   @spec authorized?(term()) :: boolean()
+  def authorized?(%{marker: %{"provider" => "google", "id" => id}, tracker_fingerprint: scope} = context) do
+    with {:ok, config} <- BrowserIdentity.settings(),
+         true <- google_address?(context, config),
+         {:ok, session} <- BrowserSessions.session(id) do
+      session.fingerprint == config.fingerprint and session.scope == scope and
+        scope == Orchestrator.tracker_fingerprint() and BrowserIdentity.admit(session.identity, config)
+    else
+      _ -> false
+    end
+  end
+
   def authorized?(%{marker: marker, host: host, peer_ip: peer_ip, tracker_fingerprint: scope}) do
-    local_address?(host, peer_ip) and valid_marker?(marker, Config.control_token()) and
+    not google_enabled?() and local_address?(host, peer_ip) and valid_marker?(marker, Config.control_token()) and
       is_binary(scope) and scope == Orchestrator.tracker_fingerprint()
   end
 
@@ -40,11 +66,53 @@ defmodule SymphonyElixirWeb.BrowserAuth do
     token = Config.control_token()
 
     cond do
+      google_enabled?() -> {:error, :google_required}
       not local_request?(conn) -> {:error, :local_browser_required}
       not configured_token?(token) -> {:error, :control_auth_unconfigured}
       not is_binary(supplied) or not Plug.Crypto.secure_compare(token, supplied) -> {:error, :unauthorized}
       true -> {:ok, %{"fingerprint" => fingerprint(token), "issued_at" => System.system_time(:second)}}
     end
+  end
+
+  @spec callback_request?(Conn.t()) :: boolean()
+  def callback_request?(conn) do
+    case BrowserIdentity.settings() do
+      {:ok, config} -> google_address?(conn_context(conn), config)
+      _ -> false
+    end
+  end
+
+  @spec browser_request?(Conn.t()) :: boolean()
+  def browser_request?(conn) do
+    if google_enabled?() do
+      case BrowserIdentity.settings() do
+        {:ok, config} -> google_address?(conn_context(conn), config) and same_origin?(conn)
+        _ -> false
+      end
+    else
+      local_request?(conn)
+    end
+  end
+
+  @spec conn_context(Conn.t()) :: map()
+  def conn_context(conn) do
+    %{
+      marker: Conn.get_session(conn, @session_key),
+      host: conn.host,
+      port: conn.port,
+      scheme: Atom.to_string(conn.scheme),
+      peer_ip: Conn.get_peer_data(conn).address,
+      tracker_fingerprint: Orchestrator.tracker_fingerprint()
+    }
+  end
+
+  @spec revoke(term()) :: :ok | {:error, atom()}
+  def revoke(%{"provider" => "google", "id" => id}), do: BrowserSessions.revoke(id)
+  def revoke(_marker), do: :ok
+
+  defp google_address?(context, config) do
+    context[:host] == config.uri.host and context[:scheme] == config.uri.scheme and context[:port] == config.uri.port and
+      (config.uri.scheme == "https" or local_address?(context[:host], context[:peer_ip]))
   end
 
   @spec local_request?(Conn.t()) :: boolean()

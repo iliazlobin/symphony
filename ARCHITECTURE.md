@@ -32,7 +32,7 @@ owns those acceptance steps.
 flowchart TB
   User["User"] --> Client["CLI or narrow MCP tools"]
   subgraph Mac["Trusted Mac services"]
-    Web["Web client · Board and Chat"] --> Browser["Local browser session and CSRF checks"]
+    Web["Web client · Board and Chat"] --> Browser["Google or local browser session · CSRF checks"]
     Browser --> Scheduler
     Browser --> Chat["Conversation store · project scope and action receipts"]
     Chat --- History["Private durable chat records"]
@@ -95,8 +95,10 @@ commands to the native API and owns no scheduling state.
 - [`TaskBoard`](elixir/lib/symphony_elixir_web/task_board.ex) combines tracker issues,
   runtime and durable holds for the LiveView Kanban board. Sorting and manual order
   are browser preferences. Card and Settings dialogs preserve the board underneath.
-  [`BrowserAuth`](elixir/lib/symphony_elixir_web/browser_auth.ex) gates local operator
-  sessions; `BoardActions` forwards only existing commands with native project,
+  [`BrowserAuth`](elixir/lib/symphony_elixir_web/browser_auth.ex) checks Google or
+  local operator sessions. Google mode protects the board, chat and read APIs before
+  project data is returned; an explicit allowlist controls operator access.
+  `BoardActions` forwards only existing commands with native project,
   revision and idempotency checks. The same checks apply to chat control actions.
   Concurrency changes persist in the ledger and affect admission only: they never
   interrupt existing work or reset budgets. The workflow's configured concurrency
@@ -174,6 +176,29 @@ prove that its container has stopped.
   restart; the running instance fails closed rather than switching ledgers or
   silently dropping controls.
 
+## Browser identity
+
+`browser_auth.provider` selects Google OpenID Connect or the backward-compatible
+`local_token` login. Google sign-in uses a server-side authorization-code exchange
+with PKCE, state and nonce checks, and validates signed Google identity claims.
+Only the configured public origin can establish a browser session. Google tokens
+stay out of the browser session; the login grants no Drive, Gmail or other service-data access.
+
+Authorization requires an exact allowlisted, verified email controlled by Google.
+Gmail identities can be additionally pinned through `allowed_subjects`; Workspace
+identities must be pinned to a Google subject as well as their email. An arbitrary
+third-party email attached to a Google account is not accepted. The session retains
+the Google issuer and stable subject; all allowed operators share the configured
+project's operator authority, with no per-user roles or separate chat histories.
+
+The bounded session owner keeps browser grants in memory; restarting the application
+signs browsers out while retaining durable conversations. Sign-out revokes the grant
+and disconnects its live sockets. Identity configuration changes invalidate affected
+grants. Provider and public-origin changes require a restart to refresh the socket
+origin policy. Existing control tokens remain for
+local API/CLI clients and are not an alternate browser login in Google mode.
+See [configuration and recovery](elixir/README.md#browser-sign-in).
+
 ## Management conversations
 
 Each chat has an immutable project identity and retained tracker fingerprint. The
@@ -224,8 +249,10 @@ the web chat does not call MCP to reach its own service. Codex 0.154.0 is pinned
 this experimental protocol. The management runtime registers no execution environments
 or coding tools and disables inherited Apps, plugins, MCP servers and instructions.
 This reduces the model's tool authority; it is not a container isolation boundary.
-Remote ingress, identity, shared storage and cloud runtime credentials need a separate
-GCP implementation before exposing this local service remotely.
+Google browser identity is separate from the model's subscription login and GitHub
+service credentials. Remote ingress, retained storage and cloud runtime credentials
+still require the [GKE deployment contract](deploy/gke/README.md); configuring Google
+sign-in does not deploy or enable a cloud controller.
 
 The integration follows the [App Server thread and turn lifecycle](https://learn.chatgpt.com/docs/app-server)
 and [typed function-calling guidance](https://developers.openai.com/api/docs/guides/function-calling):
