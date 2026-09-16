@@ -54,6 +54,8 @@ defmodule SymphonyElixir.Config do
       "$" <> name -> if String.match?(name, ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/), do: [name], else: []
       _ -> []
     end)
+    # The Mac launcher supplies these names independently of workflow reloads.
+    |> Enum.concat(["SYMPHONY_GOOGLE_CLIENT_ID", "SYMPHONY_GOOGLE_CLIENT_SECRET"])
     |> Enum.uniq()
   end
 

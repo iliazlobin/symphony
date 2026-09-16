@@ -260,7 +260,6 @@ defmodule SymphonyElixir.Codex.AppServer do
       tracker_secret_unset_command(dynamic_tool_binding),
       "exec #{Config.settings!().codex.command}"
     ]
-    |> Enum.reject(&is_nil/1)
     |> Enum.join(" && ")
   end
 
@@ -270,7 +269,6 @@ defmodule SymphonyElixir.Codex.AppServer do
       tracker_secret_unset_command(dynamic_tool_binding),
       "exec #{Config.settings!().codex.command}"
     ]
-    |> Enum.reject(&is_nil/1)
     |> Enum.join(" && ")
   end
 
@@ -284,10 +282,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp tracker_secret_unset_command(dynamic_tool_binding) do
     names = dynamic_tool_binding.secret_environment_names ++ Config.browser_auth_secret_environment_names()
 
-    case names |> valid_environment_names() |> Enum.uniq() do
-      [] -> nil
-      names -> "unset " <> Enum.join(names, " ")
-    end
+    "unset " <> Enum.join(names |> valid_environment_names() |> Enum.uniq(), " ")
   end
 
   defp valid_environment_names(names) do

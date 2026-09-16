@@ -147,6 +147,25 @@ providing a missing answer. Other transitions explain the owning workflow action
 open the exact configured origin and choose **Sign in with Google**. Only explicitly
 allowed accounts can read the board and chat or manage work. Machine API clients
 retain their separate local authentication.
+
+For the Mac launch agent, save the downloaded Google **Web application** client JSON
+outside the repository and worker homes, owned by your user with mode `0600`. Add its
+absolute path as `google_oauth_client_file` in the existing private `config.json`:
+
+```json
+"google_oauth_client_file": "/absolute/private/path/google-web-client.json"
+```
+
+The controller launcher reads the file on each start and supplies
+`SYMPHONY_GOOGLE_CLIENT_ID` and `SYMPHONY_GOOGLE_CLIENT_SECRET` to the controller only.
+Reference these variables in `browser_auth` in the private `WORKFLOW.md`; configure
+the exact public origin and operator allowlist there. The publisher and worker
+launchers do not load this file. No shell exports or secrets in launch-agent plists
+are needed. Missing, unsafe or malformed configured files prevent controller startup
+without printing their contents. Omitting the setting preserves existing environment
+configuration. Rotate the private file and restart the controller to load a new client;
+follow the existing drain/restart procedure to preserve active work.
+
 **Settings → Connections → Sign out** ends the Symphony session. Restarting the
 controller also signs browsers out; saved conversations remain. Google sign-in does
 not provide the separate Codex subscription login or GitHub service credentials.

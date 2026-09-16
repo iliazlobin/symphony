@@ -34,6 +34,95 @@ Keep scope bounded.
 
 
 class ProfileTests(unittest.TestCase):
+    def oauth_file(self, root):
+        path = root / "google-client.json"
+        path.write_text(json.dumps({"web": {
+            "client_id": "fixture.apps.googleusercontent.com", "client_secret": "fixture-secret",
+            "redirect_uris": ["http://localhost:8778/auth/google/callback"],
+        }}))
+        path.chmod(0o600)
+        return path
+
+    def test_optional_oauth_file_preserves_existing_environment(self):
+        with patch.dict(os.environ, {"SYMPHONY_GOOGLE_CLIENT_ID": "existing"}), \
+                patch.object(profile, "read_private") as read:
+            self.assertEqual(profile.google_oauth_environment({}), {})
+            self.assertEqual(os.environ["SYMPHONY_GOOGLE_CLIENT_ID"], "existing")
+            read.assert_not_called()
+
+    def test_oauth_file_rejects_missing_unsafe_and_non_web_credentials_without_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self.oauth_file(root)
+            cases = [None, "", "relative.json", str(root / "missing.json")]
+            for location in cases:
+                with self.subTest(location=location), self.assertRaises(profile.ControlError):
+                    profile.google_oauth_environment({"google_oauth_client_file": location})
+            for mode in (0o400, 0o644, 0o700):
+                path.chmod(mode)
+                with self.subTest(mode=mode), self.assertRaises(profile.ControlError):
+                    profile.google_oauth_environment({"google_oauth_client_file": str(path)})
+            path.chmod(0o600)
+            for document in ('{"web": "fixture-secret"}', '{"installed": {}}',
+                             '{"web": {"client_id": "fixture-secret"}}',
+                             '{"web": {"client_id": "wrong-host", "client_secret": "fixture-secret"}}',
+                             '{"web": {"client_id": "fixture.apps.googleusercontent.com", "client_secret": "x\\u0000"}}',
+                             '{"web": {"client_id": "fixture.apps.googleusercontent.com", "client_secret": 4}}',
+                             '{"fixture-secret"', 'null', '[]'):
+                path.write_text(document)
+                with self.subTest(document=document), self.assertRaises(profile.ControlError) as raised:
+                    profile.google_oauth_environment({"google_oauth_client_file": str(path)})
+                self.assertNotIn("fixture-secret", str(raised.exception))
+                self.assertNotIn(str(path), str(raised.exception))
+
+    def test_oauth_file_rejects_symlink_and_other_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self.oauth_file(root)
+            link = root / "client-link.json"
+            link.symlink_to(path)
+            with self.assertRaises(profile.ControlError):
+                profile.google_oauth_environment({"google_oauth_client_file": str(link)})
+            with patch.object(profile.os, "getuid", return_value=os.getuid() + 1), \
+                    self.assertRaises(profile.ControlError):
+                profile.google_oauth_environment({"google_oauth_client_file": str(path)})
+
+    def test_controller_loads_oauth_without_changing_parent_or_worker_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self.oauth_file(root)
+            workflow = root / "WORKFLOW.md"
+            workflow.write_text(WORKFLOW)
+            workflow.chmod(0o600)
+            binary = root / "elixir/bin/symphony"
+            binary.parent.mkdir(parents=True)
+            binary.touch()
+            config = {"google_oauth_client_file": str(path), "workflow_path": str(workflow),
+                      "state_dir": str(root), "base_sha": "a" * 40, "_token": "control-fixture",
+                      "workspace_root": str(root / "workspaces"), "profile_bin": "profile.py",
+                      "_config_path": str(root / "config.json"), "api_url": "http://127.0.0.1:8778",
+                      "codex_home": str(root / "worker-home")}
+            with patch.object(profile, "ROOT", root), patch.object(profile.os, "chdir"), \
+                    patch.object(profile.os, "execve") as execute, patch.object(profile, "run", return_value="github-fixture") as gh, \
+                    patch.dict(os.environ, {"SYMPHONY_GOOGLE_CLIENT_ID": "ambient-id", "SYMPHONY_GOOGLE_CLIENT_SECRET": "ambient-secret"}):
+                profile.start_service(config)
+                self.assertEqual(os.environ["SYMPHONY_GOOGLE_CLIENT_SECRET"], "ambient-secret")
+                launched = execute.call_args.args[2]
+                self.assertEqual(launched["SYMPHONY_GOOGLE_CLIENT_ID"], "fixture.apps.googleusercontent.com")
+                self.assertEqual(launched["SYMPHONY_GOOGLE_CLIENT_SECRET"], "fixture-secret")
+                self.assertEqual(launched["SYMPHONY_CONTROL_TOKEN"], "control-fixture")
+                self.assertEqual(launched["GITHUB_TOKEN"], os.environ.get("GITHUB_TOKEN", "github-fixture"))
+                self.assertNotIn("SYMPHONY_GOOGLE_CLIENT_SECRET", profile.worker_env(config))
+                self.assertNotIn("SYMPHONY_GOOGLE_CLIENT_ID", profile.worker_env(config))
+                self.assertNotIn("fixture-secret", str(execute.call_args.args[:2]))
+                path.write_text("malformed fixture-secret")
+                execute.reset_mock()
+                gh.reset_mock()
+                with self.assertRaises(profile.ControlError):
+                    profile.start_service(config)
+                execute.assert_not_called()
+                gh.assert_not_called()
+
     def test_initialized_worker_config_disables_apps_and_preserves_role_permissions(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
