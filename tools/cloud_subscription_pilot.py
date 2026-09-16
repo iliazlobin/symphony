@@ -48,6 +48,35 @@ class PilotError(RuntimeError):
     """Fixed safe messages only; never include upstream RPC/authentication text."""
 
 
+def rpc_error_summary(error):
+    """Return only fixed categories and bounded protocol/status numbers."""
+    if not isinstance(error, dict):
+        return {"category": "invalid_rpc_error"}
+    message = error.get("message", "")
+    message = message.lower() if isinstance(message, str) else ""
+    category = "provider_error"
+    phrases = (("chatgpt login is disabled", "login_policy_denied"),
+               ("external auth is active", "external_auth_forbidden"),
+               ("device code login is not enabled", "device_login_unavailable"),
+               ("dns", "dns_failure"), ("name resolution", "dns_failure"),
+               ("certificate", "tls_failure"), ("tls", "tls_failure"),
+               ("timed out", "network_timeout"), ("timeout", "network_timeout"),
+               ("error sending request", "transport_failure"),
+               ("connection", "connection_failure"), ("expected value", "invalid_provider_response"))
+    for phrase, value in phrases:
+        if phrase in message:
+            category = value
+            break
+    result = {"category": category}
+    code = error.get("code")
+    if type(code) is int and -32768 <= code <= -32000:
+        result["rpc_code"] = code
+    status = re.search(r"device code request failed with status ([1-5][0-9]{2})(?:\s|$)", message)
+    if status:
+        result.update(category="device_auth_http_error", http_status=int(status.group(1)))
+    return result
+
+
 def load_module(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -221,7 +250,8 @@ class AppServer:
             value = self.message(deadline)
             if value.get("id") == request_id:
                 if "error" in value or "result" not in value:
-                    raise PilotError("Codex rejected the " + method + " request")
+                    summary = rpc_error_summary(value.get("error"))
+                    raise PilotError("Codex rejected the " + method + " request: " + json.dumps(summary, sort_keys=True))
                 return value["result"]
             if "method" in value:
                 self.notifications.append(value)
@@ -258,10 +288,19 @@ def enroll(client, emit):
 
 
 def verify_subscription(client, slot, claim):
+    # In pinned 0.153.4 account/read requests refresh but can return cached account
+    # state after a transient refresh failure. It does not emit account/updated.
+    # getAuthStatus explicitly excludes tokens; rateLimits/read makes a provider
+    # request, proving current acceptance without claiming refresh-token rotation.
     account = client.rpc("account/read", {"refreshToken": True})
-    if client.auth_mode is None:
-        client.wait("account/updated", lambda params: params.get("authMode") is not None, 10)
-    slot.verify_account(claim["owner"], claim["generation"], account, client.auth_mode)
+    status = client.rpc("getAuthStatus", {"includeToken": False, "refreshToken": False})
+    if (status.get("authMethod") != "chatgpt" or status.get("authToken") is not None
+            or status.get("requiresOpenaiAuth") is not True):
+        raise PilotError("Codex-managed token-free ChatGPT authentication was not verified")
+    limits = client.rpc("account/rateLimits/read", None)
+    if not isinstance(limits, dict) or not isinstance(limits.get("rateLimits"), dict) or not limits["rateLimits"]:
+        raise PilotError("Provider-backed subscription authentication was not verified")
+    slot.verify_account(claim["owner"], claim["generation"], account, status["authMethod"])
 
 
 def task(client):
@@ -328,7 +367,7 @@ def run_stage(boot, receipt, emit):
             enroll(client, emit)
         verify_subscription(client, slot, claim)
         result = {"stage": boot["stage"], "generation": claim["generation"],
-                  "subscription_verified": True, "refresh_requested": True}
+                  "subscription_verified": True, "provider_auth_verified": True, "refresh_requested": True}
         if boot["stage"] == "task":
             result.update(task(client))
         return result

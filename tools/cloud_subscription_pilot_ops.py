@@ -5,9 +5,13 @@ Operator sequence (use umask 077 and the pinned platform-dev kubectl context):
   foundation > foundation.json; apply after review; retain its PVC permanently.
   job --image <digest> --owner <nonce> --stage enrollment --generation 1 \
       --expires-at <unix-deadline> > job.json; create after review.
-  Capture fresh Namespace, PVC, Job and complete selected PodList JSON directly
-  from the trusted API. Use --chunk-size=0 for the PodList and its exact selector
-  batch.kubernetes.io/controller-uid=<captured-job-uid>. Do not use model output.
+  Capture fresh Namespace, PVC and Job JSON directly from the trusted API.
+  Capture the complete PodList using kubectl get --raw with this endpoint:
+  /api/v1/namespaces/symphony-workers/pods?labelSelector=batch.kubernetes.io%2Fcontroller-uid%3D<job-uid>
+  Quote the endpoint. A native PodList preserves its collection resourceVersion
+  and continuation marker; kubectl get pods can reformat it as List and lose
+  this evidence even with --chunk-size=0. Do not reconstruct metadata or use
+  model output. A nonempty continuation marker requires a new complete capture.
   validate --manifest job.json --namespace-object namespace.json --pvc-object pvc.json
       --job-object observed-job.json --pods-object pods.json --namespace-uid <uid>
       --pvc-uid <uid> --job-uid <uid> > admission.json
@@ -77,7 +81,9 @@ def foundation():
          "spec": {"podSelector": {"matchLabels": {"app": APP}}, "policyTypes": ["Ingress", "Egress"],
                   "ingress": [], "egress": [
                       {"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
-                               "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}],
+                               "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}},
+                              {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
+                               "podSelector": {"matchLabels": {"k8s-app": "node-local-dns"}}}],
                        "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}]},
                       {"to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": [
                           "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
@@ -132,9 +138,11 @@ def job_manifest(image, owner, stage, generation, expires_at, now=None):
                      "template": {"metadata": {"labels": labels}, "spec": pod}}}
 
 
-def identity(obj, kind, name, uid):
+def identity(obj, kind, name, uid, typed_pod_list_item=False):
     meta = obj.get("metadata", {})
-    require(UID.fullmatch(uid or "") and obj.get("kind") == kind and meta.get("name") == name
+    known_kind = obj.get("kind") == kind or (
+        typed_pod_list_item and kind == "Pod" and "kind" not in obj)
+    require(UID.fullmatch(uid or "") and known_kind and meta.get("name") == name
             and meta.get("uid") == uid and meta.get("resourceVersion") and not meta.get("deletionTimestamp"),
             "Object identity, revision or non-deletion state is unverified")
     if kind != "Namespace":
@@ -187,7 +195,9 @@ def validate(manifest, namespace, pvc, job, pods, namespace_uid, pvc_uid, job_ui
     pod = pods["items"][0]
     meta = pod.get("metadata", {})
     require(isinstance(meta.get("name"), str) and RUNNER.NAME.fullmatch(meta["name"]), "Invalid Pod name")
-    identity(pod, "Pod", meta.get("name"), meta.get("uid"))
+    # Native typed PodList items can omit TypeMeta; the validated envelope fixes
+    # their type. An explicit conflicting kind is never accepted.
+    identity(pod, "Pod", meta.get("name"), meta.get("uid"), typed_pod_list_item=True)
     require(meta.get("labels", {}).get("app") == APP
             and meta["labels"].get(OWNER) == manifest["metadata"]["labels"][OWNER]
             and meta["labels"].get("batch.kubernetes.io/controller-uid") == job_uid

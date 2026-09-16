@@ -151,10 +151,12 @@ class CloudSubscriptionPilotTests(unittest.TestCase):
         client.message(PILOT.time.monotonic() + 5)
         self.assertEqual(client.auth_mode, "chatgpt")
 
-    def test_account_update_before_or_after_refresh_response_is_accepted(self):
+    def test_replacement_admission_does_not_require_unsolicited_account_update(self):
         update = {"method": "account/updated", "params": {"authMode": "chatgpt"}}
         response = {"id": 1, "result": {"account": {"type": "chatgpt"}, "requiresOpenaiAuth": True}}
-        for messages in ((update, response), (response, update)):
+        status = {"id": 2, "result": {"authMethod": "chatgpt", "authToken": None, "requiresOpenaiAuth": True}}
+        limits = {"id": 3, "result": {"rateLimits": {"limitId": "codex"}}}
+        for messages in ((update, response, status, limits), (response, update, status, limits), (response, status, limits)):
             client = PILOT.AppServer.__new__(PILOT.AppServer)
             client.heartbeat, client.send, client.next_id = Mock(), Mock(), 0
             client.auth_mode, client.notifications = None, deque(maxlen=64)
@@ -193,11 +195,58 @@ class CloudSubscriptionPilotTests(unittest.TestCase):
 
     def test_subscription_refresh_has_no_cached_or_api_key_fallback(self):
         client, slot = Mock(), Mock()
-        client.auth_mode = "chatgpt"
-        client.rpc.return_value = {"account": {"type": "chatgpt"}, "requiresOpenaiAuth": True}
+        account = {"account": {"type": "chatgpt"}, "requiresOpenaiAuth": True}
+        client.rpc.side_effect = [account,
+            {"authMethod": "chatgpt", "authToken": None, "requiresOpenaiAuth": True},
+            {"rateLimits": {"limitId": "codex"}}]
         PILOT.verify_subscription(client, slot, {"owner": OWNER, "generation": 2})
-        client.rpc.assert_called_once_with("account/read", {"refreshToken": True})
-        slot.verify_account.assert_called_once_with(OWNER, 2, client.rpc.return_value, "chatgpt")
+        self.assertEqual(client.rpc.call_args_list[0].args, ("account/read", {"refreshToken": True}))
+        self.assertEqual(client.rpc.call_args_list[1].args, ("getAuthStatus", {"includeToken": False, "refreshToken": False}))
+        self.assertEqual(client.rpc.call_args_list[2].args, ("account/rateLimits/read", None))
+        slot.verify_account.assert_called_once_with(OWNER, 2, account, "chatgpt")
+        client.wait.assert_not_called()
+
+    def test_cached_account_cannot_pass_without_provider_acceptance(self):
+        client, slot = Mock(), Mock()
+        client.rpc.side_effect = [
+            {"account": {"type": "chatgpt"}, "requiresOpenaiAuth": True},
+            {"authMethod": "chatgpt", "authToken": None, "requiresOpenaiAuth": True},
+            PILOT.PilotError("Provider unavailable")]
+        with self.assertRaisesRegex(PILOT.PilotError, "Provider unavailable"):
+            PILOT.verify_subscription(client, slot, {"owner": OWNER, "generation": 2})
+        slot.verify_account.assert_not_called()
+
+    def test_auth_status_rejects_external_mode_tokens_or_billing_fallback(self):
+        for status in ({"authMethod": "chatgptAuthTokens", "authToken": None, "requiresOpenaiAuth": True},
+                       {"authMethod": "apikey", "authToken": None, "requiresOpenaiAuth": True},
+                       {"authMethod": "chatgpt", "authToken": "PRIVATE TOKEN", "requiresOpenaiAuth": True},
+                       {"authMethod": "chatgpt", "authToken": None, "requiresOpenaiAuth": False}):
+            client, slot = Mock(), Mock()
+            client.rpc.side_effect = [{"account": {"type": "chatgpt"}, "requiresOpenaiAuth": True}, status]
+            with self.assertRaises(PILOT.PilotError) as caught:
+                PILOT.verify_subscription(client, slot, {"owner": OWNER, "generation": 2})
+            self.assertNotIn("PRIVATE", str(caught.exception))
+            slot.verify_account.assert_not_called()
+            self.assertEqual(client.rpc.call_count, 2)
+
+    def test_rpc_diagnostics_are_allowlisted_without_raw_message_or_data(self):
+        cases = [("failed to request device code: DNS lookup failed SECRET", "dns_failure"),
+                 ("failed to request device code: certificate SECRET", "tls_failure"),
+                 ("ChatGPT login is disabled. SECRET", "login_policy_denied"),
+                 ("External auth is active. SECRET", "external_auth_forbidden"),
+                 ("device code login is not enabled SECRET", "device_login_unavailable"),
+                 ("failed to request device code: error sending request https://private", "transport_failure"),
+                 ("device code request failed with status 403 Forbidden SECRET", "device_auth_http_error"),
+                 ("PRIVATE UNKNOWN MESSAGE", "provider_error")]
+        for message, category in cases:
+            value = PILOT.rpc_error_summary({"code": -32603, "message": message, "data": "SECRET"})
+            self.assertEqual(value["category"], category)
+            self.assertNotIn("SECRET", json.dumps(value))
+            self.assertNotIn("private", json.dumps(value))
+            self.assertEqual(value["rpc_code"], -32603)
+            if category == "device_auth_http_error":
+                self.assertEqual(value["http_status"], 403)
+        self.assertEqual(PILOT.rpc_error_summary({"code": "secret", "message": None}), {"category": "provider_error"})
 
     def client(self):
         client = Mock()

@@ -47,7 +47,7 @@ For a fresh environment only, create the three application resources with local 
 
 ## Runner and authentication implementation
 
-These are standalone components under test, **not an enabled cloud task path**:
+These are standalone components, **not an enabled Symphony cloud task path**:
 
 - [`kubernetes_runner.py`](../../tools/kubernetes_runner.py) pins the cluster, namespace/PVC identities and image; journals launch intent; creates one bounded Job; validates admitted Pods; and checks the worker identity handshake before forwarding App Server input. Lost transport is not reattached. Cancellation retains exact terminal Job/Pod evidence; missing objects or an expired lease do not release ownership.
 - [`kubernetes_auth.py`](../../tools/kubernetes_auth.py) owns an exclusive subscription slot at `/var/lib/symphony-auth/slot-01` on a retained RWOP volume. It atomically moves the single current credential file into a fresh stage home after verified termination. Codex manages login and refresh. No credential snapshots, Mac-home copying, shared parallel refresh writers or API-key fallback are supported.
@@ -57,20 +57,38 @@ Install the [Python dependencies](../../tools/requirements.txt) in an isolated e
 
 The required entrypoint emits one identity line before Codex starts: `{"symphony_worker":{"owner":"<nonce>","generation":1,"job_uid":"<UID>","pod_uid":"<UID>"}}`. It must fence the exact auth claim, enforce `--expires-at` even without the controller, and stop Codex on heartbeat loss. The wrapper's successful exit establishes termination only. Candidate import must complete before `turn/completed` becomes visible to the existing candidate pipeline; the existing guardian must also gain explicit Kubernetes cancellation support. RWOP volumes cannot be mounted simultaneously by a staging Pod and a worker.
 
-Persistent credentials survive ordinary Pod replacement. **Codex 0.153.4 truncates `auth.json` during refresh**; a crash during that write can lose usable authentication. Block dispatch and enroll again; never restore stale tokens. The slot journal does not change that upstream storage behavior. [Pinned authentication storage implementation](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/login/src/auth/storage.rs)
+The retained slot is designed to preserve credentials across ordinary Pod replacement; the live replacement check is part of the pilot below. **Codex 0.153.4 truncates `auth.json` during refresh**; a crash during that write can lose usable authentication. Block dispatch and enroll again; never restore stale tokens. The slot journal does not change that upstream storage behavior. [Pinned authentication storage implementation](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/login/src/auth/storage.rs)
 
-## Runtime blocker
+## Worker sandbox and subscription pilot
 
-The real GKE Sandbox test fails at Codex `thread/start`, before model work: `bwrap: loopback: Failed RTM_NEWADDR`. This matches [gVisor issue 13438](https://github.com/google/gvisor/issues/13438). The pinned amd64 image starts on the dedicated node, but that does not establish Codex sandbox compatibility. There is no verified configuration-only fix. Installing system bubblewrap alone is not an accepted remedy; removing network isolation or granting privileged execution is not an acceptable workaround.
+The cloud [worker Dockerfile](Dockerfile.worker) retains Codex `0.153.4` and builds checksum-pinned bubblewrap `0.11.2` with one [loopback compatibility patch](bubblewrap-loopback-idempotent.patch). gVisor already assigns the loopback address in a new network namespace; the patch removes `NLM_F_EXCL` from that address-creation request so repeated setup succeeds. It keeps network namespace isolation and error checks. See the [source manifest and removal condition](bubblewrap-source.json), [upstream issue](https://github.com/google/gvisor/issues/13438) and [upstream fix](https://github.com/google/gvisor/pull/13532). The Mac worker image is unchanged.
 
-Keep cloud admission and real credential enrollment disabled until a reviewed runtime fix passes the complete permission canary. The pool remains capped at one node and returns to zero when idle. Canary Pods contain disposable fake data only; terminate them gracefully, verify exact container exit, then remove the completed test resource. Preserve uncertain live-worker ownership and retained volumes.
+The image below, built from [source `9a0099c`](https://github.com/iliazlobin/symphony/tree/9a0099c8dabfdf5b691680c480d4a7a861fb887e), passed the complete builder/reviewer permission canary on the actual GKE gVisor worker. The `RTM_NEWADDR` blocker is resolved for this image: workspace/tool access worked while protected files, authentication paths, process aliases and command network access remained denied. This check used fake credentials and made no model calls.
+
+```sh
+SYMPHONY_PILOT_IMAGE='us-west1-docker.pkg.dev/iz27-platform-dev/symphony/worker@sha256:923a87f75ae4cf0c8a7c2aabb177597c30abaec72726347b41c48d887434a740'
+python3 tools/cloud_subscription_pilot_ops.py --help
+python3 tools/cloud_subscription_pilot_ops.py job --help
+python3 tools/cloud_subscription_pilot.py --help
+```
+
+The [operator helper](../../tools/cloud_subscription_pilot_ops.py) emits and validates a standalone pilot; it never applies resources, starts commands or schedules tasks. Its foundation uses a retained **1 GiB RWOP** PVC, `symphony-workers/symphony-subscription-auth`, with `shared-retain`. Mount the whole authentication directory and retain `fsGroupChangePolicy: OnRootMismatch` so private files remain private on reattachment. Each stage gets a fresh disposable workspace. The pilot-only network policy permits DNS and public IPv4 HTTPS for the outer Codex client; it is not a hostname allowlist. Command-tool network access remains denied by the tested inner sandbox.
+
+1. **Enroll, generation 1:** validate the admitted Job, Pod, image and PVC identities, then invoke the [pilot helper](../../tools/cloud_subscription_pilot.py) through private `kubectl exec` with `{}` on stdin. Complete its fresh ChatGPT device login. The helper requests a managed token refresh and verifies subscription authentication. Device codes appear only in the operator stream, not Pod logs.
+2. **Task, generation 2:** obtain the prior Job's terminal receipt, retire its exact claim, then run one fixed addition task with a real model turn. The helper independently checks the generated file through the named command sandbox; generated code never executes in the trusted outer process.
+3. **Replacement task, generation 3:** start a new Job using the same retained authentication slot and the previous terminal receipt. Require another refresh and successful task without another login.
+4. **Retire generation 3:** use a final bounded retirement Job and fresh terminal evidence. Preserve the authentication PVC; remove only completed pilot resources after their identities and termination are verified.
+
+Capture receipts directly from the pinned cluster API. Use **`kubectl get --raw`** for the exact Job's Pod-list endpoint shown in the operator helper: it preserves the native `PodList` collection `resourceVersion` and continuation marker. Formatted `kubectl get pods` output can lose that evidence even with `--chunk-size=0`; never reconstruct it or substitute worker output. Validate the complete inventory immediately before execution or retirement.
+
+Each Job has no automatic retry and an absolute lifetime of at most 15 minutes. The task turn is bounded to three minutes; the helper renews its auth claim and PID1 stops the container when the exec heartbeat is lost. Expiration or a missing Pod never releases an auth slot. Credentials have not yet been enrolled for this pilot, and the subscription-backed task and replacement tests remain pending. The Mac retains controller and publisher ownership.
 
 ## Remaining integration gates
 
 - Keep admission, budgets, retries and task ownership in the existing controller. A Kubernetes Job is one bounded builder or reviewer stage, not another scheduler.
 - Persist exact Job and Pod identities before releasing model work. Use independent Pod deadlines, no automatic retries and terminal-process evidence before reusing a workspace or authentication slot.
 - Preserve the existing candidate pipeline's exact-revision and independent-review checks. Candidate import must complete before the controller receives successful completion. Controller loss or transport failure retains uncertain ownership.
-- Enroll a dedicated cloud subscription login after real gVisor permission canaries pass. Preserve Codex-managed refreshes in an exclusive retained slot, respecting the interrupted-write limit above; never clone a Mac login, restore stale credentials or fall back to API billing.
+- Complete the standalone subscription enrollment, task and replacement pilot above. Preserve Codex-managed refreshes in an exclusive retained slot, respecting the interrupted-write limit above; never clone a Mac login, restore stale credentials or fall back to API billing.
 - Satisfy the required application package and release acceptance above. Integrate the web task's accepted revision; include its management-chat runtime and persistence in the cloud release.
 
 The worker pool is bounded to zero through one node for the pilot. Larger concurrency requires measured capacity, quota and cost review. The cloud task path remains disabled until the gates above are verified.

@@ -52,6 +52,12 @@ class PilotOpsTests(unittest.TestCase):
         dns, https = policy["spec"]["egress"]
         self.assertEqual(dns["to"][0]["namespaceSelector"]["matchLabels"], {"kubernetes.io/metadata.name": "kube-system"})
         self.assertEqual(dns["to"][0]["podSelector"]["matchLabels"], {"k8s-app": "kube-dns"})
+        self.assertEqual(dns["to"][1], {
+            "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
+            "podSelector": {"matchLabels": {"k8s-app": "node-local-dns"}}})
+        self.assertEqual(dns["ports"], [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}])
+        self.assertEqual(len(dns["to"]), 2)
+        self.assertTrue(all("ipBlock" not in peer for peer in dns["to"]))
         self.assertEqual(https["ports"], [{"protocol": "TCP", "port": 443}])
         excluded = [ipaddress.ip_network(item) for item in https["to"][0]["ipBlock"]["except"]]
         for ip in ("127.0.0.1", "10.4.0.1", "172.20.0.1", "192.168.1.1", "169.254.169.254", "100.100.1.1"):
@@ -125,6 +131,28 @@ class PilotOpsTests(unittest.TestCase):
             mutate(values["pods"])
             with self.assertRaises(OPS.OpsError):
                 OPS.validate(**values)
+
+    def test_rejects_kubectl_list_wrapper_and_missing_collection_revision(self):
+        for kind, revision in (("List", "14"), ("List", ""), ("PodList", "")):
+            values = snapshots()
+            values["pods"]["kind"] = kind
+            values["pods"]["metadata"]["resourceVersion"] = revision
+            with self.subTest(kind=kind, revision=revision), self.assertRaises(OPS.OpsError):
+                OPS.validate(**values)
+
+    def test_native_typed_pod_list_items_may_omit_type_metadata(self):
+        values = snapshots()
+        pod = values["pods"]["items"][0]
+        pod.pop("kind")
+        pod.pop("apiVersion")
+        self.assertEqual(OPS.validate(**values)["pod_uid"], POD_UID)
+        pod["kind"] = "Secret"
+        with self.assertRaises(OPS.OpsError):
+            OPS.validate(**values)
+        pod.pop("kind")
+        pod["metadata"].pop("resourceVersion")
+        with self.assertRaises(OPS.OpsError):
+            OPS.validate(**values)
 
     def test_terminal_receipt_requires_job_and_all_container_termination(self):
         values = snapshots()
