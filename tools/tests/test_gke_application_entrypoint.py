@@ -29,6 +29,7 @@ class ApplicationEntrypointTests(unittest.TestCase):
         self.config = {
             "tracker": {"kind": "github", "provider": {"repo": "operator/application", "token": "fake-test-only"}},
             "control": {"enabled": True, "initial_mode": "paused", "state_path": str(self.state / "control.json")},
+            "codex": {"command": "/bin/false"},
             "workspace": {"root": str(self.directory / "workspaces")},
             "chat": {
                 "enabled": True,
@@ -58,6 +59,20 @@ class ApplicationEntrypointTests(unittest.TestCase):
         self.assertTrue(paths["authentication"].is_dir())
         self.assertFalse((paths["authentication"] / "auth.json").exists())
         self.assertFalse(paths["journal"].exists())
+
+    def test_pilot_rejects_task_execution_even_if_controls_can_be_resumed(self):
+        for key, value in (("codex", {"command": "/opt/symphony/bin/codex"}),
+                           ("hooks", {"after_create": "git clone example"}),
+                           ("worker", {"ssh_hosts": ["worker.example"]})):
+            with self.subTest(key=key):
+                previous = self.config.get(key)
+                self.config[key] = value
+                with self.assertRaises(entrypoint.ConfigurationError):
+                    self.validate()
+                if previous is None:
+                    self.config.pop(key)
+                else:
+                    self.config[key] = previous
 
     def test_serve_executes_normal_application_with_operator_workflow(self):
         self.write_workflow()

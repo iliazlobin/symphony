@@ -117,6 +117,14 @@ def validate(workflow_path, state_root, environment):
     control = mapping(config, "control")
     if control.get("enabled") is not True or control.get("initial_mode") != "paused":
         raise ConfigurationError("Cloud pilot requires enabled controls with initial_mode paused")
+    if mapping(config, "codex").get("command") != "/bin/false":
+        raise ConfigurationError("Cloud task execution is not integrated; codex.command must remain /bin/false")
+    hooks = config.get("hooks", {})
+    if not isinstance(hooks, dict) or any(value not in (None, "") for value in hooks.values()):
+        raise ConfigurationError("Cloud pilot cannot run workspace hooks before worker integration")
+    worker = config.get("worker", {})
+    if not isinstance(worker, dict) or worker.get("ssh_hosts"):
+        raise ConfigurationError("Cloud pilot cannot delegate tasks to SSH workers")
     chat = mapping(config, "chat")
     if chat.get("enabled") is not True or type(chat.get("max_concurrent")) is not int or chat["max_concurrent"] != 1:
         raise ConfigurationError("Cloud pilot requires enabled management chat with max_concurrent 1")

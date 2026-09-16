@@ -18,7 +18,7 @@ RUN mix run --no-start -e '\
   modules = [SymphonyElixir.Application, SymphonyElixir.Chat.Store, \
     SymphonyElixir.Chat.Persistence, SymphonyElixir.Chat.Runtime, \
     SymphonyElixirWeb.DashboardLive, SymphonyElixirWeb.ChatPanel, \
-    SymphonyElixirWeb.ChatLive, SymphonyElixirWeb.BrowserAuth, \
+    SymphonyElixirWeb.ChatLive, SymphonyElixirWeb.SettingsPanel, SymphonyElixirWeb.BrowserAuth, \
     SymphonyElixirWeb.Router, SymphonyElixirWeb.StaticAssets]; \
   Enum.each(modules, fn module -> true = Code.ensure_loaded?(module) end); \
   routes = SymphonyElixirWeb.Router.__routes__(); \
