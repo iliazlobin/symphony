@@ -111,6 +111,11 @@ commands to the native API and owns no scheduling state.
   without changing task admission, lifecycle stages or deployment claims.
 - [`Chat.Store`](elixir/lib/symphony_elixir/chat/store.ex) owns project-bound conversations,
   streamed display state, action decisions and durable recovery through `Chat.Persistence`.
+  Board forms call [`TaskIntake`](elixir/lib/symphony_elixir_web/task_intake.ex) to reuse
+  the same proposal, confirmation and reconciliation path without starting a model.
+  Their records stay outside conversation history, in the same bounded private journal.
+  Stable submission IDs prevent duplicate delivery; edits retain the revision seen
+  when the form opened. An uncertain write can only be checked, never replayed.
   [`Chat.Runtime`](elixir/lib/symphony_elixir/chat/runtime.ex) runs private App Server
   turns in a dedicated Codex home, retaining native thread history and compaction.
   [`Chat.Tools`](elixir/lib/symphony_elixir/chat/tools.ex) exposes typed project reads and

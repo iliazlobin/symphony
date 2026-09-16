@@ -31,7 +31,9 @@ agent:
   max_concurrent_agents: 10
   max_turns: 20
 chat:
-  # Optional management chat; see README.md for its dedicated runtime setup.
+  # Model chat is optional. GitHub task forms need a private state_path even when disabled.
+  # state_path: $SYMPHONY_CHAT_STATE
+  # See README.md for the dedicated runtime setup when enabling model conversations.
   enabled: false
 codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server

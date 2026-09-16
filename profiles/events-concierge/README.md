@@ -81,7 +81,7 @@ the shared-VM restart and verification of affected services afterward.
 candidate diff, independent review and check evidence in
 [Pull requests](https://github.com/iliazlobin/events-concierge/pulls). A draft PR is a
 review handoff; it does not mean the task is merged or deployed. Task creation and
-queue-label changes are available in GitHub and the optional web chat.
+queue-label changes are available in the native board, GitHub and optional web chat.
 
 **Web board.** Open [Symphony](http://127.0.0.1:8777/). Real tracker issues,
 runtime activity and durable holds appear in Backlog, Ready, Running, Review and
@@ -136,12 +136,28 @@ Use `--config /absolute/path/to/config.json` for another configured profile.
 The profile binds the repository to the controller address; the current controller
 API does not attest repository identity in its response.
 
-**New task** opens the configured GitHub issue form. Create the issue and manage its
-intake labels in GitHub, then refresh the board. Moving across lanes cannot fabricate
-workflow progress. Moving Ready to Backlog requests a confirmed native cancellation;
-moving a held Backlog card to Ready offers native retry. Cancel can stop work claimed
-since the card was displayed; retry clears a hold without resetting budgets or
-providing a missing answer. Other transitions explain the owning workflow action.
+**New task** creates a GitHub backlog issue directly from the board. Unlock operator
+controls first, then enter a title, outcome, scope, acceptance checks and dependencies.
+Use `none` or same-repository references such as `#12, #34`. Review the exact preview
+and confirm creation. The new issue has no routing labels and does not start a worker.
+Task forms require a private `chat.state_path`, but no model session or subscription.
+
+Open a task to edit its title/description, add feedback or change queue labels.
+The safe path for new work is **Create → Cancel → Queue → Retry**: Cancel establishes
+a durable execution hold, Queue adds the configured routing labels, and Retry releases
+the hold. Wait for active work to stop before editing or queueing. Retry preserves
+consumed budgets and dependency/launch gates; it does not provide missing answers.
+Feedback adds an issue comment and does not steer an active worker.
+
+Recent task actions retain previews and receipts after reconnect or restart. If a
+write's outcome is uncertain, use **Check outcome**; do not submit it again as a new
+action. Recovery reads GitHub without repeating the write. If the issue changes while
+an edit form is open, reopen it to review the latest content before preparing a change.
+
+Moving across lanes cannot fabricate workflow progress. Moving Ready to Backlog
+requests a confirmed native cancellation; moving a held Backlog card to Ready offers
+native retry. Cancel can stop work claimed since the card was displayed. Review and
+completion continue to require their own evidence.
 
 **Local operator controls.** In Settings → Connections, unlock with the token from the private
 `token_file` beside the operator configuration. The password form posts only to the

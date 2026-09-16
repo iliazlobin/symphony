@@ -442,6 +442,55 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     assert_finished()
   end
 
+  test "editing a created issue preserves host recovery markers while the form edits only visible content", ctx do
+    parent = self()
+    original = "## Outcome\nOriginal intent  \n\nDepends on: none\n<!-- ordinary comment -->"
+    creation = propose(ctx.context, %{"action" => "create_task", "title" => "Roundtrip", "body" => original}) |> Map.put("id", String.duplicate("a", 32))
+
+    script([
+      fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: []}} end,
+      fn "POST", _, _, body, _ ->
+        send(parent, {:created_body, body["body"]})
+        {:ok, %{status: 201, body: Map.put(body, "number", 1)}}
+      end
+    ])
+
+    assert {:ok, _} = Tools.confirm(creation, ctx.context)
+    assert_receive {:created_body, created_body}
+    assert_finished()
+    editable = ChatGitHub.editable_body(created_body)
+    assert editable == original <> "\n\n"
+    assert ChatGitHub.editable_body(nil) == ""
+    forged = "<!-- symphony-chat:malformed -->"
+    assert ChatGitHub.editable_body(forged) == forged
+    assert ChatGitHub.editable_body(marker(propose(ctx.context, %{"action" => "pause"}))) == ""
+
+    Application.put_env(:symphony_elixir, :chat_test_board, put_in(ctx.board, [:tasks, Access.at(0), :hold], "cancelled"))
+    edited_text = editable <> "\nMore acceptance checks  \n"
+    edit = propose(ctx.context, %{"action" => "edit_task", "task_id" => "1", "body" => edited_text})
+    assert {:error, :invalid_arguments} = Tools.call("symphony_propose_action", %{"action" => "edit_task", "task_id" => "1", "body" => created_body}, ctx.context)
+
+    script([
+      fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: Map.put(raw_issue(), "body", created_body)}} end,
+      fn "PATCH", _, _, body, _ ->
+        assert body["body"] == edited_text <> "\n\n" <> marker(creation) <> "\n" <> marker(edit)
+        send(parent, {:edited_body, body["body"]})
+        {:ok, %{status: 200, body: Map.put(body, "number", 1)}}
+      end
+    ])
+
+    assert {:ok, _} = Tools.confirm(edit, ctx.context)
+    assert_receive {:edited_body, edited_body}
+    assert_finished()
+    issue = Map.put(raw_issue(), "body", edited_body)
+    script([fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: [issue]}} end])
+    assert {:ok, _} = Tools.reconcile(creation, ctx.context)
+    assert_finished()
+    script([fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: issue}} end])
+    assert {:ok, _} = Tools.reconcile(edit, ctx.context)
+    assert_finished()
+  end
+
   test "edit recovery never repeats PATCH and requires the exact marker", ctx do
     Application.put_env(:symphony_elixir, :chat_test_board, put_in(ctx.board, [:tasks, Access.at(0), :hold], "cancelled"))
     proposal = propose(ctx.context, %{"action" => "edit_task", "task_id" => "1", "body" => "Updated body"})

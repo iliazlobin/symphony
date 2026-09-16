@@ -5,6 +5,13 @@ defmodule SymphonyElixir.Chat.GitHub do
   alias SymphonyElixir.GitHub.Client
   alias SymphonyElixir.Orchestrator
 
+  @host_marker ~r/<!-- symphony-chat:(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}) -->/
+
+  @doc "Removes only exact host recovery comments from an editable issue body; preserves all other text."
+  @spec editable_body(String.t() | nil) :: String.t()
+  def editable_body(body) when is_binary(body), do: Regex.replace(@host_marker, body, "")
+  def editable_body(_body), do: ""
+
   @doc "Reads one already-validated filename from a pinned default-branch revision, within a five-second budget."
   @spec read_document(String.t(), map(), map()) :: {:ok, map()} | {:error, term()}
   def read_document(document, tracker, context) do
@@ -229,7 +236,9 @@ defmodule SymphonyElixir.Chat.GitHub do
     args = proposal["args"]
     body = Map.take(args, ~w(title state))
     text = Map.get(args, "body", issue["body"] || "")
-    body = Map.put(body, "body", text <> "\n\n" <> marker(proposal))
+    retained = if Map.has_key?(args, "body"), do: host_markers(issue["body"] || ""), else: []
+    markers = Enum.uniq(retained ++ [marker(proposal)]) |> Enum.join("\n")
+    body = Map.put(body, "body", text <> "\n\n" <> markers)
 
     update_labels(body, issue, proposal, tracker)
   end
@@ -282,6 +291,8 @@ defmodule SymphonyElixir.Chat.GitHub do
       {:error, :write_outcome_unknown}
     end
   end
+
+  defp host_markers(body), do: Regex.scan(@host_marker, body) |> List.flatten()
 
   defp marked?(row, proposal), do: is_binary(row["body"]) and String.contains?(row["body"], marker(proposal))
   defp marked_body(proposal), do: proposal["args"]["body"] <> "\n\n" <> marker(proposal)

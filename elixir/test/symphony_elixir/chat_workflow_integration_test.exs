@@ -284,6 +284,47 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     refute_receive {:owner_guard, _, _, _}
   end
 
+  test "board forms use the real durable tracker path without running a model", ctx do
+    args = %{"action" => "create_task", "title" => "Create from the board", "body" => "## Outcome\nNative intake\n\nDepends on: none"}
+    id = String.duplicate("a", 32)
+    assert {:ok, preview} = Store.prepare_action(@project, id, args, nil, ctx.auth, ctx.server)
+    assert {:ok, ^preview} = Store.prepare_action(@project, id, args, nil, ctx.auth, ctx.server)
+    assert Agent.get(ctx.requests, & &1) == []
+    assert {:ok, _} = Store.decide_action_record(@project, id, "confirm", ctx.auth, ctx.server)
+
+    assert eventually(fn ->
+             {:ok, record} = Store.get_action(@project, id, ctx.auth, ctx.server)
+             hd(record["proposals"])["status"] == "completed"
+           end)
+
+    assert {:ok, _} = Store.decide_action_record(@project, id, "confirm", ctx.auth, ctx.server)
+    posts = Agent.get(ctx.requests, &Enum.filter(&1, fn {method, _, _, _} -> method == "POST" end))
+    assert [{"POST", "/repos/example/integration/issues", _, body}] = posts
+    assert body["labels"] == []
+    assert body["body"] =~ "Depends on: none"
+    assert {:ok, []} = Store.list(@project, ctx.auth, ctx.server)
+    refute_receive {:model_started, _, _, _}
+  end
+
+  test "board queue actions retain unrelated labels and never issue a retry", ctx do
+    args = %{"action" => "queue_task", "task_id" => "github:example/integration:2"}
+    id = String.duplicate("b", 32)
+    assert {:ok, _} = Store.prepare_action(@project, id, args, "2026-09-15T10:00:00Z", ctx.auth, ctx.server)
+    assert {:ok, _} = Store.decide_action_record(@project, id, "confirm", ctx.auth, ctx.server)
+
+    assert eventually(fn ->
+             {:ok, record} = Store.get_action(@project, id, ctx.auth, ctx.server)
+             hd(record["proposals"])["status"] == "completed"
+           end)
+
+    assert_receive {:owner_guard, _, 3, "2"}
+    writes = Agent.get(ctx.requests, &Enum.filter(&1, fn {method, _, _, _} -> method != "GET" end))
+    assert [{"PATCH", "/repos/example/integration/issues/2", _, body}] = writes
+    assert Enum.sort(body["labels"]) == ["publish-approved", "ready"]
+    assert Enum.find(Board.load(nil, nil).tasks, &(&1.issue_id == "2")).hold == "cancelled"
+    refute_receive {:model_started, _, _, _}
+  end
+
   test "foreign chat routing and tracker reconfiguration never reveal retained history", ctx do
     {view, _} = chat_view(ctx)
     render_submit(view, "send-message", %{"message" => "Review work"})

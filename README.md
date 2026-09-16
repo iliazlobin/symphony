@@ -27,7 +27,9 @@ The local service includes a Kanban task board and optional project-specific Ast
 chat with streaming replies, saved conversations, task widgets and filtered board
 links. Chat uses bounded management tools to read work and preview authorized
 changes; coding remains with the scheduler's workers. An authenticated local browser
-can invoke native operator controls; GitHub remains the task and publication record. See the
+can create and edit GitHub tasks through board forms, review exact changes, and manage
+queue labels alongside native operator controls. Forms do not need a model session;
+GitHub remains the task and publication record. See the
 [operator guide](profiles/events-concierge/README.md#operate) for setup and limits.
 
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](https://player.vimeo.com/video/1186371009?h=5626e4b899)
