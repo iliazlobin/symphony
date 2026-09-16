@@ -6,3 +6,10 @@
 !deploy/gke/Dockerfile.worker.dockerignore
 !deploy/gke/bubblewrap-loopback-idempotent.patch
 !deploy/gke/bubblewrap-source.json
+!tools/
+!tools/cloud_subscription_pilot.py
+!tools/kubernetes_auth.py
+!tools/symphony_control.py
+!profiles/
+!profiles/events-concierge/
+!profiles/events-concierge/profile.py
