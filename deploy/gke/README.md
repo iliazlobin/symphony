@@ -83,10 +83,12 @@ The retained slot is designed to preserve credentials across ordinary Pod replac
 
 The cloud [worker Dockerfile](Dockerfile.worker) retains Codex `0.153.4` and builds checksum-pinned bubblewrap `0.11.2` with one [loopback compatibility patch](bubblewrap-loopback-idempotent.patch). gVisor already assigns the loopback address in a new network namespace; the patch removes `NLM_F_EXCL` from that address-creation request so repeated setup succeeds. It keeps network namespace isolation and error checks. See the [source manifest and removal condition](bubblewrap-source.json), [upstream issue](https://github.com/google/gvisor/issues/13438) and [upstream fix](https://github.com/google/gvisor/pull/13532). The Mac worker image is unchanged.
 
-The image below, built from [source `fb4eaa6`](https://github.com/iliazlobin/symphony/tree/fb4eaa61a87d5c6291c8841b1a8ab30c498eb218), passed the complete builder/reviewer permission canary on the actual GKE gVisor worker. The `RTM_NEWADDR` blocker is resolved for this image: workspace/tool access worked while protected files, authentication paths, process aliases and command network access remained denied. These checks used fake credentials and made no model calls. The same image also passed real cloud lifetime checks: continuing heartbeats kept the worker alive, atomic completion ended it successfully, and a stalled exec was stopped by the watchdog.
+The sandbox-canary image, built from [source `fb4eaa6`](https://github.com/iliazlobin/symphony/tree/fb4eaa61a87d5c6291c8841b1a8ab30c498eb218), passed the complete builder/reviewer permission canary on the actual GKE gVisor worker. The `RTM_NEWADDR` blocker is resolved for this image: workspace/tool access worked while protected files, authentication paths, process aliases and command network access remained denied. These checks used fake credentials and made no model calls. The same image also passed real cloud lifetime checks: continuing heartbeats kept the worker alive, atomic completion ended it successfully, and a stalled exec was stopped by the watchdog.
+
+The current pilot image below is built from [source `244664f`](https://github.com/iliazlobin/symphony/tree/244664ff0a966a9a96604ebb893f3f59749bf1d3). It retains that sandbox implementation and adds audited ownership recovery and the full device-login wait. Its subscription task and replacement checks remain pending.
 
 ```sh
-SYMPHONY_PILOT_IMAGE='us-west1-docker.pkg.dev/iz27-platform-dev/symphony/worker@sha256:3cdd53958aea8ca5fd87c6888bc8b0dfe3ee018095b1462c680fd4a7ee515dba'
+SYMPHONY_PILOT_IMAGE='us-west1-docker.pkg.dev/iz27-platform-dev/symphony/worker@sha256:382b9dfaea7342f2e0eac32cfd2a0ea5d1d5d55b76377b4810bbba4c7543dac3'
 python3 tools/cloud_subscription_pilot_ops.py --help
 python3 tools/cloud_subscription_pilot_ops.py job --help
 python3 tools/cloud_subscription_pilot.py --help
