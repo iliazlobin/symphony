@@ -18,8 +18,8 @@ POD_UID = "44444444-4444-4444-4444-444444444444"
 IMAGE = "us-west1-docker.pkg.dev/iz27-platform-dev/symphony/worker@sha256:" + "b" * 64
 
 
-def snapshots():
-    manifest = OPS.job_manifest(IMAGE, OWNER, "task", 2, 1600, now=1000)
+def snapshots(stage="task", lifetime=600):
+    manifest = OPS.job_manifest(IMAGE, OWNER, stage, 2, 1000 + lifetime, now=1000)
     ns = {"kind": "Namespace", "metadata": {"name": OPS.NAMESPACE, "uid": NS_UID, "resourceVersion": "10"}}
     pvc = OPS.foundation()["items"][0]
     pvc["metadata"].update(uid=PVC_UID, resourceVersion="11")
@@ -107,6 +107,49 @@ class PilotOpsTests(unittest.TestCase):
             args.update(overrides)
             with self.subTest(overrides=overrides), self.assertRaises(OPS.OpsError):
                 OPS.job_manifest(**args)
+
+    def test_stage_specific_deadline_boundaries(self):
+        for stage, maximum in (("enrollment", 1500), ("task", 900), ("retire", 900)):
+            with self.subTest(stage=stage):
+                values = snapshots(stage, maximum)
+                manifest = values["manifest"]
+                self.assertEqual(manifest["spec"]["activeDeadlineSeconds"], maximum)
+                self.assertEqual(manifest["spec"]["template"]["spec"]["activeDeadlineSeconds"], maximum)
+                self.assertEqual(OPS.validate(**values)["pod_uid"], POD_UID)
+                with self.assertRaises(OPS.OpsError):
+                    snapshots(stage, maximum + 1)
+
+    def test_saved_and_observed_deadlines_cannot_agree_past_stage_limit(self):
+        for stage, maximum in (("enrollment", 1500), ("task", 900), ("retire", 900)):
+            for interval in (maximum + 1, float(maximum), True, 0, -1):
+                values = snapshots(stage, maximum)
+                manifest, job, pod = values["manifest"], values["job"], values["pods"]["items"][0]
+                pod_specs = (manifest["spec"]["template"]["spec"], job["spec"]["template"]["spec"], pod["spec"])
+                for spec in (manifest["spec"], job["spec"], *pod_specs):
+                    spec["activeDeadlineSeconds"] = interval
+                for spec in pod_specs:
+                    spec["containers"][0]["args"][7] = str(1000 + int(interval))
+                with self.subTest(stage=stage, interval=interval), self.assertRaises(OPS.OpsError):
+                    OPS.validate(**values)
+
+    def test_enrollment_deadline_cannot_be_relabelled_as_task_or_retirement(self):
+        for stage in ("task", "retire"):
+            values = snapshots("enrollment", 1500)
+            for spec in (values["manifest"]["spec"]["template"]["spec"],
+                         values["job"]["spec"]["template"]["spec"], values["pods"]["items"][0]["spec"]):
+                spec["containers"][0]["args"][3] = stage
+            with self.subTest(stage=stage), self.assertRaises(OPS.OpsError):
+                OPS.validate(**values)
+
+    def test_each_saved_and_observed_deadline_must_match(self):
+        for index in range(5):
+            values = snapshots("enrollment", 1500)
+            specs = (values["manifest"]["spec"], values["manifest"]["spec"]["template"]["spec"],
+                     values["job"]["spec"], values["job"]["spec"]["template"]["spec"],
+                     values["pods"]["items"][0]["spec"])
+            specs[index]["activeDeadlineSeconds"] = 1499
+            with self.subTest(index=index), self.assertRaises(OPS.OpsError):
+                OPS.validate(**values)
 
     def test_admission_and_known_api_defaults(self):
         values = snapshots()

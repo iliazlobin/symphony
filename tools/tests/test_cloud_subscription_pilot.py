@@ -56,6 +56,20 @@ class CloudSubscriptionPilotTests(unittest.TestCase):
         with patch.dict(os.environ, {"SYMPHONY_JOB_UID": "missing"}), self.assertRaises(PILOT.PilotError):
             PILOT.identity()
 
+    def test_stage_specific_absolute_lifetimes_and_expiry(self):
+        for stage, maximum in (("enrollment", 1500), ("task", 900), ("retire", 900)):
+            state = {**boot(stage=stage), "expires_at": 1000 + maximum}
+            with self.subTest(stage=stage):
+                self.assertEqual(PILOT.validate_boot(state, now=1100), state)
+                with self.assertRaises(PILOT.PilotError):
+                    PILOT.validate_boot({**state, "expires_at": 1001 + maximum}, now=1100)
+                with self.assertRaises(PILOT.PilotError):
+                    PILOT.validate_boot(state, now=state["expires_at"])
+        enrollment = {**boot(stage="enrollment"), "expires_at": 2500}
+        for stage in ("task", "retire"):
+            with self.subTest(stage=stage), self.assertRaises(PILOT.PilotError):
+                PILOT.validate_boot({**enrollment, "stage": stage}, now=1100)
+
     def test_receipt_input_is_bounded_object_json(self):
         self.assertEqual(PILOT.read_receipt(io.BytesIO(b"{}")), {})
         for value in (b"", b"null", b"[]", b"secret", b"{" + b"x" * PILOT.MAX_JSON):
@@ -208,7 +222,15 @@ class CloudSubscriptionPilotTests(unittest.TestCase):
                                    "userCode": "ABCD-EFGH", "untrusted": "SECRET"}
         client.wait.return_value = {"success": True}
         PILOT.enroll(client, emit)
-        emit.assert_called_once_with({"verification_url": "https://auth.openai.com/codex/device", "user_code": "ABCD-EFGH"})
+        emit.assert_called_once_with({"verification_url": "https://auth.openai.com/codex/device",
+                                      "user_code": "ABCD-EFGH", "login_wait_timeout_seconds": 930})
+        client.wait.assert_called_once()
+        method, matches_login, timeout = client.wait.call_args.args
+        self.assertEqual(method, "account/login/completed")
+        self.assertEqual(timeout, 930)
+        self.assertTrue(matches_login({"loginId": "private-login"}))
+        self.assertFalse(matches_login({"loginId": "another-login"}))
+        self.assertFalse(matches_login({}))
         for url in ("https://attacker.test/", "https://auth.openai.com:444/codex/device",
                     "https://auth.openai.com/codex/device?token=private", "https://auth.openai.com/codex/device#secret",
                     "https://auth.openai.com/unexpected", "https://user@auth.openai.com/codex/device"):

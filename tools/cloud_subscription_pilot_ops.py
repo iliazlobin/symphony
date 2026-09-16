@@ -50,6 +50,7 @@ OWNER = "symphony.openai.com/owner"
 IMAGE = re.compile(r"us-west1-docker\.pkg\.dev/iz27-platform-dev/symphony/worker@sha256:[a-f0-9]{64}")
 UID = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")
 MAX_JSON = 8 * 1024 * 1024
+STAGE_MAX_SECONDS = {"enrollment": 1500, "task": 900, "retire": 900}
 
 
 def module(name):
@@ -101,7 +102,8 @@ def job_manifest(image, owner, stage, generation, expires_at, now=None):
     require(isinstance(owner, str) and re.fullmatch(r"[a-f0-9]{32}", owner), "Invalid owner nonce")
     require(stage in ("enrollment", "task", "retire"), "Unknown pilot stage")
     require(type(generation) is int and generation > 0, "Invalid auth generation")
-    require(type(expires_at) is int and 1 <= expires_at - now <= 900, "Deadline must be within 900 seconds")
+    require(type(expires_at) is int and 1 <= expires_at - now <= STAGE_MAX_SECONDS[stage],
+            "Deadline exceeds the bounded pilot stage lifetime")
     deadline = expires_at - now
     labels = {"app": APP, OWNER: owner}
     pod = {
@@ -160,8 +162,10 @@ def validate(manifest, namespace, pvc, job, pods, namespace_uid, pvc_uid, job_ui
     container = manifest["spec"]["template"]["spec"]["containers"][0]
     args = container["args"]
     expires_at = int(args[7])
+    interval = manifest["spec"]["activeDeadlineSeconds"]
+    require(type(interval) is int, "Pilot lifetime must be an integer number of seconds")
     canonical = job_manifest(container["image"], args[1], args[3], int(args[5]), expires_at,
-                             now=expires_at - manifest["spec"]["activeDeadlineSeconds"])
+                             now=expires_at - interval)
     require(RUNNER.canonical(manifest) == RUNNER.canonical(canonical),
             "Saved manifest differs from the bounded pilot generator")
     identity(namespace, "Namespace", NAMESPACE, namespace_uid)

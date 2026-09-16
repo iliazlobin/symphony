@@ -31,6 +31,10 @@ SLOT = Path("/var/lib/symphony-auth/slot-01")
 WORKSPACE = Path("/var/lib/symphony/workspaces/subscription-pilot")
 CODEX = "/usr/local/bin/codex"
 MAX_JSON = 1_048_576
+STAGE_MAX_SECONDS = {"enrollment": 1500, "task": 900, "retire": 900}
+# Pinned Codex polls device authorization for 900 seconds. Allow its completion
+# notification a small grace period while retaining the absolute stage deadline.
+ENROLLMENT_WAIT_SECONDS = 930
 UID = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")
 RULES = b"This is an isolated subscription pilot. Complete only the fixed addition task. Never inspect credentials, modify instructions, access the network, install software or request more permissions.\n"
 PROMPT = "Create only addition.py containing a function add(a, b) that returns the sum of two integers. Run a Python check for add(2, 3) == 5, add(-4, 4) == 0 and add(0, 0) == 0. Do not install anything, access the network, inspect credentials, change instructions or commit."
@@ -140,7 +144,7 @@ def validate_boot(boot, now=None):
             or boot["stage"] not in ("enrollment", "task", "retire")
             or type(boot["generation"]) is not int or boot["generation"] < 1
             or type(boot["expires_at"]) is not int or type(boot["created_at"]) is not int
-            or not 1 <= boot["expires_at"] - boot["created_at"] <= 900
+            or not 1 <= boot["expires_at"] - boot["created_at"] <= STAGE_MAX_SECONDS[boot["stage"]]
             or not boot["created_at"] <= now < boot["expires_at"]
             or not isinstance(boot["codex_version"], str)
             or not re.fullmatch(r"0\.[0-9]+\.[0-9]+", boot["codex_version"])
@@ -294,8 +298,10 @@ def enroll(client, emit):
             or url.port not in (None, 443) or url.path != "/codex/device" or url.query or url.fragment
             or not re.fullmatch(r"[A-Z0-9]{4}-[A-Z0-9]{5}|[A-Z0-9]{4}-[A-Z0-9]{4}", login.get("userCode", ""))):
         raise PilotError("Device enrollment response did not match the expected provider")
-    emit({"verification_url": login["verificationUrl"], "user_code": login["userCode"]})
-    result = client.wait("account/login/completed", lambda params: params.get("loginId") == login["loginId"], 600)
+    emit({"verification_url": login["verificationUrl"], "user_code": login["userCode"],
+          "login_wait_timeout_seconds": ENROLLMENT_WAIT_SECONDS})
+    result = client.wait("account/login/completed", lambda params: params.get("loginId") == login["loginId"],
+                         ENROLLMENT_WAIT_SECONDS)
     if result.get("success") is not True:
         raise PilotError("Device enrollment did not complete successfully")
 
