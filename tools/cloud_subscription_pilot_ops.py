@@ -21,6 +21,9 @@ Operator sequence (use umask 077 and the pinned platform-dev kubectl context):
   then receipt with the same arguments plus --pod-uid <admitted-uid> > receipt.json.
   Start a new bounded task Job using generation 2 and the terminal receipt.
   No force deletion, TTL cleanup, credential output or automatic claim release.
+  If garbage collection removed the already-terminal Pod, audit-receipt accepts
+  one original successful GKE audit response plus the prior admission. Keep the
+  fresh empty native PodList unchanged; never splice archived Pods into it.
 
 Validation checks snapshots, not their provenance or continued freshness. The
 operator owns context/CA authentication, captures immediately before exec/retire,
@@ -149,7 +152,8 @@ def identity(obj, kind, name, uid, typed_pod_list_item=False):
         require(meta.get("namespace") == NAMESPACE, "Unexpected namespace")
 
 
-def validate(manifest, namespace, pvc, job, pods, namespace_uid, pvc_uid, job_uid, terminal=False):
+def validate(manifest, namespace, pvc, job, pods, namespace_uid, pvc_uid, job_uid, terminal=False,
+             archived_terminal_pod=None):
     # The saved desired manifest must itself come from this bounded generator.
     # Reconstruct with its original interval so terminal checks work after expiry.
     container = manifest["spec"]["template"]["spec"]["containers"][0]
@@ -180,24 +184,26 @@ def validate(manifest, namespace, pvc, job, pods, namespace_uid, pvc_uid, job_ui
     template_meta = actual["template"].get("metadata", {})
     require(all(template_meta.get("labels", {}).get(k) == v for k, v in wanted["template"]["metadata"]["labels"].items())
             and not template_meta.get("annotations"), "Job template labels or annotations changed")
+    archived = archived_terminal_pod is not None
+    require(not archived or terminal, "Archived Pods cannot authorize execution")
     require(pods.get("kind") == "PodList" and pods.get("apiVersion") == "v1"
             and pods.get("metadata", {}).get("resourceVersion") and not pods["metadata"].get("continue")
-            and isinstance(pods.get("items"), list) and len(pods["items"]) == 1,
+            and isinstance(pods.get("items"), list) and len(pods["items"]) == (0 if archived else 1),
             "Complete single-Pod inventory is required")
+    pod = archived_terminal_pod if archived else pods["items"][0]
     expected_pod = wanted["template"]["spec"]
     expected_image = expected_pod["containers"][0]["image"]
-    for observed in [actual["template"]["spec"], *[p["spec"] for p in pods["items"]]]:
+    for observed in [actual["template"]["spec"], pod["spec"]]:
         normalized = copy.deepcopy(observed)
         for container in normalized.get("containers", []):
             container.setdefault("stdin", False)
             container.setdefault("stdinOnce", False)
         require(RUNNER.constrained_pod(expected_pod, normalized), "Admitted Pod differs from reviewed constraints")
-    pod = pods["items"][0]
     meta = pod.get("metadata", {})
     require(isinstance(meta.get("name"), str) and RUNNER.NAME.fullmatch(meta["name"]), "Invalid Pod name")
     # Native typed PodList items can omit TypeMeta; the validated envelope fixes
     # their type. An explicit conflicting kind is never accepted.
-    identity(pod, "Pod", meta.get("name"), meta.get("uid"), typed_pod_list_item=True)
+    identity(pod, "Pod", meta.get("name"), meta.get("uid"), typed_pod_list_item=not archived)
     require(meta.get("labels", {}).get("app") == APP
             and meta["labels"].get(OWNER) == manifest["metadata"]["labels"][OWNER]
             and meta["labels"].get("batch.kubernetes.io/controller-uid") == job_uid
@@ -225,6 +231,48 @@ def receipt(manifest, namespace, pvc, job, pods, namespace_uid, pvc_uid, job_uid
     return value
 
 
+def audit_receipt(manifest, namespace, pvc, job, pods, namespace_uid, pvc_uid, job_uid,
+                  audit, admission):
+    """Recover only from an authenticated original GKE activity response.
+
+    File ownership and provenance fields do not authenticate an export. The
+    operator must fetch it from Cloud Logging, never from the worker/model.
+    This path cannot authorize exec or release a claim from deletion alone.
+    """
+    require(isinstance(audit, list) and len(audit) == 1 and isinstance(admission, dict),
+            "One original audit entry and saved admission are required")
+    entry = audit[0]
+    require(isinstance(entry, dict), "Original audit entry is malformed")
+    payload = entry.get("protoPayload", {})
+    require(isinstance(payload, dict), "Original audit payload is malformed")
+    pod = payload.get("response", {})
+    require(isinstance(pod, dict) and isinstance(payload.get("status", {}), dict),
+            "Original audit response is malformed")
+    require(entry.get("logName") == "projects/iz27-platform-dev/logs/cloudaudit.googleapis.com%2Factivity"
+            and entry.get("insertId")
+            and entry.get("resource") == {"type": "k8s_cluster", "labels": {
+                "project_id": "iz27-platform-dev", "cluster_name": "platform-dev", "location": "us-west1-a"}}
+            and payload.get("@type") == "type.googleapis.com/google.cloud.audit.AuditLog"
+            and payload.get("serviceName") == "k8s.io"
+            and payload.get("methodName") == "io.k8s.core.v1.pods.patch"
+            and type(payload.get("status", {}).get("code")) is int and payload["status"]["code"] == 0
+            and payload.get("resourceName") == f"core/v1/namespaces/{NAMESPACE}/pods/{admission.get('pod_name')}"
+            and pod.get("@type") == "core.k8s.io/v1.Pod"
+            and pod.get("apiVersion") == "v1" and pod.get("kind") == "Pod",
+            "Original successful GKE Pod response provenance is unverified")
+    observed = validate(manifest, namespace, pvc, job, pods, namespace_uid, pvc_uid, job_uid,
+                        terminal=True, archived_terminal_pod=pod)
+    require(observed == admission, "Archived Pod differs from its exact saved admission")
+    value = {"job": job, "pods": pods, "selector": "batch.kubernetes.io/controller-uid=" + job_uid,
+             "archived_terminal_pod": pod}
+    AUTH.terminal_job_evidence(value, {"job_uid": job_uid, "pod_uid": admission["pod_uid"]})
+    audit_at = AUTH.evidence_timestamp(entry.get("timestamp"))
+    received_at = AUTH.evidence_timestamp(entry.get("receiveTimestamp"))
+    finished_at = AUTH.evidence_timestamp(pod["status"]["containerStatuses"][0]["state"]["terminated"]["finishedAt"])
+    require(finished_at <= audit_at <= received_at, "Audit timestamp precedes the observed termination")
+    return value
+
+
 def read_json(path):
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
@@ -243,7 +291,7 @@ def main():
         job.add_argument("--" + key, required=True)
     job.add_argument("--generation", type=int, required=True)
     job.add_argument("--expires-at", type=int, required=True)
-    for action in ("validate", "receipt"):
+    for action in ("validate", "receipt", "audit-receipt"):
         sub = actions.add_parser(action)
         sub.add_argument("--manifest", required=True)
         for key in ("namespace", "pvc", "job", "pods"):
@@ -252,6 +300,9 @@ def main():
             sub.add_argument("--" + key + "-uid", required=True)
         if action == "receipt":
             sub.add_argument("--pod-uid", required=True)
+        if action == "audit-receipt":
+            sub.add_argument("--audit-object", required=True, help="Private original one-entry Cloud Logging JSON export")
+            sub.add_argument("--admission-object", required=True, help="Private admission captured before the old exec")
     args = vars(parser.parse_args())
     action = args.pop("action")
     try:
@@ -263,10 +314,13 @@ def main():
             values = {"manifest": read_json(args.pop("manifest"))}
             for key in ("namespace", "pvc", "job", "pods"):
                 values[key] = read_json(args.pop(key + "_object"))
-            result = globals()[action](**values, **args)
+            if action == "audit-receipt":
+                for key in ("audit", "admission"):
+                    values[key] = read_json(args.pop(key + "_object"))
+            result = globals()[action.replace("-", "_")](**values, **args)
         print(json.dumps(result, sort_keys=True))
         return 0
-    except (OpsError, AUTH.AuthSlotError, IndexError, KeyError, TypeError, ValueError, OSError):
+    except (OpsError, AUTH.AuthSlotError, AttributeError, IndexError, KeyError, TypeError, ValueError, OSError):
         parser.exit(1, "Pilot manifest or runtime snapshot failed validation; retain ownership.\n")
 
 

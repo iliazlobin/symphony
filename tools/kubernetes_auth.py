@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+from datetime import datetime
 import fcntl
 import json
 import math
@@ -138,15 +139,97 @@ def terminal_pod_evidence(pod, claim):
                 raise AuthSlotError("Pod still has unverified processes; retain the auth claim")
 
 
+def evidence_timestamp(value):
+    """Parse UTC API timestamps without accepting missing or synthetic zero times."""
+    if not isinstance(value, str) or not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z", value):
+        raise AuthSlotError("Terminal evidence timestamp is invalid")
+    try:
+        # Python 3.9 accepts microseconds, but GCP exports nanosecond timestamps.
+        normalized = value[:-1]
+        if "." in normalized:
+            seconds, fraction = normalized.split(".")
+            normalized = seconds + "." + fraction[:6].ljust(6, "0")
+        result = datetime.fromisoformat(normalized + "+00:00").timestamp()
+    except ValueError as exc:
+        raise AuthSlotError("Terminal evidence timestamp is invalid") from exc
+    if result <= 0 or result > time.time() + 5:
+        raise AuthSlotError("Terminal evidence timestamp is outside the observed lifetime")
+    return result
+
+
+def archived_terminal_evidence(pod, job, claim):
+    """Narrow recovery for one counted, non-retrying pilot Pod archived by GKE.
+
+    The trusted operator separately authenticates the audit response and matches
+    it to its original admission. This does not turn deletion into termination.
+    """
+    terminal_pod_evidence(pod, claim)
+    meta, status, spec = (pod.get(key, {}) for key in ("metadata", "status", "spec"))
+    job_meta, job_status, job_spec = (job.get(key, {}) for key in ("metadata", "status", "spec"))
+    counts = [job_status.get(key, 0) for key in ("failed", "succeeded")]
+    terminal_type = "Complete" if status.get("phase") == "Succeeded" else "Failed"
+    conditions = [c for c in job_status.get("conditions", [])
+                  if c.get("type") in ("Complete", "Failed") and c.get("status") == "True"]
+    if (pod.get("kind") != "Pod" or pod.get("apiVersion") != "v1"
+            or not meta.get("name") or not meta.get("resourceVersion") or meta.get("deletionTimestamp")
+            or meta.get("namespace") != job_meta.get("namespace")
+            or meta.get("labels", {}).get("batch.kubernetes.io/controller-uid") != claim["job_uid"]
+            or job_meta.get("deletionTimestamp")
+            or any(type(job_spec.get(k)) is not int or job_spec[k] != v
+                   for k, v in (("backoffLimit", 0), ("parallelism", 1), ("completions", 1)))
+            or job_spec.get("podReplacementPolicy") != "Failed"
+            or job_spec.get("template", {}).get("spec", {}).get("restartPolicy") != "Never"
+            or spec.get("restartPolicy") != "Never"
+            or any(type(job_status.get(k, 0)) is not int or job_status.get(k, 0) != 0
+                   for k in ("active", "terminating"))
+            or any(type(n) is not int or n < 0 for n in counts) or sum(counts) != 1
+            or counts != ([0, 1] if terminal_type == "Complete" else [1, 0])
+            or job_status.get("uncountedTerminatedPods", {}) not in ({}, {"failed": [], "succeeded": []},
+                                                                   {"failed": []}, {"succeeded": []})
+            or len(conditions) != 1 or conditions[0].get("type") != terminal_type
+            or status.get("reason") in ("NodeLost", "Unknown", "ContainerStatusUnknown")):
+        raise AuthSlotError("Archived Pod requires a terminal single-Pod Job without replacement uncertainty")
+    created = evidence_timestamp(meta.get("creationTimestamp"))
+    terminal_at = evidence_timestamp(conditions[0].get("lastTransitionTime"))
+    if evidence_timestamp(job_meta.get("creationTimestamp")) > created:
+        raise AuthSlotError("Archived Pod predates its Job")
+    # Recovery is deliberately limited to the pilot's one outer worker process.
+    states = status.get("containerStatuses", [])
+    declared = spec.get("containers", [])
+    if (len(declared) != 1 or declared[0].get("name") != "worker" or len(states) != 1
+            or spec.get("initContainers") or spec.get("ephemeralContainers")
+            or status.get("initContainerStatuses") or status.get("ephemeralContainerStatuses")):
+        raise AuthSlotError("Archived pilot container inventory is unsupported")
+    state = states[0]
+    terminated = state.get("state", {}).get("terminated", {})
+    if (type(state.get("restartCount")) is not int or state["restartCount"] != 0
+            or state.get("ready") is not False or state.get("started", False) is not False
+            or state.get("lastState") or set(state.get("state", {})) != {"terminated"}
+            or terminated.get("reason") not in ("Completed", "Error", "OOMKilled")
+            or not state.get("containerID") or terminated.get("containerID") != state["containerID"]
+            or not state.get("imageID")
+            or not any(o.get("name") == job_meta.get("name") and o.get("uid") == claim["job_uid"]
+                       and o.get("kind") == "Job" and o.get("controller") is True
+                       for o in meta.get("ownerReferences", []))):
+        raise AuthSlotError("Archived container stop or identity is unverified")
+    if not created <= evidence_timestamp(terminated.get("startedAt")) <= evidence_timestamp(
+            terminated.get("finishedAt")) <= terminal_at:
+        raise AuthSlotError("Archived container lifetime is inconsistent")
+
+
 def terminal_job_evidence(receipt, claim):
     """Validate an operator-owned receipt from fresh Job/get and selected Pod/list.
 
     This is a structural/identity check, NOT receipt authentication. The trusted
-    runner must obtain it directly from the pinned cluster API, never model input.
-    It must exhaust pagination for exactly this Job UID, after observing terminal
-    Job status. NotFound and force deletion cannot establish stopped processes.
+    runner obtains fresh Job/PodList objects from the pinned cluster API, never
+    model input, exhausting pagination after observing terminal Job status. The
+    separate optional archived Pod must come from an authenticated original GKE
+    audit response matched to prior admission by the trusted pilot operator.
+    NotFound and force deletion alone cannot establish stopped processes.
     """
-    if not isinstance(receipt, dict) or set(receipt) != {"job", "pods", "selector"}:
+    if not isinstance(receipt, dict) or set(receipt) not in (
+            {"job", "pods", "selector"}, {"job", "pods", "selector", "archived_terminal_pod"}):
         raise AuthSlotError("Terminal Job and exhaustive Pod-list evidence is required")
     job, pods = receipt["job"], receipt["pods"]
     if not isinstance(job, dict) or not isinstance(pods, dict):
@@ -163,7 +246,14 @@ def terminal_job_evidence(receipt, claim):
             or pods.get("kind") != "PodList" or pods.get("apiVersion") != "v1"
             or not pods.get("metadata", {}).get("resourceVersion")
             or pods.get("metadata", {}).get("continue")
-            or not isinstance(pods.get("items"), list) or not pods["items"]):
+            or not isinstance(pods.get("items"), list)):
+        raise AuthSlotError("Exhaustive owned-Pod inventory is missing")
+    if "archived_terminal_pod" in receipt:
+        if pods["items"]:
+            raise AuthSlotError("Archived recovery requires an empty current Pod inventory")
+        archived_terminal_evidence(receipt["archived_terminal_pod"], job, claim)
+        return
+    if not pods["items"]:
         raise AuthSlotError("Exhaustive owned-Pod inventory is missing")
     seen = set()
     for pod in pods["items"]:

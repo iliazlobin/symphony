@@ -42,6 +42,31 @@ def snapshots():
                 namespace_uid=NS_UID, pvc_uid=PVC_UID, job_uid=JOB_UID)
 
 
+def recovery_snapshots():
+    values = snapshots()
+    admission = OPS.validate(**values)
+    job = values["job"]
+    job["metadata"]["creationTimestamp"] = "2026-09-15T00:00:00Z"
+    job["status"] = {"failed": 1, "active": 0, "terminating": 0, "uncountedTerminatedPods": {},
+                     "conditions": [{"type": "Failed", "status": "True", "lastTransitionTime": "2026-09-15T00:01:02Z"}]}
+    pod = values["pods"]["items"].pop()
+    pod["@type"] = "core.k8s.io/v1.Pod"
+    pod["metadata"]["creationTimestamp"] = "2026-09-15T00:00:01Z"
+    pod["status"]["phase"] = "Failed"
+    state = pod["status"]["containerStatuses"][0]
+    state.update(ready=False, started=False, lastState={}, state={"terminated": {
+        "exitCode": 1, "reason": "Error", "containerID": state["containerID"],
+        "startedAt": "2026-09-15T00:00:02Z", "finishedAt": "2026-09-15T00:01:00Z"}})
+    entry = {"insertId": "native-entry", "timestamp": "2026-09-15T00:01:01Z", "receiveTimestamp": "2026-09-15T00:01:03Z",
+             "logName": "projects/iz27-platform-dev/logs/cloudaudit.googleapis.com%2Factivity",
+             "resource": {"type": "k8s_cluster", "labels": {
+                 "project_id": "iz27-platform-dev", "cluster_name": "platform-dev", "location": "us-west1-a"}},
+             "protoPayload": {"@type": "type.googleapis.com/google.cloud.audit.AuditLog", "serviceName": "k8s.io",
+                 "methodName": "io.k8s.core.v1.pods.patch", "status": {"code": 0},
+                 "resourceName": f"core/v1/namespaces/{OPS.NAMESPACE}/pods/{pod['metadata']['name']}", "response": pod}}
+    return {**values, "audit": [entry], "admission": admission}
+
+
 class PilotOpsTests(unittest.TestCase):
     def test_foundation_retains_rwop_without_scoping_other_workers(self):
         pvc, policy = OPS.foundation()["items"]
@@ -202,6 +227,112 @@ class PilotOpsTests(unittest.TestCase):
             link.symlink_to(path)
             with self.assertRaises(OSError):
                 OPS.read_json(link)
+
+    def test_audit_receipt_preserves_original_response_and_empty_native_inventory(self):
+        values = recovery_snapshots()
+        before = copy.deepcopy(values)
+        result = OPS.audit_receipt(**values)
+        self.assertEqual(values, before)
+        self.assertIs(result["pods"], values["pods"])
+        self.assertEqual(result["pods"]["items"], [])
+        self.assertIs(result["archived_terminal_pod"], values["audit"][0]["protoPayload"]["response"])
+        self.assertNotIn("audit", result)
+        # The same empty inventory without archive evidence still fails closed.
+        with self.assertRaises(OPS.AUTH.AuthSlotError):
+            OPS.AUTH.terminal_job_evidence({k: v for k, v in result.items() if k != "archived_terminal_pod"},
+                                          {"job_uid": JOB_UID, "pod_uid": POD_UID})
+
+    def test_audit_provenance_cannot_be_substituted(self):
+        mutations = [
+            lambda e: e.update(logName="projects/other/logs/cloudaudit.googleapis.com%2Factivity"),
+            lambda e: e["resource"].update(type="gce_instance"),
+            lambda e: e["resource"]["labels"].update(project_id="other"),
+            lambda e: e["resource"]["labels"].update(cluster_name="other"),
+            lambda e: e["resource"]["labels"].update(location="us-east1-b"),
+            lambda e: e["protoPayload"].update(serviceName="other"),
+            lambda e: e["protoPayload"].update(methodName="io.k8s.core.v1.pods.delete"),
+            lambda e: e["protoPayload"].update(resourceName="core/v1/namespaces/other/pods/symphony-pilot-test"),
+            lambda e: e["protoPayload"].update(status={"code": 7}),
+            lambda e: e["protoPayload"].update(status={}),
+            lambda e: e["protoPayload"]["response"].pop("@type"),
+            lambda e: e["protoPayload"].update(response={"kind": "Patch"}),
+        ]
+        for mutate in mutations:
+            values = recovery_snapshots()
+            mutate(values["audit"][0])
+            with self.subTest(mutate=mutate), self.assertRaises(OPS.OpsError):
+                OPS.audit_receipt(**values)
+
+    def test_audit_recovery_requires_exact_prior_admission(self):
+        for key in ("container_id", "pod_uid", "pod_name", "image", "container", "namespace", "namespace_uid", "pvc_uid", "job_uid"):
+            values = recovery_snapshots()
+            values["admission"][key] = "changed"
+            with self.subTest(key=key), self.assertRaises(OPS.OpsError):
+                OPS.audit_receipt(**values)
+
+    def test_archive_cannot_hide_current_or_unlisted_pods(self):
+        for mutate in (
+            lambda v: v["pods"]["items"].append(copy.deepcopy(v["audit"][0]["protoPayload"]["response"])),
+            lambda v: v["pods"]["metadata"].update({"continue": "next"}),
+            lambda v: v["pods"]["metadata"].pop("resourceVersion"),
+            lambda v: v["pods"].update(kind="List"),
+            lambda v: v.update(audit=[]),
+            lambda v: v["audit"].append(copy.deepcopy(v["audit"][0])),
+        ):
+            values = recovery_snapshots()
+            mutate(values)
+            with self.assertRaises(OPS.OpsError):
+                OPS.audit_receipt(**values)
+
+    def test_archive_rejects_modified_container_or_incomplete_stop(self):
+        for mutate in (
+            lambda p: p["metadata"].update(uid=PVC_UID),
+            lambda p: p["metadata"].update(deletionTimestamp="2026-09-15T00:01:01Z"),
+            lambda p: p["spec"].update(hostNetwork=True),
+            lambda p: p["status"].update(phase="Unknown"),
+            lambda p: p["status"].update(reason="NodeLost"),
+            lambda p: p["status"]["containerStatuses"][0].update(restartCount=1),
+            lambda p: p["status"]["containerStatuses"][0].update(containerID="containerd://replacement"),
+            lambda p: p["status"]["containerStatuses"][0].update(imageID="sha256:" + "c" * 64),
+            lambda p: p["status"]["containerStatuses"][0]["state"]["terminated"].update(reason="ContainerStatusUnknown"),
+            lambda p: p["status"]["containerStatuses"][0]["state"]["terminated"].pop("finishedAt"),
+        ):
+            values = recovery_snapshots()
+            mutate(values["audit"][0]["protoPayload"]["response"])
+            with self.assertRaises((OPS.OpsError, OPS.AUTH.AuthSlotError)):
+                OPS.audit_receipt(**values)
+
+    def test_archive_rejects_retry_and_terminal_accounting_uncertainty(self):
+        for mutate in (
+            lambda j: j["spec"].update(backoffLimit=1),
+            lambda j: j["spec"].update(parallelism=2),
+            lambda j: j["spec"].update(completions=2),
+            lambda j: j["spec"].update(podReplacementPolicy="TerminatingOrFailed"),
+            lambda j: j["status"].update(active=1),
+            lambda j: j["status"].update(terminating=1),
+            lambda j: j["status"].update(failed=2),
+            lambda j: j["status"].update(succeeded=1),
+            lambda j: j["status"].update(uncountedTerminatedPods={"failed": [POD_UID]}),
+            lambda j: j["status"].update(conditions=[]),
+        ):
+            values = recovery_snapshots()
+            mutate(values["job"])
+            with self.assertRaises((OPS.OpsError, OPS.AUTH.AuthSlotError)):
+                OPS.audit_receipt(**values)
+
+    def test_archive_timestamps_must_describe_actual_past_termination(self):
+        for mutate in (
+            lambda v: v["audit"][0].update(timestamp="2026-09-15T00:00:59Z"),
+            lambda v: v["audit"][0].update(receiveTimestamp="2026-09-15T00:00:59Z"),
+            lambda v: v["audit"][0].update(timestamp="2099-01-01T00:00:00Z"),
+            lambda v: v["audit"][0].update(timestamp="invalid"),
+            lambda v: v["job"]["status"]["conditions"][0].update(lastTransitionTime="2026-09-15T00:00:59Z"),
+            lambda v: v["audit"][0]["protoPayload"]["response"]["status"]["containerStatuses"][0]["state"]["terminated"].update(startedAt="1970-01-01T00:00:00Z"),
+        ):
+            values = recovery_snapshots()
+            mutate(values)
+            with self.assertRaises((OPS.OpsError, OPS.AUTH.AuthSlotError)):
+                OPS.audit_receipt(**values)
 
 
 if __name__ == "__main__":
