@@ -106,7 +106,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#lane-running [data-task-id='github:example/fixture:3']")
     assert has_element?(view, "#lane-review [data-task-id='github:example/fixture:4']")
     assert has_element?(view, "#lane-done [data-task-id='github:example/fixture:5']")
-    assert has_element?(view, "#filter-project[role=combobox]")
+    assert has_element?(view, ".board-header .board-location #board-project-picker[phx-update=ignore] #filter-project[role=combobox]")
+    refute has_element?(view, "#board-toolbar #filter-project")
     assert has_element?(view, "#filter-status[role=combobox]")
     assert has_element?(view, "#filter-priority[role=combobox]")
     assert has_element?(view, "select[aria-label='Sort cards']")
@@ -144,7 +145,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     topic = "chat_project:github:example/fixture"
     subscribed = fn -> Enum.any?(Registry.lookup(SymphonyElixir.PubSub, topic), &(elem(&1, 0) == view.pid)) end
     render_click(view, "open-chat")
-    assert has_element?(view, "#session-threads-content:not([hidden])")
+    assert has_element?(view, "#chat-thread-list:not([hidden])")
     assert subscribed.()
     render_patch(view, "/")
     refute has_element?(view, "#management-chat-dock")
@@ -152,7 +153,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     send(view.pid, {:chat_list_updated, "github:example/fixture"})
     refute has_element?(view, "#management-chat-dock")
     render_click(view, "open-chat")
-    assert has_element?(view, "#session-threads-content:not([hidden])")
+    assert has_element?(view, "#chat-thread-list:not([hidden])")
     assert subscribed.()
     view |> element("button[aria-label='Close chat']") |> render_click()
     refute has_element?(view, "#management-chat-dock")

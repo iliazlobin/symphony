@@ -328,16 +328,20 @@ The observability UI now runs on a minimal Phoenix stack:
 Open **Chat** at the right of the board header to show the conversation panel.
 The board and full-page chat share `ChatPanel`. The dock retains board filters and
 selected task links. Each message automatically attaches a validated project-bound
-snapshot of bounded task IDs and filters, not raw browser contents. The first tab,
-**Threads**, lists the project's conversations with live activity status and search.
-Open a thread to continue it or start a new chat. **Chat**, **Context**,
+snapshot of bounded task IDs and filters, not raw browser contents. The chat list
+shows the project's conversations with live activity status and search. Pin important
+chats and drag the handles to reorder within Pinned or Chats; move controls also work
+with a keyboard. Pins and ordering persist in private project chat storage.
+Open a chat to continue it, return with **Back to chats**, or start a new chat.
+Inside the conversation, **Chat**, **Context**,
 **Outputs** and **Sources** organize the same durable conversation. Context separates
 the next message's view from snapshots retained with earlier messages. Outputs collect
 the latest 100 distinct issue/PR summaries and action results; original tool results stay
 in message history. Sources retain retrieved references.
 GitHub artifact statuses are recorded observations; thread activity updates live.
-The composer is hidden on Threads without discarding its draft. The selected tab is
-remembered in this browser session. The current-view
+Returning to the list hides the composer without discarding its draft. Conversation
+messages scroll independently of the composer. The selected view and tab are remembered
+in this browser session. The current-view
 tool resolves fresh authorized task summaries; action previews and browser
 confirmations own all writes. See [management conversations](../ARCHITECTURE.md#management-conversations)
 for the context, storage and tool boundary, and the [operator guide](../profiles/events-concierge/README.md#operate)

@@ -438,8 +438,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
       data-scope={scope(@board)} data-projects={Jason.encode!(@board.projects)} data-url-filters={Jason.encode!(@url_filters)} data-selected-task={@dialog == :task && @selected && @selected.id}>
       <div class="board-main">
       <header class="board-header">
-        <a href="/" class="brand"><span class="brand-mark" aria-hidden="true">∿</span> Symphony</a>
-        <span class="header-divider" aria-hidden="true">/</span><span class="board-heading">Projects</span>
+        <div class="board-location">
+          <a href="/" class="brand"><span class="brand-mark" aria-hidden="true">∿</span> Symphony</a>
+          <span class="header-divider" aria-hidden="true">/</span><span class="board-heading">Projects</span>
+          <span class="header-divider" aria-hidden="true">/</span>
+          <div id="board-project-picker" class="filter-combo project-combo" data-filter="project" phx-update="ignore">
+            <div class="combo-control"><input id="filter-project" role="combobox" aria-label="Project filter"
+              autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="options-project"
+              placeholder="All projects" /><button type="button" data-filter-toggle="project" aria-label="Open project filter">⌄</button></div>
+            <div id="options-project" class="combo-options" role="listbox" aria-label="Project options" aria-multiselectable="true" hidden></div>
+          </div>
+        </div>
         <span class="header-spacer"></span>
         <div id="board-search" phx-update="ignore"><input type="search" data-board-search aria-label="Search tasks" placeholder="Search tasks…" /></div>
         <button id="settings-button" class="button button-quiet" phx-click="open-settings">Settings</button>
@@ -449,12 +458,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
       <div id="board-toolbar" class="board-toolbar" phx-update="ignore">
         <div class="toolbar-primary">
-          <div class="filter-combo project-combo" data-filter="project">
-            <div class="combo-control"><input id="filter-project" role="combobox" aria-label="Project filter"
-              autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="options-project"
-              placeholder="Project: All" /><button type="button" data-filter-toggle="project" aria-label="Open project filter">⌄</button></div>
-            <div id="options-project" class="combo-options" role="listbox" aria-label="Project options" aria-multiselectable="true" hidden></div>
-          </div>
           <span class="header-spacer"></span>
           <button type="button" class="button button-quiet toolbar-button" data-toggle-filters aria-expanded="false" aria-controls="board-filter-panel">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M7 12h10M10 17h4" /></svg>Filter</button>

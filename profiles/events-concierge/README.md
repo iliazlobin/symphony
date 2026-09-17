@@ -181,14 +181,17 @@ controller or change task ownership. Additional project services, delivery of an
 into running workers, automatic repairs and web publication remain separate work.
 
 **Web chat.** After [dedicated runtime setup](../../elixir/README.md#web-board-and-chat),
-select one project on the board and open **Chat** in the right-side panel. A task
+select a project beside **Projects** in the top header and open **Chat** in the right-side panel. A task
 popup also offers **Discuss this task**. Sign in through the configured browser provider.
-Open **Threads** to search this project's retained conversations and see which are
-running, waiting for confirmation, idle, interrupted or in error. Select a thread to
-continue it, or use **New chat** for a separate topic. These statuses describe chat
-activity; the board tracks coding tasks. **Chat**, **Context**, **Outputs** and **Sources**
-retain the selected conversation's messages and evidence. Switching tabs preserves
-your draft. Outputs include observed issue/PR status and action results.
+The list shows this project's retained chats and which are running, waiting for
+confirmation, idle, interrupted or in error. Pin chats to keep them at the top;
+drag their handles or use the move controls to arrange each group. Pins and order
+are saved with project chat state. Open a chat to read and continue it; **Back to chats**
+returns to the list. **New chat** starts a separate topic. These statuses describe
+chat activity; the board tracks coding tasks. **Chat**, **Context**, **Outputs** and
+**Sources** retain the selected conversation's messages and evidence. Returning to
+the list or switching tabs preserves its draft. Outputs include observed issue/PR
+status and action results.
 Project changes clear the current selection and draft. A chat stays with its original project. This service currently supplies one configured
 project; additional controllers are not aggregated yet.
 

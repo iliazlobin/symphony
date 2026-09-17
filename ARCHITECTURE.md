@@ -208,10 +208,13 @@ is a separate extension. Historical messages are records; tools refresh current 
 and attach source timestamps, task links and board filters.
 
 The board hosts the shared conversation component in a right-side panel; `/chat`
-is its standalone host. Task popups remain interactive alongside the panel. The first
-Threads tab shows authorized conversation summaries and live activity for the selected
-project. Project notifications invalidate that list; the component rechecks access
-when retrieving summaries. Selecting a thread loads its retained conversation. Chat
+is its standalone host. Task popups remain interactive alongside the panel. The chat
+list shows authorized conversation summaries and live activity for the selected project.
+Selecting a chat opens its scrollable conversation; returning to the list preserves
+that chat's unsent draft. Pins and order are project presentation preferences, scoped
+to the retained tracker fingerprint and stored atomically beside conversation records.
+They do not change message timestamps or execution order. Project notifications
+invalidate the list; each retrieval and preference change rechecks access. Chat
 activity is distinct from the coding-task lifecycle on the board.
 [`Chat.ViewContext`](elixir/lib/symphony_elixir/chat/view_context.ex) validates a
 bounded snapshot for each user message: project, filters, selected task ID,

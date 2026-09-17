@@ -82,6 +82,8 @@ input, select {
 .management-chat-dock { position: sticky; top: 0; height: 100dvh; min-width: 0; border-left: 1px solid var(--line); background: var(--panel); z-index: 15; }
 .board-dialog[data-nonmodal=true] { position: fixed; inset: 80px calc(420px + 20px) auto 20px; width: auto; max-width: 720px; margin: 0 auto; max-height: calc(100dvh - 110px); z-index: 12; }
 .board-header {
+  position: relative;
+  z-index: 6;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -95,6 +97,12 @@ input, select {
 .brand-mark { color: var(--accent); font-size: 23px; line-height: 1; }
 .header-divider { color: var(--line); font-size: 18px; }
 .board-heading { font-size: 13px; font-weight: 500; }
+.board-location { display: flex; align-items: center; gap: 12px; min-width: 0; max-width: 100%; }
+.board-location > .brand, .board-location > .board-heading, .board-location > .header-divider { flex-shrink: 0; }
+.board-location .project-combo { flex: 0 1 250px; width: 250px; }
+.board-location .combo-control { border-color: transparent; }
+.board-location .combo-control:hover, .board-location .combo-control:focus-within { background: var(--soft); }
+.board-location .combo-control input { text-overflow: ellipsis; }
 .dashboard-shell .board-header .button { font-size: 12px; padding: 5px 9px; border-radius: 5px; }
 .header-subtitle { padding-left: 14px; border-left: 1px solid var(--line); color: var(--muted); }
 .header-spacer { flex: 1; }
@@ -102,7 +110,6 @@ input, select {
 #board-search input { width: 100%; border-color: transparent; padding: 5px 8px; background: var(--soft); font-size: 12px; border-radius: 5px; }
 .board-toolbar { padding: 8px 24px; background: var(--panel); border-bottom: 1px solid var(--line); position: relative; z-index: 5; }
 .toolbar-primary { display: flex; align-items: center; gap: 8px; }
-.project-combo { flex: 0 1 240px; }
 .toolbar-button, .board-menu > summary { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border-radius: 5px; font-size: 12px; color: var(--fg); }
 .toolbar-button svg, .board-menu svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
 .toolbar-button:hover, .board-menu > summary:hover, .board-menu[open] > summary { background: var(--soft); }
