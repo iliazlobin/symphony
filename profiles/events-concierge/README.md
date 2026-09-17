@@ -142,11 +142,28 @@ backlog issue; creating it does not start a worker. The form's recent submission
 retain completed receipts and unfinished actions. If the result is uncertain, use
 **Check outcome** rather than creating another request. Model access is not required,
 but the service's durable action store must be configured and healthy.
-Manage intake labels through GitHub or an approved chat action. Moving across lanes cannot fabricate
-workflow progress. Moving Ready to Backlog requests a confirmed native cancellation;
-moving a held Backlog card to Ready offers native retry. Cancel can stop work claimed
-since the card was displayed; retry clears a hold without resetting budgets or
-providing a missing answer. Other transitions explain the owning workflow action.
+
+| Stage | What you do | What Symphony does |
+| --- | --- | --- |
+| Backlog | Create and confirm a task with its outcome, scope, checks and dependencies. | Creates the GitHub issue and keeps the submission receipt. No worker starts. |
+| Ready | Add `symphony:ready` to the issue in GitHub when it is ready to execute. | Checks eligibility, dependencies, holds, budget and available capacity before dispatch. |
+| Running | Answer blockers or cancel the task when needed. | Starts an isolated builder, records progress and runs a separate reviewer against the candidate commit. |
+| Review | Review the candidate, PR and CI; request changes or mark the PR ready and merge when acceptable. | Retains the candidate and review evidence, holds further execution and lets the publication broker publish eligible work as a draft PR. Automatic merge requires a separately enabled policy. |
+| Done | Confirm the outcome and close the GitHub issue, or merge a PR that closes it. | Reflects the closed issue on the board. A PR merge alone does not always close the issue; deployment remains a separate approved action. |
+
+Drag cards to arrange the board; there is no Move dropdown. Within a column, choose
+**Display → Sort by → Manual order** first. This saves the order in this browser and does
+not change scheduling priority. Dragging **Ready → Backlog** requests a confirmed
+cancellation; dragging a held **Backlog → Ready** offers a confirmed retry. These
+actions are also available by opening the task and choosing **Cancel** or **Retry**.
+Cancel can stop work claimed since the card was displayed. Retry clears a hold without
+resetting budgets, adding queue labels or supplying a missing answer.
+
+Dragging a newly created Backlog task to Ready does **not** queue it yet: add the
+`symphony:ready` label in GitHub. Other cross-column drops explain the required action;
+they cannot manually mark work Running, Review or Done. Chat can propose tracker
+changes with confirmation; queue/edit operations require an idle, cancelled task,
+and retry is a separate action.
 
 **Browser sign-in.** With the [Google provider configured](../../elixir/README.md#browser-sign-in),
 open the exact configured origin and choose **Sign in with Google**. Only explicitly

@@ -555,10 +555,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 </div>
                 <div :if={task_links(task, ["repo", "candidate", "checks"]) != []} class="card-reference-links"><a :for={link <- task_links(task, ["repo", "candidate", "checks"])} href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
                 <p :if={current_activity(task, @payload)} class="card-activity">{current_activity(task, @payload)}</p>
-                <div class="card-bottom"><time datetime={task.updated_at} title={updated_at(task.updated_at)}>{compact_updated_at(task.updated_at)}</time>
-                  <select :if={!@read_only} class="move-select" data-move-task={task.id} aria-label={"Move #{task.identifier}"}>
-                    <option value="">Move…</option><option :for={{value, title} <- @lanes} :if={value != task.stage} value={value}>{title}</option>
-                  </select></div>
+                <div class="card-bottom"><time datetime={task.updated_at} title={updated_at(task.updated_at)}>{compact_updated_at(task.updated_at)}</time></div>
               </article>
             </div>
             <p class="lane-empty" data-lane-empty>No tasks</p>

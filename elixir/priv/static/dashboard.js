@@ -274,7 +274,6 @@
         else if (event.target.hasAttribute("data-board-theme") && ["light", "dark", "system"].includes(event.target.value)) { this.prefs.theme = event.target.value; this.apply(); this.save(); }
         else if (event.target.dataset.visibleLane) this.setLaneVisible(event.target.dataset.visibleLane, event.target.checked);
         else if (event.target.hasAttribute("data-mobile-lane")) { this.prefs.lane = event.target.value; this.setLaneVisible(event.target.value, true); }
-        else if (event.target.dataset.moveTask && event.target.value) { const stage = event.target.value; event.target.value = ""; this.pushEvent("move-task", {id: event.target.dataset.moveTask, stage}); }
       });
       on("dragstart", event => { const card = event.target.closest("[data-task-id]"); if (!card || card.getAttribute("draggable") !== "true" || event.target.closest("select,a,button,summary")) { event.preventDefault(); return; } this.drag = card; card.classList.add("dragging"); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", card.dataset.taskId); });
       const clearDrop = () => this.el.querySelectorAll(".drop-target,.drop-before,.drop-after").forEach(el => el.classList.remove("drop-target", "drop-before", "drop-after"));
