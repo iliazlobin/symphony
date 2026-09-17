@@ -229,7 +229,11 @@ defmodule SymphonyElixirWeb.ChatPanel do
       {:ok, projects} ->
         selected = selected_project(projects, params["project"])
         socket = if selected != socket.assigns.project, do: clear_conversation(socket), else: socket
-        socket = socket |> assign(projects: projects, project: selected, loading: false) |> subscribe_project(selected && selected["id"])
+
+        socket =
+          socket
+          |> assign(projects: projects, project: selected, loading: false)
+          |> subscribe_project(selected && selected["id"])
 
         cond do
           is_nil(selected) -> assign(socket, :notice, unavailable_project(projects))
@@ -290,7 +294,10 @@ defmodule SymphonyElixirWeb.ChatPanel do
   defp subscribe_project(%{assigns: %{project_subscribed: project}} = socket, project), do: socket
 
   defp subscribe_project(socket, project) do
-    if socket.assigns.project_subscribed, do: Phoenix.PubSub.unsubscribe(SymphonyElixir.PubSub, "chat_project:" <> socket.assigns.project_subscribed)
+    if socket.assigns.project_subscribed do
+      Phoenix.PubSub.unsubscribe(SymphonyElixir.PubSub, "chat_project:" <> socket.assigns.project_subscribed)
+    end
+
     if project, do: Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat_project:" <> project)
     send(self(), {:chat_panel, :project_subscription, project})
     assign(socket, :project_subscribed, project)

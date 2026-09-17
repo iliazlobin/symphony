@@ -100,7 +100,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   def handle_info({:chat_panel, :close}, socket) do
-    socket = socket |> unsubscribe_chat() |> assign(:chat_open, false) |> assign(:chat_id, nil) |> assign(:view_context, nil)
+    socket = socket |> unsubscribe_chat() |> assign(chat_open: false, chat_id: nil, view_context: nil)
     {:noreply, push_patch(socket, to: board_location(socket))}
   end
 
@@ -899,7 +899,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp unsubscribe_chat(socket) do
     if socket.assigns.chat_id, do: Phoenix.PubSub.unsubscribe(SymphonyElixir.PubSub, "chat:" <> socket.assigns.chat_id)
-    if socket.assigns.chat_project_subscription, do: Phoenix.PubSub.unsubscribe(SymphonyElixir.PubSub, "chat_project:" <> socket.assigns.chat_project_subscription)
+
+    if socket.assigns.chat_project_subscription do
+      Phoenix.PubSub.unsubscribe(SymphonyElixir.PubSub, "chat_project:" <> socket.assigns.chat_project_subscription)
+    end
+
     assign(socket, :chat_project_subscription, nil)
   end
 
