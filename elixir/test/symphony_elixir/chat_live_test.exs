@@ -638,13 +638,28 @@ defmodule SymphonyElixir.ChatLiveTest do
 
   test "authorization loss on component refresh clears all retained content", ctx do
     view = embedded_view(ctx, view_context())
+    render_change(view, "draft", %{"message" => "Private alpha draft"})
+    render_click(view, "session-tab", %{"tab" => "context"})
+    assert has_element?(view, "#session-context-content")
+    assert has_element?(view, "#chat-message-input", "Private alpha draft")
     System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("changed", 8))
     {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
     FixtureStore.put(chat)
+
+    # PubSub reaches the host before its queued component update; render alone
+    # does not wait for that second message to clear the retained state.
+    assert eventually(fn -> has_element?(view, ".chat-login", "Unlock chat") end)
     html = render(view)
     assert html =~ "Unlock chat"
     refute html =~ "Alpha secret"
+    refute html =~ "Private alpha draft"
     refute has_element?(view, "#session-context-content")
+    refute has_element?(view, "#chat-thread-list")
+    refute has_element?(view, "#chat-composer")
+
+    for topic <- ["chat:a1", "chat_project:alpha"] do
+      refute Enum.any?(Registry.lookup(SymphonyElixir.PubSub, topic), &(elem(&1, 0) == view.pid))
+    end
   end
 
   defp embedded_view(ctx, context, read_only \\ false) do
