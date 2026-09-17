@@ -32,7 +32,8 @@ cd elixir
 make all
 cd ..
 python3 profiles/events-concierge/profile.py init \
-  --source /path/to/events-concierge --base-sha FULL_REVIEWED_COMMIT
+  --source /path/to/events-concierge --base-sha FULL_REVIEWED_COMMIT \
+  --integration-branch main
 python3 profiles/events-concierge/profile.py install-rules
 python3 profiles/events-concierge/profile.py login
 python3 profiles/events-concierge/profile.py doctor
@@ -43,10 +44,11 @@ The source commit must contain the reviewed application `AGENTS.md`,
 `~/Library/Application Support/Symphony/events-concierge`: configuration, an API token,
 control ledger, retained workspaces, worker home, managed rules and publication receipts.
 Runtime copies are pinned inputs, not another documentation home. Initialization refuses
-to overwrite existing state. The initial [pilot](https://github.com/iliazlobin/events-concierge/issues/6)
-targets a draft PR into `codex/symphony-onboarding` from the
-[pinned baseline](https://github.com/iliazlobin/events-concierge/tree/cae67523a6e125682f3a87a0bb4ec95d85a633ee).
-This pilot target does not select a permanent release branch or enable automatic merge.
+to overwrite existing state. The canonical integration branch is
+[`main`](https://github.com/iliazlobin/events-concierge/tree/main); select its reviewed,
+full commit SHA explicitly and make it available in the configured source checkout.
+The branch name does not advance the source pin or enable automatic merge. Existing
+installations use the baseline change procedure below rather than initialization.
 
 ## Operate
 
@@ -390,10 +392,53 @@ known required checks from pinned GitHub Apps, and matching remote head/base rev
 Missing evidence blocks it. The user approves deployments separately. A merge is not
 proof of deployment or runtime acceptance.
 
-This first profile uses an explicitly pinned source baseline. If the integration branch
-moves, publication stops for stale candidates. The operator must reconcile/review the
-new baseline, update the host pin and restart before another delivery; automatic rebase
-and baseline advancement are not implemented.
+This profile uses an explicitly pinned source baseline. If the integration branch
+moves, publication stops for stale candidates. Automatic rebase and baseline advancement
+are not implemented; review and update the pin before another delivery, including after
+a merge to `main`. Overlapping candidates do not gain permission to publish against a
+changed base merely because their checks passed.
+
+## Change the baseline
+
+Run the commands below from the installed Symphony checkout. Use the existing private
+configuration and state directory; do not initialize a replacement profile or delete
+the ledger, locks, receipts or retained workspaces. A configuration change does not
+authorize worker activation, broader permissions, automatic merge or deployment.
+
+1. Review the intended `main` revision and reconcile its `AGENTS.md`, `ARCHITECTURE.md`,
+   `WORKFLOW.md` and task template with the current application. Verify the full SHA
+   against GitHub and fetch its committed objects into the configured `source_path`
+   without checking out or discarding unrelated local work. Resolve outstanding old-base
+   candidates explicitly; changing the pin cannot reuse their prior review.
+2. Read `python3 tools/symphony_control.py status`, then run
+   `python3 tools/symphony_control.py drain --revision CURRENT_REVISION` with the observed
+   `control.revision`. Wait for running/retrying work and process cleanup to finish;
+   unavailable status means unknown ownership, not idle. Re-read status, then run
+   `python3 tools/symphony_control.py pause --revision CURRENT_REVISION` with its new
+   revision and confirm paused mode. Drain stops new dispatch; pausing after completion
+   also stops automatic publication.
+3. Run `python3 tools/symphony_service.py stop`, then
+   `python3 tools/symphony_service.py status`; both controller and publisher must be
+   unloaded. The controller captures its base SHA at startup, while the publisher
+   reloads configuration during each pass. Do not change the pin while either is running.
+4. In the existing private `config.json`, set `integration_branch` to `main` and
+   `base_sha` to the reviewed full SHA. Preserve all other settings, including the
+   current worker-launch gate and disabled automatic-merge gate. Review the private
+   `workflow_path` against the new committed workflow and reconcile intentional runtime
+   settings; do not overwrite browser/chat configuration, budgets or concurrency with
+   template defaults. Keep `control.base_sha: $SYMPHONY_BASE_SHA`. Preserve private file
+   ownership and mode `0600`; never print credentials or commit runtime files.
+5. Run `python3 profiles/events-concierge/profile.py doctor`, then
+   `python3 tools/symphony_service.py start` and
+   `python3 tools/symphony_control.py status`. Confirm the intended baseline and branch,
+   unchanged gates and retained evidence, healthy service/API state and **paused** mode.
+   `initial_mode: paused` only initializes new state; the pause recorded before stopping
+   is what prevents an idle existing profile from resuming on restart.
+6. Keep the profile paused until source, workflow and runtime validation is complete.
+   Re-read status immediately before an authorized
+   `python3 tools/symphony_control.py resume --revision CURRENT_REVISION`, then verify
+   the result. Rebuild and independently review any candidate carried onto the new base;
+   retain completed task receipts and budgets without retrying them merely to migrate.
 
 ## Verification and recovery
 
