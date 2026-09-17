@@ -2,6 +2,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
   @moduledoc "Project-bound management conversations, streamed from the conversation owner."
   use Phoenix.LiveComponent
 
+  alias SymphonyElixir.Chat.Artifacts
   alias SymphonyElixirWeb.{BrowserAuth, Endpoint}
 
   @impl true
@@ -412,7 +413,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
         executing: executing?(assigns.chat),
         busy: busy?(assigns.chat),
         current_context: scoped_context(assigns),
-        artifacts: SymphonyElixir.Chat.Artifacts.entries(assigns.chat)
+        artifacts: Artifacts.entries(assigns.chat)
       )
 
     ~H"""
@@ -502,7 +503,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
             </section>
           </div>
           <div id="session-outputs-content" class="chat-detail-panel" role="tabpanel" tabindex="0" aria-labelledby="session-outputs-tab" hidden={@session_tab != "outputs"}>
-            <h2>Outputs</h2><p class="muted">Issues, pull requests and action results retained in this conversation. Status reflects the recorded observation, not a live refresh.</p>
+            <h2>Outputs</h2><p class="muted">The latest 100 issues, pull requests and action results retained in this conversation. Status reflects the recorded observation; earlier tool results remain below.</p>
             <p :if={output_widgets(@chat) == []} class="chat-detail-empty">No outputs yet.</p>
             <div class="chat-artifacts"><.artifact :for={artifact <- @artifacts} artifact={artifact} /></div>
             <div :if={@session_tab == "outputs" && output_widgets(@chat) != []} class="chat-widgets"><h3>Tool results and actions</h3><.widget :for={widget <- output_widgets(@chat)} widget={map(widget)} project={@project} busy={@busy} myself={@myself} embedded={@embedded} /></div>

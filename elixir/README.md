@@ -331,7 +331,8 @@ selected task links. Each message automatically attaches a validated project-bou
 snapshot of bounded task IDs and filters, not raw browser contents. **Chat**, **Context**,
 **Outputs** and **Sources** organize the same durable conversation. Context separates
 the next message's view from snapshots retained with earlier messages. Outputs collect
-recorded issue/PR summaries and action results; Sources retain retrieved references.
+the latest 100 distinct issue/PR summaries and action results; original tool results stay
+in message history. Sources retain retrieved references.
 Observed statuses are not live updates. The composer stays available across tabs, and
 the selected tab is remembered per conversation in this browser session. The current-view
 tool resolves fresh authorized task summaries; action previews and browser

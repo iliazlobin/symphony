@@ -193,16 +193,15 @@ Responses stream as they arrive. **Stop** interrupts the chat response, not a co
 task. Closing the tab leaves the response running; reopen its URL to reconnect.
 After a service restart, send another message to continue an interrupted conversation.
 Codex handles native compaction while the app retains visible messages and receipts.
-The optional **Context / Outputs** drawer shows retrieved sources, task widgets and
-actions. References update the board filters or open a task popup while keeping
+**Sources** shows retrieved references; **Outputs** shows up to 100 distinct issue/PR
+artifacts and action results, with earlier tool results retained in history. References
+update the board filters or open a task popup while keeping
 the conversation open. `/chat` remains available as a full-page conversation view.
 
-**Manage the view context.** The composer shows what will accompany the next message:
-project, filters, displayed task count and the selected card. Switch off **Share this
-view** to send no current board snapshot, or uncheck **Identify selected card** to
-remove its explicit selection (the card may still be part of the displayed task list).
-Sharing off does not erase earlier messages or sources; start a new chat for a fresh
-conversation. Context refreshes as you filter, scroll, switch lanes or open a card.
+**View context.** The **Context** tab shows what automatically accompanies the next
+message: project, filters, displayed task count and selected card. Earlier snapshots
+remain attached to their messages; start a new chat for a fresh conversation. Current
+context refreshes as you filter, scroll, switch lanes or open a card.
 It includes up to 50 task IDs and marks truncated lists. It excludes arbitrary screen
 text, screenshots, password fields and other browser tabs. Tools recheck task details
 and authorization before using a snapshot; the snapshot is not approval to act.
