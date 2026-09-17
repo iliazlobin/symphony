@@ -300,8 +300,12 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
   defp refresh_list(socket) do
     case call(socket, :list, [project_id(socket)]) do
-      {:ok, chats} -> assign(socket, chats: chats, list_error: nil)
-      {:error, reason} -> socket |> show_error(reason) |> assign(:list_error, error_message(reason))
+      {:ok, chats} ->
+        notice = if socket.assigns.notice == socket.assigns.list_error, do: nil, else: socket.assigns.notice
+        assign(socket, chats: chats, list_error: nil, notice: notice)
+
+      {:error, reason} ->
+        socket |> show_error(reason) |> assign(:list_error, error_message(reason))
     end
   end
 

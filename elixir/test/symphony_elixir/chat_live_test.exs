@@ -351,6 +351,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     Endpoint.config_change([{Endpoint, Keyword.put(Application.get_env(:symphony_elixir, Endpoint), :chat_store, FixtureStore)}], [])
     render_click(view, "retry-chat-list")
     refute has_element?(view, "#chat-thread-list", "could not be loaded")
+    refute render(view) =~ "could not confirm saving"
     assert has_element?(view, "#chat-message-input", "Retained draft")
   end
 
