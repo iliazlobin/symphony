@@ -133,8 +133,14 @@ Use `--config /absolute/path/to/config.json` for another configured profile.
 The profile binds the repository to the controller address; the current controller
 API does not attest repository identity in its response.
 
-**New task** opens the configured GitHub issue form. Create the issue and manage its
-intake labels in GitHub, then refresh the board. Moving across lanes cannot fabricate
+**New task** opens a form in the board. Fill in the title, outcome, scope, acceptance
+checks and dependencies (`none` when there are none), then choose **Preview task**.
+Review the exact issue and choose **Create task**. It appears in GitHub as an unqueued
+backlog issue; creating it does not start a worker. The form's recent submissions
+retain completed receipts and unfinished actions. If the result is uncertain, use
+**Check outcome** rather than creating another request. Model access is not required,
+but the service's durable action store must be configured and healthy.
+Manage intake labels through GitHub or an approved chat action. Moving across lanes cannot fabricate
 workflow progress. Moving Ready to Backlog requests a confirmed native cancellation;
 moving a held Backlog card to Ready offers native retry. Cancel can stop work claimed
 since the card was displayed; retry clears a hold without resetting budgets or

@@ -326,6 +326,12 @@ The observability UI now runs on a minimal Phoenix stack:
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
 Open **Chat** at the right of the board header to show the conversation panel.
+Use **New task** to enter a title, outcome, scope, acceptance checks and dependencies.
+**Preview task** saves the exact proposed GitHub issue; **Create task** confirms it.
+Created tasks enter the backlog without execution routing labels. Recent submissions
+retain receipts and unfinished actions across reconnects. If the result is uncertain,
+use **Check outcome** to reconcile it before creating another request. This form uses
+the durable action store and works without a model turn or subscription login.
 The board and full-page chat share `ChatPanel`. The dock retains board filters and
 selected task links. Each message automatically attaches a validated project-bound
 snapshot of bounded task IDs and filters, not raw browser contents. The chat list
@@ -381,6 +387,11 @@ a keyring-only login is not available to it. Never copy another Codex home's
 authentication, configuration or history. The new home must have no user configuration, agent instructions, hooks, plugins or user
 skills. Native generated system skills are tolerated but disabled. The backend
 creates empty conversation workspaces and supplies only typed management tools.
+Management functions are exposed directly with
+`features.code_mode.direct_only_tool_namespaces = ["functions"]`; the Code Mode
+feature and host remain disabled. The pinned model's routing metadata must not send
+these functions through an unavailable code host. Configuration is verified before
+starting or resuming each turn; never enable coding tools to repair a management call.
 The browser uses [Google or local operator sign-in](#browser-sign-in); model
 credentials stay on the host. These are separate logins: Google grants access to
 Symphony, while the dedicated Codex home supplies model access. A disabled store

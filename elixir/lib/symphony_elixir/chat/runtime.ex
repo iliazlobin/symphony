@@ -21,7 +21,7 @@ defmodule SymphonyElixir.Chat.Runtime do
     remote_plugin remote_control enable_mcp_apps hooks codex_hooks plugin_hooks
     multi_agent multi_agent_v2 collab enable_fanout memories memory_tool chronicle
     external_agent_memory_import external_migration browser_use computer_use
-    in_app_browser image_generation imagegenext view_image js_repl code_mode
+    in_app_browser image_generation imagegenext view_image js_repl
     code_mode_host code_mode_only deferred_executor workspace_dependencies
     request_permissions request_permissions_tool tool_suggest recommended_plugins
     standalone_web_search web_search web_search_cached web_search_request
@@ -48,6 +48,11 @@ defmodule SymphonyElixir.Chat.Runtime do
   def configuration do
     Map.new(@disabled, &{"features.#{&1}", false})
     |> Map.merge(%{
+      # Astra's model metadata can select CodeModeOnly even when the feature is
+      # disabled. Keep our dynamic functions directly callable without starting
+      # a JavaScript host or exposing any additional execution capabilities.
+      "features.code_mode.enabled" => false,
+      "features.code_mode.direct_only_tool_namespaces" => ["functions"],
       "agents.enabled" => false,
       "skills.bundled.enabled" => false,
       "skills.include_instructions" => false,
@@ -204,7 +209,8 @@ defmodule SymphonyElixir.Chat.Runtime do
       "approvalPolicy" => "never",
       "sandbox" => "read-only",
       "baseInstructions" => opts.instructions,
-      "developerInstructions" => "Use only the supplied Symphony management tools. Never execute code, read local files, or infer successful actions without tool evidence.",
+      "developerInstructions" =>
+        "Call the supplied Symphony management functions directly. The Code Mode host is disabled: do not use exec or wait to call tools. Never execute code, read local files, or infer successful actions without tool evidence.",
       "config" => configuration()
     }
 

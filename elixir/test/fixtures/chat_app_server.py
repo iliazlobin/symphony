@@ -59,6 +59,8 @@ for line in sys.stdin:
         result = {'userAgent': 'symphony-management/' + version + ' (test)'}
     elif method == 'config/read':
         if mode == 'unsafe': config['features']['shell_tool'] = True
+        if mode == 'unsafe-code-host': config['features']['code_mode_host'] = True
+        if mode == 'unsafe-tool-routing': config['features']['code_mode']['direct_only_tool_namespaces'] = []
         result = {'config': [] if mode == 'config-non-map' else config}
     elif method == 'account/read':
         result = {'account': None if mode == 'auth' else {'type': 'chatgpt'}, 'requiresOpenaiAuth': True}
@@ -67,6 +69,9 @@ for line in sys.stdin:
         if mode == 'model-pages' or (mode == 'model-second-page' and params.get('cursor') is None):
             result = {'data': [], 'nextCursor': 'next-page'}
     elif method in ('thread/start', 'thread/resume'):
+        assert params['config']['features.code_mode_host'] is False
+        assert params['config']['features.code_mode.enabled'] is False
+        assert params['config']['features.code_mode.direct_only_tool_namespaces'] == ['functions']
         if mode == 'reject':
             write({'id': rid, 'error': {'message': 'private diagnostic secret'}}); continue
         if method == 'thread/start':
