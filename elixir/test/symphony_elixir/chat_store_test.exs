@@ -279,7 +279,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, _} = Store.send_message(c.project, chat["id"], text, "summary", c.auth, c.server)
     finished = wait_chat(c, chat, &(&1["status"] == "idle"))
     assert {:ok, [summary]} = Store.list(c.project, c.auth, c.server)
-    assert Map.keys(summary) |> Enum.sort() == Enum.sort(~w(id project_id title snippet updated_at status display_status archived message_count))
+    assert Map.keys(summary) |> Enum.sort() == Enum.sort(~w(id project_id title snippet updated_at status display_status archived message_count pinned))
     assert summary["title"] == text |> String.replace(~r/\s+/, " ") |> String.trim() |> String.slice(0, 80)
     assert summary["snippet"] == "Hello from the project."
     assert summary["display_status"] == "idle"
@@ -425,6 +425,121 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, summaries} = Store.list(c.project, c.auth, c.server)
     assert Enum.map(summaries, & &1["id"]) == Enum.sort([first["id"], second["id"]], :desc)
     assert {:ok, ^summaries} = Store.list(c.project, c.auth, c.server)
+  end
+
+  test "pins and same-group manual order persist atomically without rewriting conversations", c do
+    [first, second, third] = Enum.map(1..3, fn _ -> create(c) end)
+    originals = Map.new([first, second, third], &{&1["id"], File.read!(Path.join(c.root, &1["id"] <> ".json"))})
+    assert {:ok, _} = Store.pin(c.project, first["id"], true, c.auth, c.server)
+    assert {:ok, _} = Store.pin(c.project, second["id"], true, c.auth, c.server)
+    assert {:ok, moved} = Store.move(c.project, second["id"], first["id"], true, c.auth, c.server)
+    assert Enum.map(moved, &{&1["id"], &1["pinned"]}) == [{second["id"], true}, {first["id"], true}, {third["id"], false}]
+    Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat_project:" <> c.project)
+    assert {:ok, ^moved} = Store.move(c.project, second["id"], first["id"], true, c.auth, c.server)
+    assert {:ok, ^moved} = Store.pin(c.project, first["id"], true, c.auth, c.server)
+    refute_receive {:chat_list_updated, _}
+    assert {:ok, _} = Store.pin(c.project, second["id"], false, c.auth, c.server)
+    assert_receive {:chat_list_updated, _}
+    assert {:ok, ordered} = Store.move(c.project, second["id"], third["id"], false, c.auth, c.server)
+    assert Enum.map(ordered, & &1["id"]) == Enum.map([first, second, third], & &1["id"])
+    assert {:ok, appended} = Store.move(c.project, second["id"], nil, false, c.auth, c.server)
+    assert Enum.map(appended, & &1["id"]) == Enum.map([first, third, second], & &1["id"])
+    assert Enum.all?(originals, fn {id, bytes} -> File.read!(Path.join(c.root, id <> ".json")) == bytes end)
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    assert {:ok, ^appended} = Store.list(c.project, c.auth, server)
+    assert {:ok, new} = Store.create(c.project, "Arrival", c.auth, server)
+    assert {:ok, with_new} = Store.list(c.project, c.auth, server)
+    assert Enum.map(with_new, & &1["id"]) == Enum.map([first, third, second, new], & &1["id"])
+  end
+
+  test "history commands reject invalid, archived, foreign and cross-group rows without changing state", c do
+    [first, second] = Enum.map(1..2, fn _ -> create(c) end)
+    assert {:ok, foreign} = Store.create("github:test/two", "Other", c.auth, c.server)
+    assert {:ok, _} = Store.pin(c.project, first["id"], true, c.auth, c.server)
+
+    foreign_scope = %{c.auth | tracker_fingerprint: "other"}
+
+    for operation <- [:pin, :move] do
+      group = if operation == :move, do: [true], else: []
+      value = if operation == :pin, do: true, else: nil
+      arguments = [c.project, first["id"], value] ++ group
+      foreign_arguments = [c.project, foreign["id"], value] ++ group
+      assert {:error, :unauthorized} = apply(Store, operation, arguments ++ [%{}, c.server])
+      assert {:error, :chat_not_found} = apply(Store, operation, foreign_arguments ++ [c.auth, c.server])
+      assert {:error, :chat_not_found} = apply(Store, operation, arguments ++ [foreign_scope, c.server])
+    end
+
+    assert {:error, :invalid_pin} = Store.pin(c.project, first["id"], "true", c.auth, c.server)
+
+    for anchor <- [first["id"], "bad", %{}, second["id"]] do
+      assert {:error, :invalid_chat_order} = Store.move(c.project, first["id"], anchor, true, c.auth, c.server)
+    end
+
+    for anchor <- [foreign["id"], String.duplicate("f", 32)] do
+      assert {:error, :chat_not_found} = Store.move(c.project, first["id"], anchor, true, c.auth, c.server)
+    end
+
+    assert {:ok, _} = Store.archive(c.project, second["id"], c.auth, c.server)
+    assert {:error, :chat_not_found} = Store.pin(c.project, second["id"], true, c.auth, c.server)
+    assert {:error, :chat_not_found} = Store.move(c.project, first["id"], second["id"], true, c.auth, c.server)
+    assert {:ok, [%{"pinned" => true}]} = Store.list(c.project, c.auth, c.server)
+    assert {:ok, [%{"pinned" => false}]} = Store.list("github:test/two", c.auth, c.server)
+    other_auth = %{c.auth | tracker_fingerprint: "new-project-version"}
+    assert {:ok, versioned} = Store.create(c.project, "New scope", other_auth, c.server)
+    assert {:ok, [%{"pinned" => true}]} = Store.pin(c.project, versioned["id"], true, other_auth, c.server)
+    assert {:ok, [%{"id" => original_id, "pinned" => true}]} = Store.list(c.project, c.auth, c.server)
+    assert original_id == first["id"]
+  end
+
+  test "concurrent history commands serialize while retaining all pins and streaming never resets order", c do
+    [first, second, third] = Enum.map(1..3, fn _ -> create(c) end)
+    jobs = for chat <- [first, second], do: Task.async(fn -> Store.pin(c.project, chat["id"], true, c.auth, c.server) end)
+    assert Enum.all?(Task.await_many(jobs), &match?({:ok, _}, &1))
+    moves = for chat <- [first, second], do: Task.async(fn -> Store.move(c.project, chat["id"], nil, true, c.auth, c.server) end)
+    move_results = Task.await_many(moves)
+    assert {:ok, final_move} = Store.list(c.project, c.auth, c.server)
+    assert {:ok, final_move} in move_results
+    assert Enum.sort(Enum.map(final_move, & &1["id"])) == Enum.sort(Enum.map([first, second, third], & &1["id"]))
+    assert {:ok, ordered} = Store.move(c.project, first["id"], second["id"], true, c.auth, c.server)
+    assert Enum.map(ordered, &{&1["id"], &1["pinned"]}) == [{first["id"], true}, {second["id"], true}, {third["id"], false}]
+    assert {:ok, _} = Store.send_message(c.project, second["id"], "wait", "during-order", c.auth, c.server)
+    wait_chat(c, second, &(List.last(&1["messages"])["text"] == "Partial response"))
+    assert {:ok, streaming} = Store.list(c.project, c.auth, c.server)
+    assert Enum.map(streaming, & &1["id"]) == Enum.map(ordered, & &1["id"])
+  end
+
+  test "unwritable or corrupt preference state never resets pins or removes the selected conversation", c do
+    chat = create(c)
+    assert {:ok, pinned} = Store.pin(c.project, chat["id"], true, c.auth, c.server)
+    path = Path.join(c.root, "presentation.json")
+    original = File.read!(path)
+    File.rm!(path)
+    File.mkdir!(path)
+    Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat_project:" <> c.project)
+    assert {:error, :chat_preferences_unavailable} = Store.pin(c.project, chat["id"], false, c.auth, c.server)
+    refute_receive {:chat_list_updated, _}
+    assert {:ok, ^pinned} = Store.list(c.project, c.auth, c.server)
+    assert {:ok, _} = Store.get(c.project, chat["id"], c.auth, c.server)
+    File.rmdir!(path)
+    File.write!(path, original)
+    assert {:ok, _} = Store.pin(c.project, chat["id"], false, c.auth, c.server)
+    stop_supervised!(Store)
+    File.write!(path, "{corrupt")
+    server = start_supervised!({Store, c.opts})
+    assert {:error, :chat_preferences_unavailable} = Store.list(c.project, c.auth, server)
+    assert {:error, :chat_preferences_unavailable} = Store.pin(c.project, chat["id"], true, c.auth, server)
+    assert {:ok, _} = Store.get(c.project, chat["id"], c.auth, server)
+    assert File.read!(path) == "{corrupt"
+  end
+
+  test "an end-of-group drop rejects a pin group changed after the move intent was captured", c do
+    [first, second] = Enum.map(1..2, fn _ -> create(c) end)
+    assert {:ok, _} = Store.pin(c.project, first["id"], true, c.auth, c.server)
+    assert {:ok, saved} = Store.pin(c.project, second["id"], true, c.auth, c.server)
+    assert {:error, :chat_order_changed} = Store.move(c.project, first["id"], nil, false, c.auth, c.server)
+    assert {:error, :invalid_chat_order} = Store.move(c.project, first["id"], nil, "true", c.auth, c.server)
+    assert {:ok, ^saved} = Store.list(c.project, c.auth, c.server)
   end
 
   test "streamed deltas survive restart, resume native thread, and reject duplicate submissions", c do

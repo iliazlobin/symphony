@@ -3,6 +3,8 @@ defmodule SymphonyElixir.Chat.Persistence do
 
   alias SymphonyElixir.PathSafety
 
+  @preferences_file "presentation.json"
+
   @lock_script """
   import fcntl, os, sys
   fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
@@ -50,6 +52,53 @@ defmodule SymphonyElixir.Chat.Persistence do
     end
   end
 
+  @spec preferences(map()) :: {:ok, map()} | {:error, :chat_preferences_unavailable}
+  def preferences(%{path: root}) do
+    path = Path.join(root, @preferences_file)
+
+    case File.lstat(path) do
+      {:error, :enoent} -> {:ok, %{"version" => 1, "scopes" => %{}}}
+      {:ok, %{type: :regular, size: size}} when size <= 8_000_000 -> read_preferences(path)
+      _ -> {:error, :chat_preferences_unavailable}
+    end
+  end
+
+  @spec put_preferences(map(), map()) :: :ok | {:error, :chat_preferences_unavailable}
+  def put_preferences(%{path: root}, preferences) do
+    with true <- valid_preferences?(preferences),
+         {:ok, bytes} <- Jason.encode(preferences),
+         true <- byte_size(bytes) <= 8_000_000,
+         :ok <- persist(Path.join(root, @preferences_file), bytes) do
+      :ok
+    else
+      _ -> {:error, :chat_preferences_unavailable}
+    end
+  end
+
+  defp read_preferences(path) do
+    with {:ok, bytes} <- File.read(path),
+         {:ok, preferences} <- Jason.decode(bytes),
+         true <- valid_preferences?(preferences) do
+      {:ok, preferences}
+    else
+      _ -> {:error, :chat_preferences_unavailable}
+    end
+  end
+
+  defp valid_preferences?(%{"version" => 1, "scopes" => scopes} = preferences) when is_map(scopes) and map_size(scopes) <= 500 do
+    map_size(preferences) == 2 and Enum.all?(scopes, &valid_preference_scope?/1)
+  end
+
+  defp valid_preferences?(_), do: false
+
+  defp valid_preference_scope?({scope, %{"pinned" => pinned, "order" => order} = preferences}) do
+    is_binary(scope) and String.match?(scope, ~r/^[a-f0-9]{64}$/) and map_size(preferences) == 2 and
+      valid_preference_ids?(pinned) and valid_preference_ids?(order) and Enum.all?(pinned, &(&1 in order))
+  end
+
+  defp valid_preference_scope?(_), do: false
+  defp valid_preference_ids?(ids), do: is_list(ids) and length(ids) <= 500 and Enum.all?(ids, &valid_id?/1) and Enum.uniq(ids) == ids
+
   @spec close(map()) :: :ok
   def close(%{lock: port}) do
     if Port.info(port), do: Port.close(port)
@@ -60,7 +109,7 @@ defmodule SymphonyElixir.Chat.Persistence do
   def valid_id?(id), do: is_binary(id) and String.match?(id, ~r/^[a-f0-9]{32}$/)
 
   defp load(root) do
-    paths = Path.wildcard(Path.join(root, "*.json"))
+    paths = Path.wildcard(Path.join(root, "*.json")) |> Enum.reject(&(Path.basename(&1) == @preferences_file))
 
     if length(paths) > 500 do
       {:error, :chat_storage_unavailable}

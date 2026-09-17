@@ -31,6 +31,78 @@ defmodule SymphonyElixir.Chat.PersistenceTest do
     assert :ok = Persistence.close(reopened)
   end
 
+  test "presentation preferences share the owner lock and atomic private storage without becoming conversations", c do
+    {:ok, owner, %{}} = Persistence.open(c.root)
+    assert {:ok, %{"version" => 1, "scopes" => %{}}} = Persistence.preferences(owner)
+    assert :ok = Persistence.put(owner, c.chat)
+    scope = String.duplicate("a", 64)
+    preferences = %{"version" => 1, "scopes" => %{scope => %{"pinned" => [c.chat["id"]], "order" => [c.chat["id"]]}}}
+    assert :ok = Persistence.put_preferences(owner, preferences)
+    assert {:ok, ^preferences} = Persistence.preferences(owner)
+    assert band(File.stat!(Path.join(c.root, "presentation.json")).mode, 0o777) == 0o600
+    assert {:error, :chat_storage_locked} = Persistence.open(c.root)
+    Persistence.close(owner)
+    {reopened, records} = open_when_released(c.root)
+    assert records == %{c.chat["id"] => c.chat}
+    assert {:ok, ^preferences} = Persistence.preferences(reopened)
+    Persistence.close(reopened)
+  end
+
+  test "invalid preference shapes fail closed without replacing an existing record", c do
+    {:ok, owner, %{}} = Persistence.open(c.root)
+    scope = String.duplicate("a", 64)
+    ids = [c.chat["id"]]
+    good = %{"version" => 1, "scopes" => %{scope => %{"pinned" => ids, "order" => ids}}}
+    assert :ok = Persistence.put_preferences(owner, good)
+    path = Path.join(c.root, "presentation.json")
+    original = File.read!(path)
+
+    invalid = [
+      nil,
+      %{},
+      %{good | "version" => 2},
+      Map.put(good, "extra", "field"),
+      put_in(good, ["scopes", scope], nil),
+      put_in(good, ["scopes", scope, "order"], []),
+      put_in(good, ["scopes", scope, "pinned"], "bad"),
+      put_in(good, ["scopes", scope, "pinned"], ["bad"]),
+      put_in(good, ["scopes", scope, "order"], ids ++ ids),
+      put_in(good, ["scopes", scope, "order"], List.duplicate(c.chat["id"], 501)),
+      %{"version" => 1, "scopes" => %{"unscoped" => %{"pinned" => [], "order" => []}}},
+      %{"version" => 1, "scopes" => Map.new(1..501, &{Integer.to_string(&1), %{"pinned" => [], "order" => []}})}
+    ]
+
+    for record <- invalid do
+      assert {:error, :chat_preferences_unavailable} = Persistence.put_preferences(owner, record)
+      assert File.read!(path) == original
+      File.write!(path, Jason.encode!(record))
+      assert {:error, :chat_preferences_unavailable} = Persistence.preferences(owner)
+      File.write!(path, original)
+    end
+
+    File.write!(path, "{invalid")
+    assert {:error, :chat_preferences_unavailable} = Persistence.preferences(owner)
+    Persistence.close(owner)
+  end
+
+  test "preference symlinks, directories and oversized records are rejected and their targets retained", c do
+    {:ok, owner, %{}} = Persistence.open(c.root)
+    path = Path.join(c.root, "presentation.json")
+    target = Path.join(c.root, "retained-original")
+    File.write!(target, "original")
+    File.ln_s!(target, path)
+    assert {:error, :chat_preferences_unavailable} = Persistence.preferences(owner)
+    assert {:error, :chat_preferences_unavailable} = Persistence.put_preferences(owner, %{"version" => 1, "scopes" => %{}})
+    assert File.read!(target) == "original"
+    File.rm!(path)
+    File.mkdir!(path)
+    assert {:error, :chat_preferences_unavailable} = Persistence.preferences(owner)
+    File.rmdir!(path)
+    File.write!(path, String.duplicate("x", 8_000_001))
+    assert {:error, :chat_preferences_unavailable} = Persistence.preferences(owner)
+    Persistence.close(owner)
+  end
+
   test "an OS lock rejects a competing owner and releases when its process exits", c do
     parent = self()
 
