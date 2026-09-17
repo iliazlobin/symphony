@@ -386,11 +386,34 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#task-action-preview a[href='https://github.com/example/fixture/issues/99']")
     assert has_element?(view, "#task-action-preview .action-receipt", "Created in Backlog without queue labels.")
     refute has_element?(view, "#task-action-preview button[phx-value-decision=confirm]")
+    view |> element("#task-action-preview button[phx-click=new-draft]") |> render_click()
+    assert has_element?(view, "#task-intake-form input[name='task[title]'][value='']")
+    assert has_element?(view, "#task-intake-form input[name='task[dependencies]'][value='none']")
+    assert render(view |> element("#task-intake-form textarea[name='task[outcome]']")) =~ "></textarea>"
+    assert render(view |> element("#task-intake-form textarea[name='task[scope]']")) =~ "></textarea>"
+    assert render(view |> element("#task-intake-form textarea[name='task[acceptance]']")) =~ "></textarea>"
+    refute_receive {:intake_prepared, _, _}
     render_click(view, "close-dialog")
     view = authorized_board_view()
     render_click(view, "new-task")
     view |> element(".intake-history-item[phx-value-id='#{id}']") |> render_click()
     assert has_element?(view, "#task-action-preview", "Action completed")
+  end
+
+  test "cancelled preview keeps the editable task draft" do
+    view = authorized_board_view()
+    render_click(view, "new-task")
+    view |> form("#task-intake-form", task: intake_fields()) |> render_submit()
+    assert_receive {:intake_prepared, id, _}
+    view |> element("#task-action-preview button[phx-value-decision=cancel]") |> render_click()
+    assert_receive {:intake_decided, ^id, "cancel"}
+    view |> element("#task-action-preview button[phx-click=new-draft]") |> render_click()
+    assert has_element?(view, "#task-intake-form input[name='task[title]'][value='Bounded fixture task']")
+    assert has_element?(view, "#task-intake-form textarea[name='task[outcome]']", "A useful result")
+    assert has_element?(view, "#task-intake-form textarea[name='task[scope]']", "One small change")
+    assert has_element?(view, "#task-intake-form textarea[name='task[acceptance]']", "- Focused checks pass")
+    assert has_element?(view, "#task-intake-form input[name='task[dependencies]'][value='#12, #34']")
+    refute_receive {:intake_decided, _, "confirm"}
   end
 
   test "intake rejects malformed dependencies and extra declarations without creating proposals" do

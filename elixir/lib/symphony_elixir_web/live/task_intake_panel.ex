@@ -96,8 +96,11 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
   end
 
   def handle_event("new-draft", _params, socket) do
-    if proposal(socket.assigns.record)["status"] in [nil, "completed", "cancelled", "failed"] do
-      {:noreply, socket |> subscribe(nil) |> assign(record: nil, submission_id: nonce(), notice: nil)}
+    status = proposal(socket.assigns.record)["status"]
+
+    if status in [nil, "completed", "cancelled", "failed"] do
+      draft = if status == "completed", do: initial_draft(), else: socket.assigns.draft
+      {:noreply, socket |> subscribe(nil) |> assign(record: nil, submission_id: nonce(), notice: nil, draft: draft)}
     else
       {:noreply, assign(socket, :notice, "Finish or cancel the pending action before starting another.")}
     end
