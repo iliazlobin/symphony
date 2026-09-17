@@ -22,11 +22,11 @@ defmodule SymphonyElixirWeb.ChatPanel do
        chats: [],
        chat: nil,
        subscribed: nil,
+       project_subscribed: nil,
        draft: "",
        client_id: nonce(),
-       history_query: "",
-       dialog: nil,
-       session_tab: "chat",
+       thread_query: "",
+       session_tab: "threads",
        notice: nil,
        loading: true,
        unavailable: nil
@@ -36,6 +36,11 @@ defmodule SymphonyElixirWeb.ChatPanel do
   @impl true
   def update(%{refresh_chat: id}, socket) do
     {:ok, if(chat_id(socket) == id, do: fetch_chat(socket, id), else: socket)}
+  end
+
+  def update(%{refresh_threads: project}, socket) do
+    socket = if project == project_id(socket), do: refresh_list(socket), else: socket
+    {:ok, socket}
   end
 
   def update(assigns, socket) do
@@ -79,13 +84,13 @@ defmodule SymphonyElixirWeb.ChatPanel do
   @impl true
   def handle_event("close-panel", _params, socket) do
     send(self(), {:chat_panel, :close})
-    {:noreply, subscribe(socket, nil)}
+    {:noreply, socket |> subscribe(nil) |> subscribe_project(nil)}
   end
 
   def handle_event("open-chat", %{"id" => id}, socket) do
     case call(socket, :get, [project_id(socket), id]) do
       {:ok, chat} ->
-        socket = socket |> clear_changed_draft(id) |> put_chat(chat) |> assign(:dialog, nil)
+        socket = socket |> clear_changed_draft(id) |> put_chat(chat) |> assign(:session_tab, "chat")
         {:noreply, navigate(socket, project_id(socket), id)}
 
       {:error, reason} ->
@@ -113,22 +118,17 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
   def handle_event("new-chat", _params, socket), do: mutate(socket, :create, [project_id(socket), "New chat"])
 
-  def handle_event("open-history", _params, socket) do
-    socket = refresh_list(socket)
-    {:noreply, assign(socket, :dialog, if(BrowserAuth.authorized?(socket.assigns.auth), do: :history, else: nil))}
-  end
+  def handle_event("search-threads", %{"query" => query}, socket), do: {:noreply, assign(socket, :thread_query, String.slice(query, 0, 200))}
 
-  def handle_event("search-history", %{"query" => query}, socket), do: {:noreply, assign(socket, :history_query, String.slice(query, 0, 200))}
-  def handle_event("close-dialog", _params, socket), do: {:noreply, assign(socket, :dialog, nil)}
-
-  def handle_event("session-tab", %{"tab" => tab}, socket) when tab in ["chat", "context", "outputs", "sources"] do
+  def handle_event("session-tab", %{"tab" => tab}, socket) when tab in ["threads", "chat", "context", "outputs", "sources"] do
+    socket = if tab == "threads", do: refresh_list(socket), else: socket
     {:noreply, assign(socket, :session_tab, tab)}
   end
 
   def handle_event("session-tab", _params, socket), do: {:noreply, socket}
 
   def handle_event("restore-session-tab", %{"project_id" => project, "chat_id" => chat, "tab" => tab}, socket)
-      when tab in ["chat", "context", "outputs", "sources"] do
+      when tab in ["threads", "chat", "context", "outputs", "sources"] do
     if BrowserAuth.authorized?(socket.assigns.auth) and project == project_id(socket) and chat == chat_id(socket) do
       {:noreply, assign(socket, :session_tab, tab)}
     else
@@ -215,7 +215,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
           socket
           |> clear_changed_draft(chat["id"])
           |> put_chat(chat)
-          |> assign(dialog: nil, notice: nil)
+          |> assign(notice: nil, session_tab: "chat")
 
         {:noreply, navigate(socket, project_id(socket), chat["id"])}
 
@@ -229,12 +229,12 @@ defmodule SymphonyElixirWeb.ChatPanel do
       {:ok, projects} ->
         selected = selected_project(projects, params["project"])
         socket = if selected != socket.assigns.project, do: clear_conversation(socket), else: socket
-        socket = assign(socket, projects: projects, project: selected, loading: false)
+        socket = socket |> assign(projects: projects, project: selected, loading: false) |> subscribe_project(selected && selected["id"])
 
         cond do
           is_nil(selected) -> assign(socket, :notice, unavailable_project(projects))
-          params["chat"] -> socket |> assign(:dialog, nil) |> refresh_list() |> fetch_chat(params["chat"])
-          true -> socket |> clear_conversation() |> refresh_list()
+          params["chat"] -> socket |> refresh_list() |> fetch_chat(params["chat"])
+          true -> socket |> clear_conversation(true) |> refresh_list()
         end
 
       {:error, reason} ->
@@ -259,7 +259,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
   defp fetch_chat(socket, id) do
     case call(socket, :get, [project_id(socket), id]) do
       {:ok, chat} -> socket |> clear_changed_draft(id) |> put_chat(chat) |> refresh_list()
-      {:error, reason} -> socket |> clear_conversation() |> show_error(reason)
+      {:error, reason} -> socket |> clear_conversation(true) |> show_error(reason) |> refresh_list()
     end
   end
 
@@ -271,10 +271,12 @@ defmodule SymphonyElixirWeb.ChatPanel do
     assign(socket, :chat, chat)
   end
 
-  defp clear_conversation(socket) do
+  defp clear_conversation(socket, keep_project \\ false) do
+    socket = if keep_project, do: socket, else: subscribe_project(socket, nil)
+
     socket
     |> subscribe(nil)
-    |> assign(chat: nil, chats: [], draft: "", history_query: "", client_id: nonce(), dialog: nil, session_tab: "chat")
+    |> assign(chat: nil, chats: [], draft: "", thread_query: "", client_id: nonce(), session_tab: "threads")
   end
 
   defp subscribe(%{assigns: %{subscribed: id}} = socket, id), do: socket
@@ -283,6 +285,15 @@ defmodule SymphonyElixirWeb.ChatPanel do
     if socket.assigns.subscribed, do: Phoenix.PubSub.unsubscribe(SymphonyElixir.PubSub, "chat:" <> socket.assigns.subscribed)
     if id, do: Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat:" <> id)
     assign(socket, :subscribed, id)
+  end
+
+  defp subscribe_project(%{assigns: %{project_subscribed: project}} = socket, project), do: socket
+
+  defp subscribe_project(socket, project) do
+    if socket.assigns.project_subscribed, do: Phoenix.PubSub.unsubscribe(SymphonyElixir.PubSub, "chat_project:" <> socket.assigns.project_subscribed)
+    if project, do: Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat_project:" <> project)
+    send(self(), {:chat_panel, :project_subscription, project})
+    assign(socket, :project_subscribed, project)
   end
 
   defp call(socket, operation, args) do
@@ -357,7 +368,36 @@ defmodule SymphonyElixirWeb.ChatPanel do
   defp retained_contexts(chat), do: messages(chat) |> Enum.filter(&is_map(&1["view_context"])) |> Enum.reverse()
   defp context_items(nil), do: []
   defp context_items(chat), do: list(chat["context"])
-  defp matching_chats(chats, query), do: Enum.filter(chats, &(not &1["archived"] and String.contains?(String.downcase(chat_title(&1)), String.downcase(query))))
+
+  defp matching_chats(chats, query) do
+    Enum.filter(chats, &(not &1["archived"] and String.contains?(String.downcase(chat_title(&1) <> " " <> text(&1["snippet"])), String.downcase(query))))
+  end
+
+  defp selected_title(nil, _chats), do: "Threads"
+  defp selected_title(chat, chats), do: chat_title(Enum.find(chats, &(&1["id"] == chat["id"])) || chat)
+
+  defp compact_updated_at(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _} -> "Updated " <> Calendar.strftime(datetime, "%b %-d")
+      _ -> "Updated time unknown"
+    end
+  end
+
+  defp compact_updated_at(_), do: "Updated time unknown"
+  defp thread_status(chat), do: text(chat["display_status"] || chat["status"] || "new")
+
+  defp thread_status_label(chat) do
+    case thread_status(chat) do
+      "running" -> "Running"
+      "action" -> "Running action"
+      "needs_reconciliation" -> "Check outcome"
+      "awaiting_confirmation" -> "Awaiting confirmation"
+      "error" -> "Error"
+      "interrupted" -> "Interrupted"
+      "idle" -> "Idle"
+      _ -> "New"
+    end
+  end
 
   defp chat_path(project, id \\ nil) do
     params = if project, do: %{"project" => project}, else: %{}
@@ -422,7 +462,6 @@ defmodule SymphonyElixirWeb.ChatPanel do
         <a :if={!@embedded} href="/" class="brand">∿ Symphony</a>
         <nav :if={!@embedded} class="workspace-tabs" aria-label="Workspace"><a href={board_path(@project && @project["id"])}>Board</a><a href={chat_path(@project && @project["id"])} aria-current="page">Chat</a></nav>
         <strong :if={@embedded}>Project chat</strong><span class="header-spacer"></span>
-        <button :if={@authorized && is_nil(@unavailable)} id="chat-history-button" class="button button-quiet" phx-target={@myself} phx-click="open-history" disabled={is_nil(@project)}>History</button>
         <button :if={@authorized && is_nil(@unavailable)} id="new-chat-button" class="button button-primary" phx-target={@myself} phx-click="new-chat" disabled={is_nil(@project)}>+ New chat</button>
         <button :if={@embedded} class="button button-quiet" phx-target={@myself} phx-click="close-panel" aria-label="Close chat">×</button>
       </header>
@@ -435,11 +474,11 @@ defmodule SymphonyElixirWeb.ChatPanel do
             <option :for={project <- @projects} value={project["id"]} selected={@project && @project["id"] == project["id"]}>{project_label(project)}</option>
           </select>
         </form>
-        <div class="chat-title"><strong>{chat_title(@chat)}</strong><span class="muted">{conversation_status(@chat)}</span></div>
+        <div class="chat-title"><strong>{if @session_tab == "threads", do: project_label(@project), else: selected_title(@chat, @chats)}</strong><span class="muted">{if @session_tab == "threads", do: "Project conversations", else: conversation_status(@chat)}</span></div>
       </div>
 
       <div :if={!@loading && @authorized && is_nil(@unavailable)} class="chat-session-tabs workspace-tabs" role="tablist" aria-label="Conversation workspace">
-        <button :for={{tab, label} <- [{"chat", "Chat"}, {"context", "Context"}, {"outputs", "Outputs"}, {"sources", "Sources"}]} id={"session-#{tab}-tab"} role="tab" aria-selected={to_string(@session_tab == tab)} aria-controls={"session-#{tab}-content"} tabindex={if @session_tab == tab, do: "0", else: "-1"} phx-target={@myself} phx-click="session-tab" phx-value-tab={tab}>{label}<span :if={tab == "outputs" && @artifacts != []} class="chat-tab-count">{length(@artifacts)}</span><span :if={tab == "sources" && context_items(@chat) != []} class="chat-tab-count">{length(context_items(@chat))}</span></button>
+        <button :for={{tab, label} <- [{"threads", "Threads"}, {"chat", "Chat"}, {"context", "Context"}, {"outputs", "Outputs"}, {"sources", "Sources"}]} id={"session-#{tab}-tab"} role="tab" aria-selected={to_string(@session_tab == tab)} aria-controls={"session-#{tab}-content"} tabindex={if @session_tab == tab, do: "0", else: "-1"} phx-target={@myself} phx-click="session-tab" phx-value-tab={tab}>{label}<span :if={tab == "outputs" && @artifacts != []} class="chat-tab-count">{length(@artifacts)}</span><span :if={tab == "sources" && context_items(@chat) != []} class="chat-tab-count">{length(context_items(@chat))}</span></button>
       </div>
 
       <p :if={@notice} class="board-warning chat-notice" role="status">{@notice}</p>
@@ -465,6 +504,13 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
       <div :if={!@loading && @authorized && is_nil(@unavailable)} class="chat-workspace">
         <main class="chat-main">
+          <div id="session-threads-content" class="chat-detail-panel chat-threads-panel" role="tabpanel" tabindex="0" aria-labelledby="session-threads-tab" hidden={@session_tab != "threads"}>
+            <form id="chat-thread-search" phx-target={@myself} phx-change="search-threads"><label class="field"><span class="visually-hidden">Search threads</span><input type="search" name="query" value={@thread_query} placeholder="Search threads…" phx-debounce="150" /></label></form>
+            <div class="conversation-list"><button :for={chat <- matching_chats(@chats, @thread_query)} type="button" phx-target={@myself} phx-click="open-chat" phx-value-id={chat["id"]} class="conversation-item" data-thread-id={chat["id"]} aria-current={if @chat && @chat["id"] == chat["id"], do: "page", else: nil}>
+              <span class="thread-content"><strong>{chat_title(chat)}</strong><span :if={text(chat["snippet"]) != ""} class="thread-snippet">{text(chat["snippet"])}</span><time :if={chat["updated_at"]} datetime={chat["updated_at"]} title={"Updated " <> text(chat["updated_at"])}>{compact_updated_at(chat["updated_at"])}</time></span><span class="conversation-status thread-status" data-status={thread_status(chat)}>{thread_status_label(chat)}</span>
+            </button></div>
+            <p :if={matching_chats(@chats, @thread_query) == []} class="chat-detail-empty">{if @thread_query == "", do: "No threads yet. Start a new chat for this project.", else: "No threads match your search."}</p>
+          </div>
           <div id="session-chat-content" class="chat-scroll" role="tabpanel" tabindex="0" aria-labelledby="session-chat-tab" hidden={@session_tab != "chat"}>
             <div :if={messages(@chat) == []} class="chat-empty">
               <span class="chat-orbit" aria-hidden="true">∿</span><h1>What’s next for {project_label(@project)}?</h1>
@@ -517,7 +563,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
               <p :if={map(item)["summary"]}>{text(map(item)["summary"])}</p><small>{text(map(item)["revision"] || map(item)["checked_at"])}</small>
             </div>
           </div>
-          <div class="chat-composer-wrap">
+          <div class="chat-composer-wrap" hidden={@session_tab == "threads"}>
             <p :if={@session_tab != "chat" && @chat && @chat["error"]} class="board-warning" role="alert">{text(@chat["error"])}</p>
             <p :if={@session_tab != "chat" && @busy} class="chat-response-status" role="status">{conversation_status(@chat)} Open Chat to follow the response.</p>
             <p id="chat-live-status" class="visually-hidden" role="status" aria-live="polite">{if @busy, do: conversation_status(@chat), else: "Ready for your message."}</p>
@@ -535,18 +581,6 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
       </div>
 
-      <dialog :if={@dialog} id="chat-dialog" class="board-dialog chat-dialog" phx-hook="BoardDialog" data-close-selector="#chat-close-dialog" data-event-target={@myself} aria-labelledby="chat-dialog-title">
-        <div class="dialog-inner"><div class="dialog-heading"><h2 id="chat-dialog-title">{dialog_title(@dialog)}</h2><button id="chat-close-dialog" class="button button-quiet" phx-target={@myself} phx-click="close-dialog" aria-label="Close dialog">Close ×</button></div>
-          <div :if={@dialog == :history}>
-            <p class="muted">{project_label(@project)} conversations</p>
-            <form phx-target={@myself} phx-change="search-history"><label class="field"><span class="visually-hidden">Search conversations</span><input type="search" name="query" value={@history_query} placeholder="Search conversations…" phx-debounce="150" autofocus /></label></form>
-            <div class="conversation-list"><button :for={chat <- matching_chats(@chats, @history_query)} type="button" phx-target={@myself} phx-click="open-chat" phx-value-id={chat["id"]} class="conversation-item" aria-current={if @chat && @chat["id"] == chat["id"], do: "page", else: nil}>
-              <span><strong>{chat_title(chat)}</strong><small>{text(chat["updated_at"])}</small></span><span class="conversation-status">{if running?(chat), do: "Responding", else: "↗"}</span>
-            </button></div>
-            <p :if={matching_chats(@chats, @history_query) == []} class="chat-detail-empty">{if @history_query == "", do: "No conversations in this project yet.", else: "No conversations match your search."}</p>
-          </div>
-        </div>
-      </dialog>
     </section>
     """
   end
@@ -591,8 +625,6 @@ defmodule SymphonyElixirWeb.ChatPanel do
     |> Enum.reject(&(&1 == ""))
     |> Enum.join(" · ")
   end
-
-  defp dialog_title(:history), do: "Chat history"
 
   defp conversation_status(chat) do
     cond do

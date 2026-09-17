@@ -55,6 +55,13 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
 
     def handle_info({:view_context, context}, socket), do: {:noreply, assign(socket, :view_context, context)}
 
+    def handle_info({:chat_list_updated, project}, socket) do
+      send_update(ChatPanel, id: "management-chat", refresh_threads: project)
+      {:noreply, socket}
+    end
+
+    def handle_info({:chat_panel, :project_subscription, _project}, socket), do: {:noreply, socket}
+
     def handle_info({:chat_panel, :navigate, location}, socket), do: {:noreply, assign(socket, Map.to_list(location))}
 
     def render(assigns) do
@@ -460,8 +467,12 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
 
   defp wait_chat(ctx, predicate, remaining) do
     case Store.list(@project, ctx.auth, Application.fetch_env!(:symphony_elixir, :chat_integration_store)) do
-      {:ok, [chat | _]} -> if predicate.(chat), do: chat, else: retry_chat(ctx, predicate, remaining)
-      _ -> retry_chat(ctx, predicate, remaining)
+      {:ok, [summary | _]} ->
+        {:ok, chat} = Store.get(@project, summary["id"], ctx.auth, Application.fetch_env!(:symphony_elixir, :chat_integration_store))
+        if predicate.(chat), do: chat, else: retry_chat(ctx, predicate, remaining)
+
+      _ ->
+        retry_chat(ctx, predicate, remaining)
     end
   end
 

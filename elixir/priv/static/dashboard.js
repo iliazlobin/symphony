@@ -371,8 +371,9 @@
       this.atBottom = true;
       this.running = this.el.dataset.running === "true";
       const on = (name, handler) => this.el.addEventListener(name, handler, {signal: this.abort.signal});
-      const tabs = ["chat", "context", "outputs", "sources"];
-      this.tabKey = () => this.el.dataset.project && this.el.dataset.chatId ? "symphony.chat.tab.v1:" + this.el.dataset.project + ":" + this.el.dataset.chatId : null;
+      const tabs = ["threads", "chat", "context", "outputs", "sources"];
+      this.tabKeyFor = chat => this.el.dataset.project ? "symphony.chat.tab.v1:" + this.el.dataset.project + ":" + (chat || "project") : null;
+      this.tabKey = () => this.tabKeyFor(this.el.dataset.chatId);
       this.saveTab = tab => { try { const key = this.tabKey(); if (key) sessionStorage.setItem(key, tab); } catch { /* Optional presentation preference. */ } };
       this.loadTab = () => {
         const key = this.tabKey();
@@ -380,7 +381,7 @@
         this.loadedTabKey = key;
         try {
           const tab = key && sessionStorage.getItem(key);
-          if (tabs.includes(tab)) this.pushEventTo(this.el.dataset.eventTarget, "restore-session-tab", {project_id: this.el.dataset.project, chat_id: this.el.dataset.chatId, tab});
+          if (tabs.includes(tab)) this.pushEventTo(this.el.dataset.eventTarget, "restore-session-tab", {project_id: this.el.dataset.project, chat_id: this.el.dataset.chatId || null, tab});
         } catch { /* Conversation records do not depend on browser storage. */ }
       };
       this.scroll = () => {
@@ -418,6 +419,10 @@
       on("click", event => {
         const tab = event.target.closest('[role="tab"][phx-click="session-tab"]');
         if (tab) this.saveTab(tab.getAttribute("phx-value-tab"));
+        const thread = event.target.closest('button[phx-click="open-chat"]');
+        if (thread) {
+          try { const key = this.tabKeyFor(thread.getAttribute("phx-value-id")); if (key) sessionStorage.setItem(key, "chat"); } catch { /* Row selection still opens Chat on the server. */ }
+        }
         const boardLink = event.target.closest('a[phx-click="board-link"]');
         if (boardLink && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) event.preventDefault();
         else if (boardLink) event.stopPropagation();

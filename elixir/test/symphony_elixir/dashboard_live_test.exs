@@ -45,6 +45,11 @@ defmodule SymphonyElixir.DashboardLiveTest do
     def health(_auth), do: {:error, :unavailable}
   end
 
+  defmodule ThreadsChatApi do
+    def projects(_auth), do: {:ok, [%{"id" => "github:example/fixture", "label" => "Fixture"}]}
+    def list(_project, _auth), do: {:ok, []}
+  end
+
   setup context do
     config = %{
       tracker: %{
@@ -81,7 +86,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
         server: false,
         secret_key_base: String.duplicate("d", 64),
         orchestrator: runtime,
-        chat_store: UnavailableChatApi,
+        chat_store: if(context[:threads_fixture], do: ThreadsChatApi, else: UnavailableChatApi),
         snapshot_timeout_ms: 100,
         board_read_only: context[:read_only] || false,
         snapshot_loader: if(context[:snapshot_fixture], do: fn -> %{error: %{code: "fixture_snapshot_unavailable"}} end),
@@ -131,6 +136,30 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#board-dialog")
     refute has_element?(view, "#task-board-app[data-selected-task]")
     assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:2']")
+  end
+
+  @tag :threads_fixture
+  test "closing the dock through URL or button releases project subscriptions and reopening restores them" do
+    view = authorized_board_view()
+    topic = "chat_project:github:example/fixture"
+    subscribed = fn -> Enum.any?(Registry.lookup(SymphonyElixir.PubSub, topic), &(elem(&1, 0) == view.pid)) end
+    render_click(view, "open-chat")
+    assert has_element?(view, "#session-threads-content:not([hidden])")
+    assert subscribed.()
+    render_patch(view, "/")
+    refute has_element?(view, "#management-chat-dock")
+    refute subscribed.()
+    send(view.pid, {:chat_list_updated, "github:example/fixture"})
+    refute has_element?(view, "#management-chat-dock")
+    render_click(view, "open-chat")
+    assert has_element?(view, "#session-threads-content:not([hidden])")
+    assert subscribed.()
+    view |> element("button[aria-label='Close chat']") |> render_click()
+    refute has_element?(view, "#management-chat-dock")
+    refute subscribed.()
+    send(view.pid, {:chat_panel, :project_subscription, "github:example/fixture"})
+    refute has_element?(view, "#management-chat-dock")
+    refute subscribed.()
   end
 
   @tag read_only: true

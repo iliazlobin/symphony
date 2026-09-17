@@ -54,6 +54,24 @@ hook.el.dataset.chatId = "two";
 hook.updated();
 assert.equal(sent.at(-1).payload.chat_id, "two");
 assert.equal(sent.at(-1).payload.tab, "context");
+// Selecting a row overrides its saved Threads tab before the server opens it.
+saved.set(key("three"), "threads");
+const row = {getAttribute: () => "three"};
+listeners.get("click")({target: {closest: selector => selector.startsWith('button[phx-click="open-chat"]') ? row : null}});
+hook.el.dataset.chatId = "three";
+hook.updated();
+assert.equal(sent.at(-1).payload.chat_id, "three");
+assert.equal(sent.at(-1).payload.tab, "chat");
+// Threads can be remembered at project scope with no selected conversation.
+delete hook.el.dataset.chatId;
+saved.set(key("project"), "threads");
+hook.updated();
+assert.equal(sent.at(-1).payload.chat_id, null);
+assert.equal(sent.at(-1).payload.tab, "threads");
+const unselectedDraft = draft.value;
+hook.reconnected();
+assert.equal(sent.at(-1).payload.tab, "threads");
+assert.equal(draft.value, unselectedDraft);
 // Cleared auth/project state has no conversation identity and sends no restore.
 delete hook.el.dataset.project;
 delete hook.el.dataset.chatId;
