@@ -142,8 +142,11 @@ defmodule SymphonyElixirWeb.ChatPanel do
     socket = refresh_list(socket)
 
     case move_target(socket.assigns.chats, id, direction) do
-      {:ok, before} when socket.assigns.thread_query == "" -> update_list(socket, :move, [project_id(socket), id, before, pinned == "true"])
-      _ -> {:noreply, socket}
+      {:ok, before} when socket.assigns.thread_query == "" ->
+        update_list(socket, :move, [project_id(socket), id, before, pinned == "true"])
+
+      _ ->
+        {:noreply, socket}
     end
   end
 
@@ -329,7 +332,8 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
     socket
     |> subscribe(nil)
-    |> assign(chat: nil, chats: [], list_error: nil, draft: "", thread_query: "", client_id: nonce(), session_tab: "chat", workspace_view: "list")
+    |> assign(chat: nil, chats: [], list_error: nil, draft: "", thread_query: "")
+    |> assign(client_id: nonce(), session_tab: "chat", workspace_view: "list")
   end
 
   defp subscribe(%{assigns: %{subscribed: id}} = socket, id), do: socket

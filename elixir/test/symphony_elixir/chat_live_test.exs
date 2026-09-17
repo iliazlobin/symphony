@@ -48,7 +48,11 @@ defmodule SymphonyElixir.ChatLiveTest do
            true <- is_nil(before) or Enum.any?(chats, &(&1["id"] == before and &1["pinned"] == true == (source["pinned"] == true))) do
         ids = chats |> Enum.filter(&(&1["pinned"] == true == (source["pinned"] == true))) |> Enum.map(& &1["id"]) |> List.delete(id)
         index = Enum.find_index(ids, &(&1 == before)) || length(ids)
-        Enum.with_index(List.insert_at(ids, index, id), fn chat_id, order -> update(project, chat_id, auth, &Map.put(&1, "order", order)) end)
+
+        List.insert_at(ids, index, id)
+        |> Enum.with_index()
+        |> Enum.each(fn {chat_id, order} -> update(project, chat_id, auth, &Map.put(&1, "order", order)) end)
+
         list(project, auth)
       else
         _ -> {:error, :invalid_chat_order}
