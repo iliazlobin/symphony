@@ -107,6 +107,15 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     defp run_request("Queue task", opts, emit, tool), do: propose(opts, emit, tool, %{"action" => "queue_task", "task_id" => "GH-2"})
     defp run_request("Give feedback", opts, emit, tool), do: propose(opts, emit, tool, %{"action" => "feedback", "task_id" => "GH-2", "body" => "Please include the cancellation case."})
 
+    defp run_request("Wait for thread status", opts, _emit, _tool) do
+      send(opts.test_pid, {:waiting_for_thread_status, self()})
+
+      receive do
+        :finish_status -> {:ok, %{status: :completed}}
+        :interrupt -> {:ok, %{status: :interrupted}}
+      end
+    end
+
     defp run_request("Wait for logout", opts, emit, tool) do
       send(opts.test_pid, {:awaiting_logout, self()})
 
@@ -209,6 +218,32 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     end)
 
     %{server: server, opts: opts, marker: marker, auth: auth, requests: request_log, config: config, board: board_agent}
+  end
+
+  test "thread lists follow background conversation activity without changing the selected draft", ctx do
+    assert {:ok, selected} = Store.create(@project, "Selected conversation", ctx.auth, ctx.server)
+    assert {:ok, background} = Store.create(@project, "Background conversation", ctx.auth, ctx.server)
+    {view, _} = chat_view(ctx, selected["id"])
+    render_change(view, "draft", %{"message" => "Keep this unsent draft"})
+    render_click(view, "session-tab", %{"tab" => "threads"})
+    {index, _} = chat_view(ctx)
+    selector = "#session-threads-content [data-thread-id='#{background["id"]}'] .thread-status"
+    assert has_element?(index, "#session-threads-content:not([hidden])")
+
+    assert {:ok, _} = Store.send_message(@project, background["id"], "Wait for thread status", "thread-status", ctx.auth, ctx.server)
+    assert_receive {:waiting_for_thread_status, runtime}
+    assert eventually(fn -> has_element?(view, selector, "Running") end)
+    assert eventually(fn -> has_element?(index, selector, "Running") end)
+    assert has_element?(view, "#chat-message-input", "Keep this unsent draft")
+
+    send(runtime, :finish_status)
+    assert eventually(fn -> has_element?(view, selector, "Idle") end)
+    assert eventually(fn -> has_element?(index, selector, "Idle") end)
+    assert has_element?(view, "#chat-message-input", "Keep this unsent draft")
+    render_click(view, "open-chat", %{"id" => selected["id"]})
+    assert has_element?(view, "#session-chat-content:not([hidden])")
+    assert has_element?(view, "#chat-message-input", "Keep this unsent draft")
+    assert Agent.get(ctx.requests, & &1) == []
   end
 
   test "output tabs retain issue and PR evidence, metrics and safe links across reconnect", ctx do
