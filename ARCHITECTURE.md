@@ -100,6 +100,10 @@ commands to the native API and owns no scheduling state.
   project data is returned; an explicit allowlist controls operator access.
   `BoardActions` forwards only existing commands with native project,
   revision and idempotency checks. The same checks apply to chat control actions.
+  `TaskIntakePanel` prepares structured backlog issues and asks for explicit creation
+  after an exact preview. `TaskIntake` reuses the conversation store's durable action
+  lifecycle without invoking a model. Action records are separate from chat history;
+  reconnects recover pending actions and uncertain outcomes through the same owner.
   Concurrency changes persist in the ledger and affect admission only: they never
   interrupt existing work or reset budgets. The workflow's configured concurrency
   remains the ceiling and default, including after reload or restart; restoring the
@@ -208,7 +212,14 @@ is a separate extension. Historical messages are records; tools refresh current 
 and attach source timestamps, task links and board filters.
 
 The board hosts the shared conversation component in a right-side panel; `/chat`
-is its standalone host. Task popups remain interactive alongside the panel.
+is its standalone host. Task popups remain interactive alongside the panel. The chat
+list shows authorized conversation summaries and live activity for the selected project.
+Selecting a chat opens its scrollable conversation; returning to the list preserves
+that chat's unsent draft. Pins and order are project presentation preferences, scoped
+to the retained tracker fingerprint and stored atomically beside conversation records.
+They do not change message timestamps or execution order. Project notifications
+invalidate the list; each retrieval and preference change rechecks access. Chat
+activity is distinct from the coding-task lifecycle on the board.
 [`Chat.ViewContext`](elixir/lib/symphony_elixir/chat/view_context.ex) validates a
 bounded snapshot for each user message: project, filters, selected task ID,
 up to 50 displayed task IDs, their viewport subset, hidden columns and timestamps.
@@ -252,6 +263,11 @@ backend. MCP remains an optional client interface for external management agents
 the web chat does not call MCP to reach its own service. Codex 0.154.0 is pinned for
 this experimental protocol. The management runtime registers no execution environments
 or coding tools and disables inherited Apps, plugins, MCP servers and instructions.
+Its Symphony functions use the direct-only `functions` namespace. This overrides
+the model catalog's Code Mode routing without enabling the Code Mode host; local
+JavaScript execution remains disabled. Startup verifies the effective configuration,
+and the same configuration is applied when resuming a conversation. The host accepts
+only registered management functions for the active thread and turn.
 This reduces the model's tool authority; it is not a container isolation boundary.
 Google browser identity is separate from the model's subscription login and GitHub
 service credentials. Remote ingress, retained storage and cloud runtime credentials

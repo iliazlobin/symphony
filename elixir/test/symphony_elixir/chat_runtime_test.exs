@@ -73,6 +73,8 @@ defmodule SymphonyElixir.Chat.RuntimeTest do
   for {mode, expected} <- [
         {"old", :unsupported_runtime_version},
         {"unsafe", :unsafe_runtime_configuration},
+        {"unsafe-code-host", :unsafe_runtime_configuration},
+        {"unsafe-tool-routing", :unsafe_runtime_configuration},
         {"auth", :authentication_required},
         {"missing", :model_unavailable},
         {"reject", :request_rejected},

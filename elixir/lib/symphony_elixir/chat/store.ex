@@ -1,9 +1,10 @@
 defmodule SymphonyElixir.Chat.Store do
-  @moduledoc "Owns project-bound management conversations; browsers subscribe without owning agent execution."
+  @moduledoc "Owns project conversations and durable task submissions; browsers do not own execution."
   use GenServer
 
   alias SymphonyElixir.Chat.{Persistence, Runtime, Tools, ViewContext}
   alias SymphonyElixir.{Config, Orchestrator}
+  alias SymphonyElixir.GitHub.Admission
   alias SymphonyElixirWeb.{BrowserAuth, Endpoint, TaskBoard}
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -18,6 +19,12 @@ defmodule SymphonyElixir.Chat.Store do
 
   @spec list(String.t(), map(), GenServer.server()) :: {:ok, list()} | {:error, term()}
   def list(project, auth, server \\ __MODULE__), do: call(server, {:list, project, auth})
+
+  @spec pin(String.t(), String.t(), boolean(), map(), GenServer.server()) :: {:ok, list()} | {:error, term()}
+  def pin(project, id, pinned, auth, server \\ __MODULE__), do: call(server, {:pin, project, id, pinned, auth})
+
+  @spec move(String.t(), String.t(), String.t() | nil, boolean(), map(), GenServer.server()) :: {:ok, list()} | {:error, term()}
+  def move(project, id, before_id, expected_pinned, auth, server \\ __MODULE__), do: call(server, {:move, project, id, before_id, expected_pinned, auth})
 
   @spec create(String.t(), String.t(), map(), GenServer.server()) :: {:ok, map()} | {:error, term()}
   def create(project, title, auth, server \\ __MODULE__), do: call(server, {:create, project, title, auth})
@@ -44,6 +51,19 @@ defmodule SymphonyElixir.Chat.Store do
   @spec decide(String.t(), String.t(), String.t(), String.t(), map(), GenServer.server()) :: {:ok, map()} | {:error, term()}
   def decide(project, id, proposal_id, decision, auth, server \\ __MODULE__), do: call(server, {:decide, project, id, proposal_id, decision, auth})
 
+  @spec list_actions(String.t(), map(), GenServer.server()) :: {:ok, list()} | {:error, term()}
+  def list_actions(project, auth, server \\ __MODULE__), do: call(server, {:list_actions, project, auth})
+
+  @spec get_action(String.t(), String.t(), map(), GenServer.server()) :: {:ok, map()} | {:error, term()}
+  def get_action(project, id, auth, server \\ __MODULE__), do: call(server, {:get_action, project, id, auth})
+
+  @spec prepare_action(String.t(), String.t(), map(), map(), GenServer.server()) :: {:ok, map()} | {:error, term()}
+  def prepare_action(project, id, args, auth, server \\ __MODULE__),
+    do: call(server, {:prepare_action, project, id, args, auth})
+
+  @spec decide_action_record(String.t(), String.t(), String.t(), map(), GenServer.server()) :: {:ok, map()} | {:error, term()}
+  def decide_action_record(project, id, decision, auth, server \\ __MODULE__), do: call(server, {:decide_action_record, project, id, decision, auth})
+
   defp call(server, request) do
     GenServer.call(server, request, 15_000)
   catch
@@ -55,6 +75,7 @@ defmodule SymphonyElixir.Chat.Store do
     Process.flag(:trap_exit, true)
     settings = Keyword.get_lazy(opts, :settings, &Config.chat_settings/0)
     {persistence, chats, fault} = initialize(settings)
+    {preferences, preference_fault} = initialize_preferences(persistence)
     recovered = Map.new(chats, fn {id, chat} -> {id, recover(chat)} end)
 
     state = %{
@@ -62,6 +83,8 @@ defmodule SymphonyElixir.Chat.Store do
       persistence: persistence,
       chats: recovered,
       fault: fault,
+      preferences: preferences,
+      preference_fault: preference_fault,
       jobs: %{},
       dirty: MapSet.new(),
       authorize: Keyword.get(opts, :authorize, &BrowserAuth.authorized?/1),
@@ -70,6 +93,8 @@ defmodule SymphonyElixir.Chat.Store do
       tools: Keyword.get(opts, :tools, Tools),
       orchestrator: Keyword.get_lazy(opts, :orchestrator, &configured_orchestrator/0)
     }
+
+    Enum.each(recovered, fn {id, chat} -> notify_list_change(chats[id], chat) end)
 
     {:ok, state}
   end
@@ -94,16 +119,34 @@ defmodule SymphonyElixir.Chat.Store do
 
   def handle_call({:list, project, auth}, _from, state) do
     result =
-      with :ok <- authorized(state, project, auth) do
-        {:ok,
-         state.chats
-         |> Map.values()
-         |> Enum.filter(&(&1["project_id"] == project and &1["tracker_fingerprint"] == auth.tracker_fingerprint and not &1["archived"]))
-         |> Enum.sort_by(& &1["updated_at"], :desc)
-         |> Enum.map(&public/1)}
+      with :ok <- authorized(state, project, auth), :ok <- readable_preferences(state) do
+        {:ok, summaries(state, project, auth.tracker_fingerprint)}
       end
 
     {:reply, result, state}
+  end
+
+  def handle_call({:pin, project, id, pinned, auth}, _from, state) do
+    with {:ok, _chat} <- history_chat(state, project, id, auth),
+         true <- is_boolean(pinned) or {:error, :invalid_pin} do
+      pin_chat(state, project, id, pinned, auth)
+    else
+      error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:move, project, id, before_id, expected_pinned, auth}, _from, state) do
+    with {:ok, _chat} <- history_chat(state, project, id, auth),
+         true <- (is_boolean(expected_pinned) and valid_move?(id, before_id)) or {:error, :invalid_chat_order},
+         summaries = summaries(state, project, auth.tracker_fingerprint),
+         :ok <- move_target(summaries, id, before_id, expected_pinned) do
+      order = Enum.map(summaries, & &1["id"]) |> List.delete(id)
+      index = if is_nil(before_id), do: length(order), else: Enum.find_index(order, &(&1 == before_id))
+      pinned = summaries |> Enum.filter(& &1["pinned"]) |> Enum.map(& &1["id"])
+      save_preferences(state, project, auth, %{"pinned" => pinned, "order" => List.insert_at(order, index, id)})
+    else
+      error -> {:reply, error, state}
+    end
   end
 
   def handle_call({:create, project, title, auth}, _from, state) do
@@ -192,6 +235,51 @@ defmodule SymphonyElixir.Chat.Store do
       decide_action(state, chat, proposal, decision, auth)
     else
       nil -> {:reply, {:error, :proposal_not_found}, state}
+      false -> {:reply, {:error, :invalid_decision}, state}
+      error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:list_actions, project, auth}, _from, state) do
+    result =
+      with :ok <- authorized(state, project, auth), :ok <- writable(state) do
+        {:ok,
+         state.chats
+         |> Map.values()
+         |> Enum.filter(&(&1["kind"] == "board_action" and &1["project_id"] == project and &1["tracker_fingerprint"] == auth.tracker_fingerprint))
+         |> Enum.sort_by(& &1["updated_at"], :desc)
+         |> Enum.map(&public/1)}
+      end
+
+    {:reply, result, state}
+  end
+
+  def handle_call({:get_action, project, id, auth}, _from, state) do
+    result = with {:ok, record} <- authorized_record(state, project, id, auth, "board_action"), do: {:ok, public(record)}
+    {:reply, result, state}
+  end
+
+  def handle_call({:prepare_action, project, id, args, auth}, _from, state) do
+    with :ok <- authorized(state, project, auth),
+         :ok <- writable(state),
+         :ok <- valid_submission(id, args) do
+      submission = %{"args" => args}
+
+      case state.chats[id] do
+        nil -> prepare_or_resume_action(state, project, id, submission, auth)
+        _ -> replay_action(state, project, id, submission, auth)
+      end
+    else
+      error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:decide_action_record, project, id, decision, auth}, _from, state) do
+    with {:ok, record} <- authorized_record(state, project, id, auth, "board_action"),
+         :ok <- writable(state),
+         true <- decision in ["confirm", "cancel", "reconcile"] do
+      decide_action(state, record, hd(record["proposals"]), decision, auth)
+    else
       false -> {:reply, {:error, :invalid_decision}, state}
       error -> {:reply, error, state}
     end
@@ -331,10 +419,12 @@ defmodule SymphonyElixir.Chat.Store do
     end
   end
 
-  defp authorized_chat(state, project, id, auth) do
+  defp authorized_chat(state, project, id, auth), do: authorized_record(state, project, id, auth, nil)
+
+  defp authorized_record(state, project, id, auth, kind) do
     with :ok <- authorized(state, project, auth),
          %{"project_id" => ^project, "tracker_fingerprint" => scope} = chat <- state.chats[id],
-         true <- scope == auth.tracker_fingerprint do
+         true <- scope == auth.tracker_fingerprint and chat["kind"] == kind do
       {:ok, chat}
     else
       {:error, _} = error -> error
@@ -351,8 +441,189 @@ defmodule SymphonyElixir.Chat.Store do
   defp now, do: DateTime.utc_now() |> DateTime.to_iso8601()
   defp runtime_identity(settings), do: :crypto.hash(:sha256, :erlang.term_to_binary(Map.take(settings, [:codex_home, :executable]))) |> Base.encode16(case: :lower)
 
-  defp public(chat), do: Map.drop(chat, ["tracker_fingerprint", "runtime_identity", "codex_thread_id", "client_ids"])
+  defp public(chat), do: Map.drop(chat, ["tracker_fingerprint", "runtime_identity", "codex_thread_id", "client_ids", "submission"])
   defp notify(id), do: Phoenix.PubSub.broadcast(SymphonyElixir.PubSub, "chat:" <> id, {:chat_updated, id})
+
+  defp initialize_preferences(nil), do: {%{"version" => 1, "scopes" => %{}}, nil}
+
+  defp initialize_preferences(persistence) do
+    case Persistence.preferences(persistence) do
+      {:ok, preferences} -> {preferences, nil}
+      {:error, reason} -> {%{"version" => 1, "scopes" => %{}}, reason}
+    end
+  end
+
+  defp readable_preferences(%{preference_fault: nil}), do: :ok
+  defp readable_preferences(_), do: {:error, :chat_preferences_unavailable}
+
+  defp history_chat(state, project, id, auth) do
+    with {:ok, chat} <- authorized_chat(state, project, id, auth),
+         :ok <- writable(state),
+         :ok <- readable_preferences(state),
+         false <- chat["archived"] do
+      {:ok, chat}
+    else
+      true -> {:error, :chat_not_found}
+      error -> error
+    end
+  end
+
+  defp preference_scope(project, fingerprint), do: :crypto.hash(:sha256, Jason.encode!([project, fingerprint])) |> Base.encode16(case: :lower)
+
+  defp pin_chat(state, project, id, pinned, auth) do
+    summaries = summaries(state, project, auth.tracker_fingerprint)
+    existing = Enum.find(summaries, &(&1["id"] == id))
+
+    if existing["pinned"] == pinned do
+      {:reply, {:ok, summaries}, state}
+    else
+      pinned_ids = summaries |> Enum.filter(& &1["pinned"]) |> Enum.map(& &1["id"]) |> List.delete(id)
+      pinned_ids = if pinned, do: pinned_ids ++ [id], else: pinned_ids
+      order = Enum.map(summaries, & &1["id"]) |> List.delete(id)
+      save_preferences(state, project, auth, %{"pinned" => pinned_ids, "order" => order ++ [id]})
+    end
+  end
+
+  defp valid_move?(id, before_id), do: (is_nil(before_id) or Persistence.valid_id?(before_id)) and before_id != id
+
+  defp summaries(state, project, fingerprint) do
+    preference = Map.get(state.preferences["scopes"], preference_scope(project, fingerprint), %{"pinned" => [], "order" => []})
+    ranks = preference["order"] |> Enum.with_index() |> Map.new()
+
+    state.chats
+    |> Map.values()
+    |> Enum.filter(&(&1["project_id"] == project and &1["tracker_fingerprint"] == fingerprint and not &1["archived"] and is_nil(&1["kind"])))
+    |> Enum.sort_by(&{&1["updated_at"], &1["id"]}, :desc)
+    |> Enum.with_index()
+    |> Enum.sort_by(fn {chat, recent} ->
+      {if(chat["id"] in preference["pinned"], do: 0, else: 1), Map.get(ranks, chat["id"], map_size(ranks) + recent)}
+    end)
+    |> Enum.map(fn {chat, _} -> Map.put(summary(chat), "pinned", chat["id"] in preference["pinned"]) end)
+  end
+
+  defp move_target(summaries, id, before_id, expected_pinned) do
+    source = Enum.find(summaries, &(&1["id"] == id))
+    if source["pinned"] == expected_pinned, do: move_anchor(summaries, source, before_id), else: {:error, :chat_order_changed}
+  end
+
+  defp move_anchor(_summaries, _source, nil), do: :ok
+
+  defp move_anchor(summaries, source, before_id) do
+    case Enum.find(summaries, &(&1["id"] == before_id)) do
+      nil -> {:error, :chat_not_found}
+      %{"pinned" => pinned} -> if pinned == source["pinned"], do: :ok, else: {:error, :invalid_chat_order}
+    end
+  end
+
+  defp save_preferences(state, project, auth, preference) do
+    pinned = Enum.sort(preference["pinned"])
+    {first, rest} = Enum.split_with(preference["order"], &(&1 in pinned))
+    preference = %{"pinned" => pinned, "order" => first ++ rest}
+    scope = preference_scope(project, auth.tracker_fingerprint)
+    preferences = put_in(state.preferences, ["scopes", scope], preference)
+
+    cond do
+      preferences == state.preferences ->
+        {:reply, {:ok, summaries(state, project, auth.tracker_fingerprint)}, state}
+
+      Persistence.put_preferences(state.persistence, preferences) == :ok ->
+        next = %{state | preferences: preferences}
+        notify_project(project)
+        {:reply, {:ok, summaries(next, project, auth.tracker_fingerprint)}, next}
+
+      true ->
+        {:reply, {:error, :chat_preferences_unavailable}, state}
+    end
+  end
+
+  defp summary(chat) do
+    chat
+    |> Map.take(~w(id project_id updated_at status archived))
+    |> Map.merge(%{
+      "title" => summary_title(chat),
+      "snippet" => summary_snippet(chat),
+      "display_status" => display_status(chat),
+      "message_count" => length(chat["messages"])
+    })
+  end
+
+  defp summary_title(chat) do
+    first_message = Enum.find(chat["messages"], &(&1["role"] == "user"))
+
+    if String.downcase(chat["title"]) in ["new chat", "new conversation"] and first_message,
+      do: compact_text(first_message["text"], 80),
+      else: chat["title"]
+  end
+
+  defp summary_snippet(chat) do
+    message = Enum.find(Enum.reverse(chat["messages"]), &(&1["status"] != "streaming" and String.trim(&1["text"]) != ""))
+    if message, do: compact_text(message["text"], 160), else: ""
+  end
+
+  defp compact_text(text, limit), do: text |> String.replace(~r/\s+/, " ") |> String.trim() |> String.slice(0, limit)
+
+  defp display_status(chat) do
+    actions = Enum.map(chat["proposals"], & &1["status"])
+
+    cond do
+      "executing" in actions -> "action"
+      chat["status"] == "running" -> "running"
+      "unknown" in actions -> "needs_reconciliation"
+      "pending" in actions -> "awaiting_confirmation"
+      true -> settled_status(chat)
+    end
+  end
+
+  defp settled_status(chat) do
+    cond do
+      chat["status"] in ["error", "interrupted"] -> chat["status"]
+      recent_action_failed?(chat) -> "error"
+      chat["messages"] == [] -> "new"
+      true -> "idle"
+    end
+  end
+
+  defp recent_action_failed?(chat) do
+    action =
+      chat["proposals"]
+      |> Enum.with_index()
+      |> Enum.max_by(fn {action, index} -> {action_time(action), index} end, fn -> {%{}, 0} end)
+      |> elem(0)
+
+    user = Enum.find(Enum.reverse(chat["messages"]), %{}, &(&1["role"] == "user"))
+
+    with "failed" <- action["status"],
+         action_stamp when is_binary(action_stamp) <- action["updated_at"],
+         user_stamp when is_binary(user_stamp) <- user["created_at"],
+         {:ok, action_time, _} <- DateTime.from_iso8601(action_stamp),
+         {:ok, user_time, _} <- DateTime.from_iso8601(user_stamp) do
+      DateTime.compare(action_time, user_time) != :lt
+    else
+      _ -> false
+    end
+  end
+
+  defp action_time(action), do: parsed_time(action["updated_at"]) || parsed_time(action["created_at"]) || 0
+
+  defp parsed_time(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, time, _} -> DateTime.to_unix(time, :microsecond)
+      _ -> nil
+    end
+  end
+
+  defp parsed_time(_), do: nil
+
+  defp notify_list_change(previous, chat) do
+    if list_signature(previous) != list_signature(chat) do
+      notify_project(chat["project_id"])
+    end
+  end
+
+  defp notify_project(project), do: Phoenix.PubSub.broadcast(SymphonyElixir.PubSub, "chat_project:" <> project, {:chat_list_updated, project})
+
+  defp list_signature(nil), do: nil
+  defp list_signature(chat), do: chat |> summary() |> Map.delete("updated_at")
 
   defp reply_put(state, chat) do
     case put(state, chat) do
@@ -366,6 +637,7 @@ defmodule SymphonyElixir.Chat.Store do
 
     if is_nil(state.fault) and Persistence.put(state.persistence, chat) == :ok do
       notify(chat["id"])
+      notify_list_change(state.chats[chat["id"]], chat)
       {:ok, %{state | chats: Map.put(state.chats, chat["id"], chat)}}
     else
       {:error, fault(state)}
@@ -381,10 +653,85 @@ defmodule SymphonyElixir.Chat.Store do
     chats =
       Map.new(state.chats, fn {id, chat} ->
         notify(id)
-        {id, chat |> Map.put("status", "error") |> Map.put("error", "Conversation storage is unavailable. Work has stopped.")}
+        stopped = chat |> Map.put("status", "error") |> Map.put("error", "Conversation storage is unavailable. Work has stopped.") |> recover()
+        notify_list_change(chat, stopped)
+        {id, stopped}
       end)
 
     %{state | fault: :chat_storage_unavailable, jobs: %{}, chats: chats}
+  end
+
+  defp valid_submission(id, %{"action" => "create_task", "title" => title, "body" => body} = args) do
+    if Persistence.valid_id?(id) and map_size(args) == 3 and valid_text?(title, 200) and valid_text?(body, 16_000),
+      do: valid_intent(args),
+      else: {:error, :invalid_submission}
+  end
+
+  defp valid_submission(_id, _args), do: {:error, :invalid_submission}
+
+  defp valid_intent(%{"body" => body}) do
+    case Admission.validate_declaration(body) do
+      {:ok, _ids} -> :ok
+      {:error, reason} -> {:error, {:invalid_dependency_declaration, reason}}
+    end
+  end
+
+  defp replay_action(state, project, id, submission, auth) do
+    result =
+      with {:ok, record} <- authorized_record(state, project, id, auth, "board_action"),
+           true <- record["submission"] == submission or {:error, :submission_id_conflict} do
+        {:ok, public(record)}
+      end
+
+    {:reply, result, state}
+  end
+
+  defp prepare_or_resume_action(state, project, id, submission, auth) do
+    existing =
+      Enum.find_value(state.chats, fn {_id, record} ->
+        if record["kind"] == "board_action" and record["project_id"] == project and
+             record["tracker_fingerprint"] == auth.tracker_fingerprint and record["submission"] == submission and
+             hd(record["proposals"])["status"] in ~w(pending executing unknown),
+           do: record
+      end)
+
+    if existing do
+      {:reply, {:ok, public(existing)}, state}
+    else
+      prepare_new_action(state, project, id, submission, auth)
+    end
+  end
+
+  defp prepare_new_action(state, project, id, submission, auth) do
+    record = %{
+      "id" => id,
+      "kind" => "board_action",
+      "project_id" => project,
+      "title" => "Task action",
+      "status" => "idle",
+      "archived" => false,
+      "messages" => [],
+      "proposals" => [],
+      "context" => [],
+      "error" => nil,
+      "activity" => nil,
+      "updated_at" => now(),
+      "tracker_fingerprint" => auth.tracker_fingerprint,
+      "runtime_identity" => runtime_identity(state.settings),
+      "codex_thread_id" => nil,
+      "client_ids" => [],
+      "submission" => submission
+    }
+
+    with true <- map_size(state.chats) < 500 or {:error, :action_history_full},
+         {:ok, %{"proposal" => _proposal} = result} <- state.tools.call("symphony_propose_action", submission["args"], tool_context(state, record, auth)) do
+      {record, _result} = attach_proposal(record, result)
+      title = hd(record["proposals"])["title"]
+      reply_put(state, Map.put(record, "title", title))
+    else
+      {:error, _} = error -> {:reply, error, state}
+      _ -> {:reply, {:error, :invalid_proposal}, state}
+    end
   end
 
   defp start_turn(state, chat, text, client_id, snapshot, auth) do

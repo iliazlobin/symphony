@@ -81,6 +81,9 @@ defmodule SymphonyElixir.GoogleBrowserLiveTest do
     marker = session_marker()
     {:ok, view, _html} = live(authorized_conn(marker), "/chat")
     assert_received :private_projects_read
+    # Drain mount-time subscription messages while the session is still valid.
+    # Otherwise their handle_info guard can correctly redirect before this route test.
+    assert render(view) =~ "Allowed project"
     put_config(put_in(ctx.config, [:browser_auth, :allowed_emails], ["different@gmail.com"]))
     assert {:error, {:redirect, %{to: "/login"}}} = render_patch(view, "/chat?project=fixture")
     refute_received :private_projects_read

@@ -265,10 +265,281 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, renamed} = Store.rename(c.project, chat["id"], "A plan", c.auth, c.server)
     assert renamed["title"] == "A plan"
     refute Map.has_key?(renamed, "codex_thread_id")
-    assert {:ok, [^renamed]} = Store.list(c.project, c.auth, c.server)
+    assert {:ok, [%{"id" => id, "title" => "A plan", "display_status" => "new"}]} = Store.list(c.project, c.auth, c.server)
+    assert id == renamed["id"]
     assert {:ok, %{"archived" => true}} = Store.archive(c.project, chat["id"], c.auth, c.server)
     assert {:ok, []} = Store.list(c.project, c.auth, c.server)
     assert {:error, :chat_busy} = Store.send_message(c.project, chat["id"], "x", "x", c.auth, c.server)
+  end
+
+  test "thread summaries are scoped, bounded, and derive default titles without changing saved conversations", c do
+    assert {:ok, chat} = Store.create(c.project, "New conversation", c.auth, c.server)
+    assert {:ok, [%{"display_status" => "new", "snippet" => "", "message_count" => 0}]} = Store.list(c.project, c.auth, c.server)
+    text = "  A useful question\n" <> String.duplicate("about this project ", 30)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], text, "summary", c.auth, c.server)
+    finished = wait_chat(c, chat, &(&1["status"] == "idle"))
+    assert {:ok, [summary]} = Store.list(c.project, c.auth, c.server)
+    assert Map.keys(summary) |> Enum.sort() == Enum.sort(~w(id project_id title snippet updated_at status display_status archived message_count pinned))
+    assert summary["title"] == text |> String.replace(~r/\s+/, " ") |> String.trim() |> String.slice(0, 80)
+    assert summary["snippet"] == "Hello from the project."
+    assert summary["display_status"] == "idle"
+    assert summary["message_count"] == 2
+    assert finished["title"] == "New conversation"
+    assert {:ok, []} = Store.list("github:test/two", c.auth, c.server)
+    assert {:ok, []} = Store.list(c.project, %{c.auth | tracker_fingerprint: "other"}, c.server)
+    assert {:error, :unauthorized} = Store.list(c.project, %{}, c.server)
+  end
+
+  test "project invalidation follows nonselected conversation lifecycle without streaming content or token churn", c do
+    Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat_project:" <> c.project)
+    project = c.project
+    selected = create(c)
+    assert_receive {:chat_list_updated, ^project}
+    assert {:ok, chat} = Store.create(c.project, "New chat", c.auth, c.server)
+    assert_receive {:chat_list_updated, ^project}
+    assert {:ok, _} = Store.create("github:test/two", "Other project", c.auth, c.server)
+    refute_receive {:chat_list_updated, _}
+
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "delayed delta", "turn", c.auth, c.server)
+    assert_receive {:chat_list_updated, ^project}
+    assert_receive {:runtime, runtime, _, "delayed delta"}
+    assert_receive {:phase_ready, ^runtime, "delayed delta"}
+    assert {:ok, summaries} = Store.list(c.project, c.auth, c.server)
+    assert Enum.find(summaries, &(&1["id"] == selected["id"]))["display_status"] == "new"
+    assert Enum.find(summaries, &(&1["id"] == chat["id"]))["display_status"] == "running"
+    send(runtime, :continue)
+    wait_chat(c, chat, &(List.last(&1["messages"])["text"] == "Buffered response"))
+    run = :sys.get_state(c.server).jobs[chat["id"]].run
+    assert :ok = GenServer.call(c.server, {:runtime_event, chat["id"], run, {:status, "New activity"}})
+    refute_receive {:chat_list_updated, _}
+    assert {:ok, summaries} = Store.list(c.project, c.auth, c.server)
+    assert Enum.find(summaries, &(&1["id"] == chat["id"]))["snippet"] == "delayed delta"
+
+    send(runtime, :finish)
+    wait_chat(c, chat, &(&1["status"] == "idle"))
+    assert_receive {:chat_list_updated, ^project}
+    assert {:ok, summaries} = Store.list(c.project, c.auth, c.server)
+    assert Enum.find(summaries, &(&1["id"] == chat["id"]))["display_status"] == "idle"
+    assert {:ok, _} = Store.archive(c.project, chat["id"], c.auth, c.server)
+    assert_receive {:chat_list_updated, ^project}
+    assert {:ok, [%{"id" => selected_id}]} = Store.list(c.project, c.auth, c.server)
+    assert selected_id == selected["id"]
+  end
+
+  test "thread action states distinguish confirmation, execution, uncertain outcomes and stale failures", c do
+    {chat, proposal} = propose(c)
+    assert thread_summary(c, chat)["display_status"] == "awaiting_confirmation"
+    Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat_project:" <> c.project)
+    project = c.project
+    auth = Map.put(c.auth, :action_result, :wait)
+    assert {:ok, _} = Store.decide(c.project, chat["id"], proposal["id"], "confirm", auth, c.server)
+    assert_receive {:chat_list_updated, ^project}
+    assert_receive {:action_started, action, _}
+    assert thread_summary(c, chat)["display_status"] == "action"
+    send(action, :finish)
+    wait_chat(c, chat, &(hd(&1["proposals"])["status"] == "completed"))
+    assert_receive {:chat_list_updated, ^project}
+    assert thread_summary(c, chat)["display_status"] == "idle"
+
+    {failed, failed_proposal} = propose(c)
+    failed_auth = Map.put(c.auth, :action_result, :failed)
+    assert {:ok, _} = Store.decide(c.project, failed["id"], failed_proposal["id"], "confirm", failed_auth, c.server)
+    wait_chat(c, failed, &(hd(&1["proposals"])["status"] == "failed"))
+    assert thread_summary(c, failed)["display_status"] == "error"
+    assert {:ok, _} = Store.send_message(c.project, failed["id"], "Hello", "after-failure", c.auth, c.server)
+    wait_chat(c, failed, &(&1["status"] == "idle"))
+    assert thread_summary(c, failed)["display_status"] == "idle"
+
+    {uncertain, uncertain_proposal} = propose(c)
+    unknown_auth = Map.put(c.auth, :action_result, :unknown)
+    assert {:ok, _} = Store.decide(c.project, uncertain["id"], uncertain_proposal["id"], "confirm", unknown_auth, c.server)
+    wait_chat(c, uncertain, &(hd(&1["proposals"])["status"] == "unknown"))
+    assert thread_summary(c, uncertain)["display_status"] == "needs_reconciliation"
+  end
+
+  test "errors, interruptions and recovery invalidate thread summaries without losing conversations", c do
+    chat = create(c)
+    Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat_project:" <> c.project)
+    project = c.project
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "error", "error", c.auth, c.server)
+    assert_receive {:chat_list_updated, ^project}
+    wait_chat(c, chat, &(&1["status"] == "error"))
+    assert_receive {:chat_list_updated, ^project}
+    assert thread_summary(c, chat)["display_status"] == "error"
+
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "delay finish", "held", c.auth, c.server)
+    assert_receive {:chat_list_updated, ^project}
+    assert_receive {:phase_ready, _, "delay finish"}
+    assert thread_summary(c, chat)["display_status"] == "running"
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    assert_receive {:chat_list_updated, ^project}
+    assert thread_summary(%{c | server: server}, chat)["display_status"] == "interrupted"
+    assert {:ok, restored} = Store.get(c.project, chat["id"], c.auth, server)
+    assert length(restored["messages"]) == 4
+  end
+
+  test "a storage fault stops action execution and shows reconciliation instead of a running action", c do
+    {chat, proposal} = propose(c)
+    assert {:ok, _} = Store.decide(c.project, chat["id"], proposal["id"], "confirm", Map.put(c.auth, :action_result, :wait), c.server)
+    assert_receive {:action_started, action, _}
+    monitor = Process.monitor(action)
+    assert thread_summary(c, chat)["display_status"] == "action"
+    Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat_project:" <> c.project)
+    project = c.project
+    block_record(c, chat)
+    assert {:error, :chat_storage_unavailable} = Store.rename(c.project, chat["id"], "Attempted rename", c.auth, c.server)
+    assert_receive {:DOWN, ^monitor, :process, ^action, :shutdown}
+    assert_receive {:chat_list_updated, ^project}
+    assert thread_summary(c, chat)["display_status"] == "needs_reconciliation"
+  end
+
+  test "most recent action outcome follows decision order rather than proposal creation order", c do
+    {chat, earlier} = propose(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "proposal", "second-proposal", c.auth, c.server)
+    updated = wait_chat(c, chat, &(&1["status"] == "idle"))
+    later = List.last(updated["proposals"])
+    assert {:ok, _} = Store.decide(c.project, chat["id"], later["id"], "cancel", c.auth, c.server)
+    assert {:ok, _} = Store.decide(c.project, chat["id"], earlier["id"], "confirm", Map.put(c.auth, :action_result, :failed), c.server)
+    wait_chat(c, chat, &(hd(&1["proposals"])["status"] == "failed"))
+    assert thread_summary(c, chat)["display_status"] == "error"
+
+    :sys.replace_state(c.server, fn state ->
+      update_in(state, [:chats, chat["id"], "proposals"], fn proposals ->
+        Enum.map(proposals, &(&1 |> Map.put("created_at", "legacy-unknown") |> Map.delete("updated_at")))
+      end)
+    end)
+
+    # Legacy records without observation times still open; they cannot prove a current failure.
+    assert thread_summary(c, chat)["display_status"] == "idle"
+  end
+
+  test "identical update timestamps have stable thread ordering", c do
+    first = create(c)
+    second = create(c)
+
+    :sys.replace_state(c.server, fn state ->
+      Map.update!(state, :chats, &Map.new(&1, fn {id, chat} -> {id, Map.put(chat, "updated_at", "2026-09-16T00:00:00Z")} end))
+    end)
+
+    assert {:ok, summaries} = Store.list(c.project, c.auth, c.server)
+    assert Enum.map(summaries, & &1["id"]) == Enum.sort([first["id"], second["id"]], :desc)
+    assert {:ok, ^summaries} = Store.list(c.project, c.auth, c.server)
+  end
+
+  test "pins and same-group manual order persist atomically without rewriting conversations", c do
+    [first, second, third] = Enum.map(1..3, fn _ -> create(c) end)
+    originals = Map.new([first, second, third], &{&1["id"], File.read!(Path.join(c.root, &1["id"] <> ".json"))})
+    assert {:ok, _} = Store.pin(c.project, first["id"], true, c.auth, c.server)
+    assert {:ok, _} = Store.pin(c.project, second["id"], true, c.auth, c.server)
+    assert {:ok, moved} = Store.move(c.project, second["id"], first["id"], true, c.auth, c.server)
+    assert Enum.map(moved, &{&1["id"], &1["pinned"]}) == [{second["id"], true}, {first["id"], true}, {third["id"], false}]
+    Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat_project:" <> c.project)
+    assert {:ok, ^moved} = Store.move(c.project, second["id"], first["id"], true, c.auth, c.server)
+    assert {:ok, ^moved} = Store.pin(c.project, first["id"], true, c.auth, c.server)
+    refute_receive {:chat_list_updated, _}
+    assert {:ok, _} = Store.pin(c.project, second["id"], false, c.auth, c.server)
+    assert_receive {:chat_list_updated, _}
+    assert {:ok, ordered} = Store.move(c.project, second["id"], third["id"], false, c.auth, c.server)
+    assert Enum.map(ordered, & &1["id"]) == Enum.map([first, second, third], & &1["id"])
+    assert {:ok, appended} = Store.move(c.project, second["id"], nil, false, c.auth, c.server)
+    assert Enum.map(appended, & &1["id"]) == Enum.map([first, third, second], & &1["id"])
+    assert Enum.all?(originals, fn {id, bytes} -> File.read!(Path.join(c.root, id <> ".json")) == bytes end)
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    assert {:ok, ^appended} = Store.list(c.project, c.auth, server)
+    assert {:ok, new} = Store.create(c.project, "Arrival", c.auth, server)
+    assert {:ok, with_new} = Store.list(c.project, c.auth, server)
+    assert Enum.map(with_new, & &1["id"]) == Enum.map([first, third, second, new], & &1["id"])
+  end
+
+  test "history commands reject invalid, archived, foreign and cross-group rows without changing state", c do
+    [first, second] = Enum.map(1..2, fn _ -> create(c) end)
+    assert {:ok, foreign} = Store.create("github:test/two", "Other", c.auth, c.server)
+    assert {:ok, _} = Store.pin(c.project, first["id"], true, c.auth, c.server)
+
+    foreign_scope = %{c.auth | tracker_fingerprint: "other"}
+
+    for operation <- [:pin, :move] do
+      group = if operation == :move, do: [true], else: []
+      value = if operation == :pin, do: true, else: nil
+      arguments = [c.project, first["id"], value] ++ group
+      foreign_arguments = [c.project, foreign["id"], value] ++ group
+      assert {:error, :unauthorized} = apply(Store, operation, arguments ++ [%{}, c.server])
+      assert {:error, :chat_not_found} = apply(Store, operation, foreign_arguments ++ [c.auth, c.server])
+      assert {:error, :chat_not_found} = apply(Store, operation, arguments ++ [foreign_scope, c.server])
+    end
+
+    assert {:error, :invalid_pin} = Store.pin(c.project, first["id"], "true", c.auth, c.server)
+
+    for anchor <- [first["id"], "bad", %{}, second["id"]] do
+      assert {:error, :invalid_chat_order} = Store.move(c.project, first["id"], anchor, true, c.auth, c.server)
+    end
+
+    for anchor <- [foreign["id"], String.duplicate("f", 32)] do
+      assert {:error, :chat_not_found} = Store.move(c.project, first["id"], anchor, true, c.auth, c.server)
+    end
+
+    assert {:ok, _} = Store.archive(c.project, second["id"], c.auth, c.server)
+    assert {:error, :chat_not_found} = Store.pin(c.project, second["id"], true, c.auth, c.server)
+    assert {:error, :chat_not_found} = Store.move(c.project, first["id"], second["id"], true, c.auth, c.server)
+    assert {:ok, [%{"pinned" => true}]} = Store.list(c.project, c.auth, c.server)
+    assert {:ok, [%{"pinned" => false}]} = Store.list("github:test/two", c.auth, c.server)
+    other_auth = %{c.auth | tracker_fingerprint: "new-project-version"}
+    assert {:ok, versioned} = Store.create(c.project, "New scope", other_auth, c.server)
+    assert {:ok, [%{"pinned" => true}]} = Store.pin(c.project, versioned["id"], true, other_auth, c.server)
+    assert {:ok, [%{"id" => original_id, "pinned" => true}]} = Store.list(c.project, c.auth, c.server)
+    assert original_id == first["id"]
+  end
+
+  test "concurrent history commands serialize while retaining all pins and streaming never resets order", c do
+    [first, second, third] = Enum.map(1..3, fn _ -> create(c) end)
+    jobs = for chat <- [first, second], do: Task.async(fn -> Store.pin(c.project, chat["id"], true, c.auth, c.server) end)
+    assert Enum.all?(Task.await_many(jobs), &match?({:ok, _}, &1))
+    moves = for chat <- [first, second], do: Task.async(fn -> Store.move(c.project, chat["id"], nil, true, c.auth, c.server) end)
+    move_results = Task.await_many(moves)
+    assert {:ok, final_move} = Store.list(c.project, c.auth, c.server)
+    assert {:ok, final_move} in move_results
+    assert Enum.sort(Enum.map(final_move, & &1["id"])) == Enum.sort(Enum.map([first, second, third], & &1["id"]))
+    assert {:ok, ordered} = Store.move(c.project, first["id"], second["id"], true, c.auth, c.server)
+    assert Enum.map(ordered, &{&1["id"], &1["pinned"]}) == [{first["id"], true}, {second["id"], true}, {third["id"], false}]
+    assert {:ok, _} = Store.send_message(c.project, second["id"], "wait", "during-order", c.auth, c.server)
+    wait_chat(c, second, &(List.last(&1["messages"])["text"] == "Partial response"))
+    assert {:ok, streaming} = Store.list(c.project, c.auth, c.server)
+    assert Enum.map(streaming, & &1["id"]) == Enum.map(ordered, & &1["id"])
+  end
+
+  test "unwritable or corrupt preference state never resets pins or removes the selected conversation", c do
+    chat = create(c)
+    assert {:ok, pinned} = Store.pin(c.project, chat["id"], true, c.auth, c.server)
+    path = Path.join(c.root, "presentation.json")
+    original = File.read!(path)
+    File.rm!(path)
+    File.mkdir!(path)
+    Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat_project:" <> c.project)
+    assert {:error, :chat_preferences_unavailable} = Store.pin(c.project, chat["id"], false, c.auth, c.server)
+    refute_receive {:chat_list_updated, _}
+    assert {:ok, ^pinned} = Store.list(c.project, c.auth, c.server)
+    assert {:ok, _} = Store.get(c.project, chat["id"], c.auth, c.server)
+    File.rmdir!(path)
+    File.write!(path, original)
+    assert {:ok, _} = Store.pin(c.project, chat["id"], false, c.auth, c.server)
+    stop_supervised!(Store)
+    File.write!(path, "{corrupt")
+    server = start_supervised!({Store, c.opts})
+    assert {:error, :chat_preferences_unavailable} = Store.list(c.project, c.auth, server)
+    assert {:error, :chat_preferences_unavailable} = Store.pin(c.project, chat["id"], true, c.auth, server)
+    assert {:ok, _} = Store.get(c.project, chat["id"], c.auth, server)
+    assert File.read!(path) == "{corrupt"
+  end
+
+  test "an end-of-group drop rejects a pin group changed after the move intent was captured", c do
+    [first, second] = Enum.map(1..2, fn _ -> create(c) end)
+    assert {:ok, _} = Store.pin(c.project, first["id"], true, c.auth, c.server)
+    assert {:ok, saved} = Store.pin(c.project, second["id"], true, c.auth, c.server)
+    assert {:error, :chat_order_changed} = Store.move(c.project, first["id"], nil, false, c.auth, c.server)
+    assert {:error, :invalid_chat_order} = Store.move(c.project, first["id"], nil, "true", c.auth, c.server)
+    assert {:ok, ^saved} = Store.list(c.project, c.auth, c.server)
   end
 
   test "streamed deltas survive restart, resume native thread, and reject duplicate submissions", c do
@@ -717,6 +988,11 @@ defmodule SymphonyElixir.Chat.StoreTest do
   defp create(c) do
     {:ok, chat} = Store.create(c.project, "New chat", c.auth, c.server)
     chat
+  end
+
+  defp thread_summary(c, chat) do
+    assert {:ok, summaries} = Store.list(c.project, c.auth, c.server)
+    Enum.find(summaries, &(&1["id"] == chat["id"]))
   end
 
   defp propose(c) do

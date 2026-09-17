@@ -17,6 +17,8 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
       get: 3,
       rename: 4,
       archive: 3,
+      pin: 4,
+      move: 5,
       send_message: 5,
       send_message_with_context: 6,
       stop: 3,
@@ -54,6 +56,13 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     end
 
     def handle_info({:view_context, context}, socket), do: {:noreply, assign(socket, :view_context, context)}
+
+    def handle_info({:chat_list_updated, project}, socket) do
+      send_update(ChatPanel, id: "management-chat", refresh_threads: project)
+      {:noreply, socket}
+    end
+
+    def handle_info({:chat_panel, :project_subscription, _project}, socket), do: {:noreply, socket}
 
     def handle_info({:chat_panel, :navigate, location}, socket), do: {:noreply, assign(socket, Map.to_list(location))}
 
@@ -106,6 +115,15 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
 
     defp run_request("Queue task", opts, emit, tool), do: propose(opts, emit, tool, %{"action" => "queue_task", "task_id" => "GH-2"})
     defp run_request("Give feedback", opts, emit, tool), do: propose(opts, emit, tool, %{"action" => "feedback", "task_id" => "GH-2", "body" => "Please include the cancellation case."})
+
+    defp run_request("Wait for thread status", opts, _emit, _tool) do
+      send(opts.test_pid, {:waiting_for_thread_status, self()})
+
+      receive do
+        :finish_status -> {:ok, %{status: :completed}}
+        :interrupt -> {:ok, %{status: :interrupted}}
+      end
+    end
 
     defp run_request("Wait for logout", opts, emit, tool) do
       send(opts.test_pid, {:awaiting_logout, self()})
@@ -209,6 +227,65 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     end)
 
     %{server: server, opts: opts, marker: marker, auth: auth, requests: request_log, config: config, board: board_agent}
+  end
+
+  test "chat list pins and ordering update another browser and survive store restart", ctx do
+    {:ok, first} = Store.create(@project, "First conversation", ctx.auth, ctx.server)
+    {:ok, second} = Store.create(@project, "Second conversation", ctx.auth, ctx.server)
+    {:ok, third} = Store.create(@project, "Third conversation", ctx.auth, ctx.server)
+    {view, _} = chat_view(ctx, first["id"])
+    {other, _} = chat_view(ctx)
+    render_change(view, "draft", %{"message" => "Keep this draft while organizing"})
+    render_click(view, "back-to-chats")
+    render_click(view, "pin-thread", %{"id" => first["id"], "pinned" => "true"})
+    pinned = "[data-pin-group=true] [data-thread-id='#{first["id"]}']"
+    assert eventually(fn -> has_element?(other, pinned) end)
+    render_hook(view, "move-thread", %{"id" => second["id"], "before_id" => third["id"], "pinned" => false, "project_id" => @project})
+    reordered = "[data-pin-group=false] [data-thread-id='#{second["id"]}'] + [data-thread-id='#{third["id"]}']"
+    assert eventually(fn -> has_element?(other, reordered) end)
+    render_hook(view, "move-thread", %{"id" => first["id"], "before_id" => nil, "pinned" => false, "project_id" => @project})
+    assert render(view) =~ "moved between pinned and unpinned"
+    assert has_element?(view, "#chat-message-input", "Keep this draft while organizing")
+    assert {:ok, before} = Store.get(@project, first["id"], ctx.auth, ctx.server)
+    stop_supervised!(Store)
+    server = start_supervised!({Store, ctx.opts})
+    Application.put_env(:symphony_elixir, :chat_integration_store, server)
+    assert {:ok, restored} = Store.get(@project, first["id"], ctx.auth, server)
+    assert restored == before
+    {reopened, _} = chat_view(ctx)
+    assert has_element?(reopened, pinned)
+    assert has_element?(reopened, reordered)
+    render_click(view, "retry-chat-list")
+    render_click(view, "open-chat", %{"id" => first["id"]})
+    assert has_element?(view, "#chat-conversation-detail:not([hidden])")
+    assert has_element?(view, "#chat-message-input", "Keep this draft while organizing")
+    assert Agent.get(ctx.requests, & &1) == []
+  end
+
+  test "thread lists follow background conversation activity without changing the selected draft", ctx do
+    assert {:ok, selected} = Store.create(@project, "Selected conversation", ctx.auth, ctx.server)
+    assert {:ok, background} = Store.create(@project, "Background conversation", ctx.auth, ctx.server)
+    {view, _} = chat_view(ctx, selected["id"])
+    render_change(view, "draft", %{"message" => "Keep this unsent draft"})
+    render_click(view, "back-to-chats")
+    {index, _} = chat_view(ctx)
+    selector = "#chat-thread-list [data-thread-id='#{background["id"]}'] .thread-status"
+    assert has_element?(index, "#chat-thread-list:not([hidden])")
+
+    assert {:ok, _} = Store.send_message(@project, background["id"], "Wait for thread status", "thread-status", ctx.auth, ctx.server)
+    assert_receive {:waiting_for_thread_status, runtime}
+    assert eventually(fn -> has_element?(view, selector, "Running") end)
+    assert eventually(fn -> has_element?(index, selector, "Running") end)
+    assert has_element?(view, "#chat-message-input", "Keep this unsent draft")
+
+    send(runtime, :finish_status)
+    assert eventually(fn -> has_element?(view, selector, "Idle") end)
+    assert eventually(fn -> has_element?(index, selector, "Idle") end)
+    assert has_element?(view, "#chat-message-input", "Keep this unsent draft")
+    render_click(view, "open-chat", %{"id" => selected["id"]})
+    assert has_element?(view, "#session-chat-content:not([hidden])")
+    assert has_element?(view, "#chat-message-input", "Keep this unsent draft")
+    assert Agent.get(ctx.requests, & &1) == []
   end
 
   test "output tabs retain issue and PR evidence, metrics and safe links across reconnect", ctx do
@@ -319,6 +396,50 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     refute_receive {:owner_guard, _, _, _}
   end
 
+  test "board forms use the real durable tracker path without running a model", ctx do
+    args = %{"action" => "create_task", "title" => "Create from the board", "body" => "## Outcome\nNative intake\n\nDepends on: none"}
+    id = String.duplicate("a", 32)
+    assert {:ok, preview} = Store.prepare_action(@project, id, args, ctx.auth, ctx.server)
+    assert {:ok, ^preview} = Store.prepare_action(@project, id, args, ctx.auth, ctx.server)
+    assert Agent.get(ctx.requests, & &1) == []
+    assert {:ok, _} = Store.decide_action_record(@project, id, "confirm", ctx.auth, ctx.server)
+
+    assert eventually(fn ->
+             {:ok, record} = Store.get_action(@project, id, ctx.auth, ctx.server)
+             hd(record["proposals"])["status"] == "completed"
+           end)
+
+    assert {:ok, _} = Store.decide_action_record(@project, id, "confirm", ctx.auth, ctx.server)
+    posts = Agent.get(ctx.requests, &Enum.filter(&1, fn {method, _, _, _} -> method == "POST" end))
+    assert [{"POST", "/repos/example/integration/issues", _, body}] = posts
+    assert body["labels"] == []
+    assert body["body"] =~ "Depends on: none"
+    assert {:ok, []} = Store.list(@project, ctx.auth, ctx.server)
+    refute_receive {:model_started, _, _, _}
+  end
+
+  test "Google operator revocation rejects a previously previewed board task", ctx do
+    google = %{
+      provider: "google",
+      public_origin: "http://localhost",
+      client_id: "fixture.apps.googleusercontent.com",
+      client_secret: "$SYMPHONY_CONTROL_TOKEN",
+      allowed_emails: ["owner@gmail.com"]
+    }
+
+    configure(Map.put(ctx.config, :browser_auth, google))
+    {:ok, identity_config} = SymphonyElixirWeb.BrowserIdentity.settings()
+    identity = %{"iss" => "https://accounts.google.com", "sub" => "task-operator", "email" => "owner@gmail.com", "email_verified" => true}
+    {:ok, grant} = SymphonyElixirWeb.BrowserSessions.issue(:session, %{identity: identity, fingerprint: identity_config.fingerprint, scope: Orchestrator.tracker_fingerprint()})
+    auth = %{ctx.auth | marker: %{"provider" => "google", "id" => grant}} |> Map.merge(%{scheme: "http", port: 80})
+    args = %{"action" => "create_task", "title" => "Reviewed task", "body" => "Depends on: none"}
+    id = String.duplicate("c", 32)
+    assert {:ok, _} = Store.prepare_action(@project, id, args, auth, ctx.server)
+    assert :ok = SymphonyElixirWeb.BrowserSessions.revoke(grant)
+    assert {:error, :unauthorized} = Store.decide_action_record(@project, id, "confirm", auth, ctx.server)
+    assert Agent.get(ctx.requests, & &1) == []
+  end
+
   test "foreign chat routing and tracker reconfiguration never reveal retained history", ctx do
     {view, _} = chat_view(ctx)
     render_submit(view, "send-message", %{"message" => "Review work"})
@@ -425,8 +546,12 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
 
   defp wait_chat(ctx, predicate, remaining) do
     case Store.list(@project, ctx.auth, Application.fetch_env!(:symphony_elixir, :chat_integration_store)) do
-      {:ok, [chat | _]} -> if predicate.(chat), do: chat, else: retry_chat(ctx, predicate, remaining)
-      _ -> retry_chat(ctx, predicate, remaining)
+      {:ok, [summary | _]} ->
+        {:ok, chat} = Store.get(@project, summary["id"], ctx.auth, Application.fetch_env!(:symphony_elixir, :chat_integration_store))
+        if predicate.(chat), do: chat, else: retry_chat(ctx, predicate, remaining)
+
+      _ ->
+        retry_chat(ctx, predicate, remaining)
     end
   end
 

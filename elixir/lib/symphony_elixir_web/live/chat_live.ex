@@ -27,6 +27,13 @@ defmodule SymphonyElixirWeb.ChatLive do
     {:noreply, socket}
   end
 
+  def handle_info({:chat_list_updated, project}, socket) do
+    send_update(ChatPanel, id: "management-chat", refresh_threads: project)
+    {:noreply, socket}
+  end
+
+  def handle_info({:chat_panel, :project_subscription, _project}, socket), do: {:noreply, socket}
+
   def handle_info({:chat_panel, :navigate, location}, socket) do
     params = %{"project" => location.project_id, "chat" => location.chat_id} |> Map.reject(fn {_key, value} -> is_nil(value) end)
     path = if params == %{}, do: "/chat", else: "/chat?" <> URI.encode_query(params)

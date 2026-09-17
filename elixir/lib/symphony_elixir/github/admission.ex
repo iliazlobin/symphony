@@ -32,7 +32,18 @@ defmodule SymphonyElixir.GitHub.Admission do
   defp declaration(%Issue{dispatchable: false}), do: {:error, "Not a dispatchable GitHub issue."}
 
   defp declaration(%Issue{description: description, id: id, native_ref: %{"repo" => repo}})
-       when is_binary(description) and is_binary(repo) and repo != "" do
+       when is_binary(description) and is_binary(repo) and repo != "", do: validate_declaration(description, id)
+
+  defp declaration(%Issue{}), do: {:error, @instruction}
+
+  @doc "Validates declaration syntax only; current dependency states remain an admission-time check."
+  @spec validate_declaration(term()) :: {:ok, [String.t()]} | {:error, String.t()}
+  def validate_declaration(description), do: validate_declaration(description, nil)
+
+  @spec validate_declaration(term(), String.t() | nil) :: {:ok, [String.t()]} | {:error, String.t()}
+  def validate_declaration(description, id), do: declaration_text(description, id)
+
+  defp declaration_text(description, id) when is_binary(description) do
     lines =
       description
       |> String.split(~r/\r?\n/)
@@ -44,7 +55,7 @@ defmodule SymphonyElixir.GitHub.Admission do
     end
   end
 
-  defp declaration(%Issue{}), do: {:error, @instruction}
+  defp declaration_text(_description, _id), do: {:error, @instruction}
 
   defp parse_declaration(line, id) do
     case Regex.run(@declaration, line) do

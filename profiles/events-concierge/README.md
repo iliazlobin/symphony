@@ -133,8 +133,14 @@ Use `--config /absolute/path/to/config.json` for another configured profile.
 The profile binds the repository to the controller address; the current controller
 API does not attest repository identity in its response.
 
-**New task** opens the configured GitHub issue form. Create the issue and manage its
-intake labels in GitHub, then refresh the board. Moving across lanes cannot fabricate
+**New task** opens a form in the board. Fill in the title, outcome, scope, acceptance
+checks and dependencies (`none` when there are none), then choose **Preview task**.
+Review the exact issue and choose **Create task**. It appears in GitHub as an unqueued
+backlog issue; creating it does not start a worker. The form's recent submissions
+retain completed receipts and unfinished actions. If the result is uncertain, use
+**Check outcome** rather than creating another request. Model access is not required,
+but the service's durable action store must be configured and healthy.
+Manage intake labels through GitHub or an approved chat action. Moving across lanes cannot fabricate
 workflow progress. Moving Ready to Backlog requests a confirmed native cancellation;
 moving a held Backlog card to Ready offers native retry. Cancel can stop work claimed
 since the card was displayed; retry clears a hold without resetting budgets or
@@ -181,11 +187,17 @@ controller or change task ownership. Additional project services, delivery of an
 into running workers, automatic repairs and web publication remain separate work.
 
 **Web chat.** After [dedicated runtime setup](../../elixir/README.md#web-board-and-chat),
-select one project on the board and open **Chat** in the right-side panel. A task
+select a project beside **Projects** in the top header and open **Chat** in the right-side panel. A task
 popup also offers **Discuss this task**. Sign in through the configured browser provider.
-Use **New chat** for a separate topic; **History** opens searchable retained conversations.
-Use **Chat**, **Context**, **Outputs** and **Sources** to inspect the same session without
-losing your draft. Outputs include observed issue/PR status and action results.
+The list shows this project's retained chats and which are running, waiting for
+confirmation, idle, interrupted or in error. Pin chats to keep them at the top;
+drag their handles or use the move controls to arrange each group. Pins and order
+are saved with project chat state. Open a chat to read and continue it; **Back to chats**
+returns to the list. **New chat** starts a separate topic. These statuses describe
+chat activity; the board tracks coding tasks. **Chat**, **Context**, **Outputs** and
+**Sources** retain the selected conversation's messages and evidence. Returning to
+the list or switching tabs preserves its draft. Outputs include observed issue/PR
+status and action results.
 Project changes clear the current selection and draft. A chat stays with its original project. This service currently supplies one configured
 project; additional controllers are not aggregated yet.
 

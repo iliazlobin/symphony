@@ -326,15 +326,28 @@ The observability UI now runs on a minimal Phoenix stack:
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
 Open **Chat** at the right of the board header to show the conversation panel.
+Use **New task** to enter a title, outcome, scope, acceptance checks and dependencies.
+**Preview task** saves the exact proposed GitHub issue; **Create task** confirms it.
+Created tasks enter the backlog without execution routing labels. Recent submissions
+retain receipts and unfinished actions across reconnects. If the result is uncertain,
+use **Check outcome** to reconcile it before creating another request. This form uses
+the durable action store and works without a model turn or subscription login.
 The board and full-page chat share `ChatPanel`. The dock retains board filters and
 selected task links. Each message automatically attaches a validated project-bound
-snapshot of bounded task IDs and filters, not raw browser contents. **Chat**, **Context**,
+snapshot of bounded task IDs and filters, not raw browser contents. The chat list
+shows the project's conversations with live activity status and search. Pin important
+chats and drag the handles to reorder within Pinned or Chats; move controls also work
+with a keyboard. Pins and ordering persist in private project chat storage.
+Open a chat to continue it, return with **Back to chats**, or start a new chat.
+Inside the conversation, **Chat**, **Context**,
 **Outputs** and **Sources** organize the same durable conversation. Context separates
 the next message's view from snapshots retained with earlier messages. Outputs collect
 the latest 100 distinct issue/PR summaries and action results; original tool results stay
 in message history. Sources retain retrieved references.
-Observed statuses are not live updates. The composer stays available across tabs, and
-the selected tab is remembered per conversation in this browser session. The current-view
+GitHub artifact statuses are recorded observations; thread activity updates live.
+Returning to the list hides the composer without discarding its draft. Conversation
+messages scroll independently of the composer. The selected view and tab are remembered
+in this browser session. The current-view
 tool resolves fresh authorized task summaries; action previews and browser
 confirmations own all writes. See [management conversations](../ARCHITECTURE.md#management-conversations)
 for the context, storage and tool boundary, and the [operator guide](../profiles/events-concierge/README.md#operate)
@@ -374,6 +387,11 @@ a keyring-only login is not available to it. Never copy another Codex home's
 authentication, configuration or history. The new home must have no user configuration, agent instructions, hooks, plugins or user
 skills. Native generated system skills are tolerated but disabled. The backend
 creates empty conversation workspaces and supplies only typed management tools.
+Management functions are exposed directly with
+`features.code_mode.direct_only_tool_namespaces = ["functions"]`; the Code Mode
+feature and host remain disabled. The pinned model's routing metadata must not send
+these functions through an unavailable code host. Configuration is verified before
+starting or resuming each turn; never enable coding tools to repair a management call.
 The browser uses [Google or local operator sign-in](#browser-sign-in); model
 credentials stay on the host. These are separate logins: Google grants access to
 Symphony, while the dedicated Codex home supplies model access. A disabled store
@@ -386,7 +404,8 @@ before moving or restoring either; preserve both together. A second store owner,
 corrupt records or failed writes block operation without overwriting recovery data.
 Browser reconnect does not stop a turn; service restart leaves interrupted turns
 available to continue and uncertain writes available for read-only reconciliation.
-The file store is bounded to 500 conversations and 8 MiB per conversation. Archive
+The file store holds at most 500 conversation and task-submission records, with an
+8 MiB limit per record. Archive
 hides a chat from the active list; it does not delete its retained records.
 Once a conversation reaches 400 messages, start another chat for further turns.
 
