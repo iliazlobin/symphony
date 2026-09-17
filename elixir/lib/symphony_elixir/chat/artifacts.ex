@@ -34,7 +34,7 @@ defmodule SymphonyElixir.Chat.Artifacts do
     do: task_entries(task, task["checked_at"], project, repo)
 
   defp widget_entries(%{"type" => "tasks", "tasks" => tasks} = widget, project, repo),
-    do: tasks |> items(50) |> Enum.flat_map(&task_entries(&1, widget["checked_at"], project, repo))
+    do: tasks |> items(50) |> Enum.flat_map(&task_entries(Map.put(&1, "enrichment_error", widget["enrichment_error"]), widget["checked_at"], project, repo))
 
   defp widget_entries(_, _, _), do: []
 
@@ -43,18 +43,27 @@ defmodule SymphonyElixir.Chat.Artifacts do
 
     if number && task["id"] == project <> ":" <> number && task["project"] == project do
       issue =
-        entry("issue", task["id"], text(task["title"]) || "Issue ##{number}", "https://github.com/#{repo}/issues/#{number}", choice(task["tracker_state"], ~w(open closed)), task, checked_at, [
-          metric("Workflow", choice(task["stage"], ~w(backlog ready running review done))),
-          metric("Priority", priority(task["priority"]))
-        ])
+        entry(
+          "issue",
+          task["id"],
+          text(task["title"]) || "Issue ##{number}",
+          "https://github.com/#{repo}/issues/#{number}",
+          choice(task["tracker_state"], ~w(open closed)),
+          task,
+          checked_at,
+          [
+            metric("Workflow", choice(task["stage"], ~w(backlog ready running review done))),
+            metric("Priority", priority(task["priority"]))
+          ] ++ evidence_metrics(task)
+        )
 
-      [issue | task["pull_requests"] |> items(20) |> Enum.flat_map(&pull_request_entries(&1, checked_at, repo))]
+      [issue | task["pull_requests"] |> items(20) |> Enum.flat_map(&pull_request_entries(&1, checked_at, repo, evidence_metrics(task)))]
     else
       []
     end
   end
 
-  defp pull_request_entries(pr, checked_at, repo) do
+  defp pull_request_entries(pr, checked_at, repo, evidence) do
     number = number(pr["number"])
     url = "https://github.com/#{repo}/pull/#{number}"
 
@@ -70,7 +79,7 @@ defmodule SymphonyElixir.Chat.Artifacts do
         metric("Files", count(pr["changed_files"]))
       ]
 
-      [entry("pull_request", "github:#{repo}:pull:#{number}", text(pr["title"]) || "Pull request ##{number}", url, choice(pr["state"], ~w(open closed merged)), pr, checked_at, metrics)]
+      [entry("pull_request", "github:#{repo}:pull:#{number}", text(pr["title"]) || "Pull request ##{number}", url, choice(pr["state"], ~w(open closed merged)), pr, checked_at, metrics ++ evidence)]
     else
       []
     end
@@ -83,10 +92,11 @@ defmodule SymphonyElixir.Chat.Artifacts do
       widgets = items(receipt["widgets"], 20)
       number = widgets |> Enum.map(&receipt_number(&1["task_id"], project)) |> Enum.find(& &1)
       url = if number, do: "https://github.com/#{repo}/issues/#{number}", else: nil
+      status = if proposal["status"] == "completed" and receipt == %{}, do: "unknown", else: proposal["status"]
 
       [
-        entry("action", proposal["id"], title, url, proposal["status"], proposal, receipt["checked_at"], [
-          metric("Outcome", if(proposal["status"] == "completed" and map_size(receipt) > 0, do: "Confirmed by action receipt", else: "No confirmed success"))
+        entry("action", proposal["id"], title, url, status, proposal, receipt["checked_at"], [
+          metric("Outcome", if(status == "completed", do: "Confirmed by action receipt", else: "No confirmed success"))
         ])
       ]
     else
@@ -100,6 +110,15 @@ defmodule SymphonyElixir.Chat.Artifacts do
   end
 
   defp receipt_number(_, _), do: nil
+
+  defp evidence_metrics(task) do
+    status = metric("GitHub evidence", choice(task["github_status"], ~w(available partial unavailable not_loaded)))
+
+    case text(task["enrichment_error"]) do
+      nil -> [status]
+      warning -> [status, metric("Source warning", warning)]
+    end
+  end
 
   defp entry(kind, id, title, url, status, source, checked_at, metrics) do
     %{

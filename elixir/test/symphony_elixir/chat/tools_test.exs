@@ -281,6 +281,8 @@ defmodule SymphonyElixir.Chat.ToolsTest do
           url: "https://github.com/example/repo/pull/#{number}",
           state: state,
           draft: false,
+          created_at: "2026-09-15T09:00:00Z",
+          updated_at: "2026-09-15T10:00:00Z",
           review: review,
           checks: checks,
           head_sha: String.duplicate(Integer.to_string(rem(number, 10)), 40),
@@ -310,7 +312,11 @@ defmodule SymphonyElixir.Chat.ToolsTest do
 
     assert {:ok, %{"widgets" => [search]}} = Tools.call("symphony_search_tasks", %{}, ctx.context)
     assert search["checked_at"] == board.generated_at
-    assert Enum.find(search["tasks"], &(&1["issue_id"] == "1"))["pull_requests"] == task["pull_requests"]
+    assert Enum.find(search["tasks"], &(&1["issue_id"] == "1"))["pull_requests"] == Enum.map(task["pull_requests"], &Map.delete(&1, "check_runs"))
+    assert search["enrichment_error"] == board.enrichment_error
+    artifact = SymphonyElixir.Chat.Artifacts.entries(%{"project_id" => ctx.context.project_id, "messages" => [%{"widgets" => [search]}]}) |> Enum.find(&(&1["kind"] == "pull_request"))
+    assert artifact["created_at"] == "2026-09-15T09:00:00Z"
+    assert artifact["updated_at"] == "2026-09-15T10:00:00Z"
     refute Jason.encode!(search) =~ "do not expose"
   end
 

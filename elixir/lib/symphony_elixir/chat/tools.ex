@@ -9,8 +9,8 @@ defmodule SymphonyElixir.Chat.Tools do
   @writes ~w(create_task edit_task feedback queue_task unqueue_task)
   @stages ~w(backlog ready running review done attention)
   @sorts ~w(updated priority title oldest)
-  @task_keys ~w(id issue_id identifier title project project_label stage attention priority updated_at created_at tracker_state completion_evidence source_missing hold)a
-  @pr_keys ~w(number title url state draft review head_ref base_ref author additions deletions changed_files mergeable head_sha relation checks check_total check_details_status)a
+  @task_keys ~w(id issue_id identifier title project project_label stage attention priority updated_at created_at tracker_state completion_evidence source_missing hold github_status)a
+  @pr_keys ~w(number title url state draft created_at updated_at review head_ref base_ref author additions deletions changed_files mergeable head_sha relation checks check_total check_details_status)a
   @check_keys ~w(kind name status conclusion url started_at completed_at duration_ms workflow_name run_url run_number run_event)a
   @proposal_keys ~w(id action args project_id tracker_fingerprint expected_revision expected_updated_at created_at queue_labels)
   @documents ~w(ARCHITECTURE.md WORKFLOW.md PROJECT.md README.md AGENTS.md)
@@ -303,7 +303,8 @@ defmodule SymphonyElixir.Chat.Tools do
         "filters" => filters,
         "url" => board_url(context.project_id, filters),
         "project_id" => context.project_id,
-        "checked_at" => board[:generated_at]
+        "checked_at" => board[:generated_at],
+        "enrichment_error" => board[:enrichment_error]
       }
 
       {:ok, %{"widgets" => [widget]}}
@@ -313,10 +314,11 @@ defmodule SymphonyElixir.Chat.Tools do
   defp dispatch("symphony_task_details", args, context, _settings, board) do
     with :ok <- complete_board(board), {:ok, task} <- find_task(args["task_id"], context, board) do
       details =
-        task_with_pull_requests(task)
+        task_view(task)
         |> Map.merge(string_keys(Map.take(task, ~w(execution_status blocker_reason github_status)a)))
         |> Map.put("description", truncate(task[:description], 32_000))
         |> Map.put("labels", task[:labels] || [])
+        |> Map.put("pull_requests", Enum.map(task[:pull_requests] || [], &pull_request_details/1))
         |> Map.put("links", Enum.map(task[:links] || [], &string_keys(Map.take(&1, [:label, :url, :kind]))))
         |> Map.put("checked_at", board[:generated_at])
         |> Map.put("enrichment_error", board[:enrichment_error])
@@ -348,7 +350,7 @@ defmodule SymphonyElixir.Chat.Tools do
     pr |> Map.take(@pr_keys) |> string_keys() |> Map.put("check_runs", Enum.map(pr[:check_runs] || [], &string_keys(Map.take(&1, @check_keys))))
   end
 
-  defp task_with_pull_requests(task), do: task_view(task) |> Map.put("pull_requests", Enum.map(task[:pull_requests] || [], &pull_request_details/1))
+  defp task_with_pull_requests(task), do: task_view(task) |> Map.put("pull_requests", Enum.map(task[:pull_requests] || [], &(Map.take(&1, @pr_keys) |> string_keys())))
 
   defp string_keys(map), do: Map.new(map, fn {key, value} -> {Atom.to_string(key), value} end)
 

@@ -18,7 +18,7 @@ defmodule SymphonyElixir.Chat.ArtifactsTest do
     assert issue["created_at"] == @time
     assert issue["updated_at"] == @time
     assert issue["checked_at"] == @time
-    assert issue["metrics"] == [%{"label" => "Workflow", "value" => "review"}, %{"label" => "Priority", "value" => "P2"}]
+    assert issue["metrics"] == [%{"label" => "Workflow", "value" => "review"}, %{"label" => "Priority", "value" => "P2"}, %{"label" => "GitHub evidence", "value" => "unknown"}]
     assert Enum.find(entries, &(&1["id"] == "github:example/repo:pull:10"))["status"] == "merged"
     unchanged = Enum.find(entries, &(&1["id"] == "github:example/repo:pull:11"))
     assert unchanged["created_at"] == nil
@@ -29,7 +29,7 @@ defmodule SymphonyElixir.Chat.ArtifactsTest do
   end
 
   test "invalid, foreign and deceptive identities never become navigable artifacts" do
-    for invalid <- [nil, %{}, %{"project_id" => "linear:team"}, %{"project_id" => "github:example/repo/extra"}] do
+    for invalid <- [nil, %{}, %{"project_id" => "linear:team"}, %{"project_id" => "github:example/repo/extra"}, %{"project_id" => "github:../.."}, %{"project_id" => "github:example/.."}] do
       assert Artifacts.entries(invalid) == []
     end
 
@@ -92,6 +92,19 @@ defmodule SymphonyElixir.Chat.ArtifactsTest do
     end
 
     assert Artifacts.entries(Map.put(chat([]), "proposals", [%{proposal | "project_id" => "github:foreign/repo"}])) == []
+    assert [%{"status" => "unknown"}] = Artifacts.entries(Map.put(chat([]), "proposals", [%{proposal | "receipt" => nil}]))
+  end
+
+  test "source warnings and known PR timestamps survive search and detail projections" do
+    task = task(%{"github_status" => "partial", "pull_requests" => [pr(5, %{"created_at" => @time, "updated_at" => @time})]})
+    widget = %{"type" => "tasks", "tasks" => [task], "checked_at" => @time, "enrichment_error" => "Some relationships are unavailable."}
+    entries = Artifacts.entries(chat([widget]))
+    assert Enum.all?(entries, &(%{"label" => "GitHub evidence", "value" => "partial"} in &1["metrics"]))
+    assert Enum.all?(entries, &(%{"label" => "Source warning", "value" => "Some relationships are unavailable."} in &1["metrics"]))
+    assert hd(entries)["created_at"] == @time
+    assert hd(entries)["updated_at"] == @time
+    detail = %{"type" => "task", "task" => Map.put(task, "enrichment_error", widget["enrichment_error"])}
+    assert Artifacts.entries(chat([detail])) == entries
   end
 
   test "bounded output favors recent results without silently manufacturing missing metadata" do

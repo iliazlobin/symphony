@@ -32,6 +32,7 @@ defmodule SymphonyElixir.GitHub.BoardTest do
       assert body["variables"] == %{"owner" => "example", "name" => "repo"}
       assert body["query"] =~ "includeClosedPrs: true"
       assert body["query"] =~ "CROSS_REFERENCED_EVENT"
+      assert body["query"] =~ "createdAt updatedAt"
       assert body["query"] =~ "contexts(first: 20)"
       assert body["query"] =~ "... on CheckRun"
       assert body["query"] =~ "... on StatusContext"
@@ -55,6 +56,7 @@ defmodule SymphonyElixir.GitHub.BoardTest do
     assert %{number: 8, state: "merged", draft: false, relation: "referenced", review: "approved"} = referenced
     assert %{number: 7, draft: true, relation: "linked", review: "no_decision"} = linked
     assert Enum.all?(card.pull_requests, &(&1.head_sha == @sha and &1.checks == "success"))
+    assert Enum.all?(card.pull_requests, &(&1.created_at == "2026-09-14T01:00:00Z" and &1.updated_at == "2026-09-15T02:00:00Z"))
     assert Enum.count(card.links, &(&1.kind == "pull_request")) == 2
     assert Enum.count(card.links, &(&1.kind == "checks" and String.ends_with?(&1.url, "/checks"))) == 2
     refute Enum.any?(card.links, &(&1.kind == "commit"))
@@ -81,6 +83,13 @@ defmodule SymphonyElixir.GitHub.BoardTest do
 
     respond(payload(evidence([pr(7, %{"headRefOid" => String.duplicate("b", 40), "commits" => commits(contexts(jobs))})])))
     assert [%{checks: "stale", check_runs: [], check_total: nil, check_details_status: "stale"}] = hd(Board.enrich(board(), settings()).tasks).pull_requests
+  end
+
+  test "missing or invalid PR timestamps remain unavailable rather than becoming capture dates" do
+    for invalid <- [nil, "not-a-date", 3, "2026-09-15T12:00:00"] do
+      respond(payload(evidence([pr(7, %{"createdAt" => invalid, "updatedAt" => invalid})])))
+      assert [%{created_at: nil, updated_at: nil}] = hd(Board.enrich(board(), settings()).tasks).pull_requests
+    end
   end
 
   test "legacy statuses preserve their result without inventing timing or Actions metadata" do
@@ -387,6 +396,8 @@ defmodule SymphonyElixir.GitHub.BoardTest do
         "repository" => %{"nameWithOwner" => "example/repo"},
         "state" => "OPEN",
         "isDraft" => true,
+        "createdAt" => "2026-09-14T01:00:00Z",
+        "updatedAt" => "2026-09-15T02:00:00Z",
         "reviewDecision" => "REVIEW_REQUIRED",
         "headRefOid" => @sha,
         "headRefName" => "codex/gh-6",
