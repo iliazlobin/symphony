@@ -396,6 +396,50 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     refute_receive {:owner_guard, _, _, _}
   end
 
+  test "board forms use the real durable tracker path without running a model", ctx do
+    args = %{"action" => "create_task", "title" => "Create from the board", "body" => "## Outcome\nNative intake\n\nDepends on: none"}
+    id = String.duplicate("a", 32)
+    assert {:ok, preview} = Store.prepare_action(@project, id, args, ctx.auth, ctx.server)
+    assert {:ok, ^preview} = Store.prepare_action(@project, id, args, ctx.auth, ctx.server)
+    assert Agent.get(ctx.requests, & &1) == []
+    assert {:ok, _} = Store.decide_action_record(@project, id, "confirm", ctx.auth, ctx.server)
+
+    assert eventually(fn ->
+             {:ok, record} = Store.get_action(@project, id, ctx.auth, ctx.server)
+             hd(record["proposals"])["status"] == "completed"
+           end)
+
+    assert {:ok, _} = Store.decide_action_record(@project, id, "confirm", ctx.auth, ctx.server)
+    posts = Agent.get(ctx.requests, &Enum.filter(&1, fn {method, _, _, _} -> method == "POST" end))
+    assert [{"POST", "/repos/example/integration/issues", _, body}] = posts
+    assert body["labels"] == []
+    assert body["body"] =~ "Depends on: none"
+    assert {:ok, []} = Store.list(@project, ctx.auth, ctx.server)
+    refute_receive {:model_started, _, _, _}
+  end
+
+  test "Google operator revocation rejects a previously previewed board task", ctx do
+    google = %{
+      provider: "google",
+      public_origin: "http://localhost",
+      client_id: "fixture.apps.googleusercontent.com",
+      client_secret: "$SYMPHONY_CONTROL_TOKEN",
+      allowed_emails: ["owner@gmail.com"]
+    }
+
+    configure(Map.put(ctx.config, :browser_auth, google))
+    {:ok, identity_config} = SymphonyElixirWeb.BrowserIdentity.settings()
+    identity = %{"iss" => "https://accounts.google.com", "sub" => "task-operator", "email" => "owner@gmail.com", "email_verified" => true}
+    {:ok, grant} = SymphonyElixirWeb.BrowserSessions.issue(:session, %{identity: identity, fingerprint: identity_config.fingerprint, scope: Orchestrator.tracker_fingerprint()})
+    auth = %{ctx.auth | marker: %{"provider" => "google", "id" => grant}} |> Map.merge(%{scheme: "http", port: 80})
+    args = %{"action" => "create_task", "title" => "Reviewed task", "body" => "Depends on: none"}
+    id = String.duplicate("c", 32)
+    assert {:ok, _} = Store.prepare_action(@project, id, args, auth, ctx.server)
+    assert :ok = SymphonyElixirWeb.BrowserSessions.revoke(grant)
+    assert {:error, :unauthorized} = Store.decide_action_record(@project, id, "confirm", auth, ctx.server)
+    assert Agent.get(ctx.requests, & &1) == []
+  end
+
   test "foreign chat routing and tracker reconfiguration never reveal retained history", ctx do
     {view, _} = chat_view(ctx)
     render_submit(view, "send-message", %{"message" => "Review work"})

@@ -565,3 +565,15 @@ summary { cursor: pointer; color: var(--accent); }
 .thread-status { flex-shrink: 0; max-width: 120px; white-space: normal; padding: 3px 6px; background: var(--soft); border-radius: 5px; font-size: 10px; }
 .thread-status[data-status=running], .thread-status[data-status=action] { color: var(--accent); background: var(--tint); }
 .thread-status[data-status=error], .thread-status[data-status=needs_reconciliation], .thread-status[data-status=awaiting_confirmation] { color: var(--warn); background: var(--warn-bg); }
+
+/* Native task intake shares the board dialog and operator session. */
+.intake-form, .intake-fields { display: grid; gap: 16px; }
+.intake-form { margin: 18px 0; }
+.intake-form label { display: grid; gap: 7px; font-size: 13px; font-weight: 600; }
+.intake-form input, .intake-form textarea { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--fg); padding: 10px 12px; font: inherit; font-weight: 400; }
+.intake-form textarea { resize: vertical; line-height: 1.5; }
+.intake-form small { color: var(--muted); font-size: 12px; font-weight: 400; }
+.intake-preview-body { max-height: 340px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin: 12px 0; }
+.intake-history-item { display: flex; justify-content: space-between; gap: 14px; width: 100%; text-align: left; padding: 12px 4px; border: 0; border-bottom: 1px solid var(--line); background: none; color: var(--fg); font: inherit; cursor: pointer; }
+.intake-history-item span { overflow-wrap: anywhere; }
+.intake-history-item:hover { background: var(--soft); }

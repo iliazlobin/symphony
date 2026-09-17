@@ -140,8 +140,11 @@ defmodule SymphonyElixir.Chat.Persistence do
 
   defp metadata_valid?(chat) do
     Enum.all?(~w(project_id title tracker_fingerprint runtime_identity updated_at), &is_binary(chat[&1])) and
-      is_boolean(chat["archived"]) and chat["status"] in ["idle", "running", "error", "interrupted"]
+      is_boolean(chat["archived"]) and chat["status"] in ["idle", "running", "error", "interrupted"] and record_kind_valid?(chat)
   end
+
+  defp record_kind_valid?(%{"kind" => "board_action", "submission" => %{"args" => %{"action" => "create_task"}}, "proposals" => [%{"action" => "create_task"}]}), do: true
+  defp record_kind_valid?(chat), do: is_nil(chat["kind"])
 
   defp collection?(items, valid), do: is_list(items) and Enum.all?(items, valid)
 
