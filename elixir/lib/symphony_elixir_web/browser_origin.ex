@@ -1,6 +1,24 @@
 defmodule SymphonyElixirWeb.BrowserOrigin do
-  @moduledoc "Normalizes only explicitly trusted proxy peers to the fixed public origin; ignores forwarded headers."
+  @moduledoc "Fixed-origin browser navigation and trusted proxy normalization; ignores forwarded headers."
   alias SymphonyElixirWeb.BrowserIdentity
+
+  @loopback_hosts ["localhost", "127.0.0.1", "::1"]
+
+  @spec loopback_login_url(Plug.Conn.t()) :: String.t() | nil
+  def loopback_login_url(conn) do
+    with {:ok, %{uri: %{scheme: "http"} = uri, origin: origin}} <- BrowserIdentity.settings(),
+         true <- conn.scheme == :http and conn.port == uri.port,
+         true <- uri.host in @loopback_hosts and conn.host in @loopback_hosts and conn.host != uri.host,
+         true <- loopback_peer?(Plug.Conn.get_peer_data(conn).address) do
+      origin <> "/login"
+    else
+      _ -> nil
+    end
+  end
+
+  defp loopback_peer?({127, _, _, _}), do: true
+  defp loopback_peer?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  defp loopback_peer?(_), do: false
 
   @spec socket_uri(term(), term()) :: term()
   def socket_uri(%URI{} = uri, %{address: ip}) do
