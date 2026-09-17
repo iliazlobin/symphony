@@ -1,8 +1,8 @@
 defmodule SymphonyElixir.Chat.ToolsTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Chat.{Artifacts, Tools}
   alias SymphonyElixir.Chat.GitHub, as: ChatGitHub
-  alias SymphonyElixir.Chat.Tools
   alias SymphonyElixir.GitHub.Admission
   alias SymphonyElixir.GitHub.Client, as: GitHubClient
   alias SymphonyElixir.PathSafety
@@ -314,7 +314,7 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     assert search["checked_at"] == board.generated_at
     assert Enum.find(search["tasks"], &(&1["issue_id"] == "1"))["pull_requests"] == Enum.map(task["pull_requests"], &Map.delete(&1, "check_runs"))
     assert search["enrichment_error"] == board.enrichment_error
-    artifact = SymphonyElixir.Chat.Artifacts.entries(%{"project_id" => ctx.context.project_id, "messages" => [%{"widgets" => [search]}]}) |> Enum.find(&(&1["kind"] == "pull_request"))
+    artifact = Artifacts.entries(%{"project_id" => ctx.context.project_id, "messages" => [%{"widgets" => [search]}]}) |> Enum.find(&(&1["kind"] == "pull_request"))
     assert artifact["created_at"] == "2026-09-15T09:00:00Z"
     assert artifact["updated_at"] == "2026-09-15T10:00:00Z"
     refute Jason.encode!(search) =~ "do not expose"

@@ -13,14 +13,18 @@ defmodule SymphonyElixir.Chat.Artifacts do
       messages =
         chat["messages"]
         |> items(400)
-        |> Enum.flat_map(fn message ->
-          message["widgets"] |> items(60) |> Enum.flat_map(&widget_entries(&1, project, repo))
-        end)
+        |> Enum.flat_map(&message_entries(&1, project, repo))
 
-      actions = chat["proposals"] |> items(400) |> Enum.flat_map(&action_entries(&1, project, repo))
+      actions =
+        chat["proposals"]
+        |> items(400)
+        |> Enum.flat_map(&action_entries(&1, project, repo))
+        |> Enum.map(&{&1, observed_at(&1["updated_at"]) || observed_at(&1["created_at"])})
 
       (messages ++ actions)
-      |> Enum.reverse()
+      |> Enum.with_index()
+      |> Enum.sort_by(fn {{_entry, observed}, index} -> {observed || 0, index} end, :desc)
+      |> Enum.map(fn {{entry, _observed}, _index} -> entry end)
       |> Enum.uniq_by(&{&1["kind"], &1["id"]})
       |> Enum.take(@limit)
     else
@@ -29,6 +33,24 @@ defmodule SymphonyElixir.Chat.Artifacts do
   end
 
   def entries(_), do: []
+
+  defp message_entries(message, project, repo) do
+    message["widgets"]
+    |> items(60)
+    |> Enum.flat_map(&widget_entries(&1, project, repo))
+    |> Enum.map(&{&1, observed_at(&1["checked_at"]) || observed_at(message["created_at"])})
+  end
+
+  defp observed_at(value) do
+    case timestamp(value) do
+      nil ->
+        nil
+
+      timestamp ->
+        {:ok, time, _offset} = DateTime.from_iso8601(timestamp)
+        DateTime.to_unix(time, :microsecond)
+    end
+  end
 
   defp widget_entries(%{"type" => "task", "task" => task}, project, repo) when is_map(task),
     do: task_entries(task, task["checked_at"], project, repo)
@@ -57,7 +79,9 @@ defmodule SymphonyElixir.Chat.Artifacts do
           ] ++ evidence_metrics(task)
         )
 
-      [issue | task["pull_requests"] |> items(20) |> Enum.flat_map(&pull_request_entries(&1, checked_at, repo, evidence_metrics(task)))]
+      pull_requests = items(task["pull_requests"], 20)
+      pull_requests = Enum.flat_map(pull_requests, &pull_request_entries(&1, checked_at, repo, evidence_metrics(task)))
+      [issue | pull_requests]
     else
       []
     end
@@ -86,7 +110,7 @@ defmodule SymphonyElixir.Chat.Artifacts do
   end
 
   defp action_entries(proposal, project, repo) do
-    if proposal["project_id"] == project && text(proposal["id"]) && proposal["action"] in @actions && proposal["status"] in @action_statuses do
+    if valid_action?(proposal, project) do
       receipt = if is_map(proposal["receipt"]), do: proposal["receipt"], else: %{}
       title = proposal["action"] |> String.replace("_", " ") |> String.capitalize()
       widgets = items(receipt["widgets"], 20)
@@ -103,6 +127,9 @@ defmodule SymphonyElixir.Chat.Artifacts do
       []
     end
   end
+
+  defp valid_action?(proposal, project),
+    do: proposal["project_id"] == project && text(proposal["id"]) && proposal["action"] in @actions && proposal["status"] in @action_statuses
 
   defp receipt_number(id, project) when is_binary(id) do
     prefix = project <> ":"

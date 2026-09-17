@@ -109,12 +109,11 @@ defmodule SymphonyElixir.Chat.ArtifactsTest do
 
   test "bounded output favors recent results without silently manufacturing missing metadata" do
     messages =
-      for n <- 1..150,
-          do: %{
-            "widgets" => [
-              %{"type" => "task", "task" => task(%{"id" => @project <> ":#{n}", "issue_id" => "#{n}", "title" => String.duplicate("x", 2_000), "pull_requests" => [pr(n, %{"draft" => true})]})}
-            ]
-          }
+      for n <- 1..150 do
+        saved_task = task(%{"id" => @project <> ":#{n}", "issue_id" => "#{n}", "title" => String.duplicate("x", 2_000)})
+        saved_task = Map.put(saved_task, "pull_requests", [pr(n, %{"draft" => true})])
+        %{"widgets" => [%{"type" => "task", "task" => saved_task}]}
+      end
 
     entries = Artifacts.entries(%{"project_id" => @project, "messages" => messages, "proposals" => []})
     assert length(entries) == 100
@@ -122,6 +121,40 @@ defmodule SymphonyElixir.Chat.ArtifactsTest do
     assert %{"label" => "Draft", "value" => "Yes"} in hd(entries)["metrics"]
     assert String.length(Enum.at(entries, 1)["title"]) == 1_024
     refute Enum.any?(entries, &(&1["id"] == @project <> ":1"))
+  end
+
+  test "recent issue observations survive a hundred older actions and source update dates never set observation order" do
+    proposals =
+      for n <- 1..100 do
+        %{"id" => "operation-#{n}", "project_id" => @project, "action" => "pause", "status" => "cancelled", "created_at" => "2026-09-15T00:00:00Z"}
+      end
+
+    latest = task(%{"updated_at" => "2026-09-01T00:00:00Z"})
+    entries = Artifacts.entries(chat([%{"type" => "task", "task" => latest}]) |> Map.put("proposals", proposals))
+    assert length(entries) == 100
+    assert hd(entries)["kind"] == "issue"
+    assert hd(entries)["checked_at"] == @time
+
+    changed_action = List.last(proposals) |> Map.put("updated_at", "2026-09-17T00:00:00Z")
+
+    assert [%{"kind" => "action"}, %{"kind" => "issue"}] =
+             Artifacts.entries(chat([%{"type" => "task", "task" => latest}]) |> Map.put("proposals", [changed_action]))
+  end
+
+  test "message capture time is the fallback and missing or tied observation times keep deterministic history order" do
+    unknown = task(%{"checked_at" => nil, "updated_at" => "2099-01-01T00:00:00Z"})
+    earlier = task(%{"title" => "Earlier read", "checked_at" => "2026-09-15T00:00:00Z"})
+
+    messages = [
+      %{"created_at" => @time, "widgets" => [%{"type" => "task", "task" => unknown}]},
+      %{"created_at" => "2026-09-17T00:00:00Z", "widgets" => [%{"type" => "task", "task" => earlier}]}
+    ]
+
+    assert [%{"title" => "Task", "checked_at" => nil}] = Artifacts.entries(%{"project_id" => @project, "messages" => messages})
+
+    latest = Map.put(unknown, "title", "Last saved entry")
+    without_times = chat([%{"type" => "task", "task" => unknown}, %{"type" => "task", "task" => latest}])
+    assert [%{"title" => "Last saved entry"}] = Artifacts.entries(without_times)
   end
 
   defp chat(widgets), do: %{"project_id" => @project, "messages" => [%{"widgets" => widgets}], "proposals" => []}

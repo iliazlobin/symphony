@@ -458,7 +458,7 @@ defmodule SymphonyElixir.Chat.Store do
   end
 
   defp project_key(project), do: :crypto.hash(:sha256, project) |> Base.encode16(case: :lower)
-  defp message(role, text, status \\ "completed"), do: %{"id" => id(), "role" => role, "text" => text, "status" => status, "widgets" => []}
+  defp message(role, text, status \\ "completed"), do: %{"id" => id(), "role" => role, "text" => text, "status" => status, "widgets" => [], "created_at" => now()}
   defp update_last(chat, fun), do: Map.update!(chat, "messages", &List.update_at(&1, -1, fun))
   defp apply_event(chat, {:thread, id}), do: Map.put(chat, "codex_thread_id", id)
   defp apply_event(chat, {:status, text}), do: Map.put(chat, "activity", String.slice(text, 0, 200))
@@ -490,7 +490,7 @@ defmodule SymphonyElixir.Chat.Store do
 
   defp attach_proposal(chat, %{"proposal" => %{} = proposal} = result) do
     preview = Enum.find(result["widgets"] || [], &(&1["type"] == "proposal")) || %{}
-    proposal = proposal |> Map.put("id", id()) |> Map.put("status", "pending")
+    proposal = proposal |> Map.put("id", id()) |> Map.put("status", "pending") |> Map.put("updated_at", now())
 
     details =
       proposal["args"]
@@ -560,7 +560,7 @@ defmodule SymphonyElixir.Chat.Store do
   end
 
   defp run_action(owner, chat_id, run, tools, proposal, context, reconcile) do
-    payload = Map.drop(proposal, ["status", "receipt", "error", "type", "title", "details"])
+    payload = Map.drop(proposal, ["status", "receipt", "error", "type", "title", "details", "updated_at"])
     result = if reconcile, do: tools.reconcile(payload, context), else: tools.confirm(payload, context)
     send(owner, {:job_done, chat_id, run, result})
   end
@@ -593,6 +593,8 @@ defmodule SymphonyElixir.Chat.Store do
   end
 
   defp update_proposal(chat, proposal) do
+    proposal = Map.put(proposal, "updated_at", now())
+
     chat
     |> Map.update!("proposals", &Enum.map(&1, fn current -> replace_proposal(current, proposal) end))
     |> Map.update!("messages", &Enum.map(&1, fn message -> replace_proposal_widgets(message, proposal) end))

@@ -351,6 +351,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     wait_chat(c, chat, &(&1["status"] == "idle"))
     assert_receive {:tool_result, %{"widgets" => [_]}}
     assert {:ok, before_restart} = Store.get(c.project, chat["id"], c.auth, c.server)
+    assert Enum.all?(before_restart["messages"], &match?({:ok, _, _}, DateTime.from_iso8601(&1["created_at"])))
     entries = Artifacts.entries(before_restart)
     assert Enum.map(entries, & &1["kind"]) == ["pull_request", "issue"]
     assert Enum.all?(entries, &(&1["checked_at"] == "2026-09-16T12:00:00Z"))
@@ -416,14 +417,18 @@ defmodule SymphonyElixir.Chat.StoreTest do
 
   test "proposals require a user decision, execute once, and retain receipts", c do
     {chat, proposal} = propose(c)
+    assert {:ok, pending_at, _} = DateTime.from_iso8601(proposal["updated_at"])
     refute_receive {:confirmed, _}
     assert {:error, :proposal_not_found} = Store.decide(c.project, chat["id"], "missing", "confirm", c.auth, c.server)
     assert {:error, :invalid_decision} = Store.decide(c.project, chat["id"], proposal["id"], "yes maybe", c.auth, c.server)
     assert {:ok, _} = Store.decide(c.project, chat["id"], proposal["id"], "confirm", c.auth, c.server)
     assert_receive {:confirmed, payload}
     refute Map.has_key?(payload, "status")
+    refute Map.has_key?(payload, "updated_at")
     assert payload["id"] == proposal["id"]
     complete = wait_chat(c, chat, &(hd(&1["proposals"])["status"] == "completed"))
+    assert {:ok, completed_at, _} = DateTime.from_iso8601(hd(complete["proposals"])["updated_at"])
+    assert DateTime.compare(completed_at, pending_at) in [:eq, :gt]
     assert List.last(complete["messages"])["text"] == "Feedback saved"
     assert {:ok, _} = Store.decide(c.project, chat["id"], proposal["id"], "confirm", c.auth, c.server)
     refute_receive {:confirmed, _}
@@ -438,7 +443,8 @@ defmodule SymphonyElixir.Chat.StoreTest do
     wait_chat(c, next, &(hd(&1["proposals"])["status"] == "unknown"))
     assert_receive {:confirmed, _}
     assert {:ok, _} = Store.decide(c.project, next["id"], pending["id"], "reconcile", c.auth, c.server)
-    assert_receive {:reconciled, _}
+    assert_receive {:reconciled, payload}
+    refute Map.has_key?(payload, "updated_at")
     refute_receive {:confirmed, _}
     wait_chat(c, next, &(hd(&1["proposals"])["status"] == "completed"))
   end
