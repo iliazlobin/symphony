@@ -25,6 +25,7 @@ defmodule SymphonyElixirWeb.TaskIntakeTest do
                "project_id" => context.project_id,
                "tracker_fingerprint" => context.tracker_fingerprint,
                "expected_updated_at" => context.auth[:updated_at],
+               "queue_unheld" => args["action"] == "queue_task",
                "created_at" => "2026-09-16T01:00:00Z"
              },
              "widgets" => [%{"type" => "proposal", "title" => "Review task change"}]
@@ -163,6 +164,95 @@ defmodule SymphonyElixirWeb.TaskIntakeTest do
     assert {:ok, _} = TaskIntake.prepare(c.project, other, c.args, c.auth)
     assert {:ok, cancelled} = TaskIntake.decide(c.project, other, "cancel", c.auth)
     assert hd(cancelled["proposals"])["status"] == "cancelled"
+    refute_receive {:confirmed, _, _}
+  end
+
+  test "queue previews replay durably without changing task identity or authorization", c do
+    args = %{"action" => "queue_task", "task_id" => "11"}
+    assert {:ok, record} = TaskIntake.prepare(c.project, c.id, args, c.auth)
+    assert_receive {:prepared, ^args}
+    assert record["kind"] == "board_action"
+    assert [%{"action" => "queue_task", "status" => "pending"}] = record["proposals"]
+    assert hd(record["proposals"])["details"]["queue_unheld"] == true
+    assert {:ok, []} = Store.list(c.project, c.auth, c.server)
+    assert {:ok, ^record} = TaskIntake.prepare(c.project, c.id, args, c.auth)
+    assert {:ok, ^record} = TaskIntake.prepare(c.project, new_id(), args, c.auth)
+    restart(c)
+    assert {:ok, ^record} = TaskIntake.prepare(c.project, c.id, args, c.auth)
+    assert {:ok, [^record]} = TaskIntake.list(c.project, c.auth)
+    assert {:error, :submission_id_conflict} = TaskIntake.prepare(c.project, c.id, Map.put(args, "task_id", "12"), c.auth)
+    assert {:error, :submission_id_conflict} = TaskIntake.prepare(c.project, c.id, c.args, c.auth)
+    assert {:error, :chat_not_found} = TaskIntake.prepare("github:test/two", c.id, args, c.auth)
+    assert {:error, :chat_not_found} = TaskIntake.prepare(c.project, c.id, args, %{c.auth | tracker_fingerprint: "new"})
+    assert {:error, :unauthorized} = TaskIntake.prepare(c.project, new_id(), args, %{})
+    assert {:error, :unauthorized} = TaskIntake.decide(c.project, c.id, "confirm", %{})
+    refute_receive {:prepared, _}
+    refute_receive {:confirmed, _, _}
+  end
+
+  test "interrupted queue confirmation recovers through reconciliation without a second write", c do
+    args = %{"action" => "queue_task", "task_id" => "11"}
+    assert {:ok, _} = TaskIntake.prepare(c.project, c.id, args, c.auth)
+    assert {:ok, executing} = TaskIntake.decide(c.project, c.id, "confirm", Map.put(c.auth, :result, :wait))
+    assert hd(executing["proposals"])["status"] == "executing"
+    assert_receive {:confirmed, proposal, _worker}
+    persisted = Jason.decode!(File.read!(Path.join(c.root, c.id <> ".json")))
+    assert hd(persisted["proposals"])["status"] == "executing"
+    assert {:error, :chat_busy} = TaskIntake.decide(c.project, c.id, "confirm", c.auth)
+    restart(c)
+    assert {:ok, recovered} = TaskIntake.get(c.project, c.id, c.auth)
+    assert hd(recovered["proposals"])["status"] == "unknown"
+    assert {:ok, ^recovered} = TaskIntake.prepare(c.project, new_id(), args, c.auth)
+    assert {:ok, _} = TaskIntake.decide(c.project, c.id, "confirm", c.auth)
+    assert_receive {:reconciled, ^proposal}
+    completed = wait_for(c, "completed")
+    assert {:ok, ^completed} = TaskIntake.decide(c.project, c.id, "confirm", c.auth)
+    restart(c)
+    assert {:ok, ^completed} = TaskIntake.prepare(c.project, c.id, args, c.auth)
+    assert {:ok, ^completed} = TaskIntake.decide(c.project, c.id, "confirm", c.auth)
+    refute_receive {:confirmed, _, _}
+  end
+
+  test "unknown queue outcomes deduplicate across restart and cancelled queue previews do not write", c do
+    args = %{"action" => "queue_task", "task_id" => "11"}
+    assert {:ok, _} = TaskIntake.prepare(c.project, c.id, args, c.auth)
+    assert {:ok, _} = TaskIntake.decide(c.project, c.id, "confirm", Map.put(c.auth, :result, :unknown))
+    assert_receive {:confirmed, proposal, _}
+    unknown = wait_for(c, "unknown")
+    restart(c)
+    assert {:ok, ^unknown} = TaskIntake.prepare(c.project, c.id, args, c.auth)
+    assert {:ok, ^unknown} = TaskIntake.prepare(c.project, new_id(), args, c.auth)
+    assert {:ok, _} = TaskIntake.decide(c.project, c.id, "reconcile", c.auth)
+    assert_receive {:reconciled, ^proposal}
+    wait_for(c, "completed")
+    other = new_id()
+    assert {:ok, _} = TaskIntake.prepare(c.project, other, Map.put(args, "task_id", "12"), c.auth)
+    assert {:ok, cancelled} = TaskIntake.decide(c.project, other, "cancel", c.auth)
+    assert hd(cancelled["proposals"])["status"] == "cancelled"
+    assert {:ok, ^cancelled} = TaskIntake.decide(c.project, other, "confirm", c.auth)
+    refute_receive {:confirmed, _, _}
+  end
+
+  test "queue submissions reject malformed identities and injected action fields before invoking tools", c do
+    args = %{"action" => "queue_task", "task_id" => "11"}
+
+    for task_id <- [nil, 11, [], "", " \n ", <<255>>, "0", "01", "-1", "11\n", "1.1", "GH-11", "github:test/one#11", String.duplicate("1", 241)] do
+      assert {:error, :invalid_submission} = TaskIntake.prepare(c.project, new_id(), Map.put(args, "task_id", task_id), c.auth)
+    end
+
+    for {key, value} <- [{"priority", 1}, {"labels", ["symphony:ready"]}, {"project_id", "github:test/two"}, {"expected_revision", 1}, {"resume", true}, {"title", "Changed title"}] do
+      assert {:error, :invalid_submission} = TaskIntake.prepare(c.project, new_id(), Map.put(args, key, value), c.auth)
+    end
+
+    for action <- ~w(unqueue_task retry cancel resume) do
+      assert {:error, :invalid_submission} = TaskIntake.prepare(c.project, new_id(), %{args | "action" => action}, c.auth)
+    end
+
+    assert {:error, :invalid_submission} = TaskIntake.prepare(c.project, "not-an-id", args, c.auth)
+    assert {:error, :invalid_submission} = TaskIntake.prepare(c.project, new_id(), Map.delete(args, "task_id"), c.auth)
+    Endpoint.config_change([{Endpoint, Keyword.put(Application.get_env(:symphony_elixir, Endpoint), :board_read_only, true)}], [])
+    assert {:error, :read_only} = TaskIntake.prepare(c.project, c.id, args, c.auth)
+    refute_receive {:prepared, _}
     refute_receive {:confirmed, _, _}
   end
 

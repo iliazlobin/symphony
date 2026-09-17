@@ -667,6 +667,12 @@ defmodule SymphonyElixir.Chat.Store do
       else: {:error, :invalid_submission}
   end
 
+  defp valid_submission(id, %{"action" => "queue_task", "task_id" => task_id} = args) do
+    if Persistence.valid_id?(id) and map_size(args) == 2 and valid_text?(task_id, 240) and String.match?(task_id, ~r/\A[1-9][0-9]*\z/),
+      do: :ok,
+      else: {:error, :invalid_submission}
+  end
+
   defp valid_submission(_id, _args), do: {:error, :invalid_submission}
 
   defp valid_intent(%{"body" => body}) do
@@ -842,7 +848,7 @@ defmodule SymphonyElixir.Chat.Store do
     details =
       proposal["args"]
       |> Map.put("project", chat["project_id"])
-      |> Map.merge(Map.take(proposal, ["queue_labels", "expected_revision", "expected_updated_at"]))
+      |> Map.merge(Map.take(proposal, ["queue_labels", "queue_unheld", "expected_revision", "expected_updated_at"]))
 
     proposal = proposal |> Map.put("title", preview["title"] || "Proposed action") |> Map.put("details", details)
     widget = Map.put(proposal, "type", "proposal")

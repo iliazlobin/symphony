@@ -1,5 +1,10 @@
 # Symphony Elixir
 
+The controlled GitHub board supports queueing from **Backlog → Ready** by drag-and-drop
+or the task's **Move to Ready** button. Both open a durable preview requiring **Queue task**
+confirmation. See the [profile workflow](../profiles/events-concierge/README.md#operate)
+for task creation, holds, review and completion. Queueing does not resume a paused controller.
+
 This directory contains the current Elixir/OTP implementation of Symphony, based on
 [`SPEC.md`](../SPEC.md) at the repository root.
 

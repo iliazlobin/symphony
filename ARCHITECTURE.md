@@ -100,8 +100,8 @@ commands to the native API and owns no scheduling state.
   project data is returned; an explicit allowlist controls operator access.
   `BoardActions` forwards only existing commands with native project,
   revision and idempotency checks. The same checks apply to chat control actions.
-  `TaskIntakePanel` prepares structured backlog issues and asks for explicit creation
-  after an exact preview. `TaskIntake` reuses the conversation store's durable action
+  `TaskIntakePanel` prepares structured backlog issues and queue actions, requiring
+  explicit confirmation after an exact preview. `TaskIntake` reuses the conversation store's durable action
   lifecycle without invoking a model. Action records are separate from chat history;
   reconnects recover pending actions and uncertain outcomes through the same owner.
   Concurrency changes persist in the ledger and affect admission only: they never
@@ -246,7 +246,10 @@ retrieved references, not a claim to list every token in the model context.
 
 Only browser decisions execute write proposals. Native controls retain revision and
 idempotency checks inside the orchestrator. Tracker edits require a cancelled, idle
-task and serialize with local dispatch; fresh GitHub timestamps reject observed
+task; fresh open, unqueued backlog tasks without a hold can also be queued directly.
+Both paths serialize with local dispatch and recheck task ownership. Queue previews
+pin whether the task has a hold, and confirmation never resumes the controller or
+clears an existing hold. Fresh GitHub timestamps reject observed
 staleness. GitHub does not provide an atomic compare-and-swap across the final read
 and patch, so concurrent external issue edits remain a limitation. Feedback is an
 additive issue comment, not a message delivered into a running coding turn.

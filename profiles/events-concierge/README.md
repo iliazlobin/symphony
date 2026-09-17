@@ -146,7 +146,7 @@ but the service's durable action store must be configured and healthy.
 | Stage | What you do | What Symphony does |
 | --- | --- | --- |
 | Backlog | Create and confirm a task with its outcome, scope, checks and dependencies. | Creates the GitHub issue and keeps the submission receipt. No worker starts. |
-| Ready | Add `symphony:ready` to the issue in GitHub when it is ready to execute. | Checks eligibility, dependencies, holds, budget and available capacity before dispatch. |
+| Ready | Drag a fresh Backlog task to Ready, or open it and choose **Move to Ready**, then confirm **Queue task**. | Adds `symphony:ready` in GitHub and checks dependencies, holds, budget and capacity before dispatch. A paused controller stays paused. |
 | Running | Answer blockers or cancel the task when needed. | Starts an isolated builder, records progress and runs a separate reviewer against the candidate commit. |
 | Review | Review the candidate, PR and CI; request changes or mark the PR ready and merge when acceptable. | Retains the candidate and review evidence, holds further execution and lets the publication broker publish eligible work as a draft PR. Automatic merge requires a separately enabled policy. |
 | Done | Confirm the outcome and close the GitHub issue, or merge a PR that closes it. | Reflects the closed issue on the board. A PR merge alone does not always close the issue; deployment remains a separate approved action. |
@@ -159,11 +159,13 @@ actions are also available by opening the task and choosing **Cancel** or **Retr
 Cancel can stop work claimed since the card was displayed. Retry clears a hold without
 resetting budgets, adding queue labels or supplying a missing answer.
 
-Dragging a newly created Backlog task to Ready does **not** queue it yet: add the
-`symphony:ready` label in GitHub. Other cross-column drops explain the required action;
-they cannot manually mark work Running, Review or Done. Chat can propose tracker
-changes with confirmation; queue/edit operations require an idle, cancelled task,
-and retry is a separate action.
+Dragging a fresh Backlog task to Ready opens an exact queue preview. Confirming adds
+the configured routing labels to the existing GitHub issue; closing or cancelling
+the preview does not queue it. Pending actions and receipts can be reopened from
+**New task → Recent submissions**. An uncertain result offers **Check outcome**,
+which reads the existing result without repeating the write. Other cross-column drops
+cannot manually mark work Running, Review or Done. GitHub remains the task tracker;
+this action adds no separate queue and does not resume a paused controller.
 
 **Browser sign-in.** With the [Google provider configured](../../elixir/README.md#browser-sign-in),
 open the exact configured origin and choose **Sign in with Google**. Only explicitly
@@ -247,10 +249,11 @@ writes without repeating them; do not create a replacement request meanwhile.
 
 Chat can create a backlog issue, edit title/description/state/priority, add feedback,
 queue/unqueue intake labels and request native pause/drain/resume/cancel/retry.
-Editing or changing intake labels requires a cancelled, idle task. For new work:
-create the issue, cancel it to hold admission, queue it, then retry when ready.
-Queueing adds only the configured intake labels; retry releases the hold but retains
-dependency, budget and host launch gates. Creating a task requires explicit intake
+Fresh open, unqueued Backlog tasks with no hold or active execution can be queued
+directly after confirmation. Editing, unqueueing, and queueing an already cancelled
+task preserve the existing cancelled, idle requirement. Queueing a cancelled task
+retains its hold; retry is a separate action. Queueing adds only the configured intake
+labels and retains dependency, budget, capacity and host launch gates. Creating a task requires explicit intake
 labels in the tracker configuration so a new unlabeled issue cannot launch itself.
 Feedback is saved to the GitHub issue; it is not injected into an active coding turn.
 Deployment, merge, arbitrary code execution and worker input delivery are not chat
