@@ -79,6 +79,12 @@ defmodule SymphonyElixir.DashboardLiveTest do
     def handle_call({:prepare, project, id, args}, _from, state) do
       send(state.owner, {:intake_prepared, id, args})
       proposal = %{"id" => id, "action" => args["action"], "args" => Map.delete(args, "action"), "status" => "pending", "expected_updated_at" => nil}
+
+      proposal =
+        if args["action"] == "queue_task",
+          do: Map.merge(proposal, %{"queue_labels" => ["ready"], "queue_unheld" => true, "task_title" => "Fresh queue task title", "task_description" => "Current scope and acceptance"}),
+          else: proposal
+
       record = %{"id" => id, "project_id" => project, "kind" => "board_action", "title" => args["title"] || "Task", "proposals" => [proposal]}
       {:reply, {:ok, record}, put_in(state, [:records, id], record)}
     end
@@ -326,7 +332,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#board-dialog h2", "Ready fixture")
     assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:2']")
     refute has_element?(view, "#lane-done [data-task-id='github:example/fixture:2']")
-    assert render(view) =~ "Stages follow confirmed work"
+    assert render(view) =~ "Running, Review and Done follow confirmed work"
   end
 
   test "unauthorized commands route to Settings and confirmation does not mutate the board", ctx do
@@ -400,6 +406,65 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#task-action-preview", "Action completed")
   end
 
+  test "fresh backlog drag opens a queue preview and only confirmation submits it", ctx do
+    view = authorized_board_view()
+    render_click(view, "move-task", %{"id" => "github:example/fixture:1", "stage" => "ready"})
+    assert_receive {:intake_prepared, id, %{"action" => "queue_task", "task_id" => "1"}}
+    assert has_element?(view, "#board-dialog h2", "Move task to Ready")
+    assert has_element?(view, "#task-action-preview h4", "Fresh queue task title")
+    assert has_element?(view, "#task-action-preview", "Current scope and acceptance")
+    refute has_element?(view, "#task-action-preview h4", "Backlog fixture")
+    assert has_element?(view, "#task-action-preview", "Add queue labels: ready")
+    assert has_element?(view, "#task-action-preview", "A paused controller stays paused")
+    assert has_element?(view, "#lane-backlog [data-task-id='github:example/fixture:1']")
+    refute has_element?(view, "#task-intake-form")
+    refute_receive {:intake_decided, _, _}
+    view |> element("#task-action-preview button[phx-value-decision=confirm]") |> render_click()
+    assert_receive {:intake_decided, ^id, "confirm"}
+    assert has_element?(view, "#task-action-preview", "Action completed")
+    assert GenServer.call(ctx.runtime, :control_snapshot)["mode"] == "paused"
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refresh(view, ctx.runtime, update_task(ctx.board, "1", &%{&1 | stage: "ready"}))
+    assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:1']")
+    assert has_element?(view, "#task-action-preview", "Action completed")
+  end
+
+  test "task detail queue button supports cancellation and reopening without submitting a change" do
+    view = authorized_board_view()
+    open_task(view, "1")
+    view |> element("#queue-task-button") |> render_click()
+    assert_receive {:intake_prepared, id, %{"action" => "queue_task"}}
+    view |> element("#task-action-preview button[phx-value-decision=cancel]") |> render_click()
+    assert_receive {:intake_decided, ^id, "cancel"}
+    assert has_element?(view, "#task-action-preview", "Action cancelled")
+    view |> element("button[phx-click=preview-queue]") |> render_click()
+    assert_receive {:intake_prepared, next_id, %{"action" => "queue_task"}}
+    assert next_id != id
+    render_click(view, "close-dialog")
+    render_click(view, "new-task")
+    assert has_element?(view, "#task-action-preview h3", "Queue task")
+    assert has_element?(view, "#task-action-preview button[phx-value-decision=confirm]", "Queue task")
+    refute_receive {:intake_prepared, _, _}
+    view |> element("#task-action-preview button[phx-value-decision=cancel]") |> render_click()
+    assert_receive {:intake_decided, ^next_id, "cancel"}
+    refute_receive {:intake_decided, _, "confirm"}
+  end
+
+  test "queueing requires sign-in and rejects unavailable or non-backlog tasks" do
+    {view, _html} = board_view()
+    render_click(view, "move-task", %{"id" => "github:example/fixture:1", "stage" => "ready"})
+    assert has_element?(view, "#board-dialog h2", "Settings")
+    assert render(view) =~ "Sign in before queueing"
+    refute_receive {:intake_prepared, _, _}
+    view = authorized_board_view()
+
+    for id <- ["github:example/fixture:missing", "github:example/fixture:2", "github:example/fixture:3"] do
+      render_click(view, "queue-task", %{"id" => id})
+      assert render(view) =~ "select an idle Backlog task"
+      refute_receive {:intake_prepared, _, _}
+    end
+  end
+
   test "cancelled preview keeps the editable task draft" do
     view = authorized_board_view()
     render_click(view, "new-task")
@@ -457,6 +522,32 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, ".intake-history-item")
     refute has_element?(view, "#task-intake-form")
     refute_receive {:intake_decided, _, _}
+  end
+
+  test "revoked operator access prevents a prepared queue action and removes its fresh scope" do
+    view = authorized_board_view()
+    render_click(view, "queue-task", %{"id" => "github:example/fixture:1"})
+    assert_receive {:intake_prepared, _id, _}
+    assert has_element?(view, "#task-action-preview", "Current scope and acceptance")
+    System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("rotated-token", 4))
+    view |> element("#task-action-preview button[phx-value-decision=confirm]") |> render_click()
+    refute has_element?(view, "#task-action-preview")
+    refute has_element?(view, ".intake-history-item")
+    refute has_element?(view, "#task-intake-panel", "Current scope and acceptance")
+    refute_receive {:intake_decided, _, _}
+  end
+
+  test "read-only refresh removes a pending queue preview and rejects further queue events", ctx do
+    view = authorized_board_view()
+    render_click(view, "queue-task", %{"id" => "github:example/fixture:1"})
+    assert_receive {:intake_prepared, _id, _}
+    refresh(view, ctx.runtime, Map.put(ctx.board, :read_only, true))
+    refute has_element?(view, "#task-action-preview")
+    refute has_element?(view, ".intake-history-item")
+    render_click(view, "queue-task", %{"id" => "github:example/fixture:1"})
+    assert render(view) =~ "This board is read-only"
+    refute_receive {:intake_decided, _, _}
+    refute_receive {:intake_prepared, _, _}
   end
 
   test "oversized submitted values cannot become shortened proposals" do
@@ -737,6 +828,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
 
     for {event, params} <- [
           {"new-task", %{}},
+          {"queue-task", %{"id" => "github:example/fixture:1"}},
           {"prepare-command", %{"action" => "pause"}},
           {"move-task", %{"id" => "github:example/fixture:2", "stage" => "backlog"}},
           {"confirm-command", %{}},

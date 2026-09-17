@@ -12,7 +12,7 @@ defmodule SymphonyElixir.Chat.Tools do
   @task_keys ~w(id issue_id identifier title project project_label stage attention priority updated_at created_at tracker_state completion_evidence source_missing hold github_status)a
   @pr_keys ~w(number title url state draft created_at updated_at review head_ref base_ref author additions deletions changed_files mergeable head_sha relation checks check_total check_details_status)a
   @check_keys ~w(kind name status conclusion url started_at completed_at duration_ms workflow_name run_url run_number run_event)a
-  @proposal_keys ~w(id action args project_id tracker_fingerprint expected_revision expected_updated_at created_at queue_labels)
+  @proposal_keys ~w(id action args project_id tracker_fingerprint expected_revision expected_updated_at created_at queue_labels queue_unheld task_title task_description)
   @documents ~w(ARCHITECTURE.md WORKFLOW.md PROJECT.md README.md AGENTS.md)
   @errors %{
     invalid_view_context: "This view snapshot is invalid or belongs to another project. Send a fresh message from the board.",
@@ -28,6 +28,7 @@ defmodule SymphonyElixir.Chat.Tools do
     cancel_task_before_edit: "Cancel this task's execution first, wait for it to stop, then prepare a fresh edit or queue action.",
     task_must_be_cancelled: "Cancel this task's execution before changing its content or routing labels.",
     task_still_active: "The task is still stopping. Wait for execution to finish before changing it.",
+    task_not_queueable: "Queue an open, unqueued backlog task with no active execution or hold. Refresh the task before trying again.",
     task_changed: "The task changed since this preview. Read it again and prepare a fresh proposal.",
     revision_conflict: "Execution state changed since this preview. Refresh and prepare a fresh proposal.",
     proposal_changed: "The action preview no longer matches current routing labels. Prepare a fresh proposal.",
@@ -91,7 +92,7 @@ defmodule SymphonyElixir.Chat.Tools do
       ),
       spec(
         "symphony_propose_action",
-        "Prepare an exact action preview for operator approval. Never claim a proposal was executed. create_task makes an unqueued backlog issue. edit_task, queue_task and unqueue_task require a cancelled, idle task and retain its hold: cancel, edit/queue, then retry are separate actions. Queue changes affect only configured routing labels, never bypass admission or launch gates. Feedback adds a GitHub comment without steering a running worker. set_concurrency persists an admission limit within the configured ceiling; limit:null restores the default. Running work and consumed budgets are unchanged.",
+        "Prepare an exact action preview for operator approval. Never claim a proposal was executed. create_task makes an unqueued backlog issue. queue_task can queue an open, unqueued idle backlog task with no hold. edit_task and unqueue_task require a cancelled, idle task; queueing a cancelled task also retains its hold, so Retry remains separate. Queue changes affect only configured routing labels, never bypass admission or launch gates. Feedback adds a GitHub comment without steering a running worker. set_concurrency persists an admission limit within the configured ceiling; limit:null restores the default. Running work and consumed budgets are unchanged.",
         %{
           "action" => enum(@controls ++ @writes),
           "limit" => %{"type" => ["integer", "null"], "minimum" => 1},
@@ -449,6 +450,8 @@ defmodule SymphonyElixir.Chat.Tools do
       evidence = %{"expected_revision" => revision}
       evidence = if task, do: Map.put(evidence, "expected_updated_at", task[:updated_at]), else: evidence
       evidence = if action in ~w(queue_task unqueue_task), do: Map.put(evidence, "queue_labels", settings.tracker.required_labels), else: evidence
+      evidence = if action == "queue_task" and unheld_queue_task?(task, settings.tracker), do: Map.put(evidence, "queue_unheld", true), else: evidence
+      evidence = if action == "queue_task", do: Map.merge(evidence, %{"task_title" => task.title, "task_description" => task[:description]}), else: evidence
       {:ok, evidence}
     end
   end
@@ -461,12 +464,36 @@ defmodule SymphonyElixir.Chat.Tools do
   defp writable_task(action, task, tracker) when action in ~w(edit_task feedback queue_task unqueue_task) do
     with :ok <- github_tracker(tracker),
          true <- present?(task[:updated_at]) or {:error, :task_revision_unavailable} do
-      unsafe = task[:hold] != "cancelled" or not is_nil(task[:runtime]) or not is_nil(get_in(task, [:ledger, "active"]))
-      if action != "feedback" and unsafe, do: {:error, :cancel_task_before_edit}, else: :ok
+      writable_execution(action, task, tracker)
     end
   end
 
   defp writable_task(_action, _task, _tracker), do: :ok
+
+  defp writable_execution("feedback", _task, _tracker), do: :ok
+
+  defp writable_execution("queue_task", task, tracker) do
+    if is_nil(task[:hold]) do
+      if unheld_queue_task?(task, tracker), do: :ok, else: {:error, :task_not_queueable}
+    else
+      cancelled_task(task)
+    end
+  end
+
+  defp writable_execution(_action, task, _tracker), do: cancelled_task(task)
+
+  defp cancelled_task(task) do
+    idle = is_nil(task[:runtime]) and is_nil(get_in(task, [:ledger, "active"]))
+    if task[:hold] == "cancelled" and idle, do: :ok, else: {:error, :cancel_task_before_edit}
+  end
+
+  defp unheld_queue_task?(task, tracker) do
+    labels = Enum.map(task[:labels] || [], &String.downcase/1)
+
+    task[:tracker_state] == "open" and task[:stage] == "backlog" and is_nil(task[:hold]) and
+      is_nil(task[:runtime]) and is_nil(get_in(task, [:ledger, "active"])) and is_nil(task[:handoff]) and
+      tracker.required_labels != [] and not Enum.all?(tracker.required_labels, &(String.downcase(&1) in labels))
+  end
 
   defp labels_available(%{"action" => action}, tracker) when action in ~w(queue_task unqueue_task) do
     if tracker.required_labels == [], do: {:error, :queue_labels_unconfigured}, else: :ok
@@ -505,7 +532,8 @@ defmodule SymphonyElixir.Chat.Tools do
   defp execute(%{"action" => action} = proposal, context, settings, board) when action in @writes do
     with :ok <- complete_board(board),
          {:ok, evidence} <- proposal_evidence(Map.put(proposal["args"], "action", action), context, settings, board),
-         true <- evidence["queue_labels"] == proposal["queue_labels"] or {:error, :proposal_changed} do
+         true <- (evidence["queue_labels"] == proposal["queue_labels"] and evidence["queue_unheld"] == proposal["queue_unheld"]) or {:error, :proposal_changed},
+         true <- task_preview_matches?(proposal, evidence) or {:error, :task_changed} do
       GitHub.confirm(proposal, settings.tracker, context)
     end
   end
@@ -518,6 +546,11 @@ defmodule SymphonyElixir.Chat.Tools do
       widget = %{"type" => "receipt", "summary" => summary, "url" => board_url(context.project_id), "result" => result}
       {:ok, %{"widgets" => [widget]}}
     end
+  end
+
+  defp task_preview_matches?(proposal, evidence) do
+    # Earlier persisted cancelled-queue previews do not contain these optional fields.
+    Enum.all?(~w(task_title task_description), fn key -> not Map.has_key?(proposal, key) or proposal[key] == evidence[key] end)
   end
 
   defp native_command(proposal, context, task) do

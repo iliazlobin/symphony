@@ -205,6 +205,46 @@ defmodule SymphonyElixir.Chat.PersistenceTest do
     assert_unavailable_after_release(c.root)
   end
 
+  test "queue records require one matching action and exact bounded submission arguments", c do
+    File.mkdir_p!(c.root)
+    path = record_path(c.root, c.chat)
+    proposal = %{proposal() | "action" => "queue_task", "args" => %{"task_id" => "11"}}
+    submission = %{"args" => %{"action" => "queue_task", "task_id" => "11"}}
+    record = c.chat |> Map.put("kind", "board_action") |> Map.put("submission", submission) |> Map.put("proposals", [proposal])
+
+    invalid_records = [
+      put_in(record, ["submission", "args", "action"], "create_task"),
+      put_in(record, ["submission", "args", "task_id"], "12"),
+      put_in(record, ["submission", "args", "task_id"], nil),
+      put_in(record, ["submission", "args", "task_id"], " "),
+      put_in(record, ["submission", "args", "task_id"], String.duplicate("x", 241)),
+      put_in(record, ["submission", "args", "labels"], ["symphony:ready"]),
+      put_in(record, ["submission", "extra"], true),
+      Map.put(record, "proposals", [proposal, proposal]),
+      Map.put(record, "proposals", []),
+      Map.put(record, "proposals", [%{proposal | "action" => "create_task"}]),
+      Map.put(record, "proposals", [%{proposal | "args" => %{}}]),
+      Map.put(record, "proposals", [%{proposal | "args" => %{"task_id" => "11", "resume" => true}}])
+    ]
+
+    invalid_id_records =
+      Enum.map([nil, 11, "", " ", "0", "01", "11\n", "GH-11", String.duplicate("1", 241)], fn task_id ->
+        record |> put_in(["submission", "args", "task_id"], task_id) |> put_in(["proposals", Access.at(0), "args", "task_id"], task_id)
+      end)
+
+    for invalid <- invalid_records ++ invalid_id_records do
+      bytes = Jason.encode!(invalid)
+      File.write!(path, bytes)
+      assert_unavailable_after_release(c.root)
+      assert File.read!(path) == bytes
+    end
+
+    File.write!(path, Jason.encode!(record))
+    {owner, recovered} = open_when_released(c.root)
+    assert recovered == %{record["id"] => record}
+    Persistence.close(owner)
+  end
+
   test "record size and conversation count limits reject unbounded persisted state", c do
     {:ok, owner, %{}} = Persistence.open(c.root)
     oversized = Map.put(c.chat, "oversized", String.duplicate("x", 8_000_001))

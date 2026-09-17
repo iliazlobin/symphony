@@ -13,6 +13,7 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
      assign(socket,
        location: nil,
        project_id: nil,
+       task: nil,
        auth: nil,
        read_only: false,
        draft: %{},
@@ -35,8 +36,9 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
   end
 
   def update(assigns, socket) do
-    location = {assigns.project_id, assigns.form_key}
-    socket = assign(socket, Map.take(assigns, [:id, :project_id, :auth, :read_only]))
+    task = Map.get(assigns, :task)
+    location = {assigns.project_id, assigns.form_key, task && task.id}
+    socket = socket |> assign(Map.take(assigns, [:id, :project_id, :auth, :read_only])) |> assign(:task, task)
 
     socket =
       if location != socket.assigns.location do
@@ -44,7 +46,7 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
         |> subscribe(nil)
         |> assign(location: location, draft: initial_draft(), submission_id: nonce())
         |> assign(record: nil, records: [], notice: nil)
-        |> refresh_history()
+        |> open_intake()
       else
         socket
       end
@@ -106,6 +108,14 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
     end
   end
 
+  def handle_event("preview-queue", _params, socket) do
+    if socket.assigns.task && proposal(socket.assigns.record)["status"] in [nil, "cancelled", "failed"] do
+      {:noreply, socket |> subscribe(nil) |> assign(record: nil, submission_id: nonce(), notice: nil) |> open_intake()}
+    else
+      {:noreply, socket}
+    end
+  end
+
   def handle_event(_event, _params, socket), do: {:noreply, socket}
 
   defp action_args(%{assigns: %{draft: draft}}) do
@@ -151,6 +161,17 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
   end
 
   defp initial_draft, do: %{"title" => "", "outcome" => "", "scope" => "", "acceptance" => "", "dependencies" => "none"}
+
+  defp open_intake(%{assigns: %{task: nil}} = socket), do: refresh_history(socket)
+
+  defp open_intake(socket) do
+    args = %{"action" => "queue_task", "task_id" => socket.assigns.task.issue_id}
+
+    case prepare_action(socket, args) do
+      {:ok, record} -> socket |> put_record(record) |> refresh_history()
+      {:error, reason} -> show_error(socket, reason)
+    end
+  end
 
   defp prepare_action(socket, args) do
     parameters = [socket.assigns.project_id, socket.assigns.submission_id, args]
@@ -262,7 +283,7 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
     <section id="task-intake-panel" class="task-intake" aria-label="Task intake">
       <p class="muted">{String.replace_prefix(@project_id || "Select one project", "github:", "")}</p>
       <p :if={@notice} class="board-warning" role="alert">{@notice}</p>
-      <div :if={@authorized && @project_id && is_nil(@record)}>
+      <div :if={@authorized && @project_id && is_nil(@record) && is_nil(@task)}>
         <p>Create a GitHub issue in Backlog. Saving does not start a worker.</p>
         <form id="task-intake-form" phx-target={@myself} phx-change="draft" phx-submit="prepare" class="intake-form">
           <label><span>Title</span><input name="task[title]" value={@draft["title"]} maxlength="200" required /></label>
@@ -276,19 +297,28 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
         </form>
       </div>
       <section :if={@record} id="task-action-preview" class="dialog-section" aria-label="Action preview">
-        <div class="widget-heading"><h3>Create backlog task</h3><span class="evidence-badge">{@proposal["status"]}</span></div>
+        <div class="widget-heading"><h3>{if @proposal["action"] == "queue_task", do: "Queue task", else: "Create backlog task"}</h3><span class="evidence-badge">{@proposal["status"]}</span></div>
         <h4 :if={@args["title"]}>{@args["title"]}</h4>
+        <p :if={@proposal["action"] == "queue_task"}>Task: {@args["task_id"]}</p>
+        <h4 :if={@proposal["task_title"]}>{@proposal["task_title"]}</h4>
+        <div :if={@proposal["task_description"]} class="markdown-content intake-preview-body">{Markdown.render(@proposal["task_description"])}</div>
         <div :if={@args["body"]} class="markdown-content intake-preview-body">{Markdown.render(@args["body"])}</div>
         <p :if={@proposal["action"] == "create_task" && @proposal["status"] == "pending"} class="muted">Will create a backlog issue without queue labels. This will not start a worker.</p>
-        <div :if={@proposal["status"] == "pending" && @authorized} class="dialog-actions"><button class="button button-primary" phx-target={@myself} phx-click="decide" phx-value-decision="confirm" phx-disable-with="Confirming…">Create task</button><button class="button" phx-target={@myself} phx-click="decide" phx-value-decision="cancel" phx-disable-with="Cancelling…">Cancel action</button></div>
+        <div :if={@proposal["action"] == "queue_task" && @proposal["status"] == "pending"} class="queue-preview">
+          <p>Add queue labels: <strong>{Enum.join(@proposal["queue_labels"] || [], ", ")}</strong>.</p>
+          <p>This makes the task eligible for work. When the controller is running, Symphony can start it after checking dependencies, budget and capacity. A paused controller stays paused.</p>
+          <p :if={@proposal["queue_unheld"] != true} class="muted">The existing cancellation hold stays in place. Retry is a separate action.</p>
+        </div>
+        <div :if={@proposal["status"] == "pending" && @authorized} class="dialog-actions"><button class="button button-primary" phx-target={@myself} phx-click="decide" phx-value-decision="confirm" phx-disable-with="Confirming…">{if @proposal["action"] == "queue_task", do: "Queue task", else: "Create task"}</button><button class="button" phx-target={@myself} phx-click="decide" phx-value-decision="cancel" phx-disable-with="Cancelling…">Cancel action</button></div>
         <p :if={@proposal["status"] == "pending"} class="muted">Nothing changes until you confirm this exact action.</p>
         <p :if={@proposal["status"] == "executing"} role="status">Applying action… You can reopen its result from New task.</p>
         <div :if={@proposal["status"] == "unknown"}><p class="board-warning">The outcome is uncertain. Check the recorded result before creating another action.</p><button :if={@authorized} class="button" phx-target={@myself} phx-click="decide" phx-value-decision="reconcile" phx-disable-with="Checking…">Check outcome</button></div>
         <p :if={@proposal["status"] == "failed"} class="board-warning" role="alert">{@proposal["error"] || "The action could not be completed. Refresh the board before preparing a new action."}</p>
         <p :if={@proposal["status"] == "cancelled"}>Action cancelled. No change was submitted.</p>
         <div :if={@proposal["status"] == "completed"} class="action-receipt"><strong>Action completed</strong><p>{@receipt["summary"]}</p><a :if={result_url(@receipt, @project_id)} href={result_url(@receipt, @project_id)} target="_blank" rel="noopener noreferrer">View in GitHub ↗</a></div>
-        <button :if={@can_start && @authorized} class="button" phx-target={@myself} phx-click="new-draft">New task</button>
+        <button :if={@can_start && @authorized && is_nil(@task)} class="button" phx-target={@myself} phx-click="new-draft">New task</button>
       </section>
+      <button :if={@task && @authorized && @proposal["status"] in [nil, "cancelled", "failed"]} class="button" phx-target={@myself} phx-click="preview-queue">Preview queue action</button>
       <section class="dialog-section intake-history" aria-label="Recent submissions">
         <div class="widget-heading"><h3>Recent submissions</h3><button class="button button-small" phx-target={@myself} phx-click="refresh-actions">Refresh</button></div>
         <p :if={@records == []} class="muted">No recorded actions for this project.</p>

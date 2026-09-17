@@ -29,6 +29,11 @@ defmodule SymphonyElixir.Chat.ToolsTest do
       end
     end
 
+    def tracker_action_guarded(fingerprint, revision, issue_id, callback, owner, :queue_unheld) do
+      send(Application.fetch_env!(:symphony_elixir, :chat_test_owner), :guarded_unheld_queue)
+      tracker_action_guarded(fingerprint, revision, issue_id, callback, owner)
+    end
+
     def control_receipt_guarded(command, fingerprint, _owner) do
       send(Application.fetch_env!(:symphony_elixir, :chat_test_owner), {:receipt_read, command, fingerprint})
       Application.get_env(:symphony_elixir, :chat_test_receipt, {:error, :command_not_found})
@@ -721,9 +726,9 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     end
   end
 
-  test "queue changes cannot select labels or operate on an unheld task", ctx do
+  test "queue changes cannot select labels or requeue an already routed unheld task", ctx do
     args = %{"action" => "queue_task", "task_id" => "1"}
-    assert {:error, :cancel_task_before_edit} = Tools.call("symphony_propose_action", args, ctx.context)
+    assert {:error, :task_not_queueable} = Tools.call("symphony_propose_action", args, ctx.context)
     assert {:error, :invalid_arguments} = Tools.call("symphony_propose_action", Map.put(args, "labels", ["publish-approved"]), ctx.context)
     board = put_in(ctx.board, [:tasks, Access.at(0), :hold], "cancelled")
     Application.put_env(:symphony_elixir, :chat_test_board, board)
@@ -731,6 +736,113 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     fingerprint = Orchestrator.tracker_fingerprint()
     context = %{ctx.context | tracker_fingerprint: fingerprint, auth: %{ctx.context.auth | tracker_fingerprint: fingerprint}}
     assert {:error, :queue_labels_unconfigured} = Tools.call("symphony_propose_action", args, context)
+  end
+
+  test "an unheld backlog task queues through its serialized owner and preserves other labels", ctx do
+    backlog = update_in(ctx.board, [:tasks, Access.at(0)], &Map.merge(&1, %{stage: "backlog", labels: ["documentation"]}))
+    Application.put_env(:symphony_elixir, :chat_test_board, backlog)
+    proposal = propose(ctx.context, %{"action" => "queue_task", "task_id" => "GH-1"})
+    assert proposal["queue_unheld"] == true
+    assert proposal["queue_labels"] == ["ready"]
+    assert {:error, :proposal_changed} = Tools.confirm(Map.delete(proposal, "queue_unheld"), ctx.context)
+
+    source = Map.merge(raw_issue(), %{"state" => "open", "labels" => ["documentation"]})
+
+    script([
+      fn "GET", "/repos/example/repo/issues/1", _, _, _ -> {:ok, %{status: 200, body: source}} end,
+      fn "PATCH", "/repos/example/repo/issues/1", _, body, _ ->
+        assert body["labels"] == ["documentation", "ready"]
+        assert body["body"] == source["body"] <> "\n\n" <> marker(proposal)
+        refute Map.has_key?(body, "state")
+        {:ok, %{status: 200, body: Map.merge(source, body)}}
+      end
+    ])
+
+    assert {:ok, %{"widgets" => [%{"summary" => summary}]}} = Tools.confirm(proposal, ctx.context)
+    assert summary =~ "Task queued"
+    assert summary =~ "paused controller remains paused"
+    refute summary =~ "Retry"
+    assert_receive :guarded_unheld_queue
+    assert_finished()
+  end
+
+  test "queue previews retain fresh task scope for both unheld and cancelled tasks", ctx do
+    description = "## Outcome\n\nCurrent scope, preserved exactly.\n\nDepends on: none"
+
+    for hold <- [nil, "cancelled"] do
+      current = %{stage: "backlog", labels: [], hold: hold, title: "Updated task title", description: description}
+      board = update_in(ctx.board, [:tasks, Access.at(0)], &Map.merge(&1, current))
+      Application.put_env(:symphony_elixir, :chat_test_board, board)
+      proposal = propose(ctx.context, %{"action" => "queue_task", "task_id" => "1"})
+      assert proposal["task_title"] == "Updated task title"
+      assert proposal["task_description"] == description
+
+      for change <- [%{title: "Changed again"}, %{description: "Different scope\n\nDepends on: none"}] do
+        changed = update_in(board, [:tasks, Access.at(0)], &Map.merge(&1, change))
+        Application.put_env(:symphony_elixir, :chat_test_board, changed)
+        assert {:error, :task_changed} = Tools.confirm(proposal, ctx.context)
+        refute_receive {:guarded_edit, _, _, _}
+      end
+    end
+  end
+
+  test "fresh queue rejects held, running, reserved, reviewed and closed tasks", ctx do
+    fresh = %{stage: "backlog", labels: [], hold: nil, runtime: nil, ledger: %{}, handoff: nil, tracker_state: "open"}
+
+    changes = [
+      %{hold: "owner_review"},
+      %{hold: "interrupted"},
+      %{runtime: %{status: "running"}},
+      %{ledger: %{"active" => %{}}},
+      %{handoff: %{}},
+      %{tracker_state: "closed"}
+    ]
+
+    for changed <- changes do
+      task = ctx.board.tasks |> hd() |> Map.merge(fresh) |> Map.merge(changed)
+      Application.put_env(:symphony_elixir, :chat_test_board, %{ctx.board | tasks: [task]})
+      assert {:error, _} = Tools.call("symphony_propose_action", %{"action" => "queue_task", "task_id" => "1"}, ctx.context)
+    end
+  end
+
+  test "queue confirmation rejects a newly held task and rechecks open unqueued state inside the owner", ctx do
+    backlog = update_in(ctx.board, [:tasks, Access.at(0)], &Map.merge(&1, %{stage: "backlog", labels: []}))
+    Application.put_env(:symphony_elixir, :chat_test_board, backlog)
+    proposal = propose(ctx.context, %{"action" => "queue_task", "task_id" => "1"})
+    held = put_in(backlog, [:tasks, Access.at(0), :hold], "cancelled")
+    Application.put_env(:symphony_elixir, :chat_test_board, held)
+    assert {:error, :proposal_changed} = Tools.confirm(proposal, ctx.context)
+    Application.put_env(:symphony_elixir, :chat_test_board, backlog)
+
+    for changed <- [%{"state" => "closed", "labels" => []}, %{"state" => "open", "labels" => ["READY"]}] do
+      source = Map.merge(raw_issue(), changed)
+      script([fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: source}} end])
+      assert {:error, :task_not_queueable} = Tools.confirm(proposal, ctx.context)
+      assert_finished()
+    end
+
+    source = Map.merge(raw_issue(), %{"state" => "open", "labels" => [], "updated_at" => "2026-09-15T10:00:01Z"})
+    script([fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: source}} end])
+    assert {:error, :task_changed} = Tools.confirm(proposal, ctx.context)
+    assert_finished()
+  end
+
+  test "an uncertain fresh queue outcome is recovered without another write", ctx do
+    backlog = update_in(ctx.board, [:tasks, Access.at(0)], &Map.merge(&1, %{stage: "backlog", labels: []}))
+    Application.put_env(:symphony_elixir, :chat_test_board, backlog)
+    proposal = propose(ctx.context, %{"action" => "queue_task", "task_id" => "1"})
+    source = Map.merge(raw_issue(), %{"state" => "open", "labels" => []})
+    completed = Map.merge(source, %{"labels" => ["ready"], "body" => source["body"] <> "\n\n" <> marker(proposal)})
+
+    script([
+      fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: source}} end,
+      fn "PATCH", _, _, _, _ -> {:error, :timeout} end,
+      fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: completed}} end
+    ])
+
+    assert {:error, :write_outcome_unknown} = Tools.confirm(proposal, ctx.context)
+    assert {:ok, %{"widgets" => [%{"summary" => "Task update recovered from GitHub."}]}} = Tools.reconcile(proposal, ctx.context)
+    assert_finished()
   end
 
   test "priority edits cannot remove reserved routing labels", ctx do

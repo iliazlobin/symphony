@@ -1493,6 +1493,12 @@ defmodule SymphonyElixir.Orchestrator do
     safe_control_call(server, {:tracker_action, expected_tracker, expected_revision, issue_id, callback})
   end
 
+  @doc "Serializes fresh backlog queueing with dispatch; the trusted callback must recheck the issue before writing."
+  @spec tracker_action_guarded(String.t(), non_neg_integer(), String.t(), (-> term()), GenServer.server(), :queue_unheld) :: term()
+  def tracker_action_guarded(expected_tracker, expected_revision, issue_id, callback, server, :queue_unheld) do
+    safe_control_call(server, {:tracker_action, expected_tracker, expected_revision, issue_id, callback, :queue_unheld})
+  end
+
   @doc "Reads an exact retained control receipt without submitting or replaying a command."
   @spec control_receipt_guarded(map(), String.t(), GenServer.server()) :: {:ok, map()} | {:error, term()}
   def control_receipt_guarded(command, expected_tracker, server \\ __MODULE__) do
@@ -1634,7 +1640,11 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  def handle_call({:tracker_action, scope, revision, id, callback}, _from, state) do
+  def handle_call({:tracker_action, scope, revision, id, callback}, from, state) do
+    handle_call({:tracker_action, scope, revision, id, callback, :cancelled}, from, state)
+  end
+
+  def handle_call({:tracker_action, scope, revision, id, callback, mode}, _from, state) do
     state = refresh_runtime_config(state)
 
     result =
@@ -1643,7 +1653,7 @@ defmodule SymphonyElixir.Orchestrator do
         is_nil(state.control) -> {:error, :control_disabled}
         not is_nil(state.control_fault) -> {:error, :control_unavailable}
         revision != state.control.data["revision"] -> {:error, :revision_conflict}
-        true -> execute_cancelled_tracker_action(state, id, callback)
+        true -> execute_guarded_tracker_action(state, id, callback, mode)
       end
 
     {:reply, result, state}
@@ -2295,7 +2305,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp integer_like(_value), do: nil
 
-  defp execute_cancelled_tracker_action(state, id, callback) do
+  defp execute_guarded_tracker_action(state, id, callback, :cancelled) do
     issue = get_in(state.control.data, ["issues", id]) || %{}
 
     cond do
@@ -2304,6 +2314,26 @@ defmodule SymphonyElixir.Orchestrator do
       not is_function(callback, 0) -> {:error, :invalid_command}
       true -> execute_tracker_action(callback)
     end
+  end
+
+  defp execute_guarded_tracker_action(state, id, callback, :queue_unheld) do
+    issue = get_in(state.control.data, ["issues", id]) || %{}
+
+    cond do
+      retained_queue_state?(issue) -> {:error, :task_not_queueable}
+      owned_queue_state?(state, id) -> {:error, :task_still_active}
+      not is_function(callback, 0) -> {:error, :invalid_command}
+      true -> execute_tracker_action(callback)
+    end
+  end
+
+  defp execute_guarded_tracker_action(_state, _id, _callback, _mode), do: {:error, :invalid_command}
+
+  defp retained_queue_state?(issue), do: Enum.any?(~w(hold active handoff), &(not is_nil(issue[&1])))
+
+  defp owned_queue_state?(state, id) do
+    Map.has_key?(state.running, id) or Map.has_key?(state.retry_attempts, id) or
+      Map.has_key?(state.blocked, id) or MapSet.member?(state.claimed, id)
   end
 
   defp execute_tracker_action(callback) do

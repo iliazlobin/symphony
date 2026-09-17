@@ -21,6 +21,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:dialog, nil)
       |> assign(:selected, nil)
       |> assign(:intake_key, nil)
+      |> assign(:intake_task, nil)
       |> assign(:intake_subscription, nil)
       |> assign(:pending_command, nil)
       |> assign(:settings_tab, "execution")
@@ -50,7 +51,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    socket = if socket.assigns.dialog == :new_task, do: clear_intake_subscription(socket), else: socket
+    socket = if socket.assigns.dialog in [:new_task, :queue_task], do: clear_intake_subscription(socket), else: socket
     dialog = if params["panel"] == "settings", do: :settings, else: nil
     filters = url_filters(params)
     project = selected_project(socket.assigns.board, filters)
@@ -83,7 +84,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   def handle_info({:chat_updated, id}, socket) do
     if socket.assigns.chat_open, do: send_update(ChatPanel, id: "management-chat", refresh_chat: id)
-    if socket.assigns.dialog == :new_task, do: send_update(TaskIntakePanel, id: "task-intake", refresh_action: id)
+    if socket.assigns.dialog in [:new_task, :queue_task], do: send_update(TaskIntakePanel, id: "task-intake", refresh_action: id)
     {:noreply, socket}
   end
 
@@ -138,7 +139,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   def handle_info({:task_intake, :subscribed, id}, socket) do
-    if id && socket.assigns.dialog != :new_task do
+    if id && socket.assigns.dialog not in [:new_task, :queue_task] do
       Phoenix.PubSub.unsubscribe(SymphonyElixir.PubSub, "chat:" <> id)
       {:noreply, assign(socket, :intake_subscription, nil)}
     else
@@ -185,9 +186,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_event(action, params, socket)
-      when action in ["new-task", "move-task", "prepare-command", "confirm-command", "save-concurrency", "reset-concurrency"] do
+      when action in ["new-task", "queue-task", "move-task", "prepare-command", "confirm-command", "save-concurrency", "reset-concurrency"] do
     if read_only?(socket.assigns.board) do
-      dialog = if socket.assigns.dialog in [:confirm, :new_task], do: nil, else: socket.assigns.dialog
+      dialog = if socket.assigns.dialog in [:confirm, :new_task, :queue_task], do: nil, else: socket.assigns.dialog
       {:noreply, socket |> assign(:pending_command, nil) |> assign(:dialog, dialog) |> assign(:notice, "This board is read-only. Execution and tracker changes are unavailable here.")}
     else
       handle_write_event(action, params, socket)
@@ -270,11 +271,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
       socket =
         socket
         |> clear_card_context()
-        |> assign(dialog: :new_task, intake_key: System.unique_integer([:positive]))
+        |> assign(dialog: :new_task, intake_task: nil, intake_key: System.unique_integer([:positive]))
 
       {:noreply, assign(socket, :notice, nil)}
     else
       {:noreply, socket |> assign(:dialog, :settings) |> assign(:notice, "Sign in before creating a task.")}
+    end
+  end
+
+  defp handle_write_event("queue-task", %{"id" => id}, socket) do
+    case Enum.find(socket.assigns.board.tasks, &(&1.id == id)) do
+      %{stage: "backlog", hold: nil} = task -> prepare_queue(socket, task)
+      _ -> {:noreply, assign(socket, :notice, "Refresh the board and select an idle Backlog task to queue.")}
     end
   end
 
@@ -288,15 +296,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
       task.stage == "ready" and stage == "backlog" ->
         prepare_command(socket, "cancel", task)
 
-      task.stage == "backlog" and stage == "ready" and not is_nil(task.hold) ->
-        prepare_command(socket, "retry", task)
+      task.stage == "backlog" and stage == "ready" ->
+        if is_nil(task.hold), do: prepare_queue(socket, task), else: prepare_command(socket, "retry", task)
 
       true ->
         {:noreply,
          socket
          |> assign(:selected, task)
          |> assign(:dialog, :task)
-         |> assign(:notice, "Stages follow confirmed work. Manage intake labels in the issue tracker; review and completion require their evidence.")}
+         |> assign(:notice, "Running, Review and Done follow confirmed work. Drag a Backlog task to Ready to queue it; review and completion require their evidence.")}
     end
   end
 
@@ -345,6 +353,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
       {:error, reason} ->
         # Keep the original command identity on an uncertain response so a retry is idempotent.
         {:noreply, socket |> assign(:notice, command_error(reason)) |> refresh_board()}
+    end
+  end
+
+  defp prepare_queue(socket, task) do
+    if BrowserAuth.authorized?(socket.assigns.auth) do
+      {:noreply,
+       socket
+       |> clear_card_context()
+       |> assign(dialog: :queue_task, intake_task: task, intake_key: System.unique_integer([:positive]), notice: nil)}
+    else
+      {:noreply, socket |> assign(:dialog, :settings) |> assign(:notice, "Sign in before queueing a task.")}
     end
   end
 
@@ -615,16 +634,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <details><summary>Handoff details</summary><pre>{pretty(@selected.handoff)}</pre></details>
               </section>
               <section :if={!@read_only} class="dialog-section"><h3>Execution</h3><p class="muted">Cancel requests a hold and worker cleanup. Retry clears a hold without resetting the budget; it does not answer a question or approve a candidate.</p>
-                <div class="dialog-actions"><button :for={action <- ["cancel", "retry"]} class="button" phx-click="prepare-command" phx-value-action={action} phx-value-id={@selected.id}>{String.capitalize(action)}</button></div>
+                <div class="dialog-actions"><button :if={@selected.stage == "backlog" && is_nil(@selected.hold)} id="queue-task-button" class="button button-primary" phx-click="queue-task" phx-value-id={@selected.id}>Move to Ready</button><button :for={action <- ["cancel", "retry"]} class="button" phx-click="prepare-command" phx-value-action={action} phx-value-id={@selected.id}>{String.capitalize(action)}</button></div>
                 <details><summary>Runtime details</summary><pre>{pretty(@selected.runtime)}</pre></details>
               </section>
             <% :confirm -> %>
               <p>{command_description(@pending_command)}</p>
               <p class="muted">{@pending_command.identifier || "Configured project"} · operator revision {@pending_command.revision}</p>
               <div class="dialog-actions"><button :if={!@read_only} class="button button-primary" phx-click="confirm-command" phx-disable-with="Submitting…">Confirm {if @pending_command.action == "set_concurrency", do: "change", else: @pending_command.action}</button><button class="button" phx-click="cancel-command">Cancel</button></div>
-            <% :new_task -> %>
+            <% kind when kind in [:new_task, :queue_task] -> %>
               <.live_component module={TaskIntakePanel} id="task-intake" auth={@auth} read_only={@read_only}
-                project_id={selected_project(@board, @url_filters)} form_key={@intake_key} />
+                project_id={if @intake_task, do: @intake_task.project, else: selected_project(@board, @url_filters)} form_key={@intake_key} task={@intake_task} />
           <% end %>
         </div>
       </dialog>
@@ -1004,7 +1023,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp chat_board_link(_url, _project), do: :error
 
-  defp open_linked_task(%{assigns: %{dialog: dialog}} = socket) when dialog in [:settings, :new_task, :confirm],
+  defp open_linked_task(%{assigns: %{dialog: dialog}} = socket) when dialog in [:settings, :new_task, :queue_task, :confirm],
     do: socket
 
   defp open_linked_task(%{assigns: %{linked_task: id}} = socket) when is_binary(id) do
@@ -1049,6 +1068,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp compact_updated_at(_), do: "Updated time unknown"
   defp dialog_title(:settings, _, _), do: "Settings"
+  defp dialog_title(:queue_task, _, _), do: "Move task to Ready"
   defp dialog_title(:new_task, _, _), do: "New task"
   defp dialog_title(:task, task, _), do: task.title
   defp dialog_title(:confirm, _, %{action: "set_concurrency"}), do: "Change concurrency?"

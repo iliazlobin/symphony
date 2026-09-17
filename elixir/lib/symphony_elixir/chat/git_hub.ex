@@ -72,7 +72,8 @@ defmodule SymphonyElixir.Chat.GitHub do
     callback = fn ->
       with {:ok, _settings} <- Tools.scope(context),
            {:ok, issue} <- fetch_issue(proposal, tracker, context),
-           :ok <- current_revision(issue, proposal) do
+           :ok <- current_revision(issue, proposal),
+           :ok <- queue_precondition(issue, proposal, tracker) do
         body = edit_body(proposal, issue, tracker)
         write("PATCH", issue_path(proposal, tracker), body, proposal, tracker, context)
       end
@@ -84,7 +85,12 @@ defmodule SymphonyElixir.Chat.GitHub do
     id = issue_id(proposal, context.project_id)
     server = context[:orchestrator] || Orchestrator
 
-    case owner.tracker_action_guarded(scope, revision, id, callback, server) do
+    result =
+      if proposal["queue_unheld"] == true,
+        do: owner.tracker_action_guarded(scope, revision, id, callback, server, :queue_unheld),
+        else: owner.tracker_action_guarded(scope, revision, id, callback, server)
+
+    case result do
       {:error, :unavailable} -> {:error, :write_outcome_unknown}
       result -> result
     end
@@ -175,6 +181,14 @@ defmodule SymphonyElixir.Chat.GitHub do
   defp valid_issue?(issue, number) when is_map(issue), do: not Map.has_key?(issue, "pull_request") and issue["number"] == number
   defp valid_issue?(_issue, _number), do: false
 
+  defp queue_precondition(issue, %{"action" => "queue_task", "queue_unheld" => true}, tracker) do
+    labels = Enum.map(issue_labels(issue), &String.downcase/1)
+    unqueued = tracker.required_labels != [] and not Enum.all?(tracker.required_labels, &(String.downcase(&1) in labels))
+    if issue["state"] == "open" and unqueued, do: :ok, else: {:error, :task_not_queueable}
+  end
+
+  defp queue_precondition(_issue, _proposal, _tracker), do: :ok
+
   defp current_revision(issue, proposal) do
     if is_binary(proposal["expected_updated_at"]) and issue["updated_at"] == proposal["expected_updated_at"], do: :ok, else: {:error, :task_changed}
   end
@@ -217,13 +231,16 @@ defmodule SymphonyElixir.Chat.GitHub do
           "create_task" -> "Task created in the backlog; execution was not queued."
           "feedback" -> "Feedback recorded on GitHub; it does not interrupt or steer a running worker."
           "edit_task" -> "Task updated; its cancelled execution hold remains in place."
-          "queue_task" -> "Routing labels added. The cancelled hold remains; Retry can release it after normal admission and launch checks."
+          "queue_task" -> queue_summary(proposal)
           "unqueue_task" -> "Routing labels removed; the cancelled execution hold remains in place."
         end
 
       receipt(result, proposal, summary)
     end
   end
+
+  defp queue_summary(%{"queue_unheld" => true}), do: "Task queued. Normal dependency, budget, capacity and launch checks still apply; a paused controller remains paused."
+  defp queue_summary(_proposal), do: "Routing labels added. The cancelled hold remains; Retry can release it after normal admission and launch checks."
 
   defp edit_body(proposal, issue, tracker) do
     args = proposal["args"]

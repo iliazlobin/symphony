@@ -144,6 +144,16 @@ defmodule SymphonyElixir.Chat.Persistence do
   end
 
   defp record_kind_valid?(%{"kind" => "board_action", "submission" => %{"args" => %{"action" => "create_task"}}, "proposals" => [%{"action" => "create_task"}]}), do: true
+
+  defp record_kind_valid?(%{
+         "kind" => "board_action",
+         "submission" => %{"args" => %{"action" => "queue_task", "task_id" => task_id} = args} = submission,
+         "proposals" => [%{"action" => "queue_task", "args" => proposal_args}]
+       }) do
+    map_size(submission) == 1 and map_size(args) == 2 and is_binary(task_id) and String.valid?(task_id) and
+      byte_size(task_id) <= 240 and String.match?(task_id, ~r/\A[1-9][0-9]*\z/) and proposal_args == %{"task_id" => task_id}
+  end
+
   defp record_kind_valid?(chat), do: is_nil(chat["kind"])
 
   defp collection?(items, valid), do: is_list(items) and Enum.all?(items, valid)

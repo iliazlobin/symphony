@@ -143,6 +143,70 @@ defmodule SymphonyElixir.ControlOrchestratorTest do
     assert {:error, :control_unavailable} = guarded.(scope, 1)
   end
 
+  test "fresh queue guard rejects ownership and retained holds without changing execution state", c do
+    scope = Orchestrator.tracker_fingerprint()
+    parent = self()
+
+    callback = fn ->
+      send(parent, :queued)
+      {:ok, :saved}
+    end
+
+    guard = fn fingerprint, revision -> Orchestrator.tracker_action_guarded(fingerprint, revision, c.issue.id, callback, c.pid, :queue_unheld) end
+    before = Orchestrator.control_snapshot(c.pid)
+    assert {:error, :tracker_changed} = guard.("foreign", 0)
+    assert {:error, :revision_conflict} = guard.(scope, 1)
+    assert {:ok, :saved} = guard.(scope, 0)
+    assert_receive :queued
+    assert Orchestrator.control_snapshot(c.pid) == before
+
+    for ownership <- [:running, :retry_attempts, :blocked, :claimed] do
+      original = :sys.get_state(c.pid)
+      value = if ownership == :claimed, do: MapSet.new([c.issue.id]), else: %{c.issue.id => %{}}
+      :sys.replace_state(c.pid, &Map.put(&1, ownership, value))
+      assert {:error, :task_still_active} = guard.(scope, 0)
+      :sys.replace_state(c.pid, fn _ -> original end)
+    end
+
+    for issue <- [%{"hold" => "cancelled"}, %{"hold" => "owner_review"}, %{"hold" => "interrupted"}, %{"active" => %{}}, %{"handoff" => %{}}] do
+      original = :sys.get_state(c.pid)
+      :sys.replace_state(c.pid, &put_in(&1.control.data["issues"][c.issue.id], issue))
+      assert {:error, :task_not_queueable} = guard.(scope, 0)
+      :sys.replace_state(c.pid, fn _ -> original end)
+    end
+
+    refute_receive :queued
+  end
+
+  test "polling and control reads cannot pass fresh queue mutation and paused mode remains paused", c do
+    parent = self()
+    scope = Orchestrator.tracker_fingerprint()
+
+    queue =
+      Task.async(fn ->
+        Orchestrator.tracker_action_guarded(
+          scope,
+          0,
+          c.issue.id,
+          fn ->
+            send(parent, :queueing)
+            receive do: (:complete_queue -> {:ok, :saved})
+          end,
+          c.pid,
+          :queue_unheld
+        )
+      end)
+
+    assert_receive :queueing
+    send(c.pid, :run_poll_cycle)
+    status = Task.async(fn -> Orchestrator.control_snapshot(c.pid) end)
+    refute Task.yield(status, 20)
+    send(c.pid, :complete_queue)
+    assert {:ok, :saved} = Task.await(queue)
+    assert %{"revision" => 0, "mode" => "paused", "issues" => %{}} = Task.await(status)
+    assert :sys.get_state(c.pid).running == %{}
+  end
+
   test "native retry cannot pass a tracker edit in progress", c do
     scope = Orchestrator.tracker_fingerprint()
     assert {:ok, _} = Orchestrator.control_command(%{"command_id" => "hold", "expected_revision" => 0, "action" => "cancel", "issue_id" => c.issue.id}, c.pid)
