@@ -99,11 +99,8 @@ has **Execution**, **AI & chat**, and **Connections** tabs:
   the limit controls new starts and survives restart. **Use workflow default** removes
   the saved override. Raising the configured ceiling or changing budgets remains a
   reviewed configuration change.
-- **AI & chat:** save per-project defaults for sharing the board view and identifying
-  the selected card. These are browser-local; composer switches override one chat's
-  current choices without saving new defaults. **Cancel** discards edits; **Restore
-  defaults** stages enabled choices until **Save preferences**. Existing messages stay
-  unchanged. Model presets are read-only.
+- **AI & chat:** explains automatic project context and reports read-only model presets.
+  The conversation's Context tab shows the current view and retained snapshots.
 - **Connections:** refresh tracker/controller/chat-storage health, inspect recorded
   usage, or sign in/out with the configured browser provider. Health does not verify
   model sign-in, tracker write permissions or worker readiness. No probe starts a model or worker.
@@ -186,25 +183,25 @@ into running workers, automatic repairs and web publication remain separate work
 **Web chat.** After [dedicated runtime setup](../../elixir/README.md#web-board-and-chat),
 select one project on the board and open **Chat** in the right-side panel. A task
 popup also offers **Discuss this task**. Sign in through the configured browser provider.
-Use **New chat** for a separate topic; **History** opens searchable history with rename
-and archive actions. Project changes clear the current selection and draft. A chat
-stays with its original project. This service currently supplies one configured
+Use **New chat** for a separate topic; **History** opens searchable retained conversations.
+Use **Chat**, **Context**, **Outputs** and **Sources** to inspect the same session without
+losing your draft. Outputs include observed issue/PR status and action results.
+Project changes clear the current selection and draft. A chat stays with its original project. This service currently supplies one configured
 project; additional controllers are not aggregated yet.
 
 Responses stream as they arrive. **Stop** interrupts the chat response, not a coding
 task. Closing the tab leaves the response running; reopen its URL to reconnect.
 After a service restart, send another message to continue an interrupted conversation.
 Codex handles native compaction while the app retains visible messages and receipts.
-The optional **Context / Outputs** drawer shows retrieved sources, task widgets and
-actions. References update the board filters or open a task popup while keeping
+**Sources** shows retrieved references; **Outputs** shows up to 100 distinct issue/PR
+artifacts and action results, with earlier tool results retained in history. References
+update the board filters or open a task popup while keeping
 the conversation open. `/chat` remains available as a full-page conversation view.
 
-**Manage the view context.** The composer shows what will accompany the next message:
-project, filters, displayed task count and the selected card. Switch off **Share this
-view** to send no current board snapshot, or uncheck **Identify selected card** to
-remove its explicit selection (the card may still be part of the displayed task list).
-Sharing off does not erase earlier messages or sources; start a new chat for a fresh
-conversation. Context refreshes as you filter, scroll, switch lanes or open a card.
+**View context.** The **Context** tab shows what automatically accompanies the next
+message: project, filters, displayed task count and selected card. Earlier snapshots
+remain attached to their messages; start a new chat for a fresh conversation. Current
+context refreshes as you filter, scroll, switch lanes or open a card.
 It includes up to 50 task IDs and marks truncated lists. It excludes arbitrary screen
 text, screenshots, password fields and other browser tabs. Tools recheck task details
 and authorization before using a snapshot; the snapshot is not approval to act.

@@ -113,7 +113,7 @@ defmodule SymphonyElixir.GitHub.Board do
       repository(owner: $owner, name: $name) { nameWithOwner #{issues} }
     }
     fragment BoardPullRequest on PullRequest {
-      number title url state isDraft reviewDecision headRefOid repository { nameWithOwner }
+      number title url state isDraft reviewDecision headRefOid createdAt updatedAt repository { nameWithOwner }
       headRefName baseRefName author { login } additions deletions changedFiles mergeable
       commits(last: 1) { nodes { commit { oid statusCheckRollup {
         state contexts(first: #{@check_limit}) {
@@ -194,6 +194,8 @@ defmodule SymphonyElixir.GitHub.Board do
         url: url,
         state: String.downcase(state),
         draft: draft,
+        created_at: timestamp(pr["createdAt"]),
+        updated_at: timestamp(pr["updatedAt"]),
         review: review(Map.fetch(pr, "reviewDecision")),
         head_ref: optional_text(pr["headRefName"]),
         base_ref: optional_text(pr["baseRefName"]),

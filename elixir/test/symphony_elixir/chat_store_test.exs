@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Chat.StoreTest do
   use ExUnit.Case, async: false
-  alias SymphonyElixir.Chat.{Persistence, Store, ViewContext}
+  alias SymphonyElixir.Chat.{Artifacts, Persistence, Store, ViewContext}
 
   defmodule TestRuntime do
     @spec run(map(), function(), function()) :: term()
@@ -64,6 +64,11 @@ defmodule SymphonyElixir.Chat.StoreTest do
       {:ok, %{status: :completed}}
     end
 
+    defp respond("artifacts", opts, _emit, tool) do
+      send(opts.test_pid, {:tool_result, tool.("artifacts", %{})})
+      {:ok, %{status: :completed}}
+    end
+
     defp respond("malformed tool", opts, _emit, tool) do
       send(opts.test_pid, {:tool_result, tool.("malformed", %{})})
       {:ok, %{status: :completed}}
@@ -118,6 +123,20 @@ defmodule SymphonyElixir.Chat.StoreTest do
     def call("malformed", _, _), do: :unavailable
 
     def call("symphony_view_context", _, ctx), do: {:ok, %{"snapshot" => ctx.view_context}}
+
+    def call("artifacts", _, ctx) do
+      task = %{
+        "id" => ctx.project_id <> ":1",
+        "issue_id" => "1",
+        "project" => ctx.project_id,
+        "title" => "Saved issue",
+        "tracker_state" => "open",
+        "checked_at" => "2026-09-16T12:00:00Z",
+        "pull_requests" => [%{"number" => 10, "url" => "https://github.com/test/one/pull/10", "title" => "Saved PR", "state" => "open"}]
+      }
+
+      {:ok, %{"widgets" => [%{"type" => "task", "task" => task}]}}
+    end
 
     def call("symphony_propose_action", _, ctx) do
       if ctx.auth[:delay_tool] do
@@ -325,6 +344,26 @@ defmodule SymphonyElixir.Chat.StoreTest do
     wait_chat(c, second, &(&1["status"] == "idle"))
   end
 
+  test "durable tool artifacts reopen after a real store restart without a migration or another provider read", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "artifacts", "artifacts-request", c.auth, c.server)
+    assert_receive {:runtime, _, _, "artifacts"}
+    wait_chat(c, chat, &(&1["status"] == "idle"))
+    assert_receive {:tool_result, %{"widgets" => [_]}}
+    assert {:ok, before_restart} = Store.get(c.project, chat["id"], c.auth, c.server)
+    assert Enum.all?(before_restart["messages"], &match?({:ok, _, _}, DateTime.from_iso8601(&1["created_at"])))
+    entries = Artifacts.entries(before_restart)
+    assert Enum.map(entries, & &1["kind"]) == ["pull_request", "issue"]
+    assert Enum.all?(entries, &(&1["checked_at"] == "2026-09-16T12:00:00Z"))
+
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    assert {:ok, restored} = Store.get(c.project, chat["id"], c.auth, server)
+    assert restored["messages"] == before_restart["messages"]
+    assert Artifacts.entries(restored) == entries
+    refute_receive {:runtime, _, _, _}
+  end
+
   test "Stop cancels only chat execution and interrupted service restarts retain history", c do
     chat = create(c)
     assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "client", c.auth, c.server)
@@ -378,14 +417,18 @@ defmodule SymphonyElixir.Chat.StoreTest do
 
   test "proposals require a user decision, execute once, and retain receipts", c do
     {chat, proposal} = propose(c)
+    assert {:ok, pending_at, _} = DateTime.from_iso8601(proposal["updated_at"])
     refute_receive {:confirmed, _}
     assert {:error, :proposal_not_found} = Store.decide(c.project, chat["id"], "missing", "confirm", c.auth, c.server)
     assert {:error, :invalid_decision} = Store.decide(c.project, chat["id"], proposal["id"], "yes maybe", c.auth, c.server)
     assert {:ok, _} = Store.decide(c.project, chat["id"], proposal["id"], "confirm", c.auth, c.server)
     assert_receive {:confirmed, payload}
     refute Map.has_key?(payload, "status")
+    refute Map.has_key?(payload, "updated_at")
     assert payload["id"] == proposal["id"]
     complete = wait_chat(c, chat, &(hd(&1["proposals"])["status"] == "completed"))
+    assert {:ok, completed_at, _} = DateTime.from_iso8601(hd(complete["proposals"])["updated_at"])
+    assert DateTime.compare(completed_at, pending_at) in [:eq, :gt]
     assert List.last(complete["messages"])["text"] == "Feedback saved"
     assert {:ok, _} = Store.decide(c.project, chat["id"], proposal["id"], "confirm", c.auth, c.server)
     refute_receive {:confirmed, _}
@@ -400,7 +443,8 @@ defmodule SymphonyElixir.Chat.StoreTest do
     wait_chat(c, next, &(hd(&1["proposals"])["status"] == "unknown"))
     assert_receive {:confirmed, _}
     assert {:ok, _} = Store.decide(c.project, next["id"], pending["id"], "reconcile", c.auth, c.server)
-    assert_receive {:reconciled, _}
+    assert_receive {:reconciled, payload}
+    refute Map.has_key?(payload, "updated_at")
     refute_receive {:confirmed, _}
     wait_chat(c, next, &(hd(&1["proposals"])["status"] == "completed"))
   end

@@ -4,13 +4,6 @@
   const parse = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };
   const escapeText = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[c]));
   const storage = { get(key) { try { return localStorage.getItem(key); } catch { return null; } }, set(key, value) { try { localStorage.setItem(key, value); } catch { /* Preferences are optional. */ } } };
-  const chatPreferenceKey = project => "symphony.chat.preferences.v1:" + project;
-  const chatPreferences = project => {
-    const saved = parse(storage.get(chatPreferenceKey(project)), null);
-    return {share_context: typeof saved?.share_context === "boolean" ? saved.share_context : true,
-      include_selected: typeof saved?.include_selected === "boolean" ? saved.include_selected : true};
-  };
-
   const TaskBoard = {
     mounted() {
       this.prefs = {project: [], status: [], priority: [], query: "", sort: "manual", order: {}, lane: "ready", density: "compact", theme: "light", hiddenLanes: ["done"]};
@@ -371,52 +364,6 @@
       });
     }
   };
-  const ChatPreferences = {
-    mounted() {
-      this.abort = new AbortController();
-      this.project = null;
-      this.status = message => { const node = this.el.querySelector("[data-chat-prefs-status]"); if (node) node.textContent = message; };
-      this.draw = () => {
-        this.el.querySelectorAll("[data-chat-pref]").forEach(input => {
-          if (Object.hasOwn(this.draft, input.dataset.chatPref)) input.checked = this.draft[input.dataset.chatPref];
-          input.disabled = !this.project;
-        });
-        this.el.querySelectorAll("[data-chat-prefs-save], [data-chat-prefs-reset]").forEach(button => button.disabled = !this.project);
-      };
-      this.load = () => {
-        const project = this.el.dataset.project || null;
-        if (this.project !== project || !this.draft) {
-          this.project = project;
-          this.draft = project ? chatPreferences(project) : {share_context: true, include_selected: true};
-          this.status(project ? "" : "Select a project to save chat preferences.");
-        }
-        this.draw();
-      };
-      this.save = () => {
-        if (!this.project || this.project !== this.el.dataset.project) return;
-        try { localStorage.setItem(chatPreferenceKey(this.project), JSON.stringify(this.draft)); }
-        catch { this.status("Could not save in this browser. Check browser storage permissions and try again."); return; }
-        window.dispatchEvent(new CustomEvent("symphony:chat-preferences", {detail: {project_id: this.project, ...this.draft}}));
-        this.status("Saved in this browser. Applies to the next message and future visits.");
-      };
-      this.el.addEventListener("change", event => {
-        const key = event.target.dataset.chatPref;
-        if (Object.hasOwn(this.draft, key)) { this.draft[key] = event.target.checked; this.status("Unsaved changes."); }
-      }, {signal: this.abort.signal});
-      this.el.addEventListener("click", event => {
-        if (event.target.closest("[data-chat-prefs-save]")) { event.preventDefault(); this.save(); }
-        else if (event.target.closest("[data-chat-prefs-reset]")) {
-          event.preventDefault(); this.draft = {share_context: true, include_selected: true}; this.draw(); this.status("Defaults restored. Save to apply.");
-        } else if (event.target.closest("[data-chat-prefs-cancel]")) {
-          this.draft = chatPreferences(this.project); this.draw(); this.status("");
-        }
-      }, {signal: this.abort.signal});
-      this.el.addEventListener("submit", event => { event.preventDefault(); this.save(); }, {signal: this.abort.signal});
-      this.load();
-    },
-    updated() { this.load(); },
-    destroyed() { this.abort.abort(); }
-  };
   const ChatWorkspace = {
     mounted() {
       this.abort = new AbortController();
@@ -424,24 +371,20 @@
       this.atBottom = true;
       this.running = this.el.dataset.running === "true";
       const on = (name, handler) => this.el.addEventListener(name, handler, {signal: this.abort.signal});
-      this.applyPreferences = preferences => {
-        if (!preferences.project_id || preferences.project_id !== this.el.dataset.project || !this.el.dataset.eventTarget) return;
-        this.pushEventTo(this.el.dataset.eventTarget, "context-preferences", preferences);
+      const tabs = ["chat", "context", "outputs", "sources"];
+      this.tabKey = () => this.el.dataset.project && this.el.dataset.chatId ? "symphony.chat.tab.v1:" + this.el.dataset.project + ":" + this.el.dataset.chatId : null;
+      this.saveTab = tab => { try { const key = this.tabKey(); if (key) sessionStorage.setItem(key, tab); } catch { /* Optional presentation preference. */ } };
+      this.loadTab = () => {
+        const key = this.tabKey();
+        if (key === this.loadedTabKey) return;
+        this.loadedTabKey = key;
+        try {
+          const tab = key && sessionStorage.getItem(key);
+          if (tabs.includes(tab)) this.pushEventTo(this.el.dataset.eventTarget, "restore-session-tab", {project_id: this.el.dataset.project, chat_id: this.el.dataset.chatId, tab});
+        } catch { /* Conversation records do not depend on browser storage. */ }
       };
-      this.loadPreferences = () => {
-        const project = this.el.dataset.project || null;
-        if (this.preferenceProject !== project) {
-          this.preferenceProject = project;
-          if (project) this.applyPreferences({project_id: project, ...chatPreferences(project)});
-        }
-      };
-      window.addEventListener("symphony:chat-preferences", event => this.applyPreferences(event.detail || {}), {signal: this.abort.signal});
-      window.addEventListener("storage", event => {
-        const project = this.el.dataset.project;
-        if (project && event.key === chatPreferenceKey(project)) this.applyPreferences({project_id: project, ...chatPreferences(project)});
-      }, {signal: this.abort.signal});
       this.scroll = () => {
-        const scroller = this.el.querySelector("#chat-scroll");
+        const scroller = this.el.querySelector("#session-chat-content");
         if (scroller && this.atBottom) scroller.scrollTop = scroller.scrollHeight;
       };
       this.resizeComposer = () => {
@@ -450,7 +393,7 @@
       };
       // Scroll does not bubble; capture the retained conversation scroll container.
       this.el.addEventListener("scroll", event => {
-        if (event.target.id === "chat-scroll") this.atBottom = event.target.scrollHeight - event.target.scrollTop - event.target.clientHeight < 90;
+        if (event.target.id === "session-chat-content") this.atBottom = event.target.scrollHeight - event.target.scrollTop - event.target.clientHeight < 90;
       }, {capture: true, signal: this.abort.signal});
       on("input", event => { if (event.target.id === "chat-message-input") this.resizeComposer(); });
       // Queue the current view before LiveView sends this form's message event.
@@ -458,12 +401,23 @@
         if (event.target.id === "chat-composer") this.el.dispatchEvent(new CustomEvent("symphony:capture-context", {bubbles: true}));
       });
       on("keydown", event => {
+        const tab = event.target.closest('[role="tab"][phx-click="session-tab"]');
+        if (tab && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+          event.preventDefault();
+          const buttons = Array.from(this.el.querySelectorAll('[role="tab"][phx-click="session-tab"]'));
+          const index = buttons.indexOf(tab);
+          const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;
+          buttons[next]?.focus(); buttons[next]?.click();
+        }
+
         if (event.target.id === "chat-message-input" && event.key === "Enter" && !event.shiftKey && !event.isComposing) {
           event.preventDefault();
           if (this.el.dataset.running !== "true" && event.target.value.trim()) event.target.form.requestSubmit();
         }
       });
       on("click", event => {
+        const tab = event.target.closest('[role="tab"][phx-click="session-tab"]');
+        if (tab) this.saveTab(tab.getAttribute("phx-value-tab"));
         const boardLink = event.target.closest('a[phx-click="board-link"]');
         if (boardLink && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) event.preventDefault();
         else if (boardLink) event.stopPropagation();
@@ -474,18 +428,23 @@
       this.handleEvent("chat-message-sent", () => {
         const input = this.el.querySelector("#chat-message-input");
         if (input) { input.value = ""; input.focus(); }
-        this.atBottom = true; this.resizeComposer(); requestAnimationFrame(this.scroll);
+        this.saveTab("chat"); this.atBottom = true; this.resizeComposer(); requestAnimationFrame(this.scroll);
       });
-      this.loadPreferences();
+      this.loadTab();
       requestAnimationFrame(this.scroll);
     },
     updated() {
       if (this.chatId !== this.el.dataset.chatId) { this.chatId = this.el.dataset.chatId; this.atBottom = true; }
-      this.loadPreferences();
+      this.loadTab();
       this.resizeComposer();
       requestAnimationFrame(this.scroll);
     },
+    reconnected() {
+      // A channel rejoin remounts server state but retains this hook instance.
+      this.loadedTabKey = undefined;
+      this.loadTab();
+    },
     destroyed() { this.abort.abort(); }
   };
-  window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace, ChatPreferences};
+  window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace};
 })();

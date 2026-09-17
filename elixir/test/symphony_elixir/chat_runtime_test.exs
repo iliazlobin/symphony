@@ -42,7 +42,7 @@ defmodule SymphonyElixir.Chat.RuntimeTest do
     refute requests =~ "private diagnostic secret"
   end
 
-  test "every native turn records its own view snapshot including sharing off on resume", %{opts: opts} do
+  test "every native turn records its own view snapshot including unavailable context on resume", %{opts: opts} do
     snapshot = %{"version" => 1, "project_id" => "github:test/repo", "selected_task_id" => "github:test/repo:1"}
     assert {:ok, _} = run(Map.put(opts, :view_context, snapshot), "split")
     resumed = opts |> Map.put(:thread_id, "thread-1") |> Map.put(:view_context, nil)
@@ -51,7 +51,7 @@ defmodule SymphonyElixir.Chat.RuntimeTest do
     turns = Enum.filter(requests, &(&1["method"] == "turn/start"))
     assert [shared, disabled] = Enum.map(turns, &get_in(&1, ["params", "input", Access.at(1), "text"]))
     assert shared =~ "github:test/repo:1"
-    assert disabled =~ ~s("sharing":"off")
+    assert disabled =~ ~s("context_status":"unavailable")
     refute disabled =~ "github:test/repo:1"
   end
 

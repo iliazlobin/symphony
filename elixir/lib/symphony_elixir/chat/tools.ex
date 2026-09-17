@@ -9,8 +9,8 @@ defmodule SymphonyElixir.Chat.Tools do
   @writes ~w(create_task edit_task feedback queue_task unqueue_task)
   @stages ~w(backlog ready running review done attention)
   @sorts ~w(updated priority title oldest)
-  @task_keys ~w(id issue_id identifier title project project_label stage attention priority updated_at created_at tracker_state completion_evidence source_missing hold)a
-  @pr_keys ~w(number title url state draft review head_ref base_ref author additions deletions changed_files mergeable head_sha relation checks check_total check_details_status)a
+  @task_keys ~w(id issue_id identifier title project project_label stage attention priority updated_at created_at tracker_state completion_evidence source_missing hold github_status)a
+  @pr_keys ~w(number title url state draft created_at updated_at review head_ref base_ref author additions deletions changed_files mergeable head_sha relation checks check_total check_details_status)a
   @check_keys ~w(kind name status conclusion url started_at completed_at duration_ms workflow_name run_url run_number run_event)a
   @proposal_keys ~w(id action args project_id tracker_fingerprint expected_revision expected_updated_at created_at queue_labels)
   @documents ~w(ARCHITECTURE.md WORKFLOW.md PROJECT.md README.md AGENTS.md)
@@ -136,7 +136,7 @@ defmodule SymphonyElixir.Chat.Tools do
   end
 
   defp view_context_result(nil, _context) do
-    {:ok, %{"snapshot" => nil, "sharing" => "off", "current_tasks" => [], "warnings" => ["No view context was shared with this message. Do not reuse an earlier snapshot."]}}
+    {:ok, %{"snapshot" => nil, "context_status" => "unavailable", "current_tasks" => [], "warnings" => ["No current board snapshot is available for this message. Do not reuse an earlier snapshot."]}}
   end
 
   defp view_context_result(snapshot, context) do
@@ -145,7 +145,7 @@ defmodule SymphonyElixir.Chat.Tools do
         {:ok, refreshed_view(snapshot, board)}
 
       {:error, :board_unavailable} ->
-        {:ok, %{"snapshot" => snapshot, "sharing" => "on", "current_tasks" => [], "warnings" => ["Current board data is unavailable; the snapshot is only a historical browser hint."]}}
+        {:ok, %{"snapshot" => snapshot, "context_status" => "available", "current_tasks" => [], "warnings" => ["Current board data is unavailable; the snapshot is only a historical browser hint."]}}
 
       error ->
         error
@@ -166,7 +166,7 @@ defmodule SymphonyElixir.Chat.Tools do
 
     %{
       "snapshot" => snapshot,
-      "sharing" => "on",
+      "context_status" => "available",
       "current_tasks" => Enum.map(tasks, &task_view/1),
       "missing_task_ids" => missing,
       "checked_at" => board[:generated_at],
@@ -298,11 +298,13 @@ defmodule SymphonyElixir.Chat.Tools do
 
       widget = %{
         "type" => "tasks",
-        "tasks" => tasks |> Enum.take(args["limit"] || 20) |> Enum.map(&task_view/1),
+        "tasks" => tasks |> Enum.take(args["limit"] || 20) |> Enum.map(&task_with_pull_requests/1),
         "total" => length(tasks),
         "filters" => filters,
         "url" => board_url(context.project_id, filters),
-        "project_id" => context.project_id
+        "project_id" => context.project_id,
+        "checked_at" => board[:generated_at],
+        "enrichment_error" => board[:enrichment_error]
       }
 
       {:ok, %{"widgets" => [widget]}}
@@ -347,6 +349,8 @@ defmodule SymphonyElixir.Chat.Tools do
   defp pull_request_details(pr) do
     pr |> Map.take(@pr_keys) |> string_keys() |> Map.put("check_runs", Enum.map(pr[:check_runs] || [], &string_keys(Map.take(&1, @check_keys))))
   end
+
+  defp task_with_pull_requests(task), do: task_view(task) |> Map.put("pull_requests", Enum.map(task[:pull_requests] || [], &(Map.take(&1, @pr_keys) |> string_keys())))
 
   defp string_keys(map), do: Map.new(map, fn {key, value} -> {Atom.to_string(key), value} end)
 
