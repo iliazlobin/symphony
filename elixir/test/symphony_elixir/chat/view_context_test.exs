@@ -5,15 +5,15 @@ defmodule SymphonyElixir.Chat.ViewContextTest do
   @project "github:example/repo"
   @id @project <> ":1"
 
-  test "optional fields normalize to a bounded snapshot and sharing off is explicit" do
+  test "optional fields normalize to a bounded snapshot and missing context is explicit" do
     assert {:ok, nil} = ViewContext.validate(nil, @project)
     assert {:ok, snapshot} = ViewContext.validate(%{"version" => 1, "project_id" => @project}, @project)
     assert snapshot["selected_task_id"] == nil
     assert snapshot["visible_task_ids"] == []
     assert snapshot["filters"]["q"] == ""
     assert ViewContext.task_ids(snapshot) == []
-    assert ViewContext.prompt(nil) =~ ~s("sharing":"off")
-    assert ViewContext.prompt(snapshot) =~ ~s("sharing":"on")
+    assert ViewContext.prompt(nil) =~ ~s("context_status":"unavailable")
+    assert ViewContext.prompt(snapshot) =~ ~s("context_status":"available")
     assert ViewContext.prompt(snapshot) =~ "Previous snapshots are not the current view"
   end
 
