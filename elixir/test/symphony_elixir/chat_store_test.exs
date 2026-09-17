@@ -394,6 +394,39 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert thread_summary(c, chat)["display_status"] == "needs_reconciliation"
   end
 
+  test "most recent action outcome follows decision order rather than proposal creation order", c do
+    {chat, earlier} = propose(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "proposal", "second-proposal", c.auth, c.server)
+    updated = wait_chat(c, chat, &(&1["status"] == "idle"))
+    later = List.last(updated["proposals"])
+    assert {:ok, _} = Store.decide(c.project, chat["id"], later["id"], "cancel", c.auth, c.server)
+    assert {:ok, _} = Store.decide(c.project, chat["id"], earlier["id"], "confirm", Map.put(c.auth, :action_result, :failed), c.server)
+    wait_chat(c, chat, &(hd(&1["proposals"])["status"] == "failed"))
+    assert thread_summary(c, chat)["display_status"] == "error"
+
+    :sys.replace_state(c.server, fn state ->
+      update_in(state, [:chats, chat["id"], "proposals"], fn proposals ->
+        Enum.map(proposals, &(&1 |> Map.put("created_at", "legacy-unknown") |> Map.delete("updated_at")))
+      end)
+    end)
+
+    # Legacy records without observation times still open; they cannot prove a current failure.
+    assert thread_summary(c, chat)["display_status"] == "idle"
+  end
+
+  test "identical update timestamps have stable thread ordering", c do
+    first = create(c)
+    second = create(c)
+
+    :sys.replace_state(c.server, fn state ->
+      Map.update!(state, :chats, &Map.new(&1, fn {id, chat} -> {id, Map.put(chat, "updated_at", "2026-09-16T00:00:00Z")} end))
+    end)
+
+    assert {:ok, summaries} = Store.list(c.project, c.auth, c.server)
+    assert Enum.map(summaries, & &1["id"]) == Enum.sort([first["id"], second["id"]], :desc)
+    assert {:ok, ^summaries} = Store.list(c.project, c.auth, c.server)
+  end
+
   test "streamed deltas survive restart, resume native thread, and reject duplicate submissions", c do
     chat = create(c)
     Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat:" <> chat["id"])

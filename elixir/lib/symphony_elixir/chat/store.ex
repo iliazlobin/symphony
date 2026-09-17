@@ -101,7 +101,7 @@ defmodule SymphonyElixir.Chat.Store do
          state.chats
          |> Map.values()
          |> Enum.filter(&(&1["project_id"] == project and &1["tracker_fingerprint"] == auth.tracker_fingerprint and not &1["archived"]))
-         |> Enum.sort_by(& &1["updated_at"], :desc)
+         |> Enum.sort_by(&{&1["updated_at"], &1["id"]}, :desc)
          |> Enum.map(&summary/1)}
       end
 
@@ -404,7 +404,12 @@ defmodule SymphonyElixir.Chat.Store do
   end
 
   defp recent_action_failed?(chat) do
-    action = List.last(chat["proposals"]) || %{}
+    action =
+      chat["proposals"]
+      |> Enum.with_index()
+      |> Enum.max_by(fn {action, index} -> {action_time(action), index} end, fn -> {%{}, 0} end)
+      |> elem(0)
+
     user = Enum.find(Enum.reverse(chat["messages"]), %{}, &(&1["role"] == "user"))
 
     with "failed" <- action["status"],
@@ -417,6 +422,17 @@ defmodule SymphonyElixir.Chat.Store do
       _ -> false
     end
   end
+
+  defp action_time(action), do: parsed_time(action["updated_at"]) || parsed_time(action["created_at"]) || 0
+
+  defp parsed_time(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, time, _} -> DateTime.to_unix(time, :microsecond)
+      _ -> nil
+    end
+  end
+
+  defp parsed_time(_), do: nil
 
   defp notify_list_change(previous, chat) do
     if list_signature(previous) != list_signature(chat) do
