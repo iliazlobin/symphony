@@ -439,6 +439,11 @@
       this.resizeComposer();
       requestAnimationFrame(this.scroll);
     },
+    reconnected() {
+      // A channel rejoin remounts server state but retains this hook instance.
+      this.loadedTabKey = undefined;
+      this.loadTab();
+    },
     destroyed() { this.abort.abort(); }
   };
   window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace};
