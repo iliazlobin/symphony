@@ -216,17 +216,21 @@ The browser sends IDs and display metadata, never arbitrary page text, screensho
 or form contents. The parent restricts IDs to its current board; the store validates
 the immutable project boundary again before persistence and model execution.
 
-Sharing controls affect the next message, not retained history. A disabled snapshot
-is explicitly delivered to the resumed native thread; earlier context is not silently
-reused as the current view. `symphony_view_context` refreshes authorized task summaries
-and reports missing records, stale sources and truncation. Snapshot hints never grant
-write authority. `symphony_task_details` retains each linked PR's independent state,
-review, head revision and CI instead of treating one merged PR as issue completion.
+The board snapshot accompanies each message automatically and is retained with that
+message. A standalone conversation without a matching board view has no current snapshot;
+it must not reuse an older view. The Context tab separates the next message's snapshot
+from retained history; Outputs and Sources expose recorded tool artifacts and references.
+Changing tabs does not reset the composer or conversation. Tabs are presentation state;
+conversation records remain owned by the store. `symphony_view_context` refreshes
+authorized task summaries and reports missing records, stale sources and truncation.
+Snapshot hints never grant write authority. `symphony_task_details` retains each
+linked PR’s independent state, review, head revision and CI; a merged PR does not
+imply issue completion.
 
 There are three distinct records: the app's visible messages and receipts, Codex's
 native thread history with automatic compaction, and committed project documents
 retrieved on demand. Compaction does not erase the visible conversation or create a
-shared project memory. Documents and task text are untrusted data. Context shows
+shared project memory. Documents and task text are untrusted data. The Sources tab shows
 retrieved references, not a claim to list every token in the model context.
 
 Only browser decisions execute write proposals. Native controls retain revision and

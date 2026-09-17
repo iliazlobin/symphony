@@ -53,6 +53,8 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
       {:noreply, socket}
     end
 
+    def handle_info({:view_context, context}, socket), do: {:noreply, assign(socket, :view_context, context)}
+
     def handle_info({:chat_panel, :navigate, location}, socket), do: {:noreply, assign(socket, Map.to_list(location))}
 
     def render(assigns) do
@@ -206,7 +208,40 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
       restore_env("SYMPHONY_CONTROL_TOKEN", previous_token)
     end)
 
-    %{server: server, opts: opts, marker: marker, auth: auth, requests: request_log, config: config}
+    %{server: server, opts: opts, marker: marker, auth: auth, requests: request_log, config: config, board: board_agent}
+  end
+
+  test "output tabs retain issue and PR evidence, metrics and safe links across reconnect", ctx do
+    pr = %{
+      number: 9,
+      title: "Handle interrupted retries",
+      url: "https://github.com/example/integration/pull/9",
+      state: "merged",
+      review: "approved",
+      checks: "success",
+      check_total: 3,
+      draft: false,
+      additions: 12,
+      deletions: 4,
+      changed_files: 2
+    }
+
+    Agent.update(ctx.board, fn board -> %{board | tasks: Enum.map(board.tasks, &Map.put(&1, :pull_requests, [pr]))} end)
+    {view, _} = chat_view(ctx)
+    render_submit(view, "send-message", %{"message" => "Review work"})
+    chat = wait_chat(ctx, &(&1["status"] == "idle"))
+    render_click(view, "session-tab", %{"tab" => "outputs"})
+    assert has_element?(view, "#session-outputs-content:not([hidden]) .chat-artifact[data-artifact-kind=issue]", "Clarify retry behavior")
+    assert has_element?(view, ".chat-artifact[data-artifact-kind=pull_request] a[href='https://github.com/example/integration/pull/9']", "Handle interrupted retries")
+    assert has_element?(view, ".chat-artifact[data-artifact-kind=pull_request]", "merged")
+    assert has_element?(view, ".chat-artifact[data-artifact-kind=pull_request] .artifact-metrics", "approved")
+    assert has_element?(view, ".chat-artifact[data-artifact-kind=pull_request] .artifact-metrics", "success")
+    render_click(view, "session-tab", %{"tab" => "sources"})
+    assert has_element?(view, "#session-sources-content:not([hidden]) .context-reference")
+    {reopened, _} = chat_view(ctx, chat["id"])
+    render_click(reopened, "session-tab", %{"tab" => "outputs"})
+    assert has_element?(reopened, ".chat-artifact[data-artifact-kind=pull_request]", "Handle interrupted retries")
+    assert Agent.get(ctx.requests, & &1) == []
   end
 
   test "real management tools stream linked widgets through Store and retain native thread history", ctx do
@@ -229,8 +264,8 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
              ".chat-widget-tasks .widget-task a[href='/?priority=P2&project=github%3Aexample%2Fintegration&q=retry&sort=priority&status=attention&task=github%3Aexample%2Fintegration%3A2']"
            )
 
-    render_click(view, "toggle-inspector")
-    refute has_element?(view, "#chat-inspector", "No outputs yet.")
+    render_click(view, "session-tab", %{"tab" => "outputs"})
+    refute has_element?(view, "#session-outputs-content", "No outputs yet.")
     assert Agent.get(ctx.requests, & &1) == []
 
     stop_supervised!(Store)
@@ -319,15 +354,15 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     {view, _} = chat_view(ctx)
     render_submit(view, "send-message", %{"message" => "Review work"})
     chat = wait_chat(ctx, &(&1["status"] == "idle"))
-    render_click(view, "toggle-inspector")
-    assert has_element?(view, "#chat-inspector")
+    render_click(view, "session-tab", %{"tab" => "outputs"})
+    assert has_element?(view, "#session-outputs-content")
     System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("new-integration-token", 3))
     Phoenix.PubSub.broadcast(SymphonyElixir.PubSub, "chat:" <> chat["id"], {:chat_updated, chat["id"]})
     assert eventually(fn -> render(view) =~ "Unlock chat" end)
     html = render(view)
     assert html =~ "Unlock chat"
     refute html =~ "The retry task needs attention."
-    refute has_element?(view, "#chat-inspector")
+    refute has_element?(view, "#session-outputs-content")
     refute has_element?(view, "#chat-messages")
     assert {:error, :unauthorized} = Store.get(@project, chat["id"], ctx.auth, ctx.server)
   end
@@ -341,7 +376,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     refute_receive {:model_started, _, _, _}
   end
 
-  test "embedded sharing controls reach real Store and tools per turn without reusing a prior view", ctx do
+  test "automatic board context reaches real Store and tools without reusing a prior view", ctx do
     snapshot = %{
       "version" => 1,
       "project_id" => @project,
@@ -358,16 +393,16 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     session = %{BrowserAuth.session_key() => ctx.marker, "project" => @project, "context" => snapshot}
     {:ok, view, _html} = live_isolated(local_conn(), PanelHost, session: session)
     view = with_target(view, "#chat-app")
-    render_change(view, "context-options", %{"share_context" => "true", "include_selected" => "false"})
     render_submit(view, "send-message", %{"message" => "Use this view"})
-    expected = Map.put(snapshot, "selected_task_id", nil)
-    assert_receive {:view_seen, ^expected, %{"sharing" => "on", "snapshot" => ^expected, "current_tasks" => [%{"issue_id" => "2"}]}}
+    expected = snapshot
+    assert_receive {:view_seen, ^expected, %{"context_status" => "available", "snapshot" => ^expected, "current_tasks" => [%{"issue_id" => "2"}]}}
     chat = wait_chat(ctx, &(&1["status"] == "idle"))
     user = Enum.find(chat["messages"], &(&1["role"] == "user"))
     assert user["view_context"] == expected
-    render_change(view, "context-options", %{"share_context" => "false"})
+    send(view.pid, {:view_context, nil})
+    assert has_element?(view, "#session-context-content", "No matching board context")
     render_submit(view, "send-message", %{"message" => "Use this view"})
-    assert_receive {:view_seen, nil, %{"sharing" => "off", "snapshot" => nil, "current_tasks" => []}}
+    assert_receive {:view_seen, nil, %{"context_status" => "unavailable", "snapshot" => nil, "current_tasks" => []}}
     chat = wait_chat(ctx, &(&1["status"] == "idle" and length(&1["messages"]) == 4))
     assert chat["messages"] |> Enum.filter(&(&1["role"] == "user")) |> List.last() |> Map.fetch!("view_context") == nil
     assert Agent.get(ctx.requests, & &1) == []

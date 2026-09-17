@@ -193,21 +193,24 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert render(resumed) =~ "One task is waiting"
   end
 
-  test "rename and archive preserve project ownership and stored history", ctx do
+  test "session tabs preserve drafts and streamed history without rename or archive controls", ctx do
     {view, _} = chat_view(ctx, "/chat?project=alpha&chat=a1")
-    render_click(view, "open-rename")
-    assert has_element?(view, "dialog#chat-dialog")
-    render_submit(view, "rename-chat", %{"title" => "Release planning"})
-    assert render(view) =~ "Release planning"
-    refute has_element?(view, "#chat-dialog")
-    render_click(view, "open-archive")
-    render_click(view, "archive-chat")
-    assert_patch(view, "/chat?project=alpha")
+    render_change(view, "draft", %{"message" => "Keep this draft"})
+
+    for tab <- ~w(context outputs sources chat) do
+      render_click(view, "session-tab", %{"tab" => tab})
+      assert has_element?(view, "#session-#{tab}-tab[aria-selected=true]")
+      assert has_element?(view, "#session-#{tab}-content:not([hidden])")
+      assert has_element?(view, "#chat-message-input", "Keep this draft")
+    end
+
+    refute has_element?(view, "button[phx-click=open-rename]")
+    refute has_element?(view, "button[phx-click=open-archive]")
+    refute has_element?(view, "#chat-inspector-button")
+    assert render(view) =~ "Alpha secret"
     {:ok, retained} = FixtureStore.get("alpha", "a1", nil)
-    assert retained["archived"]
+    refute retained["archived"]
     assert retained["messages"] != []
-    render_click(view, "open-history")
-    refute has_element?(view, "#chat-dialog", "Release planning")
   end
 
   test "typed widgets link filters and tasks while proposals require explicit confirmation", ctx do
@@ -246,10 +249,10 @@ defmodule SymphonyElixir.ChatLiveTest do
     refute has_element?(view, ".chat-widget img")
     refute has_element?(view, "a[href^='javascript:']")
     refute has_element?(view, ".chat-widget-html")
-    render_click(view, "toggle-inspector")
-    assert has_element?(view, ".chat-workspace[data-inspector=true]")
-    assert has_element?(view, "#chat-inspector", "Malicious source")
-    refute has_element?(view, "#chat-inspector a[href='//evil.example']")
+    render_click(view, "session-tab", %{"tab" => "sources"})
+    assert has_element?(view, "#session-sources-content:not([hidden])")
+    assert has_element?(view, "#session-sources-content", "Malicious source")
+    refute has_element?(view, "#session-sources-content a[href='//evil.example']")
   end
 
   test "conflicting controls wait for streaming or action completion without exposing action cancellation", ctx do
@@ -274,7 +277,6 @@ defmodule SymphonyElixir.ChatLiveTest do
     FixtureStore.put(chat)
     assert eventually(fn -> has_element?(view, "#send-message-button[disabled]", "Applying action") end)
     assert has_element?(view, "#chat-message-input[disabled]")
-    assert has_element?(view, "button[phx-click=open-archive][disabled]")
     refute has_element?(view, "#stop-response-button")
     render_submit(view, "send-message", %{"message" => "A conflicting message"})
     assert render(view) =~ "Wait for the current response or action"
@@ -327,7 +329,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     view = embedded_view(ctx, first)
     assert has_element?(view, ".embedded-chat")
     refute has_element?(view, "#chat-project")
-    assert has_element?(view, "#chat-context-controls", "2 visible tasks")
+    assert has_element?(view, "#session-context-content", "2 visible tasks")
     render_change(view, "draft", %{"message" => "Help with these cards"})
     render_click(view, "open-history")
     render_change(view, "search-history", %{"query" => "Alpha"})
@@ -335,7 +337,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     send(view.pid, {:view_context, updated})
     assert has_element?(view, "#chat-message-input", "Help with these cards")
     assert has_element?(view, "#chat-dialog input[value=Alpha]")
-    assert has_element?(view, "#chat-context-controls", "1 visible task")
+    assert has_element?(view, "#session-context-content", "1 visible task")
     assert has_element?(view, "#chat-app[data-chat-id=a1]")
     render_click(view, "close-dialog")
     render_submit(view, "send-message", %{"message" => "Help with these cards"})
@@ -343,20 +345,25 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert Enum.find(chat["messages"], &(&1["role"] == "user"))["view_context"] == updated
   end
 
-  test "view sharing and selected-card identification are explicit per-message controls", ctx do
+  test "board context and selected task attach automatically and remain with their messages", ctx do
     context = view_context()
     view = embedded_view(ctx, context)
-    render_change(view, "context-options", %{"share_context" => "true", "include_selected" => "false"})
-    render_submit(view, "send-message", %{"message" => "Use the filter without identifying the selected card"})
+    refute has_element?(view, "input[name=share_context]")
+    render_click(view, "session-tab", %{"tab" => "context"})
+    render_submit(view, "send-message", %{"message" => "Use the current cards"})
     {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
-    sent = Enum.find(chat["messages"], &(&1["role"] == "user"))["view_context"]
-    assert sent["selected_task_id"] == nil
-    assert sent["visible_task_ids"] == context["visible_task_ids"]
+    assert Enum.find(chat["messages"], &(&1["role"] == "user"))["view_context"] == context
+    assert has_element?(view, "#session-chat-tab[aria-selected=true]")
+    render_click(view, "session-tab", %{"tab" => "context"})
+    assert has_element?(view, ".retained-context", "Use the current cards")
+    assert has_element?(view, ".retained-context", "Selected task: alpha:7")
+    assert has_element?(view, "#stop-response-button")
     render_click(view, "stop-response")
-    render_change(view, "context-options", %{"share_context" => "false", "include_selected" => "false"})
-    render_submit(view, "send-message", %{"message" => "Do not attach this view"})
+    send(view.pid, {:view_context, nil})
+    render_submit(view, "send-message", %{"message" => "No board is available now"})
     {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
     assert chat["messages"] |> Enum.filter(&(&1["role"] == "user")) |> List.last() |> Map.fetch!("view_context") == nil
+    assert has_element?(view, ".retained-context", "Use the current cards")
   end
 
   test "an embedded project switch clears drafts and never attaches another project's snapshot", ctx do
@@ -373,45 +380,26 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert render(view) =~ "Beta project"
   end
 
-  test "saved chat preferences affect the next message without rewriting history or blocking composer overrides", ctx do
-    context = view_context()
-    view = embedded_view(ctx, context)
-    assert has_element?(view, "#chat-app[data-project=alpha][data-event-target]")
-    render_submit(view, "send-message", %{"message" => "First snapshot"})
-    render_click(view, "stop-response")
-
-    render_hook(view, "context-preferences", %{"project_id" => "alpha", "share_context" => false, "include_selected" => false})
-    refute has_element?(view, "input[name=share_context][checked]")
-    render_submit(view, "send-message", %{"message" => "Saved sharing preference"})
-    render_click(view, "stop-response")
-
-    render_change(view, "context-options", %{"share_context" => "true", "include_selected" => "false"})
-    render_submit(view, "send-message", %{"message" => "Override for this message"})
-    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
-    [first, second, third] = Enum.filter(chat["messages"], &(&1["role"] == "user"))
-    assert first["view_context"] == context
-    assert second["view_context"] == nil
-    assert third["view_context"] == Map.put(context, "selected_task_id", nil)
-  end
-
-  test "chat preferences reject stale project events and malformed boolean values", ctx do
+  test "tab restoration rejects stale conversation, project and malformed preferences", ctx do
     view = embedded_view(ctx, view_context())
 
     for params <- [
-          %{"project_id" => "beta", "share_context" => false, "include_selected" => false},
-          %{"project_id" => "alpha", "share_context" => "false", "include_selected" => false},
-          %{"project_id" => "alpha", "share_context" => false}
+          %{"project_id" => "beta", "chat_id" => "a1", "tab" => "sources"},
+          %{"project_id" => "alpha", "chat_id" => "b1", "tab" => "sources"},
+          %{"project_id" => "alpha", "chat_id" => "a1", "tab" => "unknown"}
         ] do
-      render_hook(view, "context-preferences", params)
-      assert has_element?(view, "input[name=share_context][checked]")
+      render_hook(view, "restore-session-tab", params)
+      assert has_element?(view, "#session-chat-tab[aria-selected=true]")
     end
 
-    send(view.pid, {:project, "beta"})
-    assert has_element?(view, "#chat-app[data-project=beta]")
-    render_hook(view, "context-preferences", %{"project_id" => "alpha", "share_context" => false, "include_selected" => false})
-    assert has_element?(view, "input[name=share_context][checked]")
-    render_hook(view, "context-preferences", %{"project_id" => "beta", "share_context" => false, "include_selected" => true})
-    refute has_element?(view, "input[name=share_context][checked]")
+    render_hook(view, "restore-session-tab", %{"project_id" => "alpha", "chat_id" => "a1", "tab" => "sources"})
+    assert has_element?(view, "#session-sources-tab[aria-selected=true]")
+    render_change(view, "draft", %{"message" => "Retain draft"})
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    FixtureStore.put(Map.put(chat, "status", "running"))
+    assert eventually(fn -> has_element?(view, "#stop-response-button") end)
+    assert has_element?(view, "#session-sources-tab[aria-selected=true]")
+    assert has_element?(view, "#chat-message-input", "Retain draft")
   end
 
   test "embedded typed links update the board without transferring conversation or accepting a foreign project", ctx do
@@ -452,7 +440,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     html = render(view)
     assert html =~ "Unlock chat"
     refute html =~ "Alpha secret"
-    refute has_element?(view, "#chat-context-controls")
+    refute has_element?(view, "#session-context-content")
   end
 
   defp embedded_view(ctx, context, read_only \\ false) do

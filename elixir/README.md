@@ -327,10 +327,14 @@ The observability UI now runs on a minimal Phoenix stack:
 
 Open **Chat** at the right of the board header to show the conversation panel.
 The board and full-page chat share `ChatPanel`. The dock retains board filters and
-selected task links. **Share this view** attaches a validated, project-bound snapshot
-to each message; the selected-card checkbox removes its explicit selection. Snapshot
-records contain bounded IDs and filters, not raw browser contents. The current-view
-tool resolves fresh authorized task summaries; existing action previews and browser
+selected task links. Each message automatically attaches a validated project-bound
+snapshot of bounded task IDs and filters, not raw browser contents. **Chat**, **Context**,
+**Outputs** and **Sources** organize the same durable conversation. Context separates
+the next message's view from snapshots retained with earlier messages. Outputs collect
+recorded issue/PR summaries and action results; Sources retain retrieved references.
+Observed statuses are not live updates. The composer stays available across tabs, and
+the selected tab is remembered per conversation in this browser session. The current-view
+tool resolves fresh authorized task summaries; action previews and browser
 confirmations own all writes. See [management conversations](../ARCHITECTURE.md#management-conversations)
 for the context, storage and tool boundary, and the [operator guide](../profiles/events-concierge/README.md#operate)
 for supported actions and examples.
@@ -360,11 +364,13 @@ Create a fresh management Codex home and sign in using that exact executable:
 ```sh
 mkdir -p "$SYMPHONY_CHAT_CODEX_HOME"
 chmod 700 "$SYMPHONY_CHAT_CODEX_HOME"
-CODEX_HOME="$SYMPHONY_CHAT_CODEX_HOME" "$SYMPHONY_CHAT_CODEX_EXECUTABLE" login
+CODEX_HOME="$SYMPHONY_CHAT_CODEX_HOME" "$SYMPHONY_CHAT_CODEX_EXECUTABLE" -c 'cli_auth_credentials_store="file"' login
+CODEX_HOME="$SYMPHONY_CHAT_CODEX_HOME" "$SYMPHONY_CHAT_CODEX_EXECUTABLE" -c 'cli_auth_credentials_store="file"' login status
 ```
 
-Never copy another Codex home's authentication, configuration or history. The new
-home must have no user configuration, agent instructions, hooks, plugins or user
+Use file credentials because the dedicated runtime reads this home’s private `auth.json`;
+a keyring-only login is not available to it. Never copy another Codex home's
+authentication, configuration or history. The new home must have no user configuration, agent instructions, hooks, plugins or user
 skills. Native generated system skills are tolerated but disabled. The backend
 creates empty conversation workspaces and supplies only typed management tools.
 The browser uses [Google or local operator sign-in](#browser-sign-in); model
@@ -583,7 +589,7 @@ in the restore rail; selecting a status reveals its column. Display preferences 
 saved only in this browser and do not change scheduling or issue state.
 Card details and Settings open as native dialogs with Close and Escape. Settings has
 three sections: **Execution** for native controls, concurrency and read-only budgets;
-**AI & chat** for browser-local project context defaults and read-only model presets;
+**AI & chat** for context behavior and read-only model presets;
 and **Connections** for tracker/controller/chat storage status and operator login.
 Concurrency changes are confirmed native `set_concurrency` commands, persisted in the
 control ledger with revision and replay checks. Limits must be 1 through the workflow's
@@ -592,13 +598,9 @@ Successful changes affect new admissions, preserve active work and consumed budg
 and survive restart. Reloading a lower ceiling clamps a saved higher override.
 Changing control budgets still requires reviewed configuration and restart.
 
-Chat context preferences apply to the next message and future visits in this browser
-for the selected project. Save persists the choices; Cancel discards edits; Restore
-defaults stages both choices as enabled until Save. Composer switches are temporary
-overrides. Earlier messages are unchanged. The read-only preview permits these local
-preferences but never enables controller commands or chat execution. Missing controller
-settings remain “Not reported”; model presets and chat storage health do not verify
-model-account access. Display preferences stay in Display.
+The read-only preview never enables controller commands or chat execution. Missing
+controller settings remain “Not reported”; model presets and chat storage health do
+not verify model-account access. Display preferences stay in Display.
 
 Task
 descriptions render Markdown headings, lists, code, tables and safe external links;

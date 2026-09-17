@@ -56,18 +56,7 @@ defmodule SymphonyElixirWeb.SettingsPanel do
     </section>
 
     <section id="settings-ai" hidden={@tab != "ai"} aria-label="AI and chat settings">
-      <div class="settings-section"><div class="settings-section-title"><h3>Chat context defaults</h3><span class="settings-badge">This browser</span></div>
-        <form :if={@project_id} id="chat-preferences" phx-hook="ChatPreferences" phx-update="ignore" data-project={@project_id}>
-          <label class="settings-check"><input type="checkbox" data-chat-pref="share_context" checked /> Share the current board view</label>
-          <label class="settings-check"><input type="checkbox" data-chat-pref="include_selected" checked /> Identify the selected card</label>
-          <p class="settings-help">Saved in this browser for this project. Applies to the next message and future visits; earlier messages are unchanged. You can override these in the composer.</p>
-          <div class="dialog-actions"><button class="button button-primary" type="button" data-chat-prefs-save>Save preferences</button>
-            <button class="button button-quiet" type="button" data-chat-prefs-cancel>Cancel</button>
-            <button class="button button-quiet" type="button" data-chat-prefs-reset>Restore defaults</button></div>
-          <p data-chat-prefs-status role="status" class="settings-help"></p>
-        </form>
-        <p :if={!@project_id} class="settings-help">Select one project to set chat preferences.</p>
-      </div>
+      <div class="settings-section"><h3>Conversation context</h3><p class="settings-help">The current project board view accompanies each message automatically. Inspect current and retained snapshots in the conversation’s Context tab; retrieved references appear in Sources.</p></div>
       <div class="settings-section"><div class="settings-section-title"><h3>Model presets</h3><span class="settings-badge">Read-only</span></div>
         <p :if={@read_only} class="settings-help">The connected controller does not report its model presets. Chat is unavailable in this read-only preview.</p>
         <div :if={!@read_only}>
