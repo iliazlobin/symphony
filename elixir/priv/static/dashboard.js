@@ -371,20 +371,73 @@
       this.atBottom = true;
       this.running = this.el.dataset.running === "true";
       const on = (name, handler) => this.el.addEventListener(name, handler, {signal: this.abort.signal});
-      const tabs = ["threads", "chat", "context", "outputs", "sources"];
+      const tabs = ["chat", "context", "outputs", "sources"];
       this.tabKeyFor = chat => this.el.dataset.project ? "symphony.chat.tab.v1:" + this.el.dataset.project + ":" + (chat || "project") : null;
       this.tabKey = () => this.tabKeyFor(this.el.dataset.chatId);
+      this.viewKeyFor = chat => this.el.dataset.project ? "symphony.chat.view.v1:" + this.el.dataset.project + ":" + (chat || "project") : null;
+      this.saveView = (view, chat = this.el.dataset.chatId) => { try { const key = this.viewKeyFor(chat); if (key) sessionStorage.setItem(key, view); } catch { /* Presentation remains usable without storage. */ } };
       this.saveTab = tab => { try { const key = this.tabKey(); if (key) sessionStorage.setItem(key, tab); } catch { /* Optional presentation preference. */ } };
       this.loadTab = () => {
         const key = this.tabKey();
         if (key === this.loadedTabKey) return;
         this.loadedTabKey = key;
         try {
-          const tab = key && sessionStorage.getItem(key);
-          if (tabs.includes(tab)) this.pushEventTo(this.el.dataset.eventTarget, "restore-session-tab", {project_id: this.el.dataset.project, chat_id: this.el.dataset.chatId || null, tab});
+          let tab = key && sessionStorage.getItem(key);
+          const viewKey = this.viewKeyFor(this.el.dataset.chatId);
+          let view = viewKey && sessionStorage.getItem(viewKey);
+          // The former Threads tab is now list navigation, never a detail tab.
+          if (tab === "threads") { tab = "chat"; this.saveTab(tab); if (!view) { view = "list"; this.saveView(view); } }
+          const scope = {project_id: this.el.dataset.project, chat_id: this.el.dataset.chatId || null};
+          if (key && ["list", "conversation"].includes(view)) this.pushEventTo(this.el.dataset.eventTarget, "restore-workspace-view", {...scope, view});
+          if (this.el.dataset.chatId && tabs.includes(tab)) this.pushEventTo(this.el.dataset.eventTarget, "restore-session-tab", {...scope, tab});
         } catch { /* Conversation records do not depend on browser storage. */ }
       };
+      this.clearDrag = () => {
+        this.draggedThread = null;
+        this.el.querySelectorAll?.("[data-chat-drop]").forEach(row => row.removeAttribute("data-chat-drop"));
+      };
+      this.scope = () => [this.el.dataset.project, this.el.dataset.chatId, this.el.dataset.workspaceView].join(":");
+      this.dragScope = this.scope();
+      const canDrag = () => this.el.dataset.workspaceView === "list" && !this.el.querySelector("#chat-thread-search input")?.value;
+      on("dragstart", event => {
+        const handle = event.target.closest("[data-thread-drag]");
+        const row = handle?.closest("[data-thread-id]");
+        if (!handle || !row || handle.disabled || !canDrag()) { event.preventDefault(); return; }
+        event.stopPropagation();
+        this.draggedThread = {id: row.dataset.threadId, pinned: row.dataset.pinned, project: this.el.dataset.project};
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", row.dataset.threadId);
+      });
+      const dropPosition = event => {
+        const row = event.target.closest("#chat-thread-list [data-thread-id]");
+        const drag = this.draggedThread;
+        if (!drag || !row || !canDrag() || drag.project !== this.el.dataset.project || row.dataset.pinned !== drag.pinned || row.dataset.threadId === drag.id) return null;
+        const source = Array.from(this.el.querySelectorAll("#chat-thread-list [data-thread-id]")).find(candidate => candidate.dataset.threadId === drag.id);
+        if (!source || source.dataset.pinned !== drag.pinned) return null;
+        const rows = Array.from(row.parentElement.querySelectorAll("[data-thread-id]"));
+        const after = event.clientY > row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2;
+        const next = after ? rows.slice(rows.indexOf(row) + 1).find(candidate => candidate.dataset.threadId !== drag.id) : row;
+        return {row, after, before: next?.dataset.threadId || null};
+      };
+      on("dragover", event => {
+        if (this.draggedThread) event.stopPropagation();
+        const target = dropPosition(event);
+        this.el.querySelectorAll?.("[data-chat-drop]").forEach(row => row.removeAttribute("data-chat-drop"));
+        if (target) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; target.row.dataset.chatDrop = target.after ? "after" : "before"; }
+      });
+      on("drop", event => {
+        if (this.draggedThread) { event.preventDefault(); event.stopPropagation(); }
+        const target = dropPosition(event);
+        if (target) {
+          event.preventDefault(); event.stopPropagation();
+          this.pushEventTo(this.el.dataset.eventTarget, "move-thread", {id: this.draggedThread.id, before_id: target.before, pinned: this.draggedThread.pinned === "true", project_id: this.draggedThread.project});
+        }
+        this.ignoreThreadClickUntil = Date.now() + 300;
+        this.clearDrag();
+      });
+      on("dragend", event => { if (this.draggedThread) event.stopPropagation(); this.ignoreThreadClickUntil = Date.now() + 300; this.clearDrag(); });
       this.scroll = () => {
+        if (this.el.dataset.workspaceView === "list") return;
         const scroller = this.el.querySelector("#session-chat-content");
         if (scroller && this.atBottom) scroller.scrollTop = scroller.scrollHeight;
       };
@@ -420,9 +473,12 @@
         const tab = event.target.closest('[role="tab"][phx-click="session-tab"]');
         if (tab) this.saveTab(tab.getAttribute("phx-value-tab"));
         const thread = event.target.closest('button[phx-click="open-chat"]');
+        if (thread && Date.now() < (this.ignoreThreadClickUntil || 0)) { event.preventDefault(); event.stopPropagation(); return; }
         if (thread) {
+          this.saveView("conversation", thread.getAttribute("phx-value-id"));
           try { const key = this.tabKeyFor(thread.getAttribute("phx-value-id")); if (key) sessionStorage.setItem(key, "chat"); } catch { /* Row selection still opens Chat on the server. */ }
         }
+        if (event.target.closest('[phx-click="back-to-chats"]')) this.saveView("list");
         const boardLink = event.target.closest('a[phx-click="board-link"]');
         if (boardLink && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) event.preventDefault();
         else if (boardLink) event.stopPropagation();
@@ -433,12 +489,13 @@
       this.handleEvent("chat-message-sent", () => {
         const input = this.el.querySelector("#chat-message-input");
         if (input) { input.value = ""; input.focus(); }
-        this.saveTab("chat"); this.atBottom = true; this.resizeComposer(); requestAnimationFrame(this.scroll);
+        this.saveView("conversation"); this.saveTab("chat"); this.atBottom = true; this.resizeComposer(); requestAnimationFrame(this.scroll);
       });
       this.loadTab();
       requestAnimationFrame(this.scroll);
     },
     updated() {
+      if (this.dragScope !== this.scope()) { this.clearDrag(); this.dragScope = this.scope(); }
       if (this.chatId !== this.el.dataset.chatId) { this.chatId = this.el.dataset.chatId; this.atBottom = true; }
       this.loadTab();
       this.resizeComposer();
@@ -446,6 +503,7 @@
     },
     reconnected() {
       // A channel rejoin remounts server state but retains this hook instance.
+      this.clearDrag();
       this.loadedTabKey = undefined;
       this.loadTab();
     },

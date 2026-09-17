@@ -21,7 +21,8 @@ defmodule SymphonyElixir.ChatLiveTest do
          GenServer.call(__MODULE__, :all)
          |> Map.values()
          |> Enum.filter(&(&1["project_id"] == project))
-         |> Enum.map(&Map.take(&1, ~w(id project_id title snippet updated_at status display_status archived)))}
+         |> Enum.sort_by(&{!(&1["pinned"] == true), &1["order"] || 0, &1["id"]})
+         |> Enum.map(&Map.take(&1, ~w(id project_id title snippet updated_at status display_status archived pinned)))}
 
     def get(project, id, _auth) do
       case GenServer.call(__MODULE__, :all)[id] do
@@ -34,6 +35,24 @@ defmodule SymphonyElixir.ChatLiveTest do
       id = "new-#{System.unique_integer([:positive])}"
       chat = %{"id" => id, "title" => title, "project_id" => project, "messages" => [], "context" => [], "status" => "idle", "archived" => false, "updated_at" => "2026-09-15"}
       put(chat)
+    end
+
+    def pin(project, id, pinned, auth) do
+      with {:ok, _} <- update(project, id, auth, &Map.put(&1, "pinned", pinned)), do: list(project, auth)
+    end
+
+    def move(project, id, before, pinned, auth) do
+      with {:ok, chats} <- list(project, auth),
+           %{} = source <- Enum.find(chats, &(&1["id"] == id)),
+           true <- source["pinned"] == true == pinned,
+           true <- is_nil(before) or Enum.any?(chats, &(&1["id"] == before and &1["pinned"] == true == (source["pinned"] == true))) do
+        ids = chats |> Enum.filter(&(&1["pinned"] == true == (source["pinned"] == true))) |> Enum.map(& &1["id"]) |> List.delete(id)
+        index = Enum.find_index(ids, &(&1 == before)) || length(ids)
+        Enum.with_index(List.insert_at(ids, index, id), fn chat_id, order -> update(project, chat_id, auth, &Map.put(&1, "order", order)) end)
+        list(project, auth)
+      else
+        _ -> {:error, :invalid_chat_order}
+      end
     end
 
     def rename(project, id, title, auth), do: update(project, id, auth, &Map.put(&1, "title", title))
@@ -75,6 +94,14 @@ defmodule SymphonyElixir.ChatLiveTest do
 
     def handle_call(:all, _from, state), do: {:reply, state, state}
     def handle_call({:put, chat}, _from, state), do: {:reply, :ok, Map.put(state, chat["id"], chat)}
+  end
+
+  defmodule UnavailablePreferences do
+    defdelegate projects(auth), to: FixtureStore
+    defdelegate get(project, id, auth), to: FixtureStore
+    def list(_project, _auth), do: {:error, :chat_preferences_unavailable}
+    def pin(_project, _id, _pinned, _auth), do: {:error, :chat_preferences_unavailable}
+    def move(_project, _id, _before, _pinned, _auth), do: {:error, :chat_preferences_unavailable}
   end
 
   defmodule EmbeddedHost do
@@ -164,11 +191,11 @@ defmodule SymphonyElixir.ChatLiveTest do
     {view, html} = chat_view(ctx, "/chat?project=alpha&chat=a1")
     assert html =~ "Alpha secret"
     refute html =~ "Beta secret"
-    render_click(view, "session-tab", %{"tab" => "threads"})
-    assert has_element?(view, "#session-threads-content", "Alpha plan")
-    refute has_element?(view, "#session-threads-content", "Beta private plan")
+    render_click(view, "back-to-chats")
+    assert has_element?(view, "#chat-thread-list", "Alpha plan")
+    refute has_element?(view, "#chat-thread-list", "Beta private plan")
     render_change(view, "search-threads", %{"query" => "missing"})
-    assert has_element?(view, "#session-threads-content", "No threads match")
+    assert has_element?(view, "#chat-thread-list", "No chats match")
     render_click(view, "session-tab", %{"tab" => "chat"})
     render_patch(view, "/chat?project=alpha&chat=b1")
     refute render(view) =~ "Beta secret"
@@ -186,9 +213,9 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert html =~ "What’s next for Beta project?"
     refute html =~ "Unsaved alpha details"
     refute html =~ "Alpha secret"
-    render_click(view, "session-tab", %{"tab" => "threads"})
-    assert has_element?(view, "#session-threads-content", "Beta private plan")
-    refute has_element?(view, "#session-threads-content", "Alpha plan")
+    render_click(view, "back-to-chats")
+    assert has_element?(view, "#chat-thread-list", "Beta private plan")
+    refute has_element?(view, "#chat-thread-list", "Alpha plan")
   end
 
   test "new chats stream owner updates and resume after browser reconnect", ctx do
@@ -212,7 +239,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     {view, _} = chat_view(ctx, "/chat?project=alpha&chat=a1")
     render_change(view, "draft", %{"message" => "Keep this draft"})
 
-    for tab <- ~w(threads context outputs sources chat) do
+    for tab <- ~w(context outputs sources chat) do
       render_click(view, "session-tab", %{"tab" => tab})
       assert has_element?(view, "#session-#{tab}-tab[aria-selected=true]")
       assert has_element?(view, "#session-#{tab}-content:not([hidden])")
@@ -228,7 +255,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert retained["messages"] != []
   end
 
-  test "Threads is first and default without selection, searchable and opens the chosen Chat", ctx do
+  test "Chat list is default, searchable and opens a conversation view", ctx do
     {:ok, second} = FixtureStore.get("alpha", "a1", nil)
 
     FixtureStore.put(
@@ -241,27 +268,96 @@ defmodule SymphonyElixir.ChatLiveTest do
     )
 
     {view, _} = chat_view(ctx, "/chat?project=alpha")
-    assert has_element?(view, ".chat-session-tabs button:first-child#session-threads-tab[aria-selected=true]")
-    assert has_element?(view, ".chat-composer-wrap[hidden]")
+    assert has_element?(view, "#chat-thread-list:not([hidden])")
+    assert has_element?(view, "#chat-conversation-detail[hidden]")
     refute has_element?(view, "#chat-history-button")
     refute has_element?(view, "#chat-dialog")
     render_change(view, "search-threads", %{"query" => "subscription"})
     assert has_element?(view, "[data-thread-id=a2] .thread-status", "Awaiting confirmation")
     refute has_element?(view, "[data-thread-id=a1]")
     assert has_element?(view, "[data-thread-id=a2] time[datetime='2026-09-16T13:14:15Z'][title='Updated 2026-09-16T13:14:15Z']", "Updated Sep 16")
-    view |> element("[data-thread-id=a2]") |> render_click()
+    view |> element("[data-thread-id=a2] .thread-open") |> render_click()
     assert has_element?(view, "#session-chat-tab[aria-selected=true]")
-    assert has_element?(view, ".chat-composer-wrap:not([hidden])")
+    assert has_element?(view, "#chat-conversation-detail:not([hidden])")
     assert has_element?(view, "#chat-app[data-chat-id=a2]")
     render_click(view, "new-chat")
     assert has_element?(view, "#session-chat-tab[aria-selected=true]")
     refute has_element?(view, "#chat-app[data-chat-id=a2]")
   end
 
+  test "list and detail navigation preserves a draft and same-chat updates never force detail", ctx do
+    {view, _} = chat_view(ctx, "/chat?project=alpha&chat=a1")
+    assert has_element?(view, "#chat-conversation-detail:not([hidden])")
+    refute has_element?(view, "#session-threads-tab")
+    render_change(view, "draft", %{"message" => "Keep my draft"})
+    render_click(view, "back-to-chats")
+    assert has_element?(view, "#chat-thread-list:not([hidden])")
+    assert has_element?(view, ".chat-session-tabs[hidden]")
+    {:ok, current} = FixtureStore.get("alpha", "a1", nil)
+    FixtureStore.put(Map.put(current, "status", "running"))
+    assert eventually(fn -> has_element?(view, "#stop-response-button") end)
+    assert has_element?(view, "#chat-thread-list:not([hidden])")
+    assert has_element?(view, "#chat-message-input", "Keep my draft")
+    view |> element("[data-thread-id=a1] .thread-open") |> render_click()
+    assert has_element?(view, "#chat-conversation-detail:not([hidden])")
+    assert has_element?(view, "#chat-message-input", "Keep my draft")
+    render_hook(view, "restore-workspace-view", %{"project_id" => "beta", "chat_id" => "a1", "view" => "list"})
+    assert has_element?(view, "#chat-conversation-detail:not([hidden])")
+    render_hook(view, "restore-workspace-view", %{"project_id" => "alpha", "chat_id" => "a1", "view" => "list"})
+    assert has_element?(view, "#chat-thread-list:not([hidden])")
+    render_hook(view, "restore-session-tab", %{"project_id" => "alpha", "chat_id" => "a1", "tab" => "threads"})
+    refute has_element?(view, "#session-threads-tab")
+  end
+
+  test "pinning and keyboard ordering keep chat groups scoped and retain selected draft", ctx do
+    {:ok, original} = FixtureStore.get("alpha", "a1", nil)
+    FixtureStore.put(original |> Map.put("id", "a2") |> Map.put("title", "Second chat"))
+    FixtureStore.put(original |> Map.put("id", "a3") |> Map.put("title", "Third chat"))
+    {view, _} = chat_view(ctx, "/chat?project=alpha&chat=a1")
+    render_change(view, "draft", %{"message" => "Still selected"})
+    render_click(view, "back-to-chats")
+    refute has_element?(view, "[data-thread-id] button button")
+    assert has_element?(view, "[data-thread-id=a1] [phx-value-direction=up][disabled]")
+    view |> element("[data-thread-id=a2] [phx-click=pin-thread]") |> render_click()
+    assert has_element?(view, "[data-pin-group=true] [data-thread-id=a2]")
+    assert has_element?(view, "[data-thread-id=a2] [phx-click=pin-thread][aria-label='Unpin Second chat']")
+    view |> element("[data-thread-id=a2] [phx-click=pin-thread]") |> render_click()
+    view |> element("[data-thread-id=a3] [phx-value-direction=up]") |> render_click()
+    assert has_element?(view, "[data-pin-group=false] [data-thread-id=a3] + [data-thread-id=a2]")
+    render_change(view, "search-threads", %{"query" => "Third"})
+    assert has_element?(view, "[data-thread-id=a3] [data-thread-drag][disabled]")
+    assert has_element?(view, "[data-thread-id=a3] [phx-value-direction=down][disabled]")
+    render_hook(view, "move-thread", %{"id" => "a3", "before_id" => "a1", "pinned" => false, "project_id" => "beta"})
+    render_change(view, "search-threads", %{"query" => ""})
+    assert has_element?(view, "[data-pin-group=false] [data-thread-id=a1] + [data-thread-id=a3]")
+    assert has_element?(view, "#chat-message-input", "Still selected")
+  end
+
+  test "unavailable list preferences retain active detail and never claim an empty history", ctx do
+    {view, _} = chat_view(ctx, "/chat?project=alpha&chat=a1")
+    render_change(view, "draft", %{"message" => "Retained draft"})
+    Endpoint.config_change([{Endpoint, Keyword.put(Application.get_env(:symphony_elixir, Endpoint), :chat_store, UnavailablePreferences)}], [])
+    render_click(view, "pin-thread", %{"id" => "a1", "pinned" => "true"})
+    assert render(view) =~ "could not confirm saving"
+    assert has_element?(view, "#chat-message-input", "Retained draft")
+    assert has_element?(view, "#chat-conversation-detail:not([hidden])")
+    render_click(view, "back-to-chats")
+    assert has_element?(view, "#chat-thread-list", "could not be loaded")
+    assert has_element?(view, "[data-thread-id=a1]")
+    refute render(view) =~ "No chats yet"
+    {fresh, _} = chat_view(ctx, "/chat?project=alpha")
+    assert has_element?(fresh, "#chat-thread-list", "could not be loaded")
+    refute render(fresh) =~ "No chats yet"
+    Endpoint.config_change([{Endpoint, Keyword.put(Application.get_env(:symphony_elixir, Endpoint), :chat_store, FixtureStore)}], [])
+    render_click(view, "retry-chat-list")
+    refute has_element?(view, "#chat-thread-list", "could not be loaded")
+    assert has_element?(view, "#chat-message-input", "Retained draft")
+  end
+
   test "thread activity refreshes in place and old project notifications cannot cross scope", ctx do
     view = embedded_view(ctx, view_context())
     render_change(view, "draft", %{"message" => "Keep alpha draft"})
-    render_click(view, "session-tab", %{"tab" => "threads"})
+    render_click(view, "back-to-chats")
     render_change(view, "search-threads", %{"query" => "Alpha"})
     {:ok, background} = FixtureStore.get("alpha", "a1", nil)
     FixtureStore.put(background |> Map.put("id", "a2") |> Map.put("title", "Alpha background") |> Map.put("display_status", "running"))
@@ -271,7 +367,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert has_element?(view, "#chat-thread-search input[value=Alpha]")
     assert Enum.any?(Registry.lookup(SymphonyElixir.PubSub, "chat_project:alpha"), &(elem(&1, 0) == view.pid))
     send(view.pid, {:project, "beta"})
-    assert has_element?(view, "#session-threads-content", "Beta private plan")
+    assert has_element?(view, "#chat-thread-list", "Beta private plan")
     refute has_element?(view, "[data-thread-id=a2]")
     refute Enum.any?(Registry.lookup(SymphonyElixir.PubSub, "chat_project:alpha"), &(elem(&1, 0) == view.pid))
     send(view.pid, {:chat_list_updated, "alpha"})
@@ -307,7 +403,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("revoked", 8))
     send(view.pid, {:chat_list_updated, "alpha"})
     assert eventually(fn -> render(view) =~ "Unlock chat" end)
-    refute has_element?(view, "#session-threads-content")
+    refute has_element?(view, "#chat-thread-list")
     refute Enum.any?(Registry.lookup(SymphonyElixir.PubSub, "chat_project:alpha"), &(elem(&1, 0) == view.pid))
   end
 
@@ -416,7 +512,7 @@ defmodule SymphonyElixir.ChatLiveTest do
   test "expired authorization clears retained messages before another action", ctx do
     {view, _} = chat_view(ctx, "/chat?project=alpha&chat=a1")
     System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("rotated", 8))
-    render_click(view, "session-tab", %{"tab" => "threads"})
+    render_click(view, "back-to-chats")
     html = render(view)
     assert html =~ "Unlock chat"
     refute html =~ "Alpha secret"
@@ -429,7 +525,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     refute has_element?(view, "#chat-project")
     assert has_element?(view, "#session-context-content", "2 visible tasks")
     render_change(view, "draft", %{"message" => "Help with these cards"})
-    render_click(view, "session-tab", %{"tab" => "threads"})
+    render_click(view, "back-to-chats")
     render_change(view, "search-threads", %{"query" => "Alpha"})
     updated = first |> Map.put("visible_task_ids", ["alpha:8"]) |> Map.put("viewport_task_ids", ["alpha:8"]) |> Map.put("selected_task_id", "alpha:8")
     send(view.pid, {:view_context, updated})
@@ -511,8 +607,8 @@ defmodule SymphonyElixir.ChatLiveTest do
     render_click(view, "board-link", %{"url" => "/?project=beta&task=beta%3A7"})
     assert render(view) =~ "outside this conversation"
     assert has_element?(view, "#board-host[data-board-link='/?project=alpha&task=alpha%3A7']")
-    render_click(view, "session-tab", %{"tab" => "threads"})
-    assert has_element?(view, "#session-threads-content:not([hidden])")
+    render_click(view, "back-to-chats")
+    assert has_element?(view, "#chat-thread-list:not([hidden])")
     refute has_element?(view, "#chat-dialog")
     refute has_element?(view, "#board-dialog")
     render_click(view, "close-panel")

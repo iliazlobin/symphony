@@ -17,6 +17,8 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
       get: 3,
       rename: 4,
       archive: 3,
+      pin: 4,
+      move: 5,
       send_message: 5,
       send_message_with_context: 6,
       stop: 3,
@@ -227,15 +229,48 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     %{server: server, opts: opts, marker: marker, auth: auth, requests: request_log, config: config, board: board_agent}
   end
 
+  test "chat list pins and ordering update another browser and survive store restart", ctx do
+    {:ok, first} = Store.create(@project, "First conversation", ctx.auth, ctx.server)
+    {:ok, second} = Store.create(@project, "Second conversation", ctx.auth, ctx.server)
+    {:ok, third} = Store.create(@project, "Third conversation", ctx.auth, ctx.server)
+    {view, _} = chat_view(ctx, first["id"])
+    {other, _} = chat_view(ctx)
+    render_change(view, "draft", %{"message" => "Keep this draft while organizing"})
+    render_click(view, "back-to-chats")
+    render_click(view, "pin-thread", %{"id" => first["id"], "pinned" => "true"})
+    pinned = "[data-pin-group=true] [data-thread-id='#{first["id"]}']"
+    assert eventually(fn -> has_element?(other, pinned) end)
+    render_hook(view, "move-thread", %{"id" => second["id"], "before_id" => third["id"], "pinned" => false, "project_id" => @project})
+    reordered = "[data-pin-group=false] [data-thread-id='#{second["id"]}'] + [data-thread-id='#{third["id"]}']"
+    assert eventually(fn -> has_element?(other, reordered) end)
+    render_hook(view, "move-thread", %{"id" => first["id"], "before_id" => nil, "pinned" => false, "project_id" => @project})
+    assert render(view) =~ "moved between pinned and unpinned"
+    assert has_element?(view, "#chat-message-input", "Keep this draft while organizing")
+    assert {:ok, before} = Store.get(@project, first["id"], ctx.auth, ctx.server)
+    stop_supervised!(Store)
+    server = start_supervised!({Store, ctx.opts})
+    Application.put_env(:symphony_elixir, :chat_integration_store, server)
+    assert {:ok, restored} = Store.get(@project, first["id"], ctx.auth, server)
+    assert restored == before
+    {reopened, _} = chat_view(ctx)
+    assert has_element?(reopened, pinned)
+    assert has_element?(reopened, reordered)
+    render_click(view, "retry-chat-list")
+    render_click(view, "open-chat", %{"id" => first["id"]})
+    assert has_element?(view, "#chat-conversation-detail:not([hidden])")
+    assert has_element?(view, "#chat-message-input", "Keep this draft while organizing")
+    assert Agent.get(ctx.requests, & &1) == []
+  end
+
   test "thread lists follow background conversation activity without changing the selected draft", ctx do
     assert {:ok, selected} = Store.create(@project, "Selected conversation", ctx.auth, ctx.server)
     assert {:ok, background} = Store.create(@project, "Background conversation", ctx.auth, ctx.server)
     {view, _} = chat_view(ctx, selected["id"])
     render_change(view, "draft", %{"message" => "Keep this unsent draft"})
-    render_click(view, "session-tab", %{"tab" => "threads"})
+    render_click(view, "back-to-chats")
     {index, _} = chat_view(ctx)
-    selector = "#session-threads-content [data-thread-id='#{background["id"]}'] .thread-status"
-    assert has_element?(index, "#session-threads-content:not([hidden])")
+    selector = "#chat-thread-list [data-thread-id='#{background["id"]}'] .thread-status"
+    assert has_element?(index, "#chat-thread-list:not([hidden])")
 
     assert {:ok, _} = Store.send_message(@project, background["id"], "Wait for thread status", "thread-status", ctx.auth, ctx.server)
     assert_receive {:waiting_for_thread_status, runtime}
