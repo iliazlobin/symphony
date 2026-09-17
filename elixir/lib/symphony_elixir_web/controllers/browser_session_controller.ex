@@ -4,10 +4,17 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
 
   alias Phoenix.HTML.Safe
   alias Plug.Conn
-  alias SymphonyElixirWeb.{BrowserAuth, BrowserLoginHTML, BrowserSessions, Endpoint, GoogleOIDC}
+  alias SymphonyElixirWeb.{BrowserAuth, BrowserLoginHTML, BrowserOrigin, BrowserSessions, Endpoint, GoogleOIDC}
 
   @spec login(Conn.t(), map()) :: Conn.t()
   def login(conn, _params) do
+    case BrowserOrigin.loopback_login_url(conn) do
+      nil -> login_page(conn)
+      url -> conn |> no_store() |> redirect(external: url)
+    end
+  end
+
+  defp login_page(conn) do
     if BrowserAuth.google_enabled?() do
       assigns = %{csrf_token: Plug.CSRFProtection.get_csrf_token(), error: Phoenix.Flash.get(conn.assigns.flash, :error)}
 
@@ -40,7 +47,18 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
           login_failed(conn)
       end
     else
-      conn |> no_store() |> send_resp(403, "Sign-in requires the configured browser origin.") |> halt()
+      rejected_origin(conn)
+    end
+  end
+
+  defp rejected_origin(conn) do
+    case BrowserOrigin.loopback_login_url(conn) do
+      nil ->
+        conn |> no_store() |> send_resp(403, "Sign-in requires the configured browser origin.") |> halt()
+
+      url ->
+        assigns = %{csrf_token: nil, error: "Open the configured Symphony address to sign in.", login_url: url}
+        conn |> no_store() |> put_status(403) |> html(BrowserLoginHTML.render(assigns) |> Safe.to_iodata() |> IO.iodata_to_binary()) |> halt()
     end
   end
 

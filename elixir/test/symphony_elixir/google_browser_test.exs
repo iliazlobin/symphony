@@ -85,6 +85,89 @@ defmodule SymphonyElixir.GoogleBrowserTest do
     assert Plug.Conn.get_resp_header(rejected, "referrer-policy") == ["no-referrer"]
   end
 
+  test "loopback login aliases navigate to the configured origin before rendering a form", ctx do
+    update_auth(ctx, Map.put(ctx.config.browser_auth, "public_origin", "http://localhost:8778"))
+
+    for {host, peer} <- [{"127.0.0.1", {127, 0, 0, 1}}, {"::1", {0, 0, 0, 0, 0, 0, 0, 1}}] do
+      conn = %{local_conn() | host: host, port: 8778}
+      conn = Plug.Test.put_peer_data(conn, %{address: peer, port: 55, ssl_cert: nil})
+      login = get(conn, "/login?return_to=https%3A%2F%2Fevil.example&code=discard&state=discard")
+
+      assert redirected_to(login) == "http://localhost:8778/login"
+      assert Plug.Conn.get_resp_header(login, "cache-control") == ["no-store"]
+      assert Plug.Conn.get_resp_header(login, "referrer-policy") == ["no-referrer"]
+      assert Plug.Conn.get_session(login, "google_flow") == nil
+      assert Floki.find(Floki.parse_document!(login.resp_body), "form") == []
+      assert_raise Plug.CSRFProtection.InvalidCSRFTokenError, fn -> post(conn, "/auth/google", %{}) end
+    end
+
+    canonical = get(%{local_conn() | port: 8778}, "/login")
+    assert html_response(canonical, 200) =~ "Sign in with Google"
+    assert Plug.Conn.get_resp_header(canonical, "location") == []
+  end
+
+  test "login alias navigation ignores spoofed peers and requires the same local endpoint" do
+    alias_conn = %{local_conn() | host: "127.0.0.1"}
+
+    remote =
+      alias_conn
+      |> Plug.Test.put_peer_data(%{address: {192, 0, 2, 1}, port: 55, ssl_cert: nil})
+      |> Plug.Conn.put_req_header("x-forwarded-for", "127.0.0.1")
+      |> Plug.Conn.put_req_header("x-forwarded-host", "localhost")
+      |> Plug.Conn.put_req_header("x-forwarded-proto", "http")
+
+    for conn <- [remote, %{alias_conn | port: 8778}, %{alias_conn | host: "evil.example"}, %{alias_conn | scheme: :https}] do
+      assert BrowserOrigin.loopback_login_url(conn) == nil
+      url = URI.to_string(%URI{scheme: Atom.to_string(conn.scheme), host: conn.host, port: conn.port, path: "/login"})
+      assert Plug.Conn.get_resp_header(get(conn, url), "location") == []
+    end
+  end
+
+  test "login alias navigation is unavailable for HTTPS, invalid Google configuration and local tokens", ctx do
+    alias_conn = %{local_conn() | host: "127.0.0.1"}
+
+    for auth <- [
+          Map.put(ctx.config.browser_auth, "public_origin", "https://localhost"),
+          Map.put(ctx.config.browser_auth, "public_origin", "http://localhost/path"),
+          Map.put(ctx.config.browser_auth, "client_secret", nil),
+          %{"provider" => "local_token"}
+        ] do
+      update_auth(ctx, auth)
+      assert BrowserOrigin.loopback_login_url(alias_conn) == nil
+      refute Enum.any?(Plug.Conn.get_resp_header(get(alias_conn, "/login"), "location"), &String.starts_with?(&1, "http"))
+    end
+  end
+
+  test "stale alias login POST offers recovery without changing grants or pending flows" do
+    {conn, marker} = signed_in()
+    {:ok, flow} = BrowserSessions.issue(:flow, %{pending: true})
+
+    login =
+      conn
+      |> browser_recycle()
+      |> Plug.Test.init_test_session(%{"google_flow" => flow})
+      |> get("/login")
+
+    alias_browser = %{browser_recycle(login) | host: "127.0.0.1"}
+    alias_browser = Plug.Conn.put_req_header(alias_browser, "origin", "http://127.0.0.1")
+    rejected = post(alias_browser, "/auth/google", %{"_csrf_token" => csrf(login), "return_to" => "https://evil.example"})
+    document = rejected |> html_response(403) |> Floki.parse_document!()
+
+    assert Floki.attribute(document, "a", "href") == ["http://localhost/login"]
+    assert Floki.text(document) =~ "Continue to Symphony"
+    assert Floki.find(document, "form") == []
+    assert Plug.Conn.get_resp_header(rejected, "location") == []
+    assert Plug.Conn.get_session(rejected, BrowserAuth.session_key()) == marker
+    assert Plug.Conn.get_session(rejected, "google_flow") == flow
+    assert {:ok, _} = BrowserSessions.session(marker["id"])
+
+    callback = get(%{browser_recycle(rejected) | host: "127.0.0.1"}, "/auth/google/callback?code=foreign&state=foreign")
+    assert callback.status == 403
+    assert Plug.Conn.get_resp_header(callback, "location") == []
+    assert {:ok, _} = BrowserSessions.session(marker["id"])
+    assert {:ok, %{pending: true}} = BrowserSessions.take_flow(flow)
+  end
+
   test "logout revokes session and pending flow before disconnect and old cookies cannot return" do
     {conn, marker} = signed_in()
     assert get(browser_recycle(conn), "/").status == 200

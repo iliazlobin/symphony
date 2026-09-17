@@ -441,7 +441,9 @@ GitHub service credentials and Codex subscription authentication stay separate.
    ```
 
 3. Restart the controller and open that **exact origin**. `localhost` and
-   `127.0.0.1` are different origins. Select **Sign in with Google**, use the allowed
+   `127.0.0.1` are different origins. Local login pages redirect loopback aliases on
+   the same port to the configured origin before starting OAuth; old login forms
+   offer a recovery link. Select **Sign in with Google**, use the allowed
    account and verify the board, chat and Settings load. **Settings → Connections →
    Sign out** ends the Symphony browser session; it does not sign out of Google or
    the Codex model account.
