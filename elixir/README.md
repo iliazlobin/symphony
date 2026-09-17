@@ -404,7 +404,8 @@ before moving or restoring either; preserve both together. A second store owner,
 corrupt records or failed writes block operation without overwriting recovery data.
 Browser reconnect does not stop a turn; service restart leaves interrupted turns
 available to continue and uncertain writes available for read-only reconciliation.
-The file store is bounded to 500 conversations and 8 MiB per conversation. Archive
+The file store holds at most 500 conversation and task-submission records, with an
+8 MiB limit per record. Archive
 hides a chat from the active list; it does not delete its retained records.
 Once a conversation reaches 400 messages, start another chat for further turns.
 
