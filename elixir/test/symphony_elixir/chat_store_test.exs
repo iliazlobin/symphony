@@ -265,10 +265,133 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, renamed} = Store.rename(c.project, chat["id"], "A plan", c.auth, c.server)
     assert renamed["title"] == "A plan"
     refute Map.has_key?(renamed, "codex_thread_id")
-    assert {:ok, [^renamed]} = Store.list(c.project, c.auth, c.server)
+    assert {:ok, [%{"id" => id, "title" => "A plan", "display_status" => "new"}]} = Store.list(c.project, c.auth, c.server)
+    assert id == renamed["id"]
     assert {:ok, %{"archived" => true}} = Store.archive(c.project, chat["id"], c.auth, c.server)
     assert {:ok, []} = Store.list(c.project, c.auth, c.server)
     assert {:error, :chat_busy} = Store.send_message(c.project, chat["id"], "x", "x", c.auth, c.server)
+  end
+
+  test "thread summaries are scoped, bounded, and derive default titles without changing saved conversations", c do
+    assert {:ok, chat} = Store.create(c.project, "New conversation", c.auth, c.server)
+    assert {:ok, [%{"display_status" => "new", "snippet" => "", "message_count" => 0}]} = Store.list(c.project, c.auth, c.server)
+    text = "  A useful question\n" <> String.duplicate("about this project ", 30)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], text, "summary", c.auth, c.server)
+    finished = wait_chat(c, chat, &(&1["status"] == "idle"))
+    assert {:ok, [summary]} = Store.list(c.project, c.auth, c.server)
+    assert Map.keys(summary) |> Enum.sort() == Enum.sort(~w(id project_id title snippet updated_at status display_status archived message_count))
+    assert summary["title"] == text |> String.replace(~r/\s+/, " ") |> String.trim() |> String.slice(0, 80)
+    assert summary["snippet"] == "Hello from the project."
+    assert summary["display_status"] == "idle"
+    assert summary["message_count"] == 2
+    assert finished["title"] == "New conversation"
+    assert {:ok, []} = Store.list("github:test/two", c.auth, c.server)
+    assert {:ok, []} = Store.list(c.project, %{c.auth | tracker_fingerprint: "other"}, c.server)
+    assert {:error, :unauthorized} = Store.list(c.project, %{}, c.server)
+  end
+
+  test "project invalidation follows nonselected conversation lifecycle without streaming content or token churn", c do
+    Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat_project:" <> c.project)
+    project = c.project
+    selected = create(c)
+    assert_receive {:chat_list_updated, ^project}
+    assert {:ok, chat} = Store.create(c.project, "New chat", c.auth, c.server)
+    assert_receive {:chat_list_updated, ^project}
+    assert {:ok, _} = Store.create("github:test/two", "Other project", c.auth, c.server)
+    refute_receive {:chat_list_updated, _}
+
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "delayed delta", "turn", c.auth, c.server)
+    assert_receive {:chat_list_updated, ^project}
+    assert_receive {:runtime, runtime, _, "delayed delta"}
+    assert_receive {:phase_ready, ^runtime, "delayed delta"}
+    assert {:ok, summaries} = Store.list(c.project, c.auth, c.server)
+    assert Enum.find(summaries, &(&1["id"] == selected["id"]))["display_status"] == "new"
+    assert Enum.find(summaries, &(&1["id"] == chat["id"]))["display_status"] == "running"
+    send(runtime, :continue)
+    wait_chat(c, chat, &(List.last(&1["messages"])["text"] == "Buffered response"))
+    run = :sys.get_state(c.server).jobs[chat["id"]].run
+    assert :ok = GenServer.call(c.server, {:runtime_event, chat["id"], run, {:status, "New activity"}})
+    refute_receive {:chat_list_updated, _}
+    assert {:ok, summaries} = Store.list(c.project, c.auth, c.server)
+    assert Enum.find(summaries, &(&1["id"] == chat["id"]))["snippet"] == "delayed delta"
+
+    send(runtime, :finish)
+    wait_chat(c, chat, &(&1["status"] == "idle"))
+    assert_receive {:chat_list_updated, ^project}
+    assert {:ok, summaries} = Store.list(c.project, c.auth, c.server)
+    assert Enum.find(summaries, &(&1["id"] == chat["id"]))["display_status"] == "idle"
+    assert {:ok, _} = Store.archive(c.project, chat["id"], c.auth, c.server)
+    assert_receive {:chat_list_updated, ^project}
+    assert {:ok, [%{"id" => selected_id}]} = Store.list(c.project, c.auth, c.server)
+    assert selected_id == selected["id"]
+  end
+
+  test "thread action states distinguish confirmation, execution, uncertain outcomes and stale failures", c do
+    {chat, proposal} = propose(c)
+    assert thread_summary(c, chat)["display_status"] == "awaiting_confirmation"
+    Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat_project:" <> c.project)
+    project = c.project
+    auth = Map.put(c.auth, :action_result, :wait)
+    assert {:ok, _} = Store.decide(c.project, chat["id"], proposal["id"], "confirm", auth, c.server)
+    assert_receive {:chat_list_updated, ^project}
+    assert_receive {:action_started, action, _}
+    assert thread_summary(c, chat)["display_status"] == "action"
+    send(action, :finish)
+    wait_chat(c, chat, &(hd(&1["proposals"])["status"] == "completed"))
+    assert_receive {:chat_list_updated, ^project}
+    assert thread_summary(c, chat)["display_status"] == "idle"
+
+    {failed, failed_proposal} = propose(c)
+    failed_auth = Map.put(c.auth, :action_result, :failed)
+    assert {:ok, _} = Store.decide(c.project, failed["id"], failed_proposal["id"], "confirm", failed_auth, c.server)
+    wait_chat(c, failed, &(hd(&1["proposals"])["status"] == "failed"))
+    assert thread_summary(c, failed)["display_status"] == "error"
+    assert {:ok, _} = Store.send_message(c.project, failed["id"], "Hello", "after-failure", c.auth, c.server)
+    wait_chat(c, failed, &(&1["status"] == "idle"))
+    assert thread_summary(c, failed)["display_status"] == "idle"
+
+    {uncertain, uncertain_proposal} = propose(c)
+    unknown_auth = Map.put(c.auth, :action_result, :unknown)
+    assert {:ok, _} = Store.decide(c.project, uncertain["id"], uncertain_proposal["id"], "confirm", unknown_auth, c.server)
+    wait_chat(c, uncertain, &(hd(&1["proposals"])["status"] == "unknown"))
+    assert thread_summary(c, uncertain)["display_status"] == "needs_reconciliation"
+  end
+
+  test "errors, interruptions and recovery invalidate thread summaries without losing conversations", c do
+    chat = create(c)
+    Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat_project:" <> c.project)
+    project = c.project
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "error", "error", c.auth, c.server)
+    assert_receive {:chat_list_updated, ^project}
+    wait_chat(c, chat, &(&1["status"] == "error"))
+    assert_receive {:chat_list_updated, ^project}
+    assert thread_summary(c, chat)["display_status"] == "error"
+
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "delay finish", "held", c.auth, c.server)
+    assert_receive {:chat_list_updated, ^project}
+    assert_receive {:phase_ready, _, "delay finish"}
+    assert thread_summary(c, chat)["display_status"] == "running"
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    assert_receive {:chat_list_updated, ^project}
+    assert thread_summary(%{c | server: server}, chat)["display_status"] == "interrupted"
+    assert {:ok, restored} = Store.get(c.project, chat["id"], c.auth, server)
+    assert length(restored["messages"]) == 4
+  end
+
+  test "a storage fault stops action execution and shows reconciliation instead of a running action", c do
+    {chat, proposal} = propose(c)
+    assert {:ok, _} = Store.decide(c.project, chat["id"], proposal["id"], "confirm", Map.put(c.auth, :action_result, :wait), c.server)
+    assert_receive {:action_started, action, _}
+    monitor = Process.monitor(action)
+    assert thread_summary(c, chat)["display_status"] == "action"
+    Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat_project:" <> c.project)
+    project = c.project
+    block_record(c, chat)
+    assert {:error, :chat_storage_unavailable} = Store.rename(c.project, chat["id"], "Attempted rename", c.auth, c.server)
+    assert_receive {:DOWN, ^monitor, :process, ^action, :shutdown}
+    assert_receive {:chat_list_updated, ^project}
+    assert thread_summary(c, chat)["display_status"] == "needs_reconciliation"
   end
 
   test "streamed deltas survive restart, resume native thread, and reject duplicate submissions", c do
@@ -717,6 +840,11 @@ defmodule SymphonyElixir.Chat.StoreTest do
   defp create(c) do
     {:ok, chat} = Store.create(c.project, "New chat", c.auth, c.server)
     chat
+  end
+
+  defp thread_summary(c, chat) do
+    assert {:ok, summaries} = Store.list(c.project, c.auth, c.server)
+    Enum.find(summaries, &(&1["id"] == chat["id"]))
   end
 
   defp propose(c) do

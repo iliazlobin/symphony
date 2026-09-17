@@ -71,6 +71,8 @@ defmodule SymphonyElixir.Chat.Store do
       orchestrator: Keyword.get_lazy(opts, :orchestrator, &configured_orchestrator/0)
     }
 
+    Enum.each(recovered, fn {id, chat} -> notify_list_change(chats[id], chat) end)
+
     {:ok, state}
   end
 
@@ -100,7 +102,7 @@ defmodule SymphonyElixir.Chat.Store do
          |> Map.values()
          |> Enum.filter(&(&1["project_id"] == project and &1["tracker_fingerprint"] == auth.tracker_fingerprint and not &1["archived"]))
          |> Enum.sort_by(& &1["updated_at"], :desc)
-         |> Enum.map(&public/1)}
+         |> Enum.map(&summary/1)}
       end
 
     {:reply, result, state}
@@ -354,6 +356,78 @@ defmodule SymphonyElixir.Chat.Store do
   defp public(chat), do: Map.drop(chat, ["tracker_fingerprint", "runtime_identity", "codex_thread_id", "client_ids"])
   defp notify(id), do: Phoenix.PubSub.broadcast(SymphonyElixir.PubSub, "chat:" <> id, {:chat_updated, id})
 
+  defp summary(chat) do
+    chat
+    |> Map.take(~w(id project_id updated_at status archived))
+    |> Map.merge(%{
+      "title" => summary_title(chat),
+      "snippet" => summary_snippet(chat),
+      "display_status" => display_status(chat),
+      "message_count" => length(chat["messages"])
+    })
+  end
+
+  defp summary_title(chat) do
+    first_message = Enum.find(chat["messages"], &(&1["role"] == "user"))
+
+    if String.downcase(chat["title"]) in ["new chat", "new conversation"] and first_message,
+      do: compact_text(first_message["text"], 80),
+      else: chat["title"]
+  end
+
+  defp summary_snippet(chat) do
+    message = Enum.find(Enum.reverse(chat["messages"]), &(&1["status"] != "streaming" and String.trim(&1["text"]) != ""))
+    if message, do: compact_text(message["text"], 160), else: ""
+  end
+
+  defp compact_text(text, limit), do: text |> String.replace(~r/\s+/, " ") |> String.trim() |> String.slice(0, limit)
+
+  defp display_status(chat) do
+    actions = Enum.map(chat["proposals"], & &1["status"])
+
+    cond do
+      "executing" in actions -> "action"
+      chat["status"] == "running" -> "running"
+      "unknown" in actions -> "needs_reconciliation"
+      "pending" in actions -> "awaiting_confirmation"
+      true -> settled_status(chat)
+    end
+  end
+
+  defp settled_status(chat) do
+    cond do
+      chat["status"] in ["error", "interrupted"] -> chat["status"]
+      recent_action_failed?(chat) -> "error"
+      chat["messages"] == [] -> "new"
+      true -> "idle"
+    end
+  end
+
+  defp recent_action_failed?(chat) do
+    action = List.last(chat["proposals"]) || %{}
+    user = Enum.find(Enum.reverse(chat["messages"]), %{}, &(&1["role"] == "user"))
+
+    with "failed" <- action["status"],
+         action_stamp when is_binary(action_stamp) <- action["updated_at"],
+         user_stamp when is_binary(user_stamp) <- user["created_at"],
+         {:ok, action_time, _} <- DateTime.from_iso8601(action_stamp),
+         {:ok, user_time, _} <- DateTime.from_iso8601(user_stamp) do
+      DateTime.compare(action_time, user_time) != :lt
+    else
+      _ -> false
+    end
+  end
+
+  defp notify_list_change(previous, chat) do
+    if list_signature(previous) != list_signature(chat) do
+      project = chat["project_id"]
+      Phoenix.PubSub.broadcast(SymphonyElixir.PubSub, "chat_project:" <> project, {:chat_list_updated, project})
+    end
+  end
+
+  defp list_signature(nil), do: nil
+  defp list_signature(chat), do: chat |> summary() |> Map.delete("updated_at")
+
   defp reply_put(state, chat) do
     case put(state, chat) do
       {:ok, next} -> {:reply, {:ok, public(next.chats[chat["id"]])}, next}
@@ -366,6 +440,7 @@ defmodule SymphonyElixir.Chat.Store do
 
     if is_nil(state.fault) and Persistence.put(state.persistence, chat) == :ok do
       notify(chat["id"])
+      notify_list_change(state.chats[chat["id"]], chat)
       {:ok, %{state | chats: Map.put(state.chats, chat["id"], chat)}}
     else
       {:error, fault(state)}
@@ -381,7 +456,9 @@ defmodule SymphonyElixir.Chat.Store do
     chats =
       Map.new(state.chats, fn {id, chat} ->
         notify(id)
-        {id, chat |> Map.put("status", "error") |> Map.put("error", "Conversation storage is unavailable. Work has stopped.")}
+        stopped = chat |> Map.put("status", "error") |> Map.put("error", "Conversation storage is unavailable. Work has stopped.") |> recover()
+        notify_list_change(chat, stopped)
+        {id, stopped}
       end)
 
     %{state | fault: :chat_storage_unavailable, jobs: %{}, chats: chats}
