@@ -382,7 +382,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     assert body["labels"] == []
     assert body["body"] =~ "<!-- symphony-chat:#{proposal["id"]} -->"
     complete = wait_chat(ctx, &(hd(&1["proposals"])["status"] == "completed"))
-    assert has_element?(view, ".chat-widget-receipt", "execution was not queued")
+    assert eventually(fn -> has_element?(view, ".chat-widget-receipt", "execution was not queued") end)
     assert List.last(complete["messages"])["widgets"] |> hd() |> Map.fetch!("type") == "receipt"
     render_click(view, "decide", %{"id" => proposal["id"], "decision" => "confirm"})
     refute_receive {:github_request, "POST", _, _}
