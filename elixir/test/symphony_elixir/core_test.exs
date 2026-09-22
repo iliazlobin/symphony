@@ -1138,14 +1138,16 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    before_exit_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    Process.sleep(50)
     state = :sys.get_state(pid)
+    after_exit_ms = System.monotonic_time(:millisecond)
 
     assert %{attempt: 1, due_at_ms: due_at_ms, identifier: "MT-560", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
-    assert_due_in_range(due_at_ms, 9_000, 10_500)
+    assert due_at_ms >= before_exit_ms + 10_000
+    assert due_at_ms <= after_exit_ms + 10_000
   end
 
   test "stale retry timer messages do not consume newer retry entries" do
