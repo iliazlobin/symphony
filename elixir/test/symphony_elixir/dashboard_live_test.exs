@@ -192,6 +192,85 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#board-dialog")
   end
 
+  test "paused Ready tasks explain the dispatch gate and open Execution settings without resuming", ctx do
+    view = authorized_board_view()
+    before = GenServer.call(ctx.runtime, :control_snapshot)
+    assert has_element?(view, "#board-dispatch-guidance", "Execution is paused")
+    assert has_element?(view, "#board-dispatch-guidance", "Ready tasks will not start")
+    assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:2']", "Execution: Idle")
+
+    render_click(view, "open-settings")
+    render_click(view, "settings-tab", %{"tab" => "connections"})
+    render_click(view, "close-dialog")
+    view |> element("#board-dispatch-guidance button") |> render_click()
+    assert has_element?(view, "#settings-execution:not([hidden])", "Controller: Paused")
+    assert has_element?(view, "#settings-connections[hidden]")
+    refute has_element?(view, "#board-dialog button[phx-click=confirm-command]")
+
+    render_click(view, "close-dialog")
+    open_task(view, "2")
+    assert has_element?(view, "#task-dispatch-guidance", "existing holds and limits still apply")
+    view |> element("#task-dispatch-guidance button") |> render_click()
+    assert has_element?(view, "#settings-execution:not([hidden])")
+    assert GenServer.call(ctx.runtime, :control_snapshot) == before
+    refute_received {:settings_command, _}
+  end
+
+  test "dispatch guidance follows controller mode and disappears when no Ready tasks remain", ctx do
+    {view, _} = board_view()
+    draining = %{ctx.board | control: Map.put(ctx.board.control, "mode", "draining")}
+    refresh(view, ctx.runtime, draining)
+    assert has_element?(view, "#board-dispatch-guidance", "Execution is draining")
+    assert has_element?(view, "#board-dispatch-guidance", "Active work can finish")
+    assert has_element?(view, "#lane-running [data-task-id='github:example/fixture:3']")
+    open_task(view, "3")
+    refute has_element?(view, "#task-dispatch-guidance")
+
+    refresh(view, ctx.runtime, %{ctx.board | control: Map.put(ctx.board.control, "mode", "running")})
+    refute has_element?(view, "#board-dispatch-guidance")
+    refute has_element?(view, "#task-dispatch-guidance")
+
+    refresh(view, ctx.runtime, %{ctx.board | tasks: Enum.reject(ctx.board.tasks, &(&1.stage == "ready"))})
+    refute has_element?(view, "#board-dispatch-guidance")
+  end
+
+  @tag snapshot_fixture: true
+  test "unavailable or disabled controls suppress stale dispatch guidance", ctx do
+    {view, _} = board_view()
+    open_task(view, "2")
+
+    for board <- [
+          %{ctx.board | runtime_error: "Controller unavailable"},
+          %{ctx.board | runtime: %{error: %{code: "controller_unavailable"}}},
+          %{ctx.board | source_error: "Tracker unavailable"},
+          %{ctx.board | control: Map.put(ctx.board.control, "enabled", false)},
+          %{ctx.board | control: Map.put(ctx.board.control, "fault", "Ledger recovery required")},
+          %{ctx.board | control: Map.put(ctx.board.control, "error", "unavailable")},
+          %{ctx.board | control: Map.put(ctx.board.control, :error, "unavailable")},
+          %{ctx.board | control: Map.delete(ctx.board.control, "revision")}
+        ] do
+      refresh(view, ctx.runtime, board)
+      refute has_element?(view, "#board-dispatch-guidance")
+      refute has_element?(view, "#task-dispatch-guidance")
+    end
+
+    refresh(view, ctx.runtime, ctx.board)
+    assert has_element?(view, "#board-dispatch-guidance", "Execution is paused")
+    assert has_element?(view, "#task-dispatch-guidance", "Execution is paused")
+  end
+
+  @tag read_only: true
+  test "read-only dispatch guidance opens inspection without execution actions", ctx do
+    {view, _} = board_view()
+    assert has_element?(view, "#board-dispatch-guidance", "Execution is paused")
+    view |> element("#board-dispatch-guidance button") |> render_click()
+    assert has_element?(view, "#settings-execution:not([hidden])", "This board is read-only")
+    refute has_element?(view, "#board-dialog button[phx-click=prepare-command]")
+    refute has_element?(view, "#board-dialog button[phx-click=confirm-command]")
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
+  end
+
   test "settings and task details are native dialogs over the retained board" do
     {view, _html} = board_view()
     view |> element("#settings-button") |> render_click()

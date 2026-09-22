@@ -212,8 +212,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  def handle_event("open-settings", _params, socket) do
-    socket = socket |> clear_card_context() |> assign(:dialog, :settings) |> assign(:concurrency_draft, nil)
+  def handle_event("open-settings", params, socket) do
+    tab = if params["tab"] == "execution", do: "execution", else: socket.assigns.settings_tab
+
+    socket =
+      socket
+      |> clear_card_context()
+      |> assign(:dialog, :settings)
+      |> assign(:settings_tab, tab)
+      |> assign(:concurrency_draft, nil)
+
     {:noreply, refresh_chat_health(socket)}
   end
 
@@ -474,6 +482,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         settings: reported_settings(assigns.board),
         settings_editable: settings_editable?(assigns),
         controls_available: controls_available?(assigns),
+        dispatch_guidance: dispatch_guidance(assigns.board, assigns.payload),
         settings_projects: Enum.map(assigns.board.projects, &Map.put(&1, :url, safe_url(&1.url)))
       )
 
@@ -539,6 +548,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <p :if={@board.source_error} class="board-warning" role="alert">{@board.source_error}</p>
         <p :if={@board.runtime_error} class="board-warning" role="alert">{@board.runtime_error}</p>
         <p :if={Map.get(@board, :enrichment_error)} class="board-warning" role="alert"><strong>Pull request details incomplete:</strong> {Map.get(@board, :enrichment_error)}</p>
+        <div :if={@dispatch_guidance} id="board-dispatch-guidance" class="board-notice" role="status">
+          <p>{@dispatch_guidance}</p>
+          <button type="button" class="button button-small" phx-click="open-settings" phx-value-tab="execution">Execution settings</button>
+        </div>
         <div class="board-summary"><span data-result-count>{length(@board.tasks)} tasks</span>
           <span class="summary-right"><span :if={@loading}>Refreshing…</span>
           <button class="button button-small" phx-click="refresh" disabled={@loading}>Refresh</button></span></div>
@@ -618,6 +631,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <p class="muted">{@selected.project_label} · {@selected.identifier} · {lane_label(@selected.stage)}</p>
               <button :if={!@chat_open} class="button button-small" phx-click="open-chat">Discuss this task</button>
               <div class="task-evidence"><span class="evidence-badge">Issue: {display(Map.get(@selected, :tracker_state))}</span><span>{task_execution(@selected)}</span></div>
+              <div :if={@selected.stage == "ready" && @dispatch_guidance} id="task-dispatch-guidance" class="board-notice" role="status">
+                <p>{@dispatch_guidance}</p>
+                <button type="button" class="button button-small" phx-click="open-settings" phx-value-tab="execution">Execution settings</button>
+              </div>
               <div class="task-reference-links"><a :for={link <- task_links(@selected)} class="button button-small" href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
               <p :if={blocker(@selected)} class="attention-badge"><strong>Needs attention:</strong> {blocker(@selected)}</p>
               <p :if={Map.get(@selected, :completion_evidence)} class="muted">{Map.get(@selected, :completion_evidence)}</p>
@@ -690,6 +707,35 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp runtime_unavailable?(board, payload), do: not is_nil(board.runtime_error) or not is_nil(payload[:error])
+
+  defp dispatch_guidance(board, payload) do
+    control = board.control
+
+    cond do
+      runtime_unavailable?(board, payload) or not is_nil(board.source_error) ->
+        nil
+
+      not control_snapshot_available?(control) ->
+        nil
+
+      not Enum.any?(board.tasks, &(&1.stage == "ready")) ->
+        nil
+
+      control["mode"] == "paused" ->
+        "Execution is paused. Ready tasks will not start until execution is resumed; existing holds and limits still apply."
+
+      control["mode"] == "draining" ->
+        "Execution is draining. Active work can finish, but Ready tasks will not start until execution is resumed."
+
+      true ->
+        nil
+    end
+  end
+
+  defp control_snapshot_available?(control) do
+    control["enabled"] == true and is_nil(control["fault"]) and is_integer(control["revision"]) and
+      not Map.has_key?(control, "error") and not Map.has_key?(control, :error)
+  end
 
   defp execution_status(board, payload) do
     cond do

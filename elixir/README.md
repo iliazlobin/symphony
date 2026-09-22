@@ -313,7 +313,8 @@ codex:
 ## Web board and chat
 
 For a separate read-only view of a configured Mac controller, run
-`python3 tools/symphony_web.py --port 8778` from the repository root. It serves this
+`python3 tools/symphony_web.py --port 8878` from the repository root, using a free
+port different from the controller's configured port. It serves this
 checkout's UI with live GitHub issues, linked PR evidence and GET-only controller
 status. The launcher uses the existing host GitHub login and private operator
 profile; credentials stay in the host process. It starts no scheduler, ledger
@@ -410,8 +411,8 @@ corrupt records or failed writes block operation without overwriting recovery da
 Browser reconnect does not stop a turn; service restart leaves interrupted turns
 available to continue and uncertain writes available for read-only reconciliation.
 The file store holds at most 500 conversation and task-submission records, with an
-8 MiB limit per record. Archive
-hides a chat from the active list; it does not delete its retained records.
+8 MiB limit per record. Previously archived records remain retained; the current
+chat list exposes pinning and ordering, with no Archive or Rename buttons.
 Once a conversation reaches 400 messages, start another chat for further turns.
 
 The current backend serves one configured project; the picker and immutable chat
