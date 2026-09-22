@@ -211,15 +211,23 @@ The current service exposes one configured tracker project. Multi-controller rou
 is a separate extension. Historical messages are records; tools refresh current work
 and attach source timestamps, task links and board filters.
 
-The board hosts the shared conversation component in a right-side panel; `/chat`
-is its standalone host. Task popups remain interactive alongside the panel. The chat
-list shows authorized conversation summaries and live activity for the selected project.
-Selecting a chat opens its scrollable conversation; returning to the list preserves
-that chat's unsent draft. Pins and order are project presentation preferences, scoped
-to the retained tracker fingerprint and stored atomically beside conversation records.
-They do not change message timestamps or execution order. Project notifications
-invalidate the list; each retrieval and preference change rechecks access. Chat
-activity is distinct from the coding-task lifecycle on the board.
+The board keeps the shared conversation component open beside task details. Each
+project/tracker identity has one main conversation and one canonical conversation per
+task. Selecting a card switches conversations; closing its details keeps its chat
+selected. Main chat handles project-level orchestration through the same typed tools
+and explicit action decisions. Binding is durable and immutable; existing free-standing
+conversations are preserved in the standalone `/chat` history rather than inferred from
+message text. Drafts and selected tabs are scoped to each conversation.
+
+The store owns a durable FIFO of up to 20 pending messages per conversation. Only one
+turn per chat runs at a time, within the existing global capacity limit. Acceptance is
+persisted before dispatch and duplicate client IDs cannot enqueue another turn. Access,
+project identity and runtime identity are checked again before dispatch; browser grants
+are not written to storage. Stop, failure and restart pause pending messages for explicit
+authenticated resumption. Queue removal and prioritization never alter an active turn.
+Project notifications refresh per-card processing and queue counts independently of
+the coding-task lifecycle. Pins and ordering in the standalone history remain private
+project presentation preferences, not execution order.
 [`Chat.ViewContext`](elixir/lib/symphony_elixir/chat/view_context.ex) validates a
 bounded snapshot for each user message: project, filters, selected task ID,
 up to 50 displayed task IDs, their viewport subset, hidden columns and timestamps.

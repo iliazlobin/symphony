@@ -244,32 +244,33 @@ controller or change task ownership. Additional project services, delivery of an
 into running workers, automatic repairs and web publication remain separate work.
 
 **Web chat.** After [dedicated runtime setup](../../elixir/README.md#web-board-and-chat),
-select a project beside **Projects** in the top header and open **Chat** in the right-side panel. A task
-popup also offers **Discuss this task**. Sign in through the configured browser provider.
-The list shows this project's retained chats and which are running, waiting for
-confirmation, idle, interrupted or in error. Pin chats to keep them at the top;
-drag their handles or use the move controls to arrange each group. Pins and order
-are saved with project chat state. Open a chat to read and continue it; **Back to chats**
-returns to the list. **New chat** starts a separate topic. These statuses describe
-chat activity; the board tracks coding tasks. **Chat**, **Context**, **Outputs** and
-**Sources** retain the selected conversation's messages and evidence. Returning to
-the list or switching tabs preserves its draft. Outputs include observed issue/PR
-status and action results.
-Project changes clear the current selection and draft. A chat stays with its original project. This service currently supplies one configured
-project; additional controllers are not aggregated yet.
+select a project beside **Projects** in the top header and sign in through the configured
+browser provider. Chat stays open beside the board. Each card has one durable conversation;
+selecting a card switches to it, and closing its details keeps that chat selected.
+**Main chat** opens the project's orchestration conversation for reports, task creation,
+updates and cancellation. Write proposals still require confirmation of the exact action.
+Switching cards preserves each conversation's draft and selected tab. **Chat**, **Context**,
+**Outputs** and **Sources** organize its messages and evidence. Prior conversations remain
+available through the full-page `/chat` history with search, pins and ordering.
 
-Responses stream as they arrive. **Stop** interrupts the chat response, not a coding
-task. Closing the tab leaves the response running; reopen its URL to reconnect.
-After a service restart, send another message to continue an interrupted conversation.
+Responses stream as they arrive. Send follow-ups while a response is running to queue
+up to 20 messages. The queue above the composer shows what will run next; **Send next**
+changes that order and **Remove** cancels a waiting message. Each conversation runs one
+message at a time, within the service-wide concurrency limit. Cards show **Chat processing**
+and the number queued, separately from the coding task's execution state.
+**Stop** interrupts the chat response, not a coding task, and pauses queued messages.
+Failure or service restart also pauses the queue; **Resume queue** checks current access
+before continuing. Closing the browser leaves accepted turns running.
+
 Codex handles native compaction while the app retains visible messages and receipts.
 **Sources** shows retrieved references; **Outputs** shows up to 100 distinct issue/PR
-artifacts and action results, with earlier tool results retained in history. References
-update the board filters or open a task popup while keeping
-the conversation open. `/chat` remains available as a full-page conversation view.
+artifacts and action results, with earlier tool results retained in history. Task and
+main conversations keep the same identity across reconnects and restarts. The current
+service supplies one configured project; additional controllers are not aggregated yet.
 
 **View context.** The **Context** tab shows what automatically accompanies the next
 message: project, filters, displayed task count and selected card. Earlier snapshots
-remain attached to their messages; start a new chat for a fresh conversation. Current
+remain attached to their messages. Current
 context refreshes as you filter, scroll, switch lanes or open a card.
 It includes up to 50 task IDs and marks truncated lists. It excludes arbitrary screen
 text, screenshots, password fields and other browser tabs. Tools recheck task details

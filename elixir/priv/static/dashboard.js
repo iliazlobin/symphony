@@ -387,7 +387,7 @@
           // The former Threads tab is now list navigation, never a detail tab.
           if (tab === "threads") { tab = "chat"; this.saveTab(tab); if (!view) { view = "list"; this.saveView(view); } }
           const scope = {project_id: this.el.dataset.project, chat_id: this.el.dataset.chatId || null};
-          if (key && ["list", "conversation"].includes(view)) this.pushEventTo(this.el.dataset.eventTarget, "restore-workspace-view", {...scope, view});
+          if (this.el.dataset.embedded !== "true" && key && ["list", "conversation"].includes(view)) this.pushEventTo(this.el.dataset.eventTarget, "restore-workspace-view", {...scope, view});
           if (this.el.dataset.chatId && tabs.includes(tab)) this.pushEventTo(this.el.dataset.eventTarget, "restore-session-tab", {...scope, tab});
         } catch { /* Conversation records do not depend on browser storage. */ }
       };
@@ -465,7 +465,7 @@
 
         if (event.target.id === "chat-message-input" && event.key === "Enter" && !event.shiftKey && !event.isComposing) {
           event.preventDefault();
-          if (this.el.dataset.running !== "true" && event.target.value.trim()) event.target.form.requestSubmit();
+          if (!event.target.disabled && event.target.value.trim()) event.target.form.requestSubmit();
         }
       });
       on("click", event => {
@@ -485,7 +485,8 @@
         const input = this.el.querySelector("#chat-message-input");
         if (starter && input && !input.disabled) { input.value = starter.dataset.chatPrompt; input.dispatchEvent(new Event("input", {bubbles: true})); input.focus(); this.resizeComposer(); }
       });
-      this.handleEvent("chat-message-sent", () => {
+      this.handleEvent("chat-message-sent", ({chat_id}) => {
+        if (chat_id !== this.el.dataset.chatId) return;
         const input = this.el.querySelector("#chat-message-input");
         if (input) { input.value = ""; input.focus(); }
         this.saveView("conversation"); this.saveTab("chat"); this.atBottom = true; this.resizeComposer(); requestAnimationFrame(this.scroll);

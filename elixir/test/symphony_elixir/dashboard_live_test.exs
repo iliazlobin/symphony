@@ -43,11 +43,54 @@ defmodule SymphonyElixir.DashboardLiveTest do
 
   defmodule UnavailableChatApi do
     def health(_auth), do: {:error, :unavailable}
+    def projects(_auth), do: {:error, :unavailable}
+    def list(_project, _auth), do: {:error, :unavailable}
   end
 
   defmodule ThreadsChatApi do
     def projects(_auth), do: {:ok, [%{"id" => "github:example/fixture", "label" => "Fixture"}]}
-    def list(_project, _auth), do: {:ok, []}
+
+    def list(project, _auth) do
+      {:ok, Agent.get(Endpoint.config(:thread_fixture), fn chats -> Enum.filter(Map.values(chats), &(&1["project_id"] == project)) end)}
+    end
+
+    def ensure_conversation(project, task, _auth) do
+      id = :crypto.hash(:md5, project <> (task || "main")) |> Base.encode16(case: :lower)
+
+      chat =
+        Agent.get_and_update(Endpoint.config(:thread_fixture), fn chats ->
+          chat =
+            Map.get(chats, id, %{
+              "id" => id,
+              "project_id" => project,
+              "task_id" => task,
+              "conversation_role" => if(task, do: "task", else: "main"),
+              "title" => if(task, do: "Task chat", else: "Main chat"),
+              "status" => "idle",
+              "queued_count" => 0,
+              "queue_paused" => false,
+              "queue" => [],
+              "archived" => false,
+              "messages" => [],
+              "proposals" => [],
+              "context" => [],
+              "error" => nil,
+              "activity" => nil,
+              "updated_at" => "2026-09-22T12:00:00Z"
+            })
+
+          {chat, Map.put(chats, id, chat)}
+        end)
+
+      {:ok, chat}
+    end
+
+    def get(project, id, _auth) do
+      case Agent.get(Endpoint.config(:thread_fixture), &Map.get(&1, id)) do
+        %{"project_id" => ^project} = chat -> {:ok, chat}
+        _ -> {:error, :chat_not_found}
+      end
+    end
   end
 
   defmodule IntakeApi do
@@ -151,6 +194,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     board = TaskBoard.project(issues(), Presenter.state_payload(runtime, 100), control, Config.settings!())
     :ok = GenServer.call(runtime, {:board, board})
     intake = start_supervised!({IntakeApi, self()})
+    threads = start_supervised!({Agent, fn -> %{} end})
     previous_endpoint = Application.get_env(:symphony_elixir, Endpoint, [])
 
     endpoint_config =
@@ -159,6 +203,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
         secret_key_base: String.duplicate("d", 64),
         orchestrator: runtime,
         chat_store: if(context[:threads_fixture], do: ThreadsChatApi, else: UnavailableChatApi),
+        thread_fixture: threads,
         task_intake: IntakeApi,
         intake_fixture: intake,
         snapshot_timeout_ms: 100,
@@ -170,7 +215,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     Application.put_env(:symphony_elixir, Endpoint, endpoint_config)
     start_supervised!({Endpoint, []})
     on_exit(fn -> Application.put_env(:symphony_elixir, Endpoint, previous_endpoint) end)
-    %{runtime: runtime, board: board}
+    %{runtime: runtime, board: board, threads: threads}
   end
 
   test "renders real projected tasks in all lanes with top filters and truthful evidence" do
@@ -188,7 +233,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert html =~ "Manual order is a browser preference"
     assert html =~ "Changes requested"
     refute html =~ "Proposed UI"
-    refute has_element?(view, "aside")
+    assert has_element?(view, "#management-chat-dock")
     refute has_element?(view, "#board-dialog")
   end
 
@@ -288,7 +333,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#lane-running [data-task-id='github:example/fixture:3']")
     render_click(view, "close-dialog")
     refute has_element?(view, "#board-dialog")
-    refute has_element?(view, "#task-board-app[data-selected-task]")
+    assert has_element?(view, "#task-board-app[data-selected-task='github:example/fixture:2']")
     assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:2']")
   end
 
@@ -525,27 +570,75 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   @tag :threads_fixture
-  test "closing the dock through URL or button releases project subscriptions and reopening restores them" do
+  test "the dock is permanent and card chats retain their identity after closing details", ctx do
     view = authorized_board_view()
-    topic = "chat_project:github:example/fixture"
-    subscribed = fn -> Enum.any?(Registry.lookup(SymphonyElixir.PubSub, topic), &(elem(&1, 0) == view.pid)) end
-    render_click(view, "open-chat")
-    assert has_element?(view, "#chat-thread-list:not([hidden])")
-    assert subscribed.()
-    render_patch(view, "/")
-    refute has_element?(view, "#management-chat-dock")
-    refute subscribed.()
+    assert has_element?(view, "#management-chat-dock")
+    refute has_element?(view, "button[aria-label='Close chat']")
+    refute has_element?(view, "#new-chat-button")
+    render(view)
+    main = :sys.get_state(view.pid).socket.assigns.chat_id
+    assert is_binary(main)
+
+    open_task(view, "2")
+    render(view)
+    first = :sys.get_state(view.pid).socket.assigns.chat_id
+    refute first == main
+    assert has_element?(view, "#task-board-app[data-selected-task='github:example/fixture:2']")
+    assert has_element?(view, "#board-dialog[data-nonmodal=true]")
+    render_click(view, "close-dialog")
+    assert has_element?(view, "#management-chat-dock")
+    assert :sys.get_state(view.pid).socket.assigns.chat_id == first
+    refute has_element?(view, "#board-dialog")
+
+    open_task(view, "4")
+    render(view)
+    second = :sys.get_state(view.pid).socket.assigns.chat_id
+    refute second == first
+    open_task(view, "2")
+    render(view)
+    assert :sys.get_state(view.pid).socket.assigns.chat_id == first
+    assert map_size(Agent.get(ctx.threads, & &1)) == 3
+    send(view.pid, {:chat_panel, :main})
+    render(view)
+    render(view)
+    assert :sys.get_state(view.pid).socket.assigns.chat_id == main
+    refute has_element?(view, "#board-dialog")
+    send(view.pid, {:chat_panel, :close})
+    assert has_element?(view, "#management-chat-dock")
+  end
+
+  @tag :threads_fixture
+  test "card indicators follow their own chat while a different chat is selected", ctx do
+    view = authorized_board_view()
+    open_task(view, "2")
+    render(view)
+    task_chat = :sys.get_state(view.pid).socket.assigns.chat_id
+    open_task(view, "4")
+    render(view)
+    Agent.update(ctx.threads, fn chats -> Map.update!(chats, task_chat, &Map.merge(&1, %{"status" => "running", "queued_count" => 2})) end)
     send(view.pid, {:chat_list_updated, "github:example/fixture"})
-    refute has_element?(view, "#management-chat-dock")
-    render_click(view, "open-chat")
-    assert has_element?(view, "#chat-thread-list:not([hidden])")
-    assert subscribed.()
-    view |> element("button[aria-label='Close chat']") |> render_click()
-    refute has_element?(view, "#management-chat-dock")
-    refute subscribed.()
-    send(view.pid, {:chat_panel, :project_subscription, "github:example/fixture"})
-    refute has_element?(view, "#management-chat-dock")
-    refute subscribed.()
+    render(view)
+    assert has_element?(view, "[data-task-id='github:example/fixture:2'] .card-chat-status", "Chat processing")
+    assert has_element?(view, "[data-task-id='github:example/fixture:2'] .card-chat-status", "2 queued")
+    refute has_element?(view, "[data-task-id='github:example/fixture:4'] .card-chat-status")
+    Agent.update(ctx.threads, fn chats -> Map.update!(chats, task_chat, &Map.merge(&1, %{"status" => "idle", "display_status" => "action"})) end)
+    send(view.pid, {:chat_list_updated, "github:example/fixture"})
+    render(view)
+    assert has_element?(view, "[data-task-id='github:example/fixture:2'] .card-chat-status", "Chat processing")
+    Agent.update(ctx.threads, fn chats -> Map.update!(chats, task_chat, &Map.merge(&1, %{"status" => "interrupted", "display_status" => "queue_paused", "queue_paused" => true})) end)
+    send(view.pid, {:chat_list_updated, "github:example/fixture"})
+    render(view)
+    assert has_element?(view, "[data-task-id='github:example/fixture:2'] .card-chat-status", "2 queued · paused")
+    refute has_element?(view, "[data-task-id='github:example/fixture:2'] .card-chat-processing")
+    Agent.update(ctx.threads, fn chats -> Map.update!(chats, task_chat, &Map.put(&1, "queued_count", 0)) end)
+    send(view.pid, {:chat_list_updated, "github:example/fixture"})
+    render(view)
+    refute has_element?(view, "[data-task-id='github:example/fixture:2'] .card-chat-status")
+    Agent.update(ctx.threads, fn chats -> Map.update!(chats, task_chat, &Map.put(&1, "queued_count", 2)) end)
+    System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("revoked", 8))
+    send(view.pid, {:chat_list_updated, "github:example/fixture"})
+    render(view)
+    refute has_element?(view, ".card-chat-status")
   end
 
   @tag read_only: true
@@ -553,7 +646,6 @@ defmodule SymphonyElixir.DashboardLiveTest do
     {view, _html} = board_view()
     render_click(view, "board-filters", %{"project" => "github:example/fixture", "status" => "ready"})
     open_task(view, "2")
-    render_click(view, "open-chat")
     assert has_element?(view, "#management-chat-dock #chat-app.embedded-chat")
     assert has_element?(view, "#board-dialog[data-nonmodal=true]", "Ready fixture")
     assert has_element?(view, "#management-chat-dock", "Chat is unavailable in this read-only view")
@@ -563,8 +655,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     render_click(view, "close-dialog")
     assert has_element?(view, "#management-chat-dock")
     refute has_element?(view, "#board-dialog")
-    view |> element("button[aria-label='Close chat']") |> render_click()
-    refute has_element?(view, "#management-chat-dock")
+    refute has_element?(view, "button[aria-label='Close chat']")
+    assert has_element?(view, "#management-chat-dock")
     assert has_element?(view, "#task-board-app[data-url-filters*='ready']")
   end
 
@@ -572,7 +664,6 @@ defmodule SymphonyElixir.DashboardLiveTest do
   test "view context is bounded to current project cards and selected task comes from the server" do
     {view, _html} = board_view()
     open_task(view, "2")
-    render_click(view, "open-chat")
 
     context = %{
       "version" => 1,
@@ -594,7 +685,6 @@ defmodule SymphonyElixir.DashboardLiveTest do
   @tag read_only: true
   test "chat references retain the dock and reject external or other project destinations" do
     {view, _html} = board_view()
-    render_click(view, "open-chat")
     send(view.pid, {:chat_panel, :board_link, "/?project=github%3Aexample%2Ffixture&status=review&task=github%3Aexample%2Ffixture%3A4"})
     assert render(view) =~ "Review fixture"
     assert has_element?(view, "#management-chat-dock")
@@ -930,7 +1020,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#board-dialog h2", "Ready fixture")
     assert has_element?(view, "#task-board-app[data-url-filters]")
     render_click(view, "close-dialog")
-    assert_patch(view, "/?" <> URI.encode_query(Map.delete(params, "task")))
+    assert_patch(view, "/?" <> URI.encode_query(params |> Map.delete("task") |> Map.put("chat_task", params["task"])))
     refute has_element?(view, "#board-dialog")
     render_patch(view, "/?project=other&task=github%3Aexample%2Ffixture%3A2")
     refute has_element?(view, "#board-dialog")
@@ -941,7 +1031,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     {view, _} = board_view()
     render_click(view, "board-filters", %{"project" => "github:example/fixture", "status" => "running", "q" => "Fixture", "sort" => "updated", "priority" => %{"bad" => "shape"}})
     assert_patch(view, "/?" <> URI.encode_query(%{"project" => "github:example/fixture", "status" => "running", "q" => "Fixture", "sort" => "updated"}))
-    assert has_element?(view, "#open-chat-button[phx-click=open-chat]")
+    assert has_element?(view, "#management-chat-dock")
+    refute has_element?(view, "#open-chat-button")
     assert has_element?(view, "#task-board-app[data-chat-project='github:example/fixture']")
   end
 

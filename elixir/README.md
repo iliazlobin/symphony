@@ -324,14 +324,16 @@ describes access and limits.
 The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
-- Optional authenticated management chat in the board's right-side panel and at `/chat`;
+- Authenticated management chat in the board's persistent right-side panel and at `/chat`;
   streaming uses LiveView's existing connection
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
-Open **Chat** at the right of the board header to show the conversation panel.
+The chat panel stays open. Select a task card to open its dedicated conversation;
+closing task details keeps that conversation selected. **Main chat** returns to the
+project conversation for reports and task creation, updates or cancellation.
 Use **New task** to enter a title, outcome, scope, acceptance checks and dependencies.
 **Preview task** saves the exact proposed GitHub issue; **Create task** confirms it.
 Created tasks enter the backlog without execution routing labels. Recent submissions
@@ -340,18 +342,24 @@ use **Check outcome** to reconcile it before creating another request. This form
 the durable action store and works without a model turn or subscription login.
 The board and full-page chat share `ChatPanel`. The dock retains board filters and
 selected task links. Each message automatically attaches a validated project-bound
-snapshot of bounded task IDs and filters, not raw browser contents. The chat list
-shows the project's conversations with live activity status and search. Pin important
-chats and drag the handles to reorder within Pinned or Chats; move controls also work
-with a keyboard. Pins and ordering persist in private project chat storage.
-Open a chat to continue it, return with **Back to chats**, or start a new chat.
+snapshot of bounded task IDs and filters, not raw browser contents. Each task has
+one retained conversation, and each project has one main conversation. These bindings
+survive reconnects and restarts; prior free-standing chats remain available at `/chat`.
+Drafts and selected tabs stay separate when switching cards. The full-page chat list
+retains search, pins and ordering for saved conversations.
 Inside the conversation, **Chat**, **Context**,
 **Outputs** and **Sources** organize the same durable conversation. Context separates
 the next message's view from snapshots retained with earlier messages. Outputs collect
 the latest 100 distinct issue/PR summaries and action results; original tool results stay
 in message history. Sources retain retrieved references.
 GitHub artifact statuses are recorded observations; thread activity updates live.
-Returning to the list hides the composer without discarding its draft. Conversation
+You can send follow-ups while a response is running. Up to 20 messages wait in the
+conversation queue above the composer; **Send next** changes the next waiting message
+and **Remove** cancels one queued message. Messages run one at a time per conversation
+and respect the service concurrency limit. Cards show chat processing and queued counts,
+separately from coding-worker activity. **Stop**, a failed turn or a service restart
+pauses the remaining queue; **Resume queue** continues it after checking current access.
+Conversation
 messages scroll independently of the composer. The selected view and tab are remembered
 in this browser session. The current-view
 tool resolves fresh authorized task summaries; action previews and browser
@@ -413,7 +421,9 @@ available to continue and uncertain writes available for read-only reconciliatio
 The file store holds at most 500 conversation and task-submission records, with an
 8 MiB limit per record. Previously archived records remain retained; the current
 chat list exposes pinning and ordering, with no Archive or Rename buttons.
-Once a conversation reaches 400 messages, start another chat for further turns.
+Task and main conversations keep their identity beyond 400 messages. Storage remains
+bounded per record; a full history rejects additional messages without deleting it.
+Legacy free-standing chats retain their 400-message limit.
 
 The current backend serves one configured project; the picker and immutable chat
 scope prepare the interface for additional controllers without mixing their data.
