@@ -1098,7 +1098,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp card_chat_status(assigns) do
     activity = assigns.activity || %{}
-    assigns = assign(assigns, running: activity["status"] == "running" or activity["display_status"] == "action", queued: activity["queued_count"] || 0, paused: activity["queue_paused"] == true)
+
+    assigns =
+      assign(assigns,
+        running: activity["status"] == "running" or activity["display_status"] == "action",
+        queued: activity["queued_count"] || 0,
+        paused: activity["queue_paused"] == true
+      )
 
     ~H"""
     <div :if={@running or @queued > 0} class="card-chat-status" data-running={to_string(@running)} role="status">
