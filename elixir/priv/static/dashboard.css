@@ -193,11 +193,11 @@ input, select {
   border-radius: 5px;
   padding: 12px;
   box-shadow: 0 1px 3px light-dark(#17181c06, #0002);
-  cursor: grab;
+  cursor: pointer;
   overflow-wrap: anywhere;
 }
-.task-card[draggable=false] { cursor: default; }
-.task-card[data-selected=true] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.task-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.task-card[data-selected=true], .task-card[data-selected=true]:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .card-chat-status { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-top: 9px; color: var(--accent); font-size: 11px; }
 .card-chat-processing { display: inline-flex; align-items: center; gap: 5px; }
 .card-chat-queued { padding: 1px 5px; border-radius: 4px; background: var(--tint); }
@@ -210,7 +210,8 @@ input, select {
 .card-top a:hover { text-decoration: underline; }
 .priority { font-size: 11px; border-radius: 4px; padding: 0 4px; background: var(--soft); }
 .priority[data-priority=P1] { color: var(--warn); background: var(--warn-bg); }
-.card-title { display: flex; align-items: start; gap: 7px; width: 100%; text-align: left; border: 0; padding: 0; background: transparent; font-size: 13px; font-weight: 500; line-height: 1.45; overflow-wrap: anywhere; }
+.card-title { display: inline-flex; align-items: start; gap: 7px; max-width: 100%; text-align: left; border: 0; padding: 0; background: transparent; font-size: 13px; font-weight: 500; line-height: 1.45; overflow-wrap: anywhere; }
+.card-title:hover { text-decoration: underline; text-underline-offset: 2px; }
 .card-title .lane-dot { margin-top: 3px; }
 .card-project { font-size: 11px; color: var(--muted); margin-top: 8px; }
 .execution-summary { margin-top: 12px; font-size: 13px; }

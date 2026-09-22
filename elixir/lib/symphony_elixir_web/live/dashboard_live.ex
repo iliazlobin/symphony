@@ -196,19 +196,24 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  def handle_event("open-task", %{"id" => id}, socket) do
+  def handle_event(action, %{"id" => id}, socket) when action in ["select-task", "open-task"] do
     case Enum.find(socket.assigns.board.tasks, &(&1.id == id)) do
       nil ->
         {:noreply, assign(socket, :notice, "That task is no longer in the current board. Refresh and try again.")}
 
       task ->
+        details? = action == "open-task"
+        chat_id = if socket.assigns.chat_task_id == id, do: socket.assigns.chat_id
+
         socket =
           socket
-          |> assign(:selected, task)
-          |> assign(:dialog, :task)
-          |> assign(:linked_task, id)
+          |> clear_card_context()
+          |> assign(:selected, if(details?, do: task))
+          |> assign(:dialog, if(details?, do: :task))
+          |> assign(:linked_task, if(details?, do: id))
+          |> assign(:pending_command, nil)
           |> assign(:chat_task_id, id)
-          |> clear_view_context()
+          |> assign(:chat_id, chat_id)
 
         {:noreply, push_patch(socket, to: board_location(socket))}
     end
@@ -569,6 +574,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <div id="mobile-lane-control" class="mobile-lane-control" phx-update="ignore"><label>Lane <select data-mobile-lane aria-label="Board lane">
           <option :for={{id, label} <- @lanes} value={id}>{label}</option>
         </select></label></div>
+        <p id="card-selection-help" class="visually-hidden">Press Enter or Space to select this task's chat. Open the title for details.</p>
         <div class="kanban-board">
           <section :for={{stage, label} <- @lanes} id={"lane-#{stage}"} class="kanban-lane" data-stage={stage} aria-label={"#{label} lane"}>
             <div class="lane-heading"><h2><span class={"lane-dot lane-dot-#{stage}"} aria-hidden="true"></span>{label}<span class="lane-count" data-lane-count>{Enum.count(@board.tasks, &(&1.stage == stage))}</span></h2>
@@ -577,6 +583,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
             <div class="lane-cards" data-lane-cards>
               <article :for={task <- Enum.filter(@board.tasks, &(&1.stage == stage))} id={card_id(task)} class="task-card" draggable={to_string(!@read_only)}
+                tabindex="0" aria-label={"#{task.identifier}: #{task.title}"} aria-describedby="card-selection-help" aria-current={if @chat_task_id == task.id, do: "true"}
                 data-task-id={task.id} data-selected={to_string(@chat_task_id == task.id)} data-project={task.project} data-priority={priority(task.priority)} data-attention={to_string(not is_nil(task.attention))}
                 data-title={task.title} data-identifier={task.identifier} data-created={task.created_at || ""} data-updated={task.updated_at || ""}>
                 <div class="card-top"><a :if={safe_url(task.url)} href={safe_url(task.url)} target="_blank" rel="noopener noreferrer"
@@ -590,7 +597,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <div :if={pull_requests(task) != []} class="card-pr-summary"><span :for={pr <- Enum.take(pull_requests(task), 2)}>
                   <a :if={safe_url(field(pr, :url))} href={safe_url(field(pr, :url))} target="_blank" rel="noopener noreferrer">PR #{field(pr, :number)}</a>
                   <span class="pr-state" data-pr-state={String.downcase(pr_state(pr))}>{pr_state(pr)}</span>
-                  <span class="compact-ci" title={ci_summary(pr)}>CI: {ci_status(pr)}</span>
+                  <a :if={pr_checks_url(pr)} class="compact-ci" href={pr_checks_url(pr)} target="_blank" rel="noopener noreferrer"
+                    title={ci_summary(pr)} aria-label={"PR ##{field(pr, :number)} checks: #{ci_status(pr)}"}>CI: {ci_status(pr)} ↗</a>
+                  <span :if={!pr_checks_url(pr)} class="compact-ci" title={ci_summary(pr)}>CI: {ci_status(pr)}</span>
                   <span :if={field(pr, :check_details_status) in ["partial", "stale", "unavailable"]} class="compact-ci-note">Check details: {field(pr, :check_details_status)}</span>
                 </span><button :if={length(pull_requests(task)) > 2} class="card-more-links" phx-click="open-task" phx-value-id={task.id}>View all {length(pull_requests(task))} pull requests</button></div>
                 <div :if={pull_requests(task) != []} class="card-pull-requests">
@@ -930,7 +939,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         changes: pr_changes(pr),
         mergeability: pr_mergeability(pr),
         revision: Enum.filter([field(pr, :head_ref), field(pr, :base_ref)], &is_binary/1) |> Enum.join(" → "),
-        checks_url: if(is_binary(url) && Regex.match?(~r{\Ahttps://github\.com/[^/]+/[^/]+/pull/[1-9][0-9]*\z}, url), do: url <> "/checks"),
+        checks_url: pr_checks_url(pr),
         ci_status: ci_status(pr),
         ci_summary: ci_summary(pr),
         ci_note: ci_note(pr)
@@ -960,6 +969,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
       {_, [_ | _] = jobs} -> display(field(pr, :checks)) <> " · " <> check_counts(jobs)
       _ -> display(field(pr, :checks))
     end
+  end
+
+  defp pr_checks_url(pr) do
+    url = safe_url(field(pr, :url))
+    if is_binary(url) && Regex.match?(~r{\Ahttps://github\.com/[^/]+/[^/]+/pull/[1-9][0-9]*\z}, url), do: url <> "/checks"
   end
 
   defp ci_missing_details(pr, status) do

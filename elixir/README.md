@@ -625,7 +625,11 @@ retaining this fork's GitHub workflow. Project selection stays in the top bar;
 detail, light/dark appearance and visible columns. Hidden columns remain available
 in the restore rail; selecting a status reveals its column. Display preferences are
 saved only in this browser and do not change scheduling or issue state.
-Card details and Settings open as native dialogs with Close and Escape. Settings has
+Click a card's background to select its task chat without opening a dialog. The title
+opens task details; issue, PR and CI links open directly in GitHub. Focus a card and
+press Enter or Space to select it. Selection survives reload and browser navigation;
+dragging still moves or reorders cards. Card details and Settings open as native dialogs
+with Close and Escape. Settings has
 three sections: **Execution** for native controls, concurrency and read-only budgets;
 **AI & chat** for context behavior and read-only model presets;
 and **Connections** for tracker/controller/chat storage status and operator login.
