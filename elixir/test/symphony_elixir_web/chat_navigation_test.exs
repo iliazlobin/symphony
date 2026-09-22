@@ -5,6 +5,54 @@ defmodule SymphonyElixirWeb.ChatNavigationTest do
 
   @project "github:example/fixture"
 
+  test "category suggestions remain available for empty groups in workflow order" do
+    categories = ChatNavigation.categories()
+    assert Enum.map(categories, & &1.id) == ~w(running review attention ready backlog done)
+    assert Enum.map(categories, & &1.label) == ["Running", "Ready for review", "Needs attention", "Ready", "Backlog", "Done"]
+    assert ChatNavigation.issues([], %{}, @project, "review") == []
+    assert %{id: "review", label: "Ready for review"} in categories
+  end
+
+  test "PR sessions distinguish queued, working, validating, reviewed, paused and unknown phases" do
+    phases = [
+      {"queued", "Queued"},
+      {"building", "Working"},
+      {"reviewing", "Validating"},
+      {"owner_review", "Ready for review"},
+      {"paused", "Paused"},
+      {"future-phase", "Unknown"}
+    ]
+
+    works =
+      phases
+      |> Enum.with_index(1)
+      |> Map.new(fn {{phase, _label}, number} ->
+        work_id = String.pad_leading(Integer.to_string(number), 32, "0")
+        work = %{"id" => work_id, "issue_id" => "11", "phase" => phase, "updated_at" => ~U[2026-09-23 10:00:00Z]}
+        {work_id, work}
+      end)
+
+    issue = task("11", "ready", issue_id: "11", ledger: %{"pr_work" => works})
+    sessions = ChatNavigation.work_sessions(issue)
+    assert Enum.map(sessions, & &1.phase) == Enum.map(phases, &elem(&1, 1))
+    assert Enum.all?(sessions, &(&1.updated_at == "2026-09-23T10:00:00Z" and not &1.session_retained))
+    assert List.last(sessions).phase != "Ready for review"
+  end
+
+  test "native DateTime activity preserves microsecond ordering alongside tracker timestamps" do
+    tasks = [
+      task("issue", "ready", updated_at: ~U[2026-09-23 10:00:00.000001Z]),
+      task("worker", "ready", runtime: %{last_event_at: ~U[2026-09-23 10:00:00.000002Z]}),
+      task("tracker", "ready", updated_at: "2026-09-23T03:00:00-07:00")
+    ]
+
+    assert [%{issues: [worker, issue, tracker]}] = ChatNavigation.issues(tasks, %{}, @project)
+    assert worker.activity_at == "2026-09-23T10:00:00.000002Z"
+    assert worker.activity_label == "Worker update"
+    assert issue.activity_at == "2026-09-23T10:00:00.000001Z"
+    assert tracker.activity_at == "2026-09-23T10:00:00Z"
+  end
+
   test "projects issue-owned PR sessions and uses their latest activity without leaking runtime paths" do
     id = String.duplicate("a", 32)
 

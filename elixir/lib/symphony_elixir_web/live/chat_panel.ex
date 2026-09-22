@@ -654,12 +654,14 @@ defmodule SymphonyElixirWeb.ChatPanel do
   def render(assigns) do
     project = assigns.project && assigns.project["id"]
     issue = Enum.find(assigns.issue_tasks, &(&1.id == assigns.task_id and &1.project == project))
+    prs = if issue, do: ChatNavigation.pull_requests(issue), else: []
 
     assigns =
       assign(assigns,
         issue: issue,
         issue_groups: ChatNavigation.issues(assigns.issue_tasks, assigns.issue_activity, project, assigns.issue_query),
-        issue_prs: if(issue, do: ChatNavigation.pull_requests(issue), else: []),
+        issue_prs: prs,
+        pr_evidence: pr_evidence(issue && issue[:github_status], length(prs)),
         issue_works: ChatNavigation.work_sessions(issue),
         authorized: BrowserAuth.authorized?(assigns.auth),
         google_auth: BrowserAuth.google_enabled?(),
@@ -722,9 +724,9 @@ defmodule SymphonyElixirWeb.ChatPanel do
           <button id="issue-card-link" class="button button-quiet" phx-click="issue-card" phx-target={@myself}>View card</button>
           <span class="issue-chat-state">{String.capitalize(@issue.stage)}</span>
           <details id="issue-pr-menu" class="issue-pr-menu" phx-hook="IssuePRMenu">
-            <summary aria-label="Pull requests for this issue">PRs <span>{length(@issue_prs)}</span><span aria-hidden="true">⌄</span></summary>
+            <summary aria-label="Pull requests for this issue">PRs <span>{@pr_evidence.label}</span><span aria-hidden="true">⌄</span></summary>
             <div class="issue-pr-list">
-              <p :if={@issue_prs == []} class="issue-options-empty">No linked pull requests yet.</p>
+              <p :if={@pr_evidence.message} class="issue-options-empty" role="status">{@pr_evidence.message}</p>
               <div :for={pr <- @issue_prs} class="issue-pr-option" data-pr-number={pr.number}>
                 <div><a :if={pr.url} href={pr.url} target="_blank" rel="noopener noreferrer">PR #{pr.number} · {pr.title}</a><span :if={!pr.url}>PR #{pr.number} · {pr.title}</span><span class="pr-state" data-pr-state={pr.state}>{pr.status}</span></div>
                 <div class="issue-pr-meta"><span>Review: {pr.review}</span><a :if={pr.checks_url} href={pr.checks_url} target="_blank" rel="noopener noreferrer">CI: {pr.ci} ↗</a><span :if={!pr.checks_url}>CI: {pr.ci}</span></div>
@@ -980,6 +982,22 @@ defmodule SymphonyElixirWeb.ChatPanel do
     <div :if={source_failed?(@widget)} class="widget-source-warning" role="alert"><strong>Current state is unavailable</strong><p :if={@widget["source_error"]}>{text(@widget["source_error"])}</p><p :if={@widget["runtime_error"]}>{text(@widget["runtime_error"])}</p><p>Any listed tasks are last-known information.</p></div>
     <p :if={@widget["generated_at"] || @widget["checked_at"]} class="widget-checked">Checked {text(@widget["generated_at"] || @widget["checked_at"])}</p>
     """
+  end
+
+  defp pr_evidence("available", count),
+    do: %{label: to_string(count), message: if(count == 0, do: "No linked pull requests yet.")}
+
+  defp pr_evidence(status, count) do
+    {label, message} =
+      case status do
+        "partial" -> {"Incomplete", "PR details are incomplete."}
+        "unavailable" -> {"Unavailable", "PR details are unavailable."}
+        "source_missing" -> {"Unavailable", "PR details are unavailable while the issue source is missing."}
+        "not_applicable" -> {"Unavailable", "PR details are not available for this tracker."}
+        _ -> {"Not loaded", "PR details have not loaded yet."}
+      end
+
+    %{label: if(count > 0, do: "#{count} shown", else: label), message: message}
   end
 
   defp proposal_details(%{"action" => action, "args" => args, "pr_work" => work})

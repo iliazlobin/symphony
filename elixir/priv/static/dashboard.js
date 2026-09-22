@@ -4,6 +4,24 @@
   const parse = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };
   const escapeText = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[c]));
   const storage = { get(key) { try { return localStorage.getItem(key); } catch { return null; } }, set(key, value) { try { localStorage.setItem(key, value); } catch { /* Preferences are optional. */ } } };
+  const observeChatDropdown = (details, selector, signal) => {
+    const fit = () => {
+      if (!details.open) return;
+      const menu = details.querySelector(selector), shell = details.closest(".chat-shell");
+      if (!menu || !shell) return;
+      const viewport = window.visualViewport;
+      const bottom = Math.min(shell.getBoundingClientRect().bottom, viewport ? viewport.offsetTop + viewport.height : window.innerHeight);
+      menu.style.setProperty("--chat-menu-space", Math.max(0, Math.floor(bottom - menu.getBoundingClientRect().top - 8)) + "px");
+    };
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(fit) : null;
+    const shell = details.closest(".chat-shell");
+    if (shell) observer?.observe(shell);
+    details.addEventListener("toggle", fit, {signal});
+    window.addEventListener("resize", fit, {signal});
+    window.visualViewport?.addEventListener("resize", fit, {signal});
+    window.visualViewport?.addEventListener("scroll", fit, {signal});
+    return {fit, disconnect: () => observer?.disconnect()};
+  };
   const TaskBoard = {
     mounted() {
       this.prefs = {project: [], status: [], priority: [], query: "", sort: "manual", order: {}, lane: "ready", density: "compact", theme: "light", hiddenLanes: ["done"]};
@@ -466,6 +484,17 @@
         const input = this.el.querySelector("#chat-message-input");
         if (input) { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 190) + "px"; }
       };
+      this.revealWork = () => {
+        const selected = this.pendingWork;
+        if (!selected) return;
+        if (selected.chat !== this.el.dataset.chatId) { this.pendingWork = null; return; }
+        if (this.el.dataset.sessionTab !== "outputs") return;
+        const article = document.getElementById("pr-work-" + selected.id);
+        if (!article || !this.el.contains(article) || article.dataset.selected !== "true") return;
+        this.pendingWork = null;
+        article.scrollIntoView({block: "nearest"});
+        this.el.querySelector("#session-outputs-tab")?.focus({preventScroll: true});
+      };
       // Scroll does not bubble; capture the retained conversation scroll container.
       this.el.addEventListener("scroll", event => {
         if (event.target.id === "session-chat-content") this.atBottom = event.target.scrollHeight - event.target.scrollTop - event.target.clientHeight < 90;
@@ -493,6 +522,12 @@
       on("click", event => {
         const tab = event.target.closest('[role="tab"][phx-click="session-tab"]');
         if (tab) this.saveTab(tab.getAttribute("phx-value-tab"));
+        const work = event.target.closest('[phx-click="inspect-pr-work"]');
+        if (work) {
+          this.saveTab("outputs");
+          this.pendingWork = {chat: this.el.dataset.chatId, id: work.getAttribute("phx-value-id")};
+          this.el.querySelector("#session-outputs-tab")?.focus({preventScroll: true});
+        }
         const thread = event.target.closest('button[phx-click="open-chat"]');
         if (thread && Date.now() < (this.ignoreThreadClickUntil || 0)) { event.preventDefault(); event.stopPropagation(); return; }
         if (thread) {
@@ -522,7 +557,7 @@
       if (this.chatId !== this.el.dataset.chatId) { this.chatId = this.el.dataset.chatId; this.atBottom = true; }
       this.loadTab();
       this.resizeComposer();
-      requestAnimationFrame(this.scroll);
+      requestAnimationFrame(() => { this.scroll(); this.revealWork(); });
     },
     reconnected() {
       // A channel rejoin remounts server state but retains this hook instance.
@@ -535,6 +570,7 @@
   const IssueSwitcher = {
     mounted() {
       this.abort = new AbortController();
+      this.menuSize = observeChatDropdown(this.el, ".issue-switcher-menu", this.abort.signal);
       this.activeId = null;
       this.input = () => this.el.querySelector('[role="combobox"]');
       this.options = () => [...this.el.querySelectorAll('[role="option"]')];
@@ -567,24 +603,24 @@
       this.sync();
     },
     beforeUpdate() { this.wasOpen = this.el.open; },
-    updated() { this.el.open = this.wasOpen; this.sync(); },
-    destroyed() { this.abort.abort(); }
+    updated() { this.el.open = this.wasOpen; this.sync(); this.menuSize.fit(); },
+    destroyed() { this.menuSize.disconnect(); this.abort.abort(); }
   };
   const IssuePRMenu = {
     mounted() {
       this.abort = new AbortController();
+      this.menuSize = observeChatDropdown(this.el, ".issue-pr-list", this.abort.signal);
       this.close = (focus = false) => { this.el.open = false; if (focus) this.el.querySelector('summary')?.focus(); };
       this.el.addEventListener('click', event => {
         if (event.target.closest('button, a')) this.close();
-        if (event.target.closest('[phx-click="inspect-pr-work"]')) document.getElementById('session-outputs-tab')?.focus({preventScroll: true});
       }, {signal: this.abort.signal});
       this.el.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); this.close(true); } }, {signal: this.abort.signal});
       document.addEventListener('click', event => { if (!this.el.contains(event.target)) this.close(); }, {signal: this.abort.signal});
       document.addEventListener('focusin', event => { if (!this.el.contains(event.target)) this.close(); }, {signal: this.abort.signal});
     },
     beforeUpdate() { this.wasOpen = this.el.open; },
-    updated() { this.el.open = this.wasOpen; },
-    destroyed() { this.abort.abort(); }
+    updated() { this.el.open = this.wasOpen; this.menuSize.fit(); },
+    destroyed() { this.menuSize.disconnect(); this.abort.abort(); }
   };
   window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace, IssueSwitcher, IssuePRMenu};
 })();

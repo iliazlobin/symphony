@@ -34,7 +34,8 @@ GitHub remains the task and publication record. See the
 [operator guide](profiles/events-concierge/README.md#operate) for setup and limits.
 
 Each issue has one coordinator chat, with a searchable activity-grouped issue picker
-and links to its card and all associated PRs. Confirmed PR work sessions retain their own
+and links to its card and associated PRs, with incomplete GitHub evidence identified.
+Confirmed PR work sessions retain their own
 builder thread and checkout across design, implementation and follow-up validation.
 They run sequentially within the issue budget, with a fresh reviewer for each candidate;
 publication, merge and deployment keep their existing authorization gates.

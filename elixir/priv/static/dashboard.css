@@ -604,10 +604,10 @@ summary { cursor: pointer; color: var(--accent); }
 .issue-switcher > summary > span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .issue-switcher > summary:hover, .issue-switcher[open] > summary { background: var(--soft); }
 .issue-switcher-menu, .issue-pr-list { position: absolute; z-index: 70; top: calc(100% + 8px); left: 0; right: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 38px #0002; padding: 8px; }
-.issue-switcher-menu { left: 16px; right: 16px; top: calc(100% - 2px); }
-.issue-switcher-menu form { padding: 3px; }
+.issue-switcher-menu { left: 16px; right: 16px; top: calc(100% - 2px); display: flex; flex-direction: column; max-height: min(480px, var(--chat-menu-space, 55dvh)); box-sizing: border-box; overflow: hidden; }
+.issue-switcher-menu form { padding: 3px; flex-shrink: 0; }
 .issue-switcher-menu input { width: 100%; box-sizing: border-box; padding: 10px; font-size: 12px; }
-.issue-options { max-height: min(480px, 55dvh); overflow-y: auto; overscroll-behavior: contain; }
+.issue-options { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; }
 .issue-group-label { position: sticky; top: 0; z-index: 1; display: flex; gap: 7px; padding: 12px 9px 6px; background: var(--panel); color: var(--muted); font-size: 11px; font-weight: 600; }
 .issue-group-label span { font-weight: 400; }
 .issue-option { display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left; background: transparent; border: 0; padding: 9px; border-radius: 7px; font-size: 12px; }
@@ -627,7 +627,7 @@ summary { cursor: pointer; color: var(--accent); }
 .issue-pr-menu { margin-left: auto; position: relative; }
 .issue-pr-menu > summary { display: flex; align-items: center; gap: 7px; cursor: pointer; list-style: none; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; white-space: nowrap; }
 .issue-pr-menu > summary > span { color: var(--muted); }
-.issue-pr-list { left: auto; min-width: min(350px, 76vw); max-height: 50dvh; overflow-y: auto; }
+.issue-pr-list { left: auto; min-width: min(350px, 76vw); max-height: min(480px, var(--chat-menu-space, 50dvh)); box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; }
 .issue-pr-option { padding: 9px 6px; border-bottom: 1px solid var(--line); }
 .issue-pr-option:last-child { border-bottom: 0; }
 .issue-pr-option > div:first-child { display: flex; align-items: start; justify-content: space-between; gap: 8px; font-size: 12px; }

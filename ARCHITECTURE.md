@@ -272,7 +272,8 @@ The issue chat coordinates all PR work on that issue. Its headline picker groups
 Running, Ready for review, Needs attention, Ready, Backlog and Done, then sorts each
 group by the newest issue, worker, chat, PR or check activity. Search matches categories,
 identifiers, titles and latest activity. The identity row links the GitHub issue and
-board card; its PR menu lists all fetched PRs and opens retained work summaries in
+board card; its PR menu lists all fetched PRs, identifies incomplete GitHub evidence,
+and opens retained work summaries in
 Outputs without changing the issue conversation. Main chat coordinates the project.
 Creating or continuing PR work uses the same durable preview, browser confirmation and
 native receipt recovery as other controls. Issue chats cannot act on another issue's

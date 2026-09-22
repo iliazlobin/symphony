@@ -755,6 +755,41 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   @tag :threads_fixture
+  test "issue PR menu distinguishes unavailable and partial evidence from verified empty", ctx do
+    board = update_task(ctx.board, "2", &%{&1 | github_status: "available", pull_requests: []})
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    render_click(view, "select-task", %{"id" => "github:example/fixture:2"})
+    render(view)
+    assert has_element?(view, "#issue-pr-menu summary", "PRs 0")
+    assert has_element?(view, "#issue-pr-menu", "No linked pull requests yet.")
+
+    for {status, label, message} <- [
+          {"unavailable", "Unavailable", "PR details are unavailable."},
+          {"not_loaded", "Not loaded", "PR details have not loaded yet."},
+          {"source_missing", "Unavailable", "issue source is missing"},
+          {"partial", "Incomplete", "PR details are incomplete."},
+          {"not_applicable", "Unavailable", "not available for this tracker"}
+        ] do
+      refresh(view, ctx.runtime, update_task(board, "2", &%{&1 | github_status: status}))
+      assert has_element?(view, "#issue-pr-menu summary", label)
+      assert has_element?(view, "#issue-pr-menu [role=status]", message)
+      refute has_element?(view, "#issue-pr-menu summary", "PRs 0")
+      refute has_element?(view, "#issue-pr-menu", "No linked pull requests yet.")
+    end
+
+    prs = for n <- 1..2, do: %{number: n, title: "Known PR #{n}", url: "https://github.com/example/fixture/pull/#{n}", state: "open"}
+    partial = update_task(board, "2", &%{&1 | github_status: "partial", pull_requests: prs})
+    refresh(view, ctx.runtime, partial)
+    assert has_element?(view, "#issue-pr-menu summary", "2 shown")
+    assert has_element?(view, "#issue-pr-menu [role=status]", "PR details are incomplete.")
+    for n <- 1..2, do: assert(has_element?(view, "#issue-pr-menu [data-pr-number='#{n}']", "Known PR #{n}"))
+    refresh(view, ctx.runtime, update_task(partial, "2", &%{&1 | github_status: "available"}))
+    assert has_element?(view, "#issue-pr-menu summary", "PRs 2")
+    refute has_element?(view, "#issue-pr-menu [role=status]")
+  end
+
+  @tag :threads_fixture
   test "card selection switches canonical chat without details and preserves board filters", ctx do
     view = authorized_board_view()
     filters = %{"project" => "github:example/fixture", "q" => "fixture", "sort" => "updated"}

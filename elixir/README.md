@@ -337,7 +337,8 @@ project conversation for reports and task creation, updates or cancellation.
 The headline picker searches issue numbers, titles, categories and recent activity.
 Issues appear in Running, Ready for review, Needs attention, Ready, Backlog and Done
 groups, newest activity first within each group. The second line links the issue and
-its card; **PRs** lists every associated PR with independent review and CI status.
+its card; **PRs** lists fetched associated PRs with independent review and CI status,
+and indicates when GitHub evidence is incomplete or unavailable.
 Retained PR work sessions open in **Outputs**, keeping the same issue chat selected.
 Use **New task** to enter a title, outcome, scope, acceptance checks and dependencies.
 **Preview task** saves the exact proposed GitHub issue; **Create task** confirms it.
