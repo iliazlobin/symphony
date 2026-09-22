@@ -95,6 +95,12 @@ commands to the native API and owns no scheduling state.
 - [`TaskBoard`](elixir/lib/symphony_elixir_web/task_board.ex) combines tracker issues,
   runtime and durable holds for the LiveView Kanban board. Sorting and manual order
   are browser preferences. Card and Settings dialogs preserve the board underneath.
+  A supervised in-memory cache retains one complete board for up to 90 seconds.
+  Reloads render that snapshot immediately, including its checked time, while a
+  fresh read runs in the background. Configuration, credentials, data source and
+  controller identity fence reuse; failed reads do not replace the last complete
+  snapshot. Restart clears the cache. It never supplies scheduling authority or
+  bypasses browser authentication, and private HTTP responses remain `no-store`.
   [`BrowserAuth`](elixir/lib/symphony_elixir_web/browser_auth.ex) checks Google or
   local operator sessions. Google mode protects the board, chat and read APIs before
   project data is returned; an explicit allowlist controls operator access.

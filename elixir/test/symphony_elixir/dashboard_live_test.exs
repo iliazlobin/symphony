@@ -3,7 +3,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
-  alias SymphonyElixirWeb.{BrowserAuth, Endpoint, Presenter, TaskBoard}
+  alias SymphonyElixirWeb.{BoardCache, BrowserAuth, Endpoint, Presenter, TaskBoard}
   @endpoint Endpoint
 
   # Explicit fixture server: real OTP calls and LiveView transport, no coding
@@ -13,6 +13,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     def start_link(state), do: GenServer.start_link(__MODULE__, state, name: state.name)
     def init(state), do: {:ok, state}
     def handle_call(:snapshot, _from, state), do: {:reply, state.snapshot, state}
+    def handle_call({:snapshot, snapshot}, _from, state), do: {:reply, :ok, %{state | snapshot: snapshot}}
     def handle_call(:control_snapshot, _from, state), do: {:reply, state.control, state}
     def handle_call(:board, _from, state), do: {:reply, state.board, state}
     def handle_call({:board, board}, _from, state), do: {:reply, :ok, %{state | board: board}}
@@ -235,6 +236,139 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute html =~ "Proposed UI"
     assert has_element?(view, "#management-chat-dock")
     refute has_element?(view, "#board-dialog")
+  end
+
+  test "reload renders the last complete board before a blocked refresh and skips synchronous snapshot IO", ctx do
+    owner = self()
+
+    configure_board_loaders(
+      fn _, _ ->
+        send(owner, {:board_read, self()})
+
+        receive do
+          {:complete, result} -> result
+          :crash -> exit(:fixture_failure)
+        end
+      end,
+      fn ->
+        send(owner, :snapshot_read)
+        ctx.board.runtime
+      end
+    )
+
+    {:ok, first, cold} = live(build_conn(), "/")
+    refute cold =~ "Backlog fixture"
+    assert_receive {:board_read, reader}
+    assert_received :snapshot_read
+    assert_received :snapshot_read
+    send(reader, {:complete, ctx.board})
+    assert render_async(first) =~ "Backlog fixture"
+    GenServer.stop(first.pid)
+
+    # Static HTML already contains cards, without a websocket or external read.
+    http = get(build_conn(), "/")
+    assert html_response(http, 200) =~ "Backlog fixture"
+    refute_received :snapshot_read
+
+    {:ok, second, warm} = live(build_conn(), "/?task=github%3Aexample%2Ffixture%3A2")
+    assert_receive {:board_read, reader}
+    assert warm =~ "Backlog fixture"
+    assert warm =~ "refreshing…"
+    refute warm =~ "Tracker issues are loading"
+    assert has_element?(second, "#board-dialog h2", "Ready fixture")
+    refute_received :snapshot_read
+
+    updated = update_task(ctx.board, "2", &%{&1 | title: "Fresh after reload"})
+    send(reader, {:complete, updated})
+    assert render_async(second) =~ "Fresh after reload"
+    assert {:ok, ^updated} = BoardCache.get(BoardCache.scope(ctx.runtime))
+
+    render_click(second, "refresh")
+    assert_receive {:board_read, reader}
+    send(reader, {:complete, %{updated | tasks: [], source_error: "Tracker unavailable"}})
+    assert render_async(second) =~ "Fresh after reload"
+    assert {:ok, ^updated} = BoardCache.get(BoardCache.scope(ctx.runtime))
+
+    render_click(second, "refresh")
+    assert_receive {:board_read, reader}
+    send(reader, :crash)
+    assert render_async(second) =~ "Board refresh failed"
+    assert {:ok, ^updated} = BoardCache.get(BoardCache.scope(ctx.runtime))
+    assert html_response(get(build_conn(), "/"), 200) =~ "Fresh after reload"
+  end
+
+  test "a configuration switch discards pending results and cached cards before loading the new scope", ctx do
+    owner = self()
+
+    configure_board_loaders(fn _, _ ->
+      send(owner, {:board_read, self()})
+
+      receive do
+        {:complete, result} -> result
+      end
+    end)
+
+    :ok = BoardCache.put(BoardCache.scope(ctx.runtime), ctx.board)
+    {:ok, view, html} = live(build_conn(), "/")
+    assert html =~ "Backlog fixture"
+    assert_receive {:board_read, old_reader}
+
+    configured = Application.get_env(:symphony_elixir, Endpoint)
+    Endpoint.config_change([{Endpoint, Keyword.put(configured, :board_read_only, true)}], [])
+    refute html_response(get(build_conn(), "/"), 200) =~ "Backlog fixture"
+    send(old_reader, {:complete, ctx.board})
+    assert_receive {:board_read, current_reader}
+    refute render(view) =~ "Backlog fixture"
+    assert :miss = BoardCache.get(BoardCache.scope(ctx.runtime))
+
+    fresh = ctx.board |> Map.put(:tasks, []) |> Map.put(:read_only, true)
+    send(current_reader, {:complete, fresh})
+    refute render_async(view) =~ "Backlog fixture"
+    assert {:ok, ^fresh} = BoardCache.get(BoardCache.scope(ctx.runtime))
+  end
+
+  test "configuration changes during a cold snapshot cannot relabel old runtime tasks", ctx do
+    configure_board_loaders(fn _, _ -> ctx.board end, fn ->
+      configured = Application.get_env(:symphony_elixir, Endpoint)
+      Endpoint.config_change([{Endpoint, Keyword.put(configured, :board_read_only, true)}], [])
+      ctx.board.runtime
+    end)
+
+    html = html_response(get(build_conn(), "/"), 200)
+    assert Floki.find(html, "article[data-task-id]") == []
+  end
+
+  test "a slow board result cannot overwrite a newer worker update", ctx do
+    owner = self()
+
+    configure_board_loaders(fn _, _ ->
+      send(owner, {:board_read, self()})
+
+      receive do
+        :complete -> ctx.board
+      end
+    end)
+
+    :ok = BoardCache.put(BoardCache.scope(ctx.runtime), ctx.board)
+    {:ok, view, _html} = live(build_conn(), "/")
+    assert_receive {:board_read, reader}
+    newer = %{snapshot() | running: [], codex_totals: %{total_tokens: 1234, seconds_running: 42}}
+    :ok = GenServer.call(ctx.runtime, {:snapshot, newer})
+    send(view.pid, :observability_updated)
+    render(view)
+    payload = :sys.get_state(view.pid).socket.assigns.payload
+    assert payload.running == []
+    assert payload.codex_totals.total_tokens == 1234
+    send(reader, :complete)
+    render_async(view)
+    assert :sys.get_state(view.pid).socket.assigns.payload == payload
+  end
+
+  defp configure_board_loaders(loader, snapshot_loader \\ nil) do
+    configured = Application.get_env(:symphony_elixir, Endpoint)
+    updates = Keyword.merge(configured, board_loader: loader, snapshot_loader: snapshot_loader)
+    Application.put_env(:symphony_elixir, Endpoint, updates)
+    Endpoint.config_change([{Endpoint, updates}], [])
   end
 
   test "paused Ready tasks explain the dispatch gate and open Execution settings without resuming", ctx do

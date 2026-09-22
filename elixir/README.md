@@ -636,6 +636,14 @@ Successful changes affect new admissions, preserve active work and consumed budg
 and survive restart. Reloading a lower ceiling clamps a saved higher override.
 Changing control budgets still requires reviewed configuration and restart.
 
+Reloads reuse the server's last complete board for up to 90 seconds while GitHub and
+controller data refresh in the background. The footer retains its checked time.
+The cache holds one snapshot in memory (up to 8 MB), clears on restart, and cannot
+cross configuration, credential, data-source or controller changes. Failed refreshes
+do not replace it. A cold start still waits for source reads; private board content
+remains behind Google sign-in and is never cached in browser storage. Execution and
+tracker changes continue to validate current authority and revisions.
+
 The read-only preview never enables controller commands or chat execution. Missing
 controller settings remain “Not reported”; model presets and chat storage health do
 not verify model-account access. Display preferences stay in Display.

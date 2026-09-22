@@ -6,7 +6,7 @@ end
 [workflow, port] = System.argv()
 SymphonyElixir.Workflow.set_workflow_file_path(workflow)
 {:ok, _} = SymphonyElixir.WorkflowStore.start_link()
-{:ok, _} = Supervisor.start_link([{Phoenix.PubSub, name: SymphonyElixir.PubSub}], strategy: :one_for_one)
+{:ok, _} = Supervisor.start_link([{Phoenix.PubSub, name: SymphonyElixir.PubSub}, SymphonyElixirWeb.BoardCache], strategy: :one_for_one)
 
 for name <- [SymphonyElixir.AgentRuntimeSupervisor, SymphonyElixir.Orchestrator, SymphonyElixir.Chat.Store] do
   if Process.whereis(name), do: raise("Read-only board must not own execution or chat processes")

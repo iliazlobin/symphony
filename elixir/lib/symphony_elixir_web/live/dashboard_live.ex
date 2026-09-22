@@ -4,19 +4,21 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   alias SymphonyElixir.Chat.ViewContext
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, ChatPanel, Endpoint, Markdown, SettingsPanel, TaskIntakePanel}
-  alias SymphonyElixirWeb.{ObservabilityPubSub, Presenter, TaskBoard, TaskExecution}
+  alias SymphonyElixirWeb.{BoardCache, ObservabilityPubSub, Presenter, TaskBoard, TaskExecution}
 
   @lanes [{"backlog", "Backlog"}, {"ready", "Ready"}, {"running", "Running"}, {"review", "Review"}, {"done", "Done"}]
   @refresh_ms 30_000
 
   @impl true
   def mount(_params, session, socket) do
-    payload = load_payload()
+    {scope, board, payload} = initial_state()
 
     socket =
       socket
       |> assign(:payload, payload)
-      |> assign(:board, initial_board(payload))
+      |> assign(:payload_revision, 0)
+      |> assign(:board, board)
+      |> assign(:board_scope, scope)
       |> assign(:loading, false)
       |> assign(:dialog, nil)
       |> assign(:selected, nil)
@@ -74,7 +76,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_info(:observability_updated, socket) do
-    {:noreply, assign(socket, :payload, load_payload())}
+    {:noreply, socket |> assign(:payload, load_payload()) |> update(:payload_revision, &(&1 + 1))}
   end
 
   def handle_info(:refresh_board, socket) do
@@ -134,7 +136,27 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def handle_info({:task_intake, :changed}, socket), do: {:noreply, refresh_board(socket)}
 
   @impl true
-  def handle_async(:board, {:ok, result}, socket) do
+  def handle_async(:board, {:ok, {scope, payload_revision, result}}, socket) do
+    if scope == BoardCache.scope(orchestrator()) do
+      :ok = BoardCache.put(scope, result)
+      {:noreply, apply_board(socket, result, payload_revision)}
+    else
+      # A completed read belongs to the configuration that started it, never to
+      # a new project, credential, controller or data source.
+      {:noreply, socket |> assign(:loading, false) |> refresh_board()}
+    end
+  end
+
+  def handle_async(:board, {:exit, _reason}, socket) do
+    if socket.assigns.board_scope == BoardCache.scope(orchestrator()) do
+      board = Map.put(socket.assigns.board, :source_error, "Board refresh failed; showing last-known tasks.")
+      {:noreply, socket |> assign(:board, board) |> assign(:loading, false)}
+    else
+      {:noreply, socket |> assign(:loading, false) |> refresh_board()}
+    end
+  end
+
+  defp apply_board(socket, result, payload_revision) do
     # A failed source cannot turn last-known work into an empty successful board.
     previous = socket.assigns.board
 
@@ -149,7 +171,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     selected = socket.assigns.selected
     current = selected && Enum.find(result.tasks, &(&1.id == selected.id))
-    socket = refresh_payload(socket, result)
+    socket = if socket.assigns.payload_revision == payload_revision, do: refresh_payload(socket, result), else: socket
     socket = socket |> assign(:board, result) |> assign(:selected, current) |> assign(:loading, false)
 
     socket =
@@ -160,12 +182,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         socket
       end
 
-    {:noreply, socket |> open_linked_task() |> sync_chat_selection() |> refresh_chat_activity()}
-  end
-
-  def handle_async(:board, {:exit, _reason}, socket) do
-    board = Map.put(socket.assigns.board, :source_error, "Board refresh failed; showing last-known tasks.")
-    {:noreply, socket |> assign(:board, board) |> assign(:loading, false)}
+    socket |> open_linked_task() |> sync_chat_selection() |> refresh_chat_activity()
   end
 
   @impl true
@@ -667,21 +684,55 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp refresh_board(socket) do
     server = orchestrator()
+    scope = BoardCache.scope(server)
     loader = Endpoint.config(:board_loader) || (&TaskBoard.load/2)
     timeout = Endpoint.config(:board_timeout_ms) || 15_000
-    socket |> assign(:loading, true) |> start_async(:board, fn -> loader.(server, timeout) end)
+
+    socket =
+      if scope == socket.assigns.board_scope do
+        socket
+      else
+        socket
+        |> clear_card_context()
+        |> assign(:board, initial_board(%{}))
+        |> assign(:payload, %{})
+        |> assign(:board_scope, scope)
+        |> assign(:chat_activity, %{})
+        |> assign(:selected, nil)
+        |> assign(:pending_command, nil)
+        |> sync_chat_selection()
+      end
+
+    payload_revision = socket.assigns.payload_revision
+
+    socket
+    |> assign(:loading, true)
+    |> start_async(:board, fn -> {scope, payload_revision, loader.(server, timeout)} end)
+  end
+
+  # BrowserAccess checks Google identity before either mount. Reuse only a
+  # bounded presentation snapshot; writes still revalidate native authority.
+  defp initial_state do
+    scope = BoardCache.scope(orchestrator())
+
+    with {:ok, board} <- BoardCache.get(scope),
+         true <- scope == BoardCache.scope(orchestrator()) do
+      {scope, board, board.runtime}
+    else
+      _ ->
+        payload = load_payload()
+        current_scope = BoardCache.scope(orchestrator())
+        payload = if current_scope == scope, do: payload, else: %{}
+        {current_scope, initial_board(payload), payload}
+    end
   end
 
   defp initial_board(payload), do: TaskBoard.from_runtime(payload)
   defp read_only?(board), do: Endpoint.config(:board_read_only, false) == true or Map.get(board, :read_only, false) == true
 
   defp refresh_payload(socket, board) do
-    if is_function(Endpoint.config(:snapshot_loader), 0) do
-      payload = if is_map(board[:runtime]), do: board.runtime, else: %{error: %{code: "snapshot_unavailable"}}
-      assign(socket, :payload, payload)
-    else
-      socket
-    end
+    payload = if is_map(board[:runtime]), do: board.runtime, else: %{error: %{code: "snapshot_unavailable"}}
+    assign(socket, :payload, payload)
   end
 
   defp source_status(board, loading) do
@@ -690,6 +741,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     cond do
       board.source_error -> "#{provider} unavailable · last-known data"
       board.runtime_error -> "Last-known cards · controller unavailable"
+      loading and board.generated_at -> "#{provider} checked #{age(board.generated_at)} · refreshing…"
       loading -> "#{provider} checking…"
       board.generated_at -> "#{provider} checked #{age(board.generated_at)}"
       true -> "#{provider} not checked"
