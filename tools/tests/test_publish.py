@@ -400,16 +400,24 @@ class PublishTest(unittest.TestCase):
 
 class RealGitIsolationTest(unittest.TestCase):
     def test_host_clone_ignores_source_hooks_and_diff_drivers(self):
+        self.clone_candidate()
+
+    def test_work_clone_is_scoped_to_the_exact_work_and_independent_review(self):
+        self.clone_candidate("1" * 32)
+
+    def clone_candidate(self, work_id=None):
+        workspace_key = "GH-7" + ("-" + work_id if work_id else "")
+        branch = "codex/gh-7" + ("-" + work_id if work_id else "")
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary).resolve()
-            source = state / "workspaces/GH-7"
+            source = state / "workspaces" / workspace_key
             source.mkdir(parents=True)
 
             def git(*args):
                 return subprocess.check_output(["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
                                                 "-C", str(source), *args], text=True).strip()
 
-            git("init", "-b", "codex/gh-7")
+            git("init", "-b", branch)
             git("config", "user.name", "Fixture")
             git("config", "user.email", "fixture@example.invalid")
             (source / "docs").mkdir()
@@ -421,7 +429,7 @@ class RealGitIsolationTest(unittest.TestCase):
             git("add", ".")
             git("commit", "-m", "Fixture change")
             head = git("rev-parse", "HEAD")
-            review = source.parent / "GH-7-review-1234567890abcdef"
+            review = source.parent / (workspace_key + "-review-1234567890abcdef")
             subprocess.run(["git", "clone", "--local", "--no-hardlinks", "--quiet", str(source), str(review)], check=True)
             marker = state / "must-not-run"
             hook = state / "hostile-hook"
@@ -432,10 +440,282 @@ class RealGitIsolationTest(unittest.TestCase):
             git("config", "core.hooksPath", str(state))
             config = {"state_dir": str(state), "workspace_root": str(source.parent)}
             candidate = {"workspace_path": str(source), "review_workspace_path": str(review),
-                         "candidate_sha": head, "base_sha": base, "branch": "codex/gh-7"}
+                         "candidate_sha": head, "base_sha": base, "branch": branch}
+            if work_id:
+                candidate["work_id"] = work_id
             with CandidateRepository(config, "7", candidate) as repository:
                 self.assertEqual(repository.changes(), [{"path": "docs/guide.md", "added": 1, "deleted": 0, "mode": "100644"}])
             self.assertFalse(marker.exists())
+
+
+class WorkGitHub(FakeGitHub):
+    """Distinct refs and PRs for two work sessions on the same issue."""
+    def __init__(self):
+        super().__init__()
+        self.refs, self.prs = {}, {}
+        self.selected_branch = None
+
+    def request(self, method, path, body=None, *, missing=False):
+        endpoint = urllib.parse.urlsplit(path).path.removeprefix("/repos/" + REPOSITORY)
+        branch = None
+        if endpoint.startswith("/git/ref/heads/"):
+            branch = endpoint.removeprefix("/git/ref/heads/")
+        elif endpoint == "/pulls" and method == "GET":
+            branch = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)["head"][0].split(":", 1)[1]
+        elif endpoint == "/pulls" and method == "POST":
+            branch = body["head"]
+        elif endpoint.startswith("/pulls/"):
+            number = int(endpoint.split("/")[2])
+            branch = next(key for key, pr in self.prs.items() if pr["number"] == number)
+            path = path.replace("/pulls/" + str(number), "/pulls/11")
+        if branch:
+            self.selected_branch = branch
+            self.ref, self.pr = self.refs.get(branch), self.prs.get(branch)
+        result = super().request(method, path, body, missing=missing)
+        if branch and self.pr:
+            if method == "POST":
+                self.pr["number"] = 11 + len(self.prs)
+                self.pr["html_url"] = "https://github.com/" + REPOSITORY + "/pull/" + str(self.pr["number"])
+                result = copy.deepcopy(self.pr)
+            self.prs[branch] = self.pr
+        return result
+
+
+class WorkPublishTest(unittest.TestCase):
+    setUp = PublishTest.setUp
+    writes = PublishTest.writes
+
+    def configure_work(self, work_id="1" * 32):
+        self.api = WorkGitHub()
+        self.broker.api = self.api
+        self.snapshot["tracker_fingerprint"] = "current-opaque-tracker-scope"
+        self.snapshot["issues"]["7"]["pr_work"] = {}
+        self.acks = []
+        self.broker.publication_writer = self.acknowledge
+        outer = self
+
+        class Repository:
+            def __init__(self, config, issue_id, candidate):
+                self.candidate = candidate
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                pass
+
+            def changes(self):
+                return outer.changes
+
+            def push(self, token, expected):
+                branch = self.candidate["branch"]
+                if outer.api.refs.get(branch) != expected:
+                    raise ControlError("Remote compare-and-swap failed")
+                head = self.candidate["candidate_sha"]
+                outer.pushes.append((branch, head, expected))
+                outer.api.refs[branch] = head
+                if branch in outer.api.prs:
+                    outer.api.prs[branch]["head"]["sha"] = head
+
+        self.broker.repository_factory = Repository
+        return self.add_work(work_id)
+
+    def add_work(self, work_id):
+        candidate = copy.deepcopy(self.candidate)
+        candidate.update(work_id=work_id, expected_head_sha=None, branch="codex/gh-7-" + work_id,
+                         workspace_path=self.config["workspace_root"] + "/GH-7-" + work_id,
+                         review_workspace_path=self.config["workspace_root"] + "/GH-7-" + work_id + "-review-1234567890abcdef")
+        work = {"id": work_id, "issue_id": "7", "tracker_fingerprint": self.snapshot["tracker_fingerprint"],
+                "base_sha": BASE, "branch": candidate["branch"], "workspace_key": "GH-7-" + work_id,
+                "head_sha": HEAD, "published_head_sha": None, "phase": "owner_review", "handoff": candidate,
+                "publication": None}
+        self.snapshot["issues"]["7"]["pr_work"][work_id] = work
+        self.snapshot["issues"]["7"]["handoff"] = candidate
+        return work
+
+    def acknowledge(self, receipt):
+        self.acks.append(copy.deepcopy(receipt))
+        work = self.snapshot["issues"][receipt["issue_id"]]["pr_work"][receipt["work_id"]]
+        work.update(publication=copy.deepcopy(receipt), published_head_sha=receipt["candidate_sha"])
+        return {"ok": True}
+
+    def advance(self, work, head="d" * 40):
+        prior = work["head_sha"]
+        work["head_sha"] = head
+        work["handoff"].update(candidate_sha=head, expected_head_sha=prior, run_id="next-native-run-123456")
+        work["handoff"]["review"]["candidate_sha"] = head
+
+    def test_work_receipt_callback_is_durable_private_and_idempotent(self):
+        work = self.configure_work()
+        first = self.broker.publish("7", work["id"])
+        second = self.broker.publish("7", work["id"])
+        self.assertEqual(first, second)
+        self.assertEqual(self.acks[0], self.acks[1])
+        self.assertEqual(len(self.pushes), 1)
+        self.assertEqual(len(self.writes()), 1)
+        self.assertEqual(first["work_id"], work["id"])
+        self.assertIsNone(first["expected_head_sha"])
+        self.assertEqual(work["published_head_sha"], HEAD)
+        path = self.broker.receipt_path("7", work["id"])
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertFalse(self.broker.receipt_path("7").exists())
+        with self.assertRaises(ControlError):
+            self.broker.publish("7")
+
+    def test_multiple_work_sessions_keep_distinct_branches_prs_receipts_and_selectors(self):
+        first = self.configure_work()
+        second = self.add_work("2" * 32)
+        result = self.broker.reconcile("7", first["id"])
+        self.assertEqual([item["work_id"] for item in result["results"]], [first["id"]])
+        self.assertFalse(self.broker.receipt("7", second["id"]))
+        result = self.broker.reconcile("7")
+        self.assertEqual(len(result["results"]), 2)
+        receipts = [self.broker.receipt("7", work["id"]) for work in (first, second)]
+        self.assertNotEqual(receipts[0]["pr_number"], receipts[1]["pr_number"])
+        self.assertEqual(len(self.pushes), 2)
+        self.assertTrue(all(item["status"] == "draft_pr" for item in receipts))
+        with self.assertRaises(ControlError):
+            self.broker.reconcile(work_id=first["id"])
+
+    def test_continuation_updates_same_pr_only_from_acknowledged_remote_head(self):
+        work = self.configure_work()
+        original = self.broker.publish("7", work["id"])
+        self.advance(work)
+        updated = self.broker.publish("7", work["id"])
+        self.assertEqual(updated["pr_number"], original["pr_number"])
+        self.assertEqual(updated["expected_head_sha"], HEAD)
+        self.assertEqual(self.pushes[-1], (work["branch"], "d" * 40, HEAD))
+        self.assertEqual(work["published_head_sha"], "d" * 40)
+        self.assertEqual(sum(method == "POST" for method, _, _ in self.writes()), 1)
+
+    def test_unrelated_remote_head_or_deleted_branch_never_gets_replaced(self):
+        for index, changed_head in enumerate(("e" * 40, None), 1):
+            with self.subTest(head=changed_head):
+                work = self.configure_work(str(index) * 32)
+                self.broker.publish("7", work["id"])
+                self.advance(work)
+                self.api.refs[work["branch"]] = changed_head
+                before = len(self.pushes), len(self.writes())
+                with self.assertRaises(ControlError):
+                    self.broker.publish("7", work["id"])
+                self.assertEqual((len(self.pushes), len(self.writes())), before)
+
+    def test_work_scope_branch_identity_and_exact_review_fail_before_mutation(self):
+        work = self.configure_work()
+        for key, value in (("id", "2" * 32), ("issue_id", "8"), ("tracker_fingerprint", "old-scope"),
+                           ("branch", "codex/gh-7-unowned"), ("workspace_key", "GH-7"),
+                           ("head_sha", "d" * 40), ("phase", "running")):
+            previous = work[key]
+            work[key] = value
+            with self.subTest(key=key), self.assertRaises(ControlError):
+                self.broker.publish("7", "1" * 32)
+            work[key] = previous
+        work["handoff"]["review"]["candidate_sha"] = BASE
+        with self.assertRaises(ControlError):
+            self.broker.publish("7", work["id"])
+        self.assertFalse(self.pushes)
+        self.assertFalse(self.writes())
+
+    def test_missing_owner_ack_reconciles_existing_pr_without_second_mutation(self):
+        work = self.configure_work()
+        def unavailable(_receipt):
+            self.assertTrue(self.broker.receipt("7", work["id"]))
+            raise ControlError("Owner acknowledgment unknown")
+        self.broker.publication_writer = unavailable
+        with self.assertRaises(ControlError):
+            self.broker.publish("7", work["id"])
+        first = self.broker.receipt("7", work["id"])
+        self.assertIsNone(work["published_head_sha"])
+        self.broker.publication_writer = self.acknowledge
+        self.assertEqual(self.broker.publish("7", work["id"]), first)
+        self.assertEqual(work["published_head_sha"], HEAD)
+        self.assertEqual(len(self.pushes), 1)
+        self.assertEqual(len(self.writes()), 1)
+
+    def test_lost_push_and_pr_creation_acknowledgments_recover_without_duplicate_work(self):
+        for index, failure in enumerate(("push", "create"), 3):
+            work = self.configure_work(str(index) * 32)
+            factory, request = self.broker.repository_factory, self.api.request
+            if failure == "push":
+                class LostPushAck(factory):
+                    def push(self, token, expected):
+                        super().push(token, expected)
+                        raise ControlError("Push acknowledgment unknown")
+                self.broker.repository_factory = LostPushAck
+            else:
+                def lost_create(method, path, body=None, **kwargs):
+                    result = request(method, path, body, **kwargs)
+                    if method == "POST":
+                        raise ControlError("PR creation acknowledgment unknown")
+                    return result
+                self.api.request = lost_create
+            with self.subTest(failure=failure), self.assertRaises(ControlError):
+                self.broker.publish("7", work["id"])
+            self.assertFalse(self.broker.receipt("7", work["id"]))
+            self.broker.repository_factory, self.api.request = factory, request
+            result = self.broker.publish("7", work["id"])
+            self.assertEqual(result["status"], "draft_pr")
+            self.assertEqual(sum(branch == work["branch"] for branch, _, _ in self.pushes), 1)
+            self.assertEqual(sum(method == "POST" for method, _, _ in self.writes()), 1)
+
+    def test_owner_acceptance_with_lost_ack_replays_without_git_or_pr_mutation(self):
+        work = self.configure_work()
+        def lost_owner_ack(receipt):
+            self.acknowledge(receipt)
+            raise ControlError("Owner acknowledgment unknown")
+        self.broker.publication_writer = lost_owner_ack
+        with self.assertRaises(ControlError):
+            self.broker.publish("7", work["id"])
+        self.assertEqual(work["published_head_sha"], HEAD)
+        self.broker.publication_writer = self.acknowledge
+        self.broker.publish("7", work["id"])
+        self.assertEqual(self.acks[0], self.acks[1])
+        self.assertEqual(len(self.pushes), 1)
+        self.assertEqual(len(self.writes()), 1)
+
+    def test_work_selection_does_not_grant_merge_and_merge_receipts_remain_scoped(self):
+        work = self.configure_work()
+        self.broker.publish("7", work["id"])
+        with self.assertRaises(ControlError):
+            self.broker.merge("7", work["id"])
+        self.config["auto_merge"]["enabled"] = True
+        self.api.prs[work["branch"]]["draft"] = False
+        result = self.broker.merge("7", work["id"])
+        self.assertEqual(result["status"], "merged")
+        self.assertEqual(result["work_id"], work["id"])
+        self.assertEqual(self.acks[-1]["merge_sha"], MERGED)
+        self.assertEqual(self.broker.publish("7", work["id"]), result)
+        self.assertEqual(sum(method == "PUT" for method, _, _ in self.writes()), 1)
+
+    def test_remote_head_race_is_rejected_by_compare_and_swap(self):
+        work = self.configure_work()
+        self.broker.publish("7", work["id"])
+        self.advance(work)
+        factory = self.broker.repository_factory
+        outer = self
+        class RemoteRace(factory):
+            def push(self, token, expected):
+                outer.api.refs[work["branch"]] = "e" * 40
+                super().push(token, expected)
+        self.broker.repository_factory = RemoteRace
+        before = len(self.pushes), len(self.writes())
+        with self.assertRaises(ControlError):
+            self.broker.publish("7", work["id"])
+        self.assertEqual((len(self.pushes), len(self.writes())), before)
+        self.assertEqual(self.api.refs[work["branch"]], "e" * 40)
+
+    def test_closed_or_rebound_work_pr_does_not_create_a_replacement(self):
+        work = self.configure_work()
+        self.broker.publish("7", work["id"])
+        for values in ({"state": "closed"}, {"body": self.broker.marker("7", "2" * 32)}):
+            pr = self.api.prs[work["branch"]]
+            before = copy.deepcopy(pr)
+            pr.update(values)
+            count = len(self.writes())
+            with self.assertRaises(ControlError):
+                self.broker.publish("7", work["id"])
+            self.assertEqual(len(self.writes()), count)
+            self.api.prs[work["branch"]] = before
 
 
 if __name__ == "__main__":

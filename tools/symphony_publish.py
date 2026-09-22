@@ -26,6 +26,7 @@ REPOSITORY = "iliazlobin/events-concierge"
 REMOTE = "https://github.com/" + REPOSITORY + ".git"
 SHA = re.compile(r"[0-9a-f]{40}")
 ISSUE = re.compile(r"[1-9][0-9]*")
+WORK = re.compile(r"[0-9a-f]{32}")
 MAX_RESPONSE = 8 * 1024 * 1024
 FORBIDDEN = re.compile(
     r"(^|[/_.-])(agents?|claude|workflow|security|auth|permissions?|polic(?:y|ies)|"
@@ -128,9 +129,14 @@ class CandidateRepository:
 
     def __init__(self, config: dict, issue_id: str, candidate: dict):
         self.config, self.candidate = config, candidate
-        self.workspace = owned_workspace(config, candidate["workspace_path"], "GH-" + issue_id)
+        workspace_key = "GH-" + issue_id
+        if candidate.get("work_id") is not None:
+            if not WORK.fullmatch(candidate["work_id"]):
+                raise ControlError("Invalid PR work identity")
+            workspace_key += "-" + candidate["work_id"]
+        self.workspace = owned_workspace(config, candidate["workspace_path"], workspace_key)
         review_name = Path(candidate["review_workspace_path"]).name
-        if not re.fullmatch(r"GH-" + issue_id + r"-review-[0-9a-f]{16}", review_name):
+        if not re.fullmatch(re.escape(workspace_key) + r"-review-[0-9a-f]{16}", review_name):
             raise ControlError("Unexpected independent review workspace")
         self.review = owned_workspace(config, candidate["review_workspace_path"], review_name)
 
@@ -147,6 +153,8 @@ class CandidateRepository:
             if self.git("symbolic-ref", "--short", "HEAD", cwd=self.repository).strip() != self.candidate["branch"]:
                 raise ControlError("Candidate branch changed after native review")
             self.git("merge-base", "--is-ancestor", self.candidate["base_sha"], self.candidate["candidate_sha"], cwd=self.repository)
+            if self.candidate.get("expected_head_sha"):
+                self.git("merge-base", "--is-ancestor", self.candidate["expected_head_sha"], self.candidate["candidate_sha"], cwd=self.repository)
             return self
         except BaseException:
             self.temporary.cleanup()
@@ -229,7 +237,7 @@ def low_risk(config: dict, changes: list[dict]) -> None:
 
 
 class Broker:
-    def __init__(self, config: dict, api, snapshot_reader=None, repository_factory=CandidateRepository):
+    def __init__(self, config: dict, api, snapshot_reader=None, repository_factory=CandidateRepository, publication_writer=None):
         if config.get("repository") != REPOSITORY or not SHA.fullmatch(config.get("base_sha", "")):
             raise ControlError("Publication configuration does not identify the approved repository and baseline")
         branch = config.get("integration_branch", "")
@@ -239,36 +247,69 @@ class Broker:
         self.automatic = False
         self.snapshot_reader = snapshot_reader or (lambda: request_json(config, "/api/v1/control"))
         self.prefix = "/repos/" + REPOSITORY
+        self.publication_writer = publication_writer or (lambda receipt: request_json(config, "/api/v1/pr-work/publication", receipt))
 
-    def candidate(self, issue_id: str):
-        if not ISSUE.fullmatch(issue_id):
+    @staticmethod
+    def selector(issue_id: str, work_id: str | None = None):
+        if not isinstance(issue_id, str) or not ISSUE.fullmatch(issue_id):
             raise ControlError("Issue ID must be a positive GitHub issue number")
+        if work_id is not None and (not isinstance(work_id, str) or not WORK.fullmatch(work_id)):
+            raise ControlError("Work ID must be an immutable 32-character hexadecimal identity")
+
+    def candidate(self, issue_id: str, work_id: str | None = None):
+        self.selector(issue_id, work_id)
         snapshot = self.snapshot_reader()
         if self.automatic and snapshot.get("mode") not in ("running", "draining"):
             raise ControlError("Native control paused publication")
         issue = snapshot.get("issues", {}).get(issue_id, {})
-        item = issue.get("handoff")
+        work = issue.get("pr_work", {}).get(work_id) if work_id else None
+        item = work.get("handoff") if isinstance(work, dict) else issue.get("handoff")
+        settled = work.get("phase") == "owner_review" if isinstance(work, dict) else issue.get("hold") == "owner_review"
         if (snapshot.get("enabled") is not True or snapshot.get("fault") is not None
-                or issue.get("hold") != "owner_review" or issue.get("active") is not None or not isinstance(item, dict)):
+                or not settled or issue.get("active") is not None or not isinstance(item, dict)):
             raise ControlError("Native control ledger has no settled owner-review candidate")
+        expected_branch = "codex/gh-" + issue_id + ("-" + work_id if work_id else "")
         review = item.get("review", {})
         if (not SHA.fullmatch(item.get("candidate_sha", "")) or item.get("base_sha") != self.config["base_sha"]
-                or item.get("branch") != "codex/gh-" + issue_id
+                or item.get("branch") != expected_branch or item.get("work_id") != work_id
                 or not re.fullmatch(r"[A-Za-z0-9_-]{10,128}", item.get("run_id", ""))
                 or review.get("candidate_sha") != item["candidate_sha"] or review.get("verdict") != "approve"
                 or review.get("findings") != []
                 or not item.get("builder_session_id") or not item.get("reviewer_session_id")
                 or item["builder_session_id"] == item["reviewer_session_id"]):
             raise ControlError("Native candidate lacks a matching independent approval and trusted baseline")
+        if work_id:
+            fingerprint = snapshot.get("tracker_fingerprint")
+            if (not isinstance(work, dict) or work.get("id") != work_id or work.get("issue_id") != issue_id
+                    or not isinstance(fingerprint, str) or not fingerprint or work.get("tracker_fingerprint") != fingerprint
+                    or work.get("branch") != expected_branch or work.get("base_sha") != item["base_sha"]
+                    or work.get("workspace_key") != "GH-" + issue_id + "-" + work_id
+                    or work.get("head_sha") != item["candidate_sha"]
+                    or item.get("expected_head_sha") is not None and not SHA.fullmatch(item["expected_head_sha"])
+                    or work.get("published_head_sha") is not None and not SHA.fullmatch(work["published_head_sha"])):
+                raise ControlError("PR work ownership, tracker scope or candidate head changed")
+            item = dict(item, published_head_sha=work.get("published_head_sha"), publication=work.get("publication"))
         return item
 
     def recheck(self, issue_id: str, candidate: dict):
-        if self.candidate(issue_id) != candidate:
+        if self.candidate(issue_id, candidate.get("work_id")) != candidate:
             raise ControlError("Native candidate changed; publication must restart from fresh evidence")
 
-    def receipt(self, issue_id: str) -> dict:
-        path = Path(self.config["state_dir"]) / "receipts" / ("publication-" + issue_id + ".json")
+    def receipt_path(self, issue_id: str, work_id: str | None = None) -> Path:
+        self.selector(issue_id, work_id)
+        suffix = issue_id + ("-" + work_id if work_id else "")
+        return Path(self.config["state_dir"]) / "receipts" / ("publication-" + suffix + ".json")
+
+    def receipt(self, issue_id: str, work_id: str | None = None) -> dict:
+        path = self.receipt_path(issue_id, work_id)
         return json.loads(read_private(path)) if path.exists() else {}
+
+    def acknowledge(self, receipt: dict):
+        if receipt.get("work_id"):
+            keys = ("issue_id", "work_id", "run_id", "candidate_sha", "expected_head_sha", "branch", "base_sha",
+                    "pr_number", "pr_url", "status", "merge_sha")
+            self.publication_writer({key: receipt[key] for key in keys if key in receipt})
+        return receipt
 
     def record(self, issue_id: str, candidate: dict, pr: dict, status: str, **extra):
         result = {"version": 1, "issue_id": issue_id, "repository": REPOSITORY,
@@ -276,16 +317,20 @@ class Broker:
                   "base_sha": candidate["base_sha"], "branch": candidate["branch"],
                   "pr_number": pr["number"], "pr_url": pr["html_url"], "status": status,
                   "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(), **extra}
-        write_receipt(Path(self.config["state_dir"]) / "receipts" / ("publication-" + issue_id + ".json"), result)
-        return result
+        if candidate.get("work_id"):
+            result.update(work_id=candidate["work_id"], expected_head_sha=candidate.get("expected_head_sha"))
+        write_receipt(self.receipt_path(issue_id, candidate.get("work_id")), result)
+        return self.acknowledge(result)
 
-    def record_error(self, issue_id: str, reason: str):
-        previous = self.receipt(issue_id)
+    def record_error(self, issue_id: str, reason: str, work_id: str | None = None):
+        previous = self.receipt(issue_id, work_id)
         if previous.get("last_error") == reason:
             return
         receipt = previous or {"version": 1, "issue_id": issue_id, "repository": REPOSITORY, "status": "blocked"}
+        if work_id:
+            receipt["work_id"] = work_id
         receipt.update(last_error=reason, updated_at=dt.datetime.now(dt.timezone.utc).isoformat())
-        write_receipt(Path(self.config["state_dir"]) / "receipts" / ("publication-" + issue_id + ".json"), receipt)
+        write_receipt(self.receipt_path(issue_id, work_id), receipt)
 
     def issue(self, issue_id: str, *, merging=False):
         issue = self.api.request("GET", self.prefix + "/issues/" + issue_id)
@@ -305,8 +350,8 @@ class Broker:
         return branch
 
     @staticmethod
-    def marker(issue_id: str) -> str:
-        return "<!-- symphony issue=GH-" + issue_id + " -->"
+    def marker(issue_id: str, work_id: str | None = None) -> str:
+        return "<!-- symphony issue=GH-" + issue_id + (" work=" + work_id if work_id else "") + " -->"
 
     def pr_body(self, issue_id: str, candidate: dict):
         def plain(value):
@@ -316,7 +361,7 @@ class Broker:
         checks = "\n".join("- " + plain(check["name"]) + ": **" + check["result"] + "** — " + plain(check["details"])
                            for check in candidate.get("checks", [])) or "- No local checks reported."
         limits = "\n".join("- " + plain(value) for value in candidate.get("limitations", [])) or "- No additional limitations reported."
-        return (self.marker(issue_id) + "\n\n" + plain(candidate["summary"]) + "\n\nRefs #" + issue_id
+        return (self.marker(issue_id, candidate.get("work_id")) + "\n\n" + plain(candidate["summary"]) + "\n\nRefs #" + issue_id
                 + "\n\nCandidate: `" + candidate["candidate_sha"] + "`. Base: `" + candidate["base_sha"]
                 + "`.\nIndependent reviewer approved this exact commit with no findings.\n\n"
                 + "The builder recorded the following checks and limitations before independent host review and publication.\n\n"
@@ -324,7 +369,7 @@ class Broker:
                 + limits + "\n\nDeployment is not part of this pull request.\n")
 
     def verify_pr(self, pr: dict, issue_id: str, candidate: dict, *, allow_old_head=False):
-        if (pr.get("state") != "open" or self.marker(issue_id) not in pr.get("body", "")
+        if (pr.get("state") != "open" or self.marker(issue_id, candidate.get("work_id")) not in pr.get("body", "")
                 or pr.get("head", {}).get("repo", {}).get("full_name") != REPOSITORY
                 or pr.get("base", {}).get("repo", {}).get("full_name") != REPOSITORY
                 or pr["head"].get("ref") != candidate["branch"]
@@ -333,24 +378,28 @@ class Broker:
                 or not allow_old_head and pr["head"].get("sha") != candidate["candidate_sha"]):
             raise ControlError("Remote PR ownership, head or base does not match the native candidate")
 
-    def publish(self, issue_id: str):
-        candidate = self.candidate(issue_id)
-        previous = self.receipt(issue_id)
-        if previous.get("pr_number"):
-            known_pr = self.api.request("GET", self.prefix + "/pulls/" + str(previous["pr_number"]))
+    def publish(self, issue_id: str, work_id: str | None = None):
+        candidate = self.candidate(issue_id, work_id)
+        previous = self.receipt(issue_id, work_id)
+        binding = candidate.get("publication") or previous
+        if previous.get("pr_number") and binding.get("pr_number") != previous["pr_number"]:
+            raise ControlError("Host and native PR work receipts disagree")
+        if binding.get("pr_number"):
+            known_pr = self.api.request("GET", self.prefix + "/pulls/" + str(binding["pr_number"]))
             if known_pr.get("merged") is True:
-                if (previous.get("candidate_sha") != candidate["candidate_sha"]
+                if (binding.get("candidate_sha") != candidate["candidate_sha"]
                         or known_pr.get("head", {}).get("sha") != candidate["candidate_sha"]
                         or known_pr.get("head", {}).get("ref") != candidate["branch"]
                         or known_pr.get("head", {}).get("repo", {}).get("full_name") != REPOSITORY
                         or known_pr.get("base", {}).get("ref") != self.config["integration_branch"]
                         or known_pr.get("base", {}).get("repo", {}).get("full_name") != REPOSITORY
-                        or self.marker(issue_id) not in known_pr.get("body", "")
+                        or self.marker(issue_id, candidate.get("work_id")) not in known_pr.get("body", "")
                         or not SHA.fullmatch(known_pr.get("merge_commit_sha", ""))):
                     raise ControlError("Merged PR does not match the native candidate receipt")
                 if previous.get("status") == "merged":
-                    return previous
+                    return self.acknowledge(previous)
                 return self.record(issue_id, candidate, known_pr, "merged", merge_sha=known_pr["merge_commit_sha"])
+            self.verify_pr(known_pr, issue_id, candidate, allow_old_head=True)
         issue = self.issue(issue_id)
         self.base(candidate)
         ref_path = self.prefix + "/git/ref/heads/" + urllib.parse.quote(candidate["branch"], safe="/")
@@ -358,9 +407,11 @@ class Broker:
         remote_sha = remote.get("object", {}).get("sha") if remote else None
         if remote_sha is not None and not SHA.fullmatch(remote_sha):
             raise ControlError("Remote task reference is malformed")
+        if work_id and remote_sha not in (candidate["published_head_sha"], candidate["candidate_sha"]):
+            raise ControlError("Remote PR work head changed from its last acknowledged publication")
         if remote_sha not in (None, candidate["candidate_sha"]):
-            if (previous.get("candidate_sha") != remote_sha or previous.get("branch") != candidate["branch"]
-                    or previous.get("repository") != REPOSITORY or previous.get("issue_id") != issue_id):
+            if (binding.get("candidate_sha") != remote_sha or binding.get("branch") != candidate["branch"]
+                    or (not work_id and binding.get("repository") != REPOSITORY) or binding.get("issue_id") != issue_id):
                 raise ControlError("Refusing to replace a task branch without a matching host publication receipt")
         query = urllib.parse.urlencode({"state": "open", "head": "iliazlobin:" + candidate["branch"],
                                         "base": self.config["integration_branch"], "per_page": 100})
@@ -368,6 +419,8 @@ class Broker:
         if not isinstance(prs, list) or len(prs) > 1:
             raise ControlError("Remote task PR is ambiguous")
         pr = self.api.request("GET", self.prefix + "/pulls/" + str(prs[0]["number"])) if prs else None
+        if binding.get("pr_number") and (not pr or pr.get("number") != binding["pr_number"]):
+            raise ControlError("The bound PR is no longer the open PR for this work session")
         if pr:
             self.verify_pr(pr, issue_id, candidate, allow_old_head=True)
             if pr["head"]["sha"] != remote_sha:
@@ -383,6 +436,9 @@ class Broker:
         self.issue(issue_id)
         self.base(candidate)
         body = self.pr_body(issue_id, candidate)
+        if pr is not None:
+            pr = self.api.request("GET", self.prefix + "/pulls/" + str(pr["number"]))
+            self.verify_pr(pr, issue_id, candidate)
         if pr is None:
             pr = self.api.request("POST", self.prefix + "/pulls", {
                 "title": ("GH-" + issue_id + ": " + issue["title"].replace("\n", " ").replace("#", "＃").replace("@", "＠"))[:200], "head": candidate["branch"],
@@ -394,7 +450,7 @@ class Broker:
         status = "draft_pr" if pr.get("draft") else "ready"
         if (previous.get("run_id") == candidate["run_id"] and previous.get("candidate_sha") == candidate["candidate_sha"]
                 and previous.get("pr_number") == pr["number"] and previous.get("status") == status and "last_error" not in previous):
-            return previous
+            return self.acknowledge(previous)
         return self.record(issue_id, candidate, pr, status)
 
     def required_checks(self, candidate: dict):
@@ -435,17 +491,17 @@ class Broker:
                     or matching[0].get("status") != "completed" or matching[0].get("conclusion") != "success"):
                 raise ControlError("Required checks are missing, ambiguous, pending or unsuccessful for this exact candidate")
 
-    def merge(self, issue_id: str):
+    def merge(self, issue_id: str, work_id: str | None = None):
         if self.config.get("auto_merge", {}).get("enabled") is not True:
             raise ControlError("Automatic merge is disabled in host configuration")
-        candidate = self.candidate(issue_id)
+        candidate = self.candidate(issue_id, work_id)
         if any(check.get("result") == "failed" for check in candidate.get("checks", [])):
             raise ControlError("Failed local checks must be resolved before automatic merge")
         self.issue(issue_id, merging=True)
         branch = self.base(candidate)
         if branch.get("protected") is not True:
             raise ControlError("Automatic merge requires verified branch protection")
-        previous = self.receipt(issue_id)
+        previous = self.receipt(issue_id, work_id)
         if previous.get("candidate_sha") != candidate["candidate_sha"] or not previous.get("pr_number"):
             raise ControlError("Publish this exact native candidate before merging")
         pr_path = self.prefix + "/pulls/" + str(previous["pr_number"])
@@ -477,7 +533,11 @@ class Broker:
             raise ControlError("GitHub did not confirm the merge; reconcile remote state")
         return self.record(issue_id, candidate, pr, "merged", merge_sha=result["sha"])
 
-    def reconcile(self):
+    def reconcile(self, issue_id: str | None = None, work_id: str | None = None):
+        if issue_id is not None:
+            self.selector(issue_id, work_id)
+        elif work_id is not None:
+            raise ControlError("A work selector requires an issue ID")
         snapshot = self.snapshot_reader()
         if snapshot.get("enabled") is not True or snapshot.get("fault") is not None:
             raise ControlError("Native control is unavailable; publication is stopped")
@@ -485,23 +545,32 @@ class Broker:
             return {"mode": snapshot.get("mode"), "results": []}
         self.automatic = True
         results = []
-        for issue_id, state in sorted(snapshot.get("issues", {}).items()):
-            if state.get("hold") != "owner_review" or state.get("active") is not None:
-                continue
-            previous = self.receipt(issue_id)
-            if previous.get("status") == "merged" and previous.get("candidate_sha") == state.get("handoff", {}).get("candidate_sha"):
-                continue
-            try:
-                result = self.publish(issue_id)
-                if result["status"] != "merged" and self.config.get("auto_merge", {}).get("enabled") is True:
-                    issue = self.issue(issue_id)
-                    if any(label.get("name") == "symphony:auto-merge" for label in issue.get("labels", []) if isinstance(label, dict)):
-                        result = self.merge(issue_id)
-                results.append({"issue_id": issue_id, "status": result["status"], "pr_url": result["pr_url"]})
-            except ControlError as exc:
-                self.record_error(issue_id, str(exc))
-                results.append({"issue_id": issue_id, "status": "blocked", "reason": str(exc)})
-        self.automatic = False
+        try:
+            for current_id, state in sorted(snapshot.get("issues", {}).items()):
+                if issue_id is not None and issue_id != current_id or state.get("active") is not None:
+                    continue
+                works = state.get("pr_work", {})
+                selected = [(key, work.get("handoff", {})) for key, work in sorted(works.items())
+                            if work.get("phase") == "owner_review" and (work_id is None or key == work_id)]
+                if not works and work_id is None and state.get("hold") == "owner_review":
+                    selected = [(None, state.get("handoff", {}))]
+                for selected_id, handoff in selected:
+                    previous = self.receipt(current_id, selected_id)
+                    if selected_id is None and previous.get("status") == "merged" and previous.get("candidate_sha") == handoff.get("candidate_sha"):
+                        continue
+                    identity = {"issue_id": current_id, **({"work_id": selected_id} if selected_id else {})}
+                    try:
+                        result = self.publish(current_id, selected_id)
+                        if result["status"] != "merged" and self.config.get("auto_merge", {}).get("enabled") is True:
+                            issue = self.issue(current_id)
+                            if any(label.get("name") == "symphony:auto-merge" for label in issue.get("labels", []) if isinstance(label, dict)):
+                                result = self.merge(current_id, selected_id)
+                        results.append({**identity, "status": result["status"], "pr_url": result["pr_url"]})
+                    except ControlError as exc:
+                        self.record_error(current_id, str(exc), selected_id)
+                        results.append({**identity, "status": "blocked", "reason": str(exc)})
+        finally:
+            self.automatic = False
         return {"mode": snapshot.get("mode"), "results": results}
 
 
@@ -524,16 +593,22 @@ def main() -> int:
     parser.add_argument("--config")
     sub = parser.add_subparsers(dest="command", required=True)
     for command in ("publish", "merge", "inspect"):
-        sub.add_parser(command).add_argument("issue_id")
-    sub.add_parser("reconcile")
+        action = sub.add_parser(command)
+        action.add_argument("issue_id")
+        action.add_argument("--work-id")
+    reconcile = sub.add_parser("reconcile")
+    reconcile.add_argument("--issue-id")
+    reconcile.add_argument("--work-id")
     watch = sub.add_parser("watch")
     watch.add_argument("--interval", type=int, default=30)
+    watch.add_argument("--issue-id")
+    watch.add_argument("--work-id")
     args = parser.parse_args()
     try:
         config = load_config(args.config)
         if args.command == "inspect":
             broker = Broker(config, None)
-            print(json.dumps(broker.candidate(args.issue_id), indent=2))
+            print(json.dumps(broker.candidate(args.issue_id, args.work_id), indent=2))
             return 0
         if args.command == "watch" and not 5 <= args.interval <= 300:
             raise ControlError("Watch interval must be between 5 and 300 seconds")
@@ -545,9 +620,9 @@ def main() -> int:
                 broker = Broker(config, api)
                 with publication_lock(config):
                     if args.command in ("reconcile", "watch"):
-                        result = broker.reconcile()
+                        result = broker.reconcile(args.issue_id, args.work_id)
                     else:
-                        result = getattr(broker, args.command)(args.issue_id)
+                        result = getattr(broker, args.command)(args.issue_id, args.work_id)
             except ControlError as exc:
                 if args.command != "watch":
                     raise
