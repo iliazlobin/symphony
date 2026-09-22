@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, ControlLedger, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, ControlLedger, PRWork, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -235,7 +235,7 @@ defmodule SymphonyElixir.Orchestrator do
         {:noreply, state}
 
       running_entry ->
-        running_entry = reset_control_thread_accounting(running_entry, update)
+        running_entry = reset_control_thread_accounting(running_entry, update, state)
         {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
 
         state =
@@ -252,15 +252,31 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp apply_worker_update(state, _issue_id, _update), do: {:noreply, state}
 
-  defp reset_control_thread_accounting(%{run_id: run_id} = entry, %{event: :session_started, thread_id: thread_id}) when is_binary(run_id) and is_binary(thread_id) do
+  defp reset_control_thread_accounting(%{run_id: run_id} = entry, %{event: :session_started, thread_id: thread_id} = update, state) when is_binary(run_id) and is_binary(thread_id) do
     if Map.get(entry, :control_thread_id) == thread_id do
       entry
     else
-      Map.merge(entry, %{control_thread_id: thread_id, codex_last_reported_input_tokens: 0, codex_last_reported_output_tokens: 0, codex_last_reported_total_tokens: 0})
+      baseline = builder_usage_baseline(state, entry.issue.id, thread_id, update[:worker_role])
+
+      Map.merge(entry, %{
+        control_thread_id: thread_id,
+        codex_last_reported_input_tokens: baseline["input_tokens"] || 0,
+        codex_last_reported_output_tokens: baseline["output_tokens"] || 0,
+        codex_last_reported_total_tokens: baseline["total_tokens"] || 0
+      })
     end
   end
 
-  defp reset_control_thread_accounting(entry, _update), do: entry
+  defp reset_control_thread_accounting(entry, _update, _state), do: entry
+
+  defp builder_usage_baseline(%{control: ledger}, issue_id, thread_id, :builder) when not is_nil(ledger) do
+    case ControlLedger.selected_work(ledger, issue_id) do
+      %{"builder_thread_id" => ^thread_id, "builder_usage" => usage} -> usage
+      _ -> %{}
+    end
+  end
+
+  defp builder_usage_baseline(_state, _issue_id, _thread_id, _role), do: %{}
 
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
     if input_required_blocker?(running_entry) do
@@ -1022,8 +1038,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp spawn_reserved_issue(%State{} = state, issue, attempt, recipient, worker_host, run_id, remaining_ms) do
+    work = if state.control, do: ControlLedger.selected_work(state.control, issue.id)
+
     case Task.Supervisor.start_child(state.task_supervisor, fn ->
-           run_reserved_issue(issue, recipient, attempt, worker_host, run_id, remaining_ms)
+           run_reserved_issue(issue, recipient, attempt, worker_host, run_id, remaining_ms, work)
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
@@ -1035,6 +1053,7 @@ defmodule SymphonyElixir.Orchestrator do
             pid: pid,
             ref: ref,
             run_id: run_id,
+            work_id: work && work["id"],
             identifier: issue.identifier,
             issue: issue,
             worker_host: worker_host,
@@ -1505,17 +1524,29 @@ defmodule SymphonyElixir.Orchestrator do
     safe_control_call(server, {:control_receipt, command, expected_tracker})
   end
 
+  @doc "Persists a verified builder identity before a turn, fenced to the calling active worker."
+  @spec checkpoint_pr_work(String.t(), String.t(), String.t(), map(), GenServer.server()) :: :ok | {:error, term()}
+  def checkpoint_pr_work(issue_id, run_id, work_id, attrs, server \\ __MODULE__) do
+    safe_control_call(server, {:checkpoint_pr_work, issue_id, run_id, work_id, attrs})
+  end
+
+  @doc "Records exact host publication evidence without releasing execution holds."
+  @spec record_pr_publication(map(), GenServer.server()) :: {:ok, map()} | {:error, term()}
+  def record_pr_publication(receipt, server \\ __MODULE__), do: safe_control_call(server, {:pr_publication, receipt})
+
   defp safe_control_call(server, message) do
     GenServer.call(server, message, 15_000)
   catch
     :exit, _ -> {:error, :unavailable}
   end
 
-  defp run_reserved_issue(issue, recipient, attempt, worker_host, run_id, remaining_ms) do
+  defp run_reserved_issue(issue, recipient, attempt, worker_host, run_id, remaining_ms, work) do
     timer = if is_integer(remaining_ms), do: elem(:timer.kill_after(remaining_ms), 1), else: nil
 
     try do
-      AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host, run_id: run_id)
+      opts = [attempt: attempt, worker_host: worker_host, run_id: run_id]
+      opts = if work, do: opts ++ [pr_work: work, checkpoint_pr_work: fn attrs -> checkpoint_pr_work(issue.id, run_id, work["id"], attrs, recipient) end], else: opts
+      AgentRunner.run(issue, recipient, opts)
     after
       if timer, do: :timer.cancel(timer)
     end
@@ -1538,14 +1569,34 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reserve_control(state, id) do
-    if control_running?(state) do
+    context = pr_work_context()
+
+    with true <- control_running?(state),
+         :ok <- verify_work_dispatch(state, id),
+         true <- context == pr_work_context() or {:error, :tracker_changed},
+         true <- control_running?(state) do
       case ControlLedger.reserve(state.control, id) do
         {:ok, ledger, run_id, remaining} -> {:ok, %{state | control: ledger}, run_id, remaining}
         {:error, :not_admitted} -> {:error, state}
         {:error, reason} -> {:error, control_failure(state, reason)}
       end
     else
-      {:error, state}
+      {:error, reason} -> {:error, control_hold(state, id, Atom.to_string(reason))}
+      false -> {:error, state}
+    end
+  end
+
+  defp verify_work_dispatch(state, id) do
+    case ControlLedger.selected_work(state.control, id) do
+      nil ->
+        :ok
+
+      work ->
+        cond do
+          work["tracker_fingerprint"] != tracker_fingerprint() -> {:error, :tracker_changed}
+          work["base_sha"] != Config.control_settings().base_sha -> {:error, :approved_baseline_changed}
+          true -> PRWork.verify_remote(work, Config.settings!().tracker)
+        end
     end
   end
 
@@ -1558,7 +1609,18 @@ defmodule SymphonyElixir.Orchestrator do
   defp persist_control_tokens(%{control: nil} = state, _id, _entry), do: state
 
   defp persist_control_tokens(state, id, entry) do
-    state = update_control(state, ControlLedger.tokens(state.control, id, entry.run_id, entry.codex_total_tokens))
+    work = ControlLedger.selected_work(state.control, id)
+
+    usage =
+      if is_map(work) and is_binary(work["builder_thread_id"]) and work["builder_thread_id"] == entry[:control_thread_id],
+        do: %{
+          "thread_id" => work["builder_thread_id"],
+          "input_tokens" => entry.codex_last_reported_input_tokens,
+          "output_tokens" => entry.codex_last_reported_output_tokens,
+          "total_tokens" => entry.codex_last_reported_total_tokens
+        }
+
+    state = update_control(state, ControlLedger.tokens(state.control, id, entry.run_id, entry.codex_total_tokens, usage))
 
     if is_nil(state.control_fault) and ControlLedger.exhausted?(state.control, id) do
       state |> control_hold(id, "token_budget") |> terminate_running_issue(id, false)
@@ -1591,6 +1653,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp apply_control_effect(state, %{"action" => "cancel", "issue_id" => id}), do: terminate_running_issue(state, id, false)
   defp apply_control_effect(state, %{"action" => "retry", "issue_id" => id}), do: state |> release_issue_claim(id) |> schedule_tick(0)
+  defp apply_control_effect(state, %{"action" => action, "issue_id" => id}) when action in ["create_pr_work", "continue_pr_work"], do: state |> release_issue_claim(id) |> schedule_tick(0)
   defp apply_control_effect(state, %{"action" => "set_concurrency"}), do: schedule_tick(state, 0)
   defp apply_control_effect(state, %{"action" => "resume"}), do: schedule_tick(state, 0)
   defp apply_control_effect(state, _command), do: state
@@ -1616,7 +1679,7 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_call(:control_snapshot, _from, state) do
     state = refresh_runtime_config(state)
     payload = if state.control, do: ControlLedger.snapshot(state.control), else: %{"enabled" => false}
-    payload = payload |> Map.put("fault", state.control_fault) |> Map.put("settings", runtime_settings(state))
+    payload = payload |> Map.put("fault", state.control_fault) |> Map.put("settings", runtime_settings(state)) |> Map.put("tracker_fingerprint", tracker_fingerprint())
     {:reply, payload, state}
   end
 
@@ -1630,13 +1693,18 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  def handle_call({:authorized_control_command, command, expected_tracker, authorize}, from, state) do
+  def handle_call({:authorized_control_command, command, expected_tracker, authorize}, _from, state) do
     state = refresh_runtime_config(state)
 
-    if authorize.() == true do
-      handle_call({:guarded_control_command, command, expected_tracker}, from, state)
-    else
-      {:reply, {:error, :unauthorized}, state}
+    cond do
+      authorize.() != true ->
+        {:reply, {:error, :unauthorized}, state}
+
+      not is_binary(expected_tracker) or expected_tracker != tracker_fingerprint() ->
+        {:reply, {:error, :tracker_changed}, state}
+
+      true ->
+        run_control_command(state, command, authorize)
     end
   end
 
@@ -1682,6 +1750,47 @@ defmodule SymphonyElixir.Orchestrator do
     {:reply, result, state}
   end
 
+  def handle_call({:checkpoint_pr_work, id, run_id, work_id, attrs}, {caller, _tag}, state) do
+    state = refresh_runtime_config(state)
+    entry = state.running[id]
+
+    if is_nil(state.control_fault) and matching_run?(state, id, run_id) and entry.pid == caller and entry[:work_id] == work_id and
+         ControlLedger.selected_work(state.control, id)["tracker_fingerprint"] == tracker_fingerprint() do
+      case ControlLedger.checkpoint_pr_work(state.control, id, run_id, work_id, attrs) do
+        {:ok, ledger} ->
+          {:reply, :ok, %{state | control: ledger}}
+
+        {:error, {:control_persistence, _} = reason} ->
+          {:reply, {:error, :control_unavailable}, control_failure(state, reason)}
+
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
+      end
+    else
+      {:reply, {:error, :stale_run}, state}
+    end
+  end
+
+  def handle_call({:pr_publication, receipt}, _from, state) do
+    state = refresh_runtime_config(state)
+
+    if is_nil(state.control) or not is_nil(state.control_fault) do
+      {:reply, {:error, :control_unavailable}, state}
+    else
+      case ControlLedger.record_pr_publication(state.control, receipt, pr_work_context()) do
+        {:ok, ledger, replayed} ->
+          notify_dashboard()
+          {:reply, {:ok, Map.put(receipt, "replayed", replayed)}, %{state | control: ledger}}
+
+        {:error, {:control_persistence, _} = reason} ->
+          {:reply, {:error, :control_unavailable}, control_failure(state, reason)}
+
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
+      end
+    end
+  end
+
   def handle_call({:control_command, _command}, _from, %{control: nil} = state), do: {:reply, {:error, :control_disabled}, state}
   def handle_call({:control_command, _command}, _from, %{control_fault: fault} = state) when not is_nil(fault), do: {:reply, {:error, :control_unavailable}, state}
 
@@ -1701,6 +1810,7 @@ defmodule SymphonyElixir.Orchestrator do
       |> Enum.map(fn {issue_id, metadata} ->
         %{
           issue_id: issue_id,
+          work_id: Map.get(metadata, :work_id),
           identifier: metadata.identifier,
           issue_url: metadata.issue.url,
           state: metadata.issue.state,
@@ -1784,10 +1894,20 @@ defmodule SymphonyElixir.Orchestrator do
      }, state}
   end
 
-  defp run_control_command(%{control_fault: fault} = state, _command) when not is_nil(fault), do: {:reply, {:error, :control_unavailable}, state}
+  defp run_control_command(state, command, authorize \\ fn -> true end)
+  defp run_control_command(%{control: nil} = state, _command, _authorize), do: {:reply, {:error, :control_disabled}, state}
+  defp run_control_command(%{control_fault: fault} = state, _command, _authorize) when not is_nil(fault), do: {:reply, {:error, :control_unavailable}, state}
 
-  defp run_control_command(state, command) do
-    case ControlLedger.command(state.control, command, state.max_concurrent_agents) do
+  defp run_control_command(state, command, authorize) do
+    context = pr_work_context()
+
+    result =
+      with :ok <- validate_pr_work_command(state, command),
+           true <- context == pr_work_context() or {:error, :tracker_changed},
+           true <- authorize.() == true or {:error, :unauthorized},
+           do: ControlLedger.command(state.control, command, state.max_concurrent_agents, context)
+
+    case result do
       {:ok, ledger, result, replayed} ->
         state = %{state | control: ledger}
         state = if replayed, do: state, else: apply_control_effect(state, command)
@@ -1800,6 +1920,53 @@ defmodule SymphonyElixir.Orchestrator do
         {:reply, {:error, reason}, state}
     end
   end
+
+  defp pr_work_context do
+    repository = Config.settings!().tracker.provider["repo"]
+    %{tracker_fingerprint: tracker_fingerprint(), base_sha: Config.control_settings().base_sha, repository: repository}
+  end
+
+  defp validate_pr_work_command(state, command) do
+    if PRWork.command?(command) and is_nil(state.control.data["commands"][command["command_id"]]) do
+      cond do
+        not PRWork.valid_command?(command) ->
+          {:error, :invalid_command}
+
+        Map.has_key?(state.running, command["issue_id"]) ->
+          {:error, :issue_running}
+
+        true ->
+          validate_pr_work_issue(state, command)
+      end
+    else
+      :ok
+    end
+  end
+
+  defp validate_pr_work_issue(state, command) do
+    id = command["issue_id"]
+
+    with {:ok, [%Issue{id: ^id} = issue]} <- Tracker.fetch_issues_by_ids([id]),
+         true <- candidate_issue?(issue, active_state_set(), terminal_state_set()) or {:error, :task_not_queueable},
+         :ok <- verify_continued_work(state, command) do
+      :ok
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :task_not_found}
+    end
+  end
+
+  defp verify_continued_work(state, %{"action" => "continue_pr_work"} = command) do
+    work = get_in(state.control.data, ["issues", command["issue_id"], "pr_work", command["work_id"]])
+
+    if work && work["tracker_fingerprint"] != tracker_fingerprint() do
+      {:error, :tracker_changed}
+    else
+      PRWork.verify_remote(work, Config.settings!().tracker)
+    end
+  end
+
+  defp verify_continued_work(_state, _command), do: :ok
 
   defp blocked_issue_state(%{issue: %Issue{state: state}}), do: state
   defp blocked_issue_state(_metadata), do: nil
