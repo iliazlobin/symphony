@@ -656,6 +656,22 @@ defmodule SymphonyElixir.Chat.ToolsTest do
 
   test "task details expose bounded PR sessions without runtime paths or unsafe publication URLs", ctx do
     work_id = String.duplicate("b", 32)
+    empty = put_pr_work(ctx, work_id, %{})
+    assert {:ok, %{"widgets" => [%{"task" => %{"pr_work" => [pending]}}]}} = Tools.call("symphony_task_details", %{"task_id" => "1"}, ctx.context)
+    assert pending["publication"] == nil
+    assert pending["head_sha"] == nil
+    assert pending["phase"] == "unknown"
+
+    works =
+      Map.new(1..25, fn number ->
+        id = Integer.to_string(number, 16) |> String.downcase() |> String.pad_leading(32, "0")
+        {id, Map.put(empty, "id", id)}
+      end)
+
+    board = put_in(ctx.board, [:tasks, Access.at(0), :ledger], %{"pr_work" => works})
+    Application.put_env(:symphony_elixir, :chat_test_board, board)
+    assert {:ok, %{"widgets" => [%{"task" => %{"pr_work" => bounded}}]}} = Tools.call("symphony_task_details", %{"task_id" => "1"}, ctx.context)
+    assert length(bounded) == 20
 
     work =
       put_pr_work(ctx, work_id, %{
