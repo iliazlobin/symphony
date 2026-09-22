@@ -260,6 +260,7 @@
           const selectingText = selection && !selection.isCollapsed && (card.contains(selection.anchorNode) || card.contains(selection.focusNode));
           if (event.button === 0 && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey &&
               !this.drag && Date.now() >= this.ignoreCardClickUntil && !selectingText) {
+            card.focus({preventScroll: true});
             this.pushEvent("select-task", {id: card.dataset.taskId});
           }
           return;
@@ -338,6 +339,7 @@
       this.bodyOverflow = document.body.style.overflow;
       this.abort = new AbortController();
       this.closeDialog = () => this.el.dataset.eventTarget ? this.pushEventTo(this.el, "close-dialog", {}) : this.pushEvent("close-dialog", {});
+      document.addEventListener("focusin", event => { if (event.target !== document.body && event.target !== document.documentElement) this.lastFocused = event.target; }, {signal: this.abort.signal});
       this.showDialog = () => {
         const nonmodal = this.el.dataset.nonmodal === "true";
         if (this.nonmodal !== nonmodal && this.el.open) this.el.close();
@@ -369,12 +371,14 @@
     },
     destroyed() {
       this.abort.abort();
+      const focused = this.lastFocused || document.activeElement;
       if (this.el.open) this.el.close();
       document.body.style.overflow = this.bodyOverflow;
       const previous = this.previous;
-      requestAnimationFrame(() => {
+      queueMicrotask(() => {
         const replacement = [...document.querySelectorAll("[data-task-id]")].find(card => card.dataset.taskId === this.taskId)?.querySelector(".card-title");
         const visible = target => target?.isConnected && target !== document.body && target !== document.documentElement && !target.closest("[hidden]") && target.getClientRects().length > 0;
+        if (visible(focused) && !this.el.contains(focused)) { focused.focus({preventScroll: true}); return; }
         const canRestore = visible(previous);
         const target = canRestore ? previous : (previous?.id ? document.getElementById(previous.id) : null);
         [target, replacement, document.getElementById("settings-button"), document.querySelector("[data-toggle-filters]")].find(visible)?.focus({preventScroll: true});
