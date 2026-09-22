@@ -79,7 +79,9 @@ def _workspace_rules(workspace: str) -> list[str]:
     return rules
 
 
-def render_policy(workspace_root: str | Path) -> str:
+def render_policy(workspace_root: str | Path, profile_name: str = PROFILE_NAME) -> str:
+    if profile_name not in (PROFILE_NAME, "symphony-self-codex"):
+        raise ValueError("Unknown reviewed worker profile name")
     root = validate_workspace_root(workspace_root)
     template = TEMPLATE.read_text(encoding="utf-8")
     if template.count(_MARKER) != 1:
@@ -93,15 +95,16 @@ def render_policy(workspace_root: str | Path) -> str:
              "  # Direct task/reviewer checkouts and exact disposable canary paths only."]
     for workspace in workspaces:
         rules.extend(_workspace_rules(workspace))
-    return template.replace(_MARKER, "\n".join(rules))
+    return template.replace('profile "' + PROFILE_NAME + '"', 'profile "' + profile_name + '"').replace(_MARKER, "\n".join(rules))
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace-root", required=True)
+    parser.add_argument("--profile-name", choices=(PROFILE_NAME, "symphony-self-codex"), default=PROFILE_NAME)
     args = parser.parse_args()
     try:
-        sys.stdout.write(render_policy(args.workspace_root))
+        sys.stdout.write(render_policy(args.workspace_root, args.profile_name))
         return 0
     except (OSError, ValueError, TypeError) as exc:
         print(str(exc), file=sys.stderr)

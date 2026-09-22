@@ -15,7 +15,7 @@ defmodule SymphonyElixirWeb.Endpoint do
   ]
 
   socket("/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [:peer_data, :uri, session: @session_options]],
+    websocket: [connect_info: [:peer_data, :uri, session: {__MODULE__, :session_options, []}]],
     longpoll: false
   )
 
@@ -31,6 +31,14 @@ defmodule SymphonyElixirWeb.Endpoint do
 
   plug(Plug.MethodOverride)
   plug(Plug.Head)
-  plug(Plug.Session, @session_options)
+  plug(:project_session)
   plug(SymphonyElixirWeb.Router)
+
+  @doc "Shared HTTP and LiveView cookie options; project controllers on one host need distinct keys."
+  @spec session_options() :: keyword()
+  def session_options do
+    Keyword.put(@session_options, :key, SymphonyElixir.Config.settings!().server.session_cookie)
+  end
+
+  defp project_session(conn, _opts), do: Plug.Session.call(conn, Plug.Session.init(session_options()))
 end

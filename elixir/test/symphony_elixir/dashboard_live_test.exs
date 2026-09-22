@@ -134,6 +134,19 @@ defmodule SymphonyElixir.DashboardLiveTest do
       observability: %{dashboard_enabled: false}
     }
 
+    config =
+      if context[:project_directory] do
+        Map.put(config, :server, %{
+          session_cookie: "_symphony_fixture_project",
+          project_links: [
+            %{id: "github:example/fixture", label: "Current project", url: "http://localhost:8778/"},
+            %{id: "github:iliazlobin/symphony", label: "Symphony", url: "http://localhost:8779/"}
+          ]
+        })
+      else
+        config
+      end
+
     File.write!(Workflow.workflow_file_path(), "---\n" <> Jason.encode!(config) <> "\n---\nFixture only")
     assert :ok = WorkflowStore.force_reload()
 
@@ -171,6 +184,21 @@ defmodule SymphonyElixir.DashboardLiveTest do
     start_supervised!({Endpoint, []})
     on_exit(fn -> Application.put_env(:symphony_elixir, Endpoint, previous_endpoint) end)
     %{runtime: runtime, board: board}
+  end
+
+  @tag :project_directory
+  test "project navigation links independent boards without changing the selected task owner" do
+    {view, _html} = board_view()
+    assert has_element?(view, "#project-directory a[href='http://localhost:8778/'][aria-current=page]", "Current project")
+    assert has_element?(view, "#project-directory a[href='http://localhost:8779/']", "Symphony")
+    refute has_element?(view, "#project-directory a[href='http://localhost:8779/'][aria-current]")
+    refute has_element?(view, "#project-directory a[data-phx-link]")
+    assert has_element?(view, "#lane-ready [data-project='github:example/fixture']")
+    refute has_element?(view, ".task-card[data-project='github:iliazlobin/symphony']")
+    assert Endpoint.session_options()[:key] == "_symphony_fixture_project"
+    conn = get(build_conn(), "/")
+    assert Map.has_key?(conn.resp_cookies, "_symphony_fixture_project")
+    refute Map.has_key?(conn.resp_cookies, "_symphony_elixir_key")
   end
 
   test "renders real projected tasks in all lanes with top filters and truthful evidence" do

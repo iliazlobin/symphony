@@ -647,6 +647,16 @@ Authentication does not bypass tracker identity, command revision, replay or
 worker-launch checks. See the [operator guide](../profiles/events-concierge/README.md#operate)
 for commands, limitations and the existing GitHub task workflow.
 
+## Multiple project boards
+
+Run one configured controller per repository. The [Symphony project guide](../profiles/symphony/README.md)
+provides the self-management profile and activation requirements. In workflow front matter,
+`server.project_links` accepts up to 20 unique `{id, label, url}` maps: GitHub project ID,
+display label and HTTPS or loopback HTTP browser origin. The Projects menu follows ordinary
+links; each destination retains its own Google sign-in, chat and control state.
+`server.session_cookie` selects a distinct cookie key for controllers on the same host;
+its default preserves existing installations. Use the same key for HTTP and LiveView.
+
 ## License
 
 This project is licensed under the [Apache License 2.0](../LICENSE).
