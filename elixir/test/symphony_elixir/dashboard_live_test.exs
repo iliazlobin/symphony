@@ -704,6 +704,68 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   @tag :threads_fixture
+  test "card selection switches canonical chat without details and preserves board filters", ctx do
+    view = authorized_board_view()
+    filters = %{"project" => "github:example/fixture", "q" => "fixture", "sort" => "updated"}
+    render_patch(view, "/?" <> URI.encode_query(filters))
+    render_click(view, "select-task", %{"id" => "github:example/fixture:2"})
+    selected_path = "/?" <> URI.encode_query(Map.put(filters, "chat_task", "github:example/fixture:2"))
+    assert_patch(view, selected_path)
+    render(view)
+    first = :sys.get_state(view.pid).socket.assigns.chat_id
+    assert is_binary(first)
+    refute has_element?(view, "#board-dialog")
+    assert has_element?(view, "article[data-task-id='github:example/fixture:2'][tabindex='0'][aria-current='true']")
+    assert has_element?(view, "#management-chat-dock", "Ready fixture")
+
+    render_click(view, "select-task", %{"id" => "github:example/fixture:2"})
+    render(view)
+    assert :sys.get_state(view.pid).socket.assigns.chat_id == first
+    view |> element("[data-task-id='github:example/fixture:2'] .card-title") |> render_click()
+    assert has_element?(view, "#board-dialog h2", "Ready fixture")
+    assert :sys.get_state(view.pid).socket.assigns.chat_id == first
+
+    render_click(view, "select-task", %{"id" => "github:example/fixture:4"})
+    render(view)
+    second = :sys.get_state(view.pid).socket.assigns.chat_id
+    assert is_binary(second) and second != first
+    refute has_element?(view, "#board-dialog")
+    refute has_element?(view, "article[data-task-id='github:example/fixture:2'][aria-current]")
+    assert has_element?(view, "article[data-task-id='github:example/fixture:4'][aria-current='true']")
+    assert :sys.get_state(view.pid).socket.assigns.url_filters == filters
+    assert :sys.get_state(view.pid).socket.assigns.selected == nil
+    assert :sys.get_state(view.pid).socket.assigns.pending_command == nil
+
+    for id <- ["missing", "github:other/project:2"] do
+      render_click(view, "select-task", %{"id" => id})
+      assert :sys.get_state(view.pid).socket.assigns.chat_id == second
+    end
+
+    render_patch(view, selected_path)
+    render(view)
+    assert :sys.get_state(view.pid).socket.assigns.chat_id == first
+    refute has_element?(view, "#board-dialog")
+    assert map_size(Agent.get(ctx.threads, & &1)) == 3
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
+  end
+
+  @tag read_only: true
+  test "selection-only links restore without details on reload and allow read-only card selection", ctx do
+    path = "/?chat_task=github%3Aexample%2Ffixture%3A2"
+    {:ok, view, _html} = live(build_conn(), path)
+    render_async(view)
+    assert has_element?(view, "article[data-task-id='github:example/fixture:2'][data-selected=true]")
+    refute has_element?(view, "#board-dialog")
+    render_click(view, "select-task", %{"id" => "github:example/fixture:4"})
+    assert has_element?(view, "article[data-task-id='github:example/fixture:4'][data-selected=true]")
+    refute has_element?(view, "#board-dialog")
+    refresh(view, ctx.runtime, %{ctx.board | tasks: Enum.reject(ctx.board.tasks, &(&1.issue_id == "4"))})
+    refute has_element?(view, "article[data-selected=true]")
+    refute has_element?(view, "#board-dialog")
+  end
+
+  @tag :threads_fixture
   test "the dock is permanent and card chats retain their identity after closing details", ctx do
     view = authorized_board_view()
     assert has_element?(view, "#management-chat-dock")
@@ -1242,6 +1304,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, card, "Queued · paused")
     assert has_element?(view, card, "Review changes before retrying")
     assert has_element?(view, card <> " a[href='https://github.com/example/fixture/pull/12']", "PR #12")
+    assert has_element?(view, card <> " .card-pr-summary a[href='https://github.com/example/fixture/pull/12/checks'][target='_blank']", "1 failed")
+    assert has_element?(view, card <> " .card-pr-summary a[href='https://github.com/example/fixture/pull/11/checks'][rel='noopener noreferrer']", "2 passed")
     assert has_element?(view, card <> " [data-pr-number='12']", "Draft")
     assert has_element?(view, card <> " [data-pr-number='12']", "GitHub review: Changes requested")
     assert has_element?(view, card <> " [data-pr-number='12'] a[href='https://github.com/example/fixture/pull/12/checks']", "1 failed")

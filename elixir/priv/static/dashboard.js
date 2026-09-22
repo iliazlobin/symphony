@@ -12,6 +12,7 @@
       this.popup = null;
       this.activeOption = 0;
       this.drag = null;
+      this.ignoreCardClickUntil = 0;
       this.scope = null;
       this.abort = new AbortController();
       this.darkMode = window.matchMedia("(prefers-color-scheme: dark)");
@@ -233,6 +234,12 @@
       on("input", event => { const key = event.target.closest("[data-filter]")?.dataset.filter; if (key) { this.popup = key; this.activeOption = 0; this.drawOptions(key); } else if (event.target.matches("[data-board-search]")) { this.prefs.query = event.target.value; this.apply(); this.save(); } });
       on("keydown", event => {
         if (event.target.closest("dialog")) return;
+        if (event.target.matches(".task-card[data-task-id]") && ["Enter", " "].includes(event.key)) {
+          if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+          event.preventDefault(); event.stopPropagation();
+          if (!event.repeat) this.pushEvent("select-task", {id: event.target.dataset.taskId});
+          return;
+        }
         if (event.key === "Escape") {
           if (this.popup) { const key = this.popup; this.el.querySelector("#filter-" + key)?.focus({preventScroll: true}); this.closeFilter(); }
           else if (this.closeMenus(null, true)) { /* Keep Escape within the open menu. */ }
@@ -247,6 +254,16 @@
         else if (event.key === "Tab") this.closeFilter();
       });
       on("click", event => {
+        const card = event.target.closest(".task-card[data-task-id]");
+        if (card && !event.target.closest("a,button,input,textarea,select,summary,[role=button],[contenteditable]:not([contenteditable=false])")) {
+          const selection = window.getSelection();
+          const selectingText = selection && !selection.isCollapsed && (card.contains(selection.anchorNode) || card.contains(selection.focusNode));
+          if (event.button === 0 && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey &&
+              !this.drag && Date.now() >= this.ignoreCardClickUntil && !selectingText) {
+            this.pushEvent("select-task", {id: card.dataset.taskId});
+          }
+          return;
+        }
         const menu = event.target.closest("details.board-menu");
         if (menu && event.target.closest("summary")) { this.closeFilter(); this.closeMenus(menu); }
         const button = event.target.closest("button"); if (!button) return;
@@ -288,9 +305,10 @@
           if (target) container.insertBefore(card, target.classList.contains("drop-after") ? target.nextSibling : target); else container.append(card);
           this.prefs.order[stage] = [...container.children].map(el => el.dataset.taskId); this.save(); this.announce("Card order saved in this browser. Dispatch order is unchanged.");
         }
+        this.ignoreCardClickUntil = Date.now() + 300;
         card.classList.remove("dragging"); this.drag = null; clearDrop();
       });
-      on("dragend", () => { this.drag?.classList.remove("dragging"); this.drag = null; clearDrop(); });
+      on("dragend", () => { this.ignoreCardClickUntil = Date.now() + 300; this.drag?.classList.remove("dragging"); this.drag = null; clearDrop(); });
       document.addEventListener("click", event => {
         if (this.popup && !event.target.closest("[data-filter]")) this.closeFilter();
         this.closeMenus(event.target.closest("details.board-menu"), true);
