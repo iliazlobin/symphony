@@ -461,6 +461,10 @@ rechecks only that work. Use these subcommands with the existing host publicatio
 command and configuration. A lost acknowledgment is reconciled against its exact
 candidate and PR identity. Missing retained runtime state, changed remote heads or
 baselines, and dirty/advanced workspaces stop continuation; preserve them for recovery.
+If startup stops after the thread identity is saved but before Codex writes its first
+turn, that empty thread may have no resumable history. Retry does not invent a new
+identity or overwrite its state. Preserve the failed session, inspect its scope and
+checkout, and explicitly create replacement work after resolving the issue hold.
 
 Automatic merge additionally requires host enablement, `symphony:auto-merge`, an explicit
 low-risk path/size allowlist, a clean independent review, a protected chosen base branch,
