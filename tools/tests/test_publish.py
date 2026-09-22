@@ -577,6 +577,97 @@ class WorkPublishTest(unittest.TestCase):
         with self.assertRaises(ControlError):
             self.broker.reconcile(work_id=first["id"])
 
+    def test_older_work_publication_uses_its_own_handoff_when_another_work_is_selected(self):
+        first = self.configure_work()
+        second = self.add_work("2" * 32)
+        self.advance(second)
+        issue = self.snapshot["issues"]["7"]
+        issue["selected_work_id"] = second["id"]
+        self.assertEqual(issue["handoff"]["candidate_sha"], "d" * 40)
+        result = self.broker.publish("7", first["id"])
+        self.assertEqual(result["candidate_sha"], HEAD)
+        self.assertEqual(self.acks[-1]["work_id"], first["id"])
+        self.assertEqual(first["published_head_sha"], HEAD)
+        self.assertIsNone(second["published_head_sha"])
+        self.assertFalse(self.broker.receipt("7", second["id"]))
+
+    def test_legacy_candidate_remains_publishable_and_reconcileable_alongside_native_work(self):
+        legacy = copy.deepcopy(self.candidate)
+        work = self.configure_work()
+        self.advance(work)
+        issue = self.snapshot["issues"]["7"]
+        issue["legacy_handoff"] = legacy
+        issue["selected_work_id"] = work["id"]
+        self.assertEqual(self.broker.candidate("7"), legacy)
+        result = self.broker.reconcile("7")
+        self.assertEqual([item.get("work_id") for item in result["results"]], [None, work["id"]])
+        legacy_receipt, work_receipt = self.broker.receipt("7"), self.broker.receipt("7", work["id"])
+        self.assertEqual(legacy_receipt["candidate_sha"], HEAD)
+        self.assertEqual(work_receipt["candidate_sha"], "d" * 40)
+        self.assertNotEqual(legacy_receipt["pr_number"], work_receipt["pr_number"])
+        self.assertEqual(len(self.acks), 1)
+        issue["hold"] = "cancelled"
+        self.assertEqual(self.broker.reconcile("7")["results"], [])
+        with self.assertRaises(ControlError):
+            self.broker.publish("7")
+
+    def test_cancelled_reviewed_work_cannot_publish_before_owner_ack_rejects_it(self):
+        work = self.configure_work()
+        self.snapshot["issues"]["7"]["hold"] = "cancelled"
+        with self.assertRaises(ControlError):
+            self.broker.publish("7", work["id"])
+        self.assertFalse(self.pushes)
+        self.assertFalse(self.writes())
+        self.assertFalse(self.acks)
+
+    def test_merged_continuation_recovers_exact_local_receipt_when_native_ack_lags(self):
+        work = self.configure_work()
+        self.broker.publish("7", work["id"])
+        self.advance(work)
+        def unavailable(_receipt):
+            raise ControlError("Owner acknowledgment unknown")
+        self.broker.publication_writer = unavailable
+        with self.assertRaises(ControlError):
+            self.broker.publish("7", work["id"])
+        self.assertEqual(work["published_head_sha"], HEAD)
+        current = self.broker.receipt("7", work["id"])
+        self.assertEqual(current["candidate_sha"], "d" * 40)
+        self.api.prs[work["branch"]].update(state="closed", merged=True, merge_commit_sha=MERGED)
+        self.api.base["commit"]["sha"] = MERGED
+        self.broker.publication_writer = self.acknowledge
+        before = len(self.pushes), len(self.writes())
+        result = self.broker.publish("7", work["id"])
+        self.assertEqual(result["status"], "merged")
+        self.assertEqual(result["candidate_sha"], "d" * 40)
+        self.assertEqual(work["published_head_sha"], "d" * 40)
+        self.assertEqual(self.acks[-1]["merge_sha"], MERGED)
+        self.assertEqual((len(self.pushes), len(self.writes())), before)
+
+    def test_stale_or_foreign_host_receipt_cannot_adopt_merged_continuation(self):
+        work = self.configure_work()
+        self.broker.publish("7", work["id"])
+        self.advance(work)
+        def unavailable(_receipt):
+            raise ControlError("Owner acknowledgment unknown")
+        self.broker.publication_writer = unavailable
+        with self.assertRaises(ControlError):
+            self.broker.publish("7", work["id"])
+        receipt = self.broker.receipt("7", work["id"])
+        self.api.prs[work["branch"]].update(state="closed", merged=True, merge_commit_sha=MERGED)
+        self.broker.publication_writer = self.acknowledge
+        path = self.broker.receipt_path("7", work["id"])
+        before = len(self.pushes), len(self.writes()), len(self.acks)
+        for field, value in (("work_id", "2" * 32), ("issue_id", "8"), ("run_id", "stale-run"),
+                             ("candidate_sha", HEAD), ("base_sha", "e" * 40), ("branch", "other"),
+                             ("expected_head_sha", None), ("pr_number", 99), ("pr_url", "https://foreign.invalid"),
+                             ("repository", "foreign/repo"), ("status", "blocked")):
+            with self.subTest(field=field):
+                altered = dict(receipt, **{field: value})
+                path.write_text(json.dumps(altered))
+                with self.assertRaises(ControlError):
+                    self.broker.publish("7", work["id"])
+        self.assertEqual((len(self.pushes), len(self.writes()), len(self.acks)), before)
+
     def test_continuation_updates_same_pr_only_from_acknowledged_remote_head(self):
         work = self.configure_work()
         original = self.broker.publish("7", work["id"])

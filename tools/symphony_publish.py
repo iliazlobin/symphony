@@ -263,10 +263,11 @@ class Broker:
             raise ControlError("Native control paused publication")
         issue = snapshot.get("issues", {}).get(issue_id, {})
         work = issue.get("pr_work", {}).get(work_id) if work_id else None
-        item = work.get("handoff") if isinstance(work, dict) else issue.get("handoff")
+        item = work.get("handoff") if isinstance(work, dict) else issue.get("legacy_handoff") or issue.get("handoff")
         settled = work.get("phase") == "owner_review" if isinstance(work, dict) else issue.get("hold") == "owner_review"
         if (snapshot.get("enabled") is not True or snapshot.get("fault") is not None
-                or not settled or issue.get("active") is not None or not isinstance(item, dict)):
+                or not settled or issue.get("hold") != "owner_review"
+                or issue.get("active") is not None or not isinstance(item, dict)):
             raise ControlError("Native control ledger has no settled owner-review candidate")
         expected_branch = "codex/gh-" + issue_id + ("-" + work_id if work_id else "")
         review = item.get("review", {})
@@ -378,14 +379,33 @@ class Broker:
                 or not allow_old_head and pr["head"].get("sha") != candidate["candidate_sha"]):
             raise ControlError("Remote PR ownership, head or base does not match the native candidate")
 
+    @staticmethod
+    def current_work_receipt(receipt: dict, issue_id: str, candidate: dict) -> bool:
+        number = receipt.get("pr_number")
+        return (receipt.get("version") == 1 and receipt.get("repository") == REPOSITORY
+                and receipt.get("issue_id") == issue_id and receipt.get("work_id") == candidate.get("work_id")
+                and all(receipt.get(key) == candidate.get(key) for key in
+                        ("run_id", "candidate_sha", "base_sha", "branch", "expected_head_sha"))
+                and "expected_head_sha" in receipt and type(number) is int and number > 0
+                and receipt.get("pr_url") == "https://github.com/" + REPOSITORY + "/pull/" + str(number)
+                and receipt.get("status") in ("draft_pr", "ready", "merged")
+                and (receipt.get("status") != "merged" or bool(SHA.fullmatch(receipt.get("merge_sha", "")))))
+
     def publish(self, issue_id: str, work_id: str | None = None):
         candidate = self.candidate(issue_id, work_id)
         previous = self.receipt(issue_id, work_id)
         binding = candidate.get("publication") or previous
-        if previous.get("pr_number") and binding.get("pr_number") != previous["pr_number"]:
+        if previous.get("pr_number") and (binding.get("pr_number") != previous["pr_number"]
+                                          or binding.get("pr_url") != previous.get("pr_url")):
             raise ControlError("Host and native PR work receipts disagree")
+        # A durable local receipt can be newer than the last native ACK. Use it
+        # only when it identifies this exact approved run on the already bound PR.
+        if work_id and self.current_work_receipt(previous, issue_id, candidate):
+            binding = previous
         if binding.get("pr_number"):
             known_pr = self.api.request("GET", self.prefix + "/pulls/" + str(binding["pr_number"]))
+            if (known_pr.get("number") != binding["pr_number"] or known_pr.get("html_url") != binding.get("pr_url")):
+                raise ControlError("Remote PR identity does not match the publication receipt")
             if known_pr.get("merged") is True:
                 if (binding.get("candidate_sha") != candidate["candidate_sha"]
                         or known_pr.get("head", {}).get("sha") != candidate["candidate_sha"]
@@ -547,13 +567,15 @@ class Broker:
         results = []
         try:
             for current_id, state in sorted(snapshot.get("issues", {}).items()):
-                if issue_id is not None and issue_id != current_id or state.get("active") is not None:
+                if (issue_id is not None and issue_id != current_id or state.get("active") is not None
+                        or state.get("hold") != "owner_review"):
                     continue
                 works = state.get("pr_work", {})
                 selected = [(key, work.get("handoff", {})) for key, work in sorted(works.items())
                             if work.get("phase") == "owner_review" and (work_id is None or key == work_id)]
-                if not works and work_id is None and state.get("hold") == "owner_review":
-                    selected = [(None, state.get("handoff", {}))]
+                legacy = state.get("legacy_handoff") or (state.get("handoff", {}) if not works else None)
+                if work_id is None and isinstance(legacy, dict) and legacy.get("work_id") is None:
+                    selected.insert(0, (None, legacy))
                 for selected_id, handoff in selected:
                     previous = self.receipt(current_id, selected_id)
                     if selected_id is None and previous.get("status") == "merged" and previous.get("candidate_sha") == handoff.get("candidate_sha"):
