@@ -464,6 +464,44 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert has_element?(view, ".chat-widget-proposal", "confirmed")
   end
 
+  test "persisted PR work proposals show confirmed scope without raw native metadata", ctx do
+    work_id = String.duplicate("a", 32)
+    base_sha = String.duplicate("b", 40)
+
+    widgets =
+      for {action, evidence, instruction} <- [
+            {"create_pr_work", %{"work_id" => work_id, "base_sha" => base_sha}, "Build the scoped implementation"},
+            {"continue_pr_work", %{"work_id" => work_id, "expected_head_sha" => nil}, "Fix the failing test"}
+          ] do
+        args = %{"task_id" => "7", "body" => instruction}
+        details = Map.merge(args, %{"project" => "alpha", "expected_revision" => 12, "pr_work" => evidence})
+
+        %{
+          "type" => "proposal",
+          "id" => action,
+          "action" => action,
+          "args" => args,
+          "pr_work" => evidence,
+          "details" => details,
+          "status" => "pending"
+        }
+      end
+
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    message = %{"id" => "pr-preview", "role" => "assistant", "text" => "", "widgets" => widgets}
+    FixtureStore.put(Map.put(chat, "messages", [message]))
+    {view, _} = chat_view(ctx, "/chat?project=alpha&chat=a1")
+    assert has_element?(view, ".chat-widget-proposal", "Create a PR work session for issue #7")
+    assert has_element?(view, ".chat-widget-proposal", "Continue PR work aaaaaaaa for issue #7")
+    assert has_element?(view, ".chat-widget-proposal", "Build the scoped implementation")
+    assert has_element?(view, ".chat-widget-proposal", "Fix the failing test")
+    assert has_element?(view, ".chat-widget-proposal", "Uses the issue's remaining budget")
+    refute render(view) =~ "expected_revision"
+    refute render(view) =~ "expected_head_sha"
+    refute render(view) =~ base_sha
+    assert has_element?(view, "button[phx-value-decision=confirm]")
+  end
+
   test "model text, malicious links and unknown widgets never execute as markup", ctx do
     {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
     widgets = [%{"type" => "receipt", "summary" => "<img src=x onerror=alert(1)>", "url" => "javascript:alert(1)"}, %{"type" => "html", "html" => "<script>bad()</script>"}]

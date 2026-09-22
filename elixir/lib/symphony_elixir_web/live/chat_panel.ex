@@ -961,7 +961,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
       </div>
       <div :if={@type == "proposal"}>
         <div class="widget-heading"><strong>{text(@widget["title"] || "Proposed action")}</strong><span class="widget-label">{text(@widget["status"] || "pending")}</span></div>
-        <p class="message-text">{details_text(@widget["details"])}</p>
+        <p class="message-text">{proposal_details(@widget)}</p>
         <div :if={@widget["status"] in [nil, "pending"]} class="dialog-actions"><button class="button button-primary" phx-target={@myself} phx-click="decide" phx-value-chat_id={@chat_id} phx-value-id={@widget["id"]} phx-value-decision="confirm" disabled={@busy} phx-disable-with="Confirming…">Confirm action</button><button class="button" phx-target={@myself} phx-click="decide" phx-value-chat_id={@chat_id} phx-value-id={@widget["id"]} phx-value-decision="cancel" disabled={@busy} phx-disable-with="Cancelling…">Cancel</button></div>
         <p :if={@widget["status"] in [nil, "pending"]} class="muted widget-footnote">Nothing changes until you confirm this action.</p>
         <p :if={@widget["status"] == "executing"} class="muted" role="status">Applying action…</p>
@@ -982,12 +982,15 @@ defmodule SymphonyElixirWeb.ChatPanel do
     """
   end
 
-  defp details_text(value) when is_binary(value), do: value
-
-  defp details_text(%{"action" => action, "args" => args, "pr_work" => work}) when action in ["create_pr_work", "continue_pr_work"] do
+  defp proposal_details(%{"action" => action, "args" => args, "pr_work" => work})
+       when action in ["create_pr_work", "continue_pr_work"] and is_map(args) and is_map(work) do
     verb = if action == "create_pr_work", do: "Create a PR work session", else: "Continue PR work #{String.slice(text(work["work_id"]), 0, 8)}"
     "#{verb} for issue ##{text(args["task_id"])}\n\n#{text(args["body"])}\n\nUses the issue's remaining budget and existing execution controls."
   end
+
+  defp proposal_details(widget), do: details_text(widget["details"])
+
+  defp details_text(value) when is_binary(value), do: value
 
   defp details_text(value) when is_map(value), do: Enum.map_join(value, "\n", fn {key, detail} -> "#{key}: #{detail_value(detail)}" end)
   defp details_text(_value), do: ""
