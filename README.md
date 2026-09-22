@@ -33,6 +33,12 @@ change worker permissions. Authenticated browsers invoke native operator control
 GitHub remains the task and publication record. See the
 [operator guide](profiles/events-concierge/README.md#operate) for setup and limits.
 
+Each issue has one coordinator chat, with a searchable activity-grouped issue picker
+and links to its card and all associated PRs. Confirmed PR work sessions retain their own
+builder thread and checkout across design, implementation and follow-up validation.
+They run sequentially within the issue budget, with a fresh reviewer for each candidate;
+publication, merge and deployment keep their existing authorization gates.
+
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](https://player.vimeo.com/video/1186371009?h=5626e4b899)
 
 _In this [demo video](https://player.vimeo.com/video/1186371009?h=5626e4b899), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise Codex; they can manage the work at a higher level._

@@ -596,6 +596,52 @@ summary { cursor: pointer; color: var(--accent); }
 
 /* A task keeps its own conversation and pending messages beside the board. */
 .chat-bound-title strong { overflow-wrap: anywhere; }
+.chat-header:has(.issue-switcher) { position: relative; }
+.chat-header:has(.issue-switcher) .header-spacer { display: none; }
+.issue-switcher { flex: 1; min-width: 0; }
+.issue-switcher > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 9px; border-radius: 7px; font-size: 13px; font-weight: 600; cursor: pointer; list-style: none; }
+.issue-switcher > summary::-webkit-details-marker, .issue-pr-menu > summary::-webkit-details-marker { display: none; }
+.issue-switcher > summary > span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.issue-switcher > summary:hover, .issue-switcher[open] > summary { background: var(--soft); }
+.issue-switcher-menu, .issue-pr-list { position: absolute; z-index: 70; top: calc(100% + 8px); left: 0; right: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 38px #0002; padding: 8px; }
+.issue-switcher-menu { left: 16px; right: 16px; top: calc(100% - 2px); }
+.issue-switcher-menu form { padding: 3px; }
+.issue-switcher-menu input { width: 100%; box-sizing: border-box; padding: 10px; font-size: 12px; }
+.issue-options { max-height: min(480px, 55dvh); overflow-y: auto; overscroll-behavior: contain; }
+.issue-group-label { position: sticky; top: 0; z-index: 1; display: flex; gap: 7px; padding: 12px 9px 6px; background: var(--panel); color: var(--muted); font-size: 11px; font-weight: 600; }
+.issue-group-label span { font-weight: 400; }
+.issue-option { display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left; background: transparent; border: 0; padding: 9px; border-radius: 7px; font-size: 12px; }
+.issue-option:hover, .issue-option[data-active=true] { background: var(--soft); }
+.issue-option[aria-selected=true] { color: var(--accent); }
+.issue-option-title { display: flex; gap: 7px; }
+.issue-option-title > span { color: var(--muted); flex-shrink: 0; }
+.issue-option-title strong { font-weight: 550; }
+.issue-option-activity { display: flex; justify-content: space-between; gap: 6px; color: var(--muted); font-size: 10px; }
+.issue-option-preview { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 11px; max-width: 100%; }
+.issue-option-main { border-bottom: 1px solid var(--line); border-radius: 7px 7px 0 0; padding-bottom: 12px; }
+.issue-option-main > span, .issue-options-empty { color: var(--muted); font-size: 11px; }
+.issue-options-empty { margin: 8px; line-height: 1.5; }
+.issue-chat-identity { display: flex; align-items: center; gap: 8px; width: 100%; font-size: 12px; min-width: 0; }
+.issue-github-link { font-weight: 600; white-space: nowrap; }
+.issue-chat-state { color: var(--muted); font-size: 11px; }
+.issue-pr-menu { margin-left: auto; position: relative; }
+.issue-pr-menu > summary { display: flex; align-items: center; gap: 7px; cursor: pointer; list-style: none; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; white-space: nowrap; }
+.issue-pr-menu > summary > span { color: var(--muted); }
+.issue-pr-list { left: auto; min-width: min(350px, 76vw); max-height: 50dvh; overflow-y: auto; }
+.issue-pr-option { padding: 9px 6px; border-bottom: 1px solid var(--line); }
+.issue-pr-option:last-child { border-bottom: 0; }
+.issue-pr-option > div:first-child { display: flex; align-items: start; justify-content: space-between; gap: 8px; font-size: 12px; }
+.issue-pr-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; color: var(--muted); font-size: 10px; }
+.issue-work-options { padding: 10px 0 0; border-top: 1px solid var(--line); }
+.issue-work-options > strong { display: block; padding: 0 6px 6px; color: var(--muted); font-size: 11px; }
+.issue-work-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; border: 0; border-radius: 6px; padding: 9px 6px; color: var(--fg); background: transparent; text-align: left; cursor: pointer; }
+.issue-work-option:hover { background: var(--soft); }
+.issue-work-option > span:last-child { color: var(--muted); font-size: 11px; }
+.issue-work-sessions { margin-bottom: 24px; }
+.issue-work-session { padding: 14px; margin-top: 10px; border: 1px solid var(--line); border-radius: 10px; }
+.issue-work-session[data-selected="true"] { border-color: var(--accent); }
+.issue-work-instruction { white-space: pre-wrap; overflow-wrap: anywhere; }
+.issue-work-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; color: var(--muted); }
 .chat-queue { margin-bottom: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
 .chat-queue-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 9px 12px; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--line); }
 .chat-queue-heading strong { color: var(--fg); font-size: 12px; }

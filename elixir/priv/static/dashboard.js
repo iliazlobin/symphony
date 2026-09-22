@@ -532,5 +532,56 @@
     },
     destroyed() { this.abort.abort(); }
   };
-  window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace};
+  const IssueSwitcher = {
+    mounted() {
+      this.abort = new AbortController();
+      this.activeId = null;
+      this.input = () => this.el.querySelector('[role="combobox"]');
+      this.options = () => [...this.el.querySelectorAll('[role="option"]')];
+      this.sync = () => {
+        const options = this.options();
+        if (!options.some(option => option.id === this.activeId)) this.activeId = options[0]?.id || null;
+        options.forEach(option => { option.tabIndex = -1; option.dataset.active = String(option.id === this.activeId); });
+        const input = this.input();
+        input?.setAttribute("aria-expanded", String(this.el.open));
+        if (this.el.open && this.activeId) input?.setAttribute("aria-activedescendant", this.activeId);
+        else input?.removeAttribute("aria-activedescendant");
+      };
+      this.close = (focus = false) => { this.el.open = false; this.sync(); if (focus) this.el.querySelector("summary")?.focus(); };
+      this.el.addEventListener("toggle", () => { this.sync(); if (this.el.open) this.input()?.focus({preventScroll: true}); }, {signal: this.abort.signal});
+      this.el.addEventListener("keydown", event => {
+        if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); this.close(true); return; }
+        if (event.target !== this.input()) return;
+        const options = this.options();
+        const current = options.findIndex(option => option.id === this.activeId);
+        let index;
+        if (event.key === "ArrowDown") index = (current + 1) % options.length;
+        else if (event.key === "ArrowUp") index = (current - 1 + options.length) % options.length;
+        else if (event.key === "Enter") { event.preventDefault(); options[current]?.click(); return; }
+        else return;
+        event.preventDefault(); this.activeId = options[index]?.id || null; this.sync(); options[index]?.scrollIntoView({block: "nearest"});
+      }, {signal: this.abort.signal});
+      this.el.addEventListener("click", event => { if (event.target.closest('[role="option"]')) this.close(true); }, {signal: this.abort.signal});
+      document.addEventListener("click", event => { if (!this.el.contains(event.target)) this.close(); }, {signal: this.abort.signal});
+      document.addEventListener("focusin", event => { if (!this.el.contains(event.target)) this.close(); }, {signal: this.abort.signal});
+      this.sync();
+    },
+    beforeUpdate() { this.wasOpen = this.el.open; },
+    updated() { this.el.open = this.wasOpen; this.sync(); },
+    destroyed() { this.abort.abort(); }
+  };
+  const IssuePRMenu = {
+    mounted() {
+      this.abort = new AbortController();
+      this.close = (focus = false) => { this.el.open = false; if (focus) this.el.querySelector('summary')?.focus(); };
+      this.el.addEventListener('click', event => { if (event.target.closest('button, a')) this.close(); }, {signal: this.abort.signal});
+      this.el.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); this.close(true); } }, {signal: this.abort.signal});
+      document.addEventListener('click', event => { if (!this.el.contains(event.target)) this.close(); }, {signal: this.abort.signal});
+      document.addEventListener('focusin', event => { if (!this.el.contains(event.target)) this.close(); }, {signal: this.abort.signal});
+    },
+    beforeUpdate() { this.wasOpen = this.el.open; },
+    updated() { this.el.open = this.wasOpen; },
+    destroyed() { this.abort.abort(); }
+  };
+  window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace, IssueSwitcher, IssuePRMenu};
 })();

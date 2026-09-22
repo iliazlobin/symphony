@@ -249,6 +249,10 @@ browser provider. Chat stays open beside the board. Each card has one durable co
 selecting a card switches to it, and closing its details keeps that chat selected.
 **Main chat** opens the project's orchestration conversation for reports, task creation,
 updates and cancellation. Write proposals still require confirmation of the exact action.
+The headline picker groups issues by activity category, with Done last, and sorts each
+group newest first. Search a category, issue number, title or recent activity. The second
+line links the GitHub issue and its board card. **PRs** lists all linked PRs and their
+review/CI state; choose a retained work session to inspect it in **Outputs**.
 Switching cards preserves each conversation's draft and selected tab. **Chat**, **Context**,
 **Outputs** and **Sources** organize its messages and evidence. Prior conversations remain
 available through the full-page `/chat` history with search, pins and ordering.
@@ -293,13 +297,20 @@ retains its hold; retry is a separate action. Queueing adds only the configured 
 labels and retains dependency, budget, capacity and host launch gates. Creating a task requires explicit intake
 labels in the tracker configuration so a new unlabeled issue cannot launch itself.
 Feedback is saved to the GitHub issue; it is not injected into an active coding turn.
-Deployment, merge, arbitrary code execution and worker input delivery are not chat
-actions. External GitHub edits can still race the final issue patch; refresh and
+To work on a separate PR, ask the issue chat to create a PR work session with its scope
+and acceptance checks, then confirm the preview. To address review feedback or CI,
+ask it to continue that session and confirm the new instruction. The builder resumes
+its retained thread and checkout; each candidate receives a fresh independent review.
+Sessions share the issue budget and run one at a time. They do not bypass intake labels,
+holds, controller mode or launch gates. A completed candidate needs explicit continuation;
+Retry alone does not rebuild it. Existing PRs are not automatically adopted, and CI failures
+do not automatically start repairs. Deployment, merge and direct input into a running
+worker are not chat actions. External GitHub edits can still race the final issue patch; refresh and
 review the issue after changes.
 
 | Read tools | Confirmed workflow actions |
 | --- | --- |
-| Current view, project status, filtered task search, task details with all fetched PRs/CI, committed project documents | Create or edit a task, add issue feedback, queue/unqueue, pause/drain/resume, cancel/retry |
+| Current view, project status, task search, task details with PRs/CI and retained work, project documents | Create/edit task, feedback, queue/unqueue, pause/drain/resume, cancel/retry, create/continue PR work |
 
 The separate read-only preview shows the panel's availability state but does not
 start a chat runtime. A signed-in dedicated management account and an explicitly
@@ -443,6 +454,13 @@ the same SHA in a separate checkout. The host retains the handoff and holds the 
 workers cannot publish, close tasks, change labels, merge or deploy. The host publication
 broker checks that evidence, publishes a scoped branch and creates a draft PR. Receipts
 retain its confirmed publication state and support retry after an uncertain write.
+PR work uses a distinct `codex/gh-<issue>-<work-id>` branch and publication receipt.
+For host publication/recovery, select it with `publish ISSUE --work-id WORK_ID` or
+`inspect ISSUE --work-id WORK_ID`; `reconcile --issue-id ISSUE --work-id WORK_ID`
+rechecks only that work. Use these subcommands with the existing host publication
+command and configuration. A lost acknowledgment is reconciled against its exact
+candidate and PR identity. Missing retained runtime state, changed remote heads or
+baselines, and dirty/advanced workspaces stop continuation; preserve them for recovery.
 
 Automatic merge additionally requires host enablement, `symphony:auto-merge`, an explicit
 low-risk path/size allowlist, a clean independent review, a protected chosen base branch,

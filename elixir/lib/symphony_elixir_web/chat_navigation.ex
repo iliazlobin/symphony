@@ -51,6 +51,50 @@ defmodule SymphonyElixirWeb.ChatNavigation do
     |> Enum.sort_by(&{pr_order(&1.state), order(&1.activity_at, &1.number || 0)})
   end
 
+  @doc "Safe, issue-bound summaries of native PR sessions; never exposes retained runtime paths."
+  @spec work_sessions(map() | nil) :: [map()]
+  def work_sessions(task) do
+    works = field(field(task, :ledger), :pr_work)
+
+    if is_map(works) do
+      works
+      |> Enum.filter(fn {id, work} ->
+        is_binary(id) and String.match?(id, ~r/^[0-9a-f]{32}$/) and is_map(work) and
+          work["id"] == id and work["issue_id"] == field(task, :issue_id)
+      end)
+      |> Enum.map(fn {id, work} ->
+        publication = work["publication"] || %{}
+        handoff = work["handoff"] || %{}
+
+        %{
+          id: id,
+          title: if(is_integer(publication["pr_number"]), do: "PR ##{publication["pr_number"]}", else: "PR session #{String.slice(id, 0, 8)}"),
+          pr_number: publication["pr_number"],
+          pr_url: safe_url(publication["pr_url"]),
+          phase: work_phase(work["phase"]),
+          instruction: String.slice(text(work["instruction"]), 0, 16_000),
+          summary: String.slice(text(handoff["summary"]), 0, 4_000),
+          branch: String.slice(text(work["branch"]), 0, 120),
+          head: String.slice(text(work["head_sha"]), 0, 7),
+          review: field(handoff["review"], :verdict),
+          updated_at: timestamp(work["updated_at"]),
+          session_retained: text(work["builder_thread_id"]) != ""
+        }
+      end)
+      |> Enum.sort_by(&order(&1.updated_at, &1.id))
+      |> Enum.take(20)
+    else
+      []
+    end
+  end
+
+  defp work_phase("queued"), do: "Queued"
+  defp work_phase("building"), do: "Working"
+  defp work_phase("reviewing"), do: "Validating"
+  defp work_phase("owner_review"), do: "Ready for review"
+  defp work_phase("paused"), do: "Paused"
+  defp work_phase(_), do: "Unknown"
+
   defp issue(task, activity) do
     prs = pull_requests(task)
     category = category(task, activity)
@@ -109,7 +153,8 @@ defmodule SymphonyElixirWeb.ChatNavigation do
       event([field(task, :updated_at), field(task, :created_at)], "Issue updated", field(task, :title)),
       event(runtime_times, "Worker update", runtime_preview),
       event([activity["updated_at"]], "Chat updated", activity["snippet"])
-      | Enum.map(prs, &event([&1.activity_at], "PR ##{&1.number} updated", &1.title))
+      | Enum.map(prs, &event([&1.activity_at], "PR ##{&1.number} updated", &1.title)) ++
+          Enum.map(work_sessions(task), &event([&1.updated_at], "#{&1.title} · #{&1.phase}", &1.instruction))
     ]
 
     events

@@ -334,6 +334,11 @@ The observability UI now runs on a minimal Phoenix stack:
 The chat panel stays open. Select a task card to open its dedicated conversation;
 closing task details keeps that conversation selected. **Main chat** returns to the
 project conversation for reports and task creation, updates or cancellation.
+The headline picker searches issue numbers, titles, categories and recent activity.
+Issues appear in Running, Ready for review, Needs attention, Ready, Backlog and Done
+groups, newest activity first within each group. The second line links the issue and
+its card; **PRs** lists every associated PR with independent review and CI status.
+Retained PR work sessions open in **Outputs**, keeping the same issue chat selected.
 Use **New task** to enter a title, outcome, scope, acceptance checks and dependencies.
 **Preview task** saves the exact proposed GitHub issue; **Create task** confirms it.
 Created tasks enter the backlog without execution routing labels. Recent submissions
@@ -352,6 +357,13 @@ Inside the conversation, **Chat**, **Context**,
 the next message's view from snapshots retained with earlier messages. Outputs collect
 the latest 100 distinct issue/PR summaries and action results; original tool results stay
 in message history. Sources retain retrieved references.
+Ask the issue chat to create PR work with a bounded instruction, or continue an existing
+work session to address feedback or checks, then confirm its preview. Each PR work keeps
+its builder thread and checkout across attempts; every candidate gets a fresh reviewer.
+One PR work runs per issue at a time, sharing the issue's cumulative budget. A review
+handoff requires explicit continuation; **Retry** does not replay a completed candidate.
+Previously linked PRs are shown but are not automatically adopted as work sessions.
+Existing routing labels, launch permissions, publication and merge gates still apply.
 GitHub artifact statuses are recorded observations; thread activity updates live.
 You can send follow-ups while a response is running. Up to 20 messages wait in the
 conversation queue above the composer; **Send next** changes the next waiting message

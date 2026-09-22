@@ -149,6 +149,22 @@ active reservation. A candidate handoff settles that reservation and installs an
 `owner_review` hold, preventing normal continuation from rebuilding it. The trusted
 baseline comes from operator configuration, not the builder's handoff file.
 
+An issue can own up to 20 durable PR work records. A confirmed `create_pr_work`
+creates a work identity before a GitHub PR exists; `continue_pr_work` resumes that
+work's builder thread with a new instruction after checking the admitted head.
+The native orchestrator admits one PR work at a time per issue under its existing
+reservation, capacity, hold and cumulative issue budgets. Neither chat's response
+queue nor the publisher schedules coding work.
+
+Each work owns a standalone checkout, derived branch, private runtime home, builder
+thread, candidate and publication receipt. The builder's thread is checkpointed
+before its first turn. A separately checkpointed working head permits recovery after
+reviewer failure without replacing the approved candidate or published-head checks.
+Resuming a thread charges only new token usage; each candidate gets a fresh reviewer.
+Missing retained state, dirty or advanced checkouts, changed baselines and unexpected
+remote PR heads block continuation. Existing issue-level runs remain supported;
+unrelated or historical PRs are not automatically adopted as retained sessions.
+
 A fresh reviewer thread has a separate checkout mounted read-only. Builder and
 reviewer token usage count toward the same issue ceiling. Host hooks and candidate
 verification remain trusted operations outside the coding containers.
@@ -251,6 +267,17 @@ authorized task summaries and reports missing records, stale sources and truncat
 Snapshot hints never grant write authority. `symphony_task_details` retains each
 linked PR’s independent state, review, head revision and CI; a merged PR does not
 imply issue completion.
+
+The issue chat coordinates all PR work on that issue. Its headline picker groups
+Running, Ready for review, Needs attention, Ready, Backlog and Done, then sorts each
+group by the newest issue, worker, chat, PR or check activity. Search matches categories,
+identifiers, titles and latest activity. The identity row links the GitHub issue and
+board card; its PR menu lists all fetched PRs and opens retained work summaries in
+Outputs without changing the issue conversation. Main chat coordinates the project.
+Creating or continuing PR work uses the same durable preview, browser confirmation and
+native receipt recovery as other controls. Issue chats cannot act on another issue's
+PR work. Continuation is explicit; failed CI does not automatically authorize repairs,
+and publication, merge and deployment retain their separate gates.
 
 There are three distinct records: the app's visible messages and receipts, Codex's
 native thread history with automatic compaction, and committed project documents

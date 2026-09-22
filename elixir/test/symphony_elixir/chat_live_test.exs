@@ -698,14 +698,14 @@ defmodule SymphonyElixir.ChatLiveTest do
     draft_message(view, "Main draft")
     render_click(view, "session-tab", %{"tab" => "context"})
     send(view.pid, {:task, "alpha:7", "First task"})
-    assert has_element?(view, ".chat-bound-title", "First task")
+    assert has_element?(view, "#issue-switcher summary", "First task")
     refute render(view) =~ "Main draft"
     task_chat = GenServer.call(FixtureStore, :all) |> Map.values() |> Enum.find(&(&1["task_id"] == "alpha:7"))
     assert has_element?(view, "#chat-composer-wrap-#{task_chat["id"]}")
     draft_message(view, "First task draft")
     render_click(view, "session-tab", %{"tab" => "sources"})
     send(view.pid, {:task, "alpha:8", "Second task"})
-    assert has_element?(view, ".chat-bound-title", "Second task")
+    assert has_element?(view, "#issue-switcher summary", "Second task")
     refute render(view) =~ "First task draft"
     draft_message(view, "Second task draft")
     send(view.pid, {:task, "alpha:7", "First task"})
@@ -759,7 +759,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     {:ok, main} = FixtureStore.get("alpha", "a1", nil)
     [queued] = main["queue"]
     send(view.pid, {:task, "alpha:7", "Task seven"})
-    assert has_element?(view, ".chat-bound-title", "Task seven")
+    assert has_element?(view, "#issue-switcher summary", "Task seven")
     render_submit(view, "send-message", %{"message" => "Late main message", "chat_id" => "a1"})
     render_submit(view, "send-message", %{"message" => "Missing binding"})
     render_change(view, "draft", %{"message" => "Stale main draft", "chat_id" => "a1"})

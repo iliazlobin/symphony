@@ -5,6 +5,30 @@ defmodule SymphonyElixirWeb.ChatNavigationTest do
 
   @project "github:example/fixture"
 
+  test "projects issue-owned PR sessions and uses their latest activity without leaking runtime paths" do
+    id = String.duplicate("a", 32)
+
+    work = %{
+      "id" => id,
+      "issue_id" => "11",
+      "phase" => "reviewing",
+      "instruction" => "Validate new checks",
+      "updated_at" => "2026-09-23T10:00:00Z",
+      "builder_thread_id" => "thread",
+      "home" => "/private/auth/home"
+    }
+
+    issue = task("11", "running", issue_id: "11", ledger: %{"pr_work" => %{id => work}})
+    assert [session] = ChatNavigation.work_sessions(issue)
+    assert session.phase == "Validating"
+    assert session.session_retained
+    refute Map.has_key?(session, :home)
+    assert [%{issues: [row]}] = ChatNavigation.issues([issue], %{}, @project, "checks")
+    assert row.activity_at == "2026-09-23T10:00:00Z"
+    assert [] == ChatNavigation.work_sessions(%{issue | issue_id: "12"})
+    assert [] == ChatNavigation.work_sessions(nil)
+  end
+
   test "groups issue and chat activity while keeping completed work last" do
     tasks = [
       task("done", "done"),

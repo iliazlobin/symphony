@@ -2368,6 +2368,15 @@ read-only configured `budgets` and the retained `base_sha`; it contains no crede
 | `cancel` | Persist a per-issue hold, stop owned work and retain its workspace. |
 | `retry` | Clear an issue hold only within remaining budgets; never reset counters. |
 | `set_concurrency` | Persist `limit` (integer 1 through the configured ceiling), or `null` to restore the default. No `issue_id`; active work and consumed budgets are unchanged. |
+| `create_pr_work` | Retain a new PR work identity for `issue_id`, with a 32-character lowercase hexadecimal `work_id`, bounded `instruction` and exact configured `base_sha`. Releases only a prior review hold; preserves other holds and launch gates. |
+| `continue_pr_work` | Select existing `work_id` with a new bounded `instruction` and exact `expected_head_sha` (explicit `null` before a candidate). Releases only the issue's review hold; other holds require their existing recovery path. |
+
+PR work commands MUST share the native revision, authorization and idempotency boundary.
+The owner MUST derive branch and workspace names, verify fresh issue eligibility and
+reject concurrent work on the same issue. Work identities MUST be immutable and retained
+before a PR number exists. A completed work requires explicit continuation; generic Retry
+MUST NOT silently replay it. Per-issue budgets include every PR work and review attempt.
+The control snapshot includes the tracker fingerprint and retained PR work records.
 
 Both routes require `Authorization: Bearer $SYMPHONY_CONTROL_TOKEN`; the token MUST
 have at least 32 bytes. The Mac profile binds loopback, accepts only loopback Host
@@ -2422,6 +2431,14 @@ fault MUST stop owned workers and prevent further ledger writes or dispatch.
 Workspace cleanup MUST retain unpublished work. Process-group cleanup MUST
 serialize with subsequent commands in the same workspace.
 
+PR work MUST checkpoint its verified builder thread synchronously before the first turn
+and resume that exact thread with the same cwd, approval policy and permission profile.
+Each new candidate still receives a fresh reviewer. A separate working-head checkpoint
+MUST retain successful builder commits before review without advancing candidate or
+published-head ownership. Missing retained state, dirty or mismatched checkouts and
+changed baselines MUST fail closed. Resumed cumulative thread usage MUST charge only
+the increase over that builder's durable usage baseline; a fresh reviewer starts at zero.
+
 ### B.4 Container ownership and host publication
 
 The Mac profile runs coding App Servers in local Docker PID namespaces, using an
@@ -2450,6 +2467,15 @@ issue opt-in, an allowed small documentation diff, an approving independent revi
 verified branch protection and successful exact-SHA required checks from pinned
 GitHub Apps. Unknown or changed evidence MUST block the operation. Deployment and
 infrastructure changes still require separate user authorization.
+
+PR work publication MUST bind one immutable PR number/URL to its work identity and
+check the last acknowledged remote head before pushing with an exact lease. Its
+receipt is independent of other PRs on the issue. Authenticated
+`POST /api/v1/pr-work/publication` accepts only issue/work/run identity, candidate and
+prior head, branch/base, PR identity, publication status and optional merge SHA.
+The owner MUST match the approved retained handoff and tracker before acknowledging;
+an identical receipt replays without another write. Lost acknowledgments MUST be
+reconciled without creating a replacement PR or adopting unrelated remote changes.
 
 ### B.5 Local web operator adapter
 

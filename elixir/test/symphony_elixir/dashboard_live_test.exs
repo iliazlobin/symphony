@@ -704,6 +704,57 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   @tag :threads_fixture
+  test "issue headline searches categories, selects the canonical chat and links its card and all PRs", ctx do
+    prs =
+      for n <- 1..4, do: %{number: n, title: "Change #{n}", url: "https://github.com/example/fixture/pull/#{n}", state: if(n == 4, do: "merged", else: "open"), checks: "success", review: "approved"}
+
+    work_id = String.duplicate("a", 32)
+
+    work = %{
+      "id" => work_id,
+      "issue_id" => "2",
+      "phase" => "building",
+      "instruction" => "Address PR checks",
+      "builder_thread_id" => "retained-thread",
+      "publication" => %{"pr_number" => 1, "pr_url" => "https://github.com/example/fixture/pull/1"}
+    }
+
+    board = %{ctx.board | tasks: Enum.map(ctx.board.tasks, fn task -> if task.issue_id == "2", do: %{task | pull_requests: prs, ledger: %{"pr_work" => %{work_id => work}}}, else: task end)}
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    assert has_element?(view, "#issue-switcher #issue-search[role=combobox][aria-autocomplete=list]")
+    categories = view |> element("#issue-options") |> render() |> Floki.parse_fragment!() |> Floki.find("[data-issue-category]") |> Enum.map(&(Floki.attribute(&1, "data-issue-category") |> hd()))
+    assert hd(categories) == "running"
+    assert List.last(categories) == "done"
+    chat = with_target(view, "#chat-app")
+    render_change(chat, "search-issues", %{"query" => "ready for review"})
+    assert has_element?(view, "#issue-options [data-issue-category=review]")
+    refute has_element?(view, "#issue-options [data-issue-category=done]")
+    render_change(chat, "search-issues", %{"query" => "GH-2"})
+    view |> element("#issue-options [data-issue-id='github:example/fixture:2']") |> render_click()
+    render(view)
+    assert has_element?(view, "#task-board-app[data-selected-task='github:example/fixture:2']")
+    refute has_element?(view, "#board-dialog")
+    assert has_element?(view, ".issue-chat-identity a[href='https://github.com/example/fixture/issues/2'][target=_blank]", "GH-2")
+    assert has_element?(view, "#issue-pr-menu summary", "4")
+    for n <- 1..4, do: assert(has_element?(view, "#issue-pr-menu a[href='https://github.com/example/fixture/pull/#{n}']", "PR ##{n}"))
+    assert has_element?(view, "#issue-pr-menu [data-pr-number='4']", "Merged")
+    id = :sys.get_state(view.pid).socket.assigns.chat_id
+    view |> element("#issue-pr-menu [phx-value-id='#{work_id}']") |> render_click()
+    assert has_element?(view, "#session-outputs-tab[aria-selected=true]")
+    assert has_element?(view, "#pr-work-#{work_id}[data-selected=true]", "Address PR checks")
+    assert has_element?(view, "#pr-work-#{work_id}", "Session retained")
+    assert :sys.get_state(view.pid).socket.assigns.chat_id == id
+    view |> element("#issue-card-link") |> render_click()
+    assert has_element?(view, "#board-dialog h2", "Ready fixture")
+    id = :sys.get_state(view.pid).socket.assigns.chat_id
+    render_click(chat, "select-issue", %{"id" => "github:other/project:99"})
+    assert :sys.get_state(view.pid).socket.assigns.chat_id == id
+    assert has_element?(view, ".chat-notice", "not available")
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+  end
+
+  @tag :threads_fixture
   test "card selection switches canonical chat without details and preserves board filters", ctx do
     view = authorized_board_view()
     filters = %{"project" => "github:example/fixture", "q" => "fixture", "sort" => "updated"}

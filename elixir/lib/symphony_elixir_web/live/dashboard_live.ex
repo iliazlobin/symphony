@@ -106,6 +106,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   def handle_info({:chat_panel, :main}, socket), do: main_chat(socket)
 
+  def handle_info({:chat_panel, :select_issue, id}, socket), do: handle_event("select-task", %{"id" => id}, socket)
+  def handle_info({:chat_panel, :issue_card, id}, socket), do: handle_event("open-task", %{"id" => id}, socket)
+
   def handle_info({:chat_panel, :navigate, %{project_id: project, chat_id: id}}, socket) do
     if project == socket.assigns.chat_project do
       {:noreply, socket |> assign(:chat_id, bounded_chat_id(id)) |> refresh_chat_activity()}
@@ -683,7 +686,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
       <aside id="management-chat-dock" class="management-chat-dock" aria-label="Project chat">
         <.live_component module={ChatPanel} id="management-chat" auth={@auth} csrf_token={@csrf_token}
           embedded={true} project_id={@chat_project} chat_id={@chat_id} task_id={@chat_task_id}
-          task_title={chat_task_title(@board, @chat_task_id)} view_context={@view_context} read_only={@read_only} />
+          task_title={chat_task_title(@board, @chat_task_id)} issue_tasks={@board.tasks} issue_activity={@chat_activity}
+          view_context={@view_context} read_only={@read_only} />
       </aside>
     </section>
     """
