@@ -675,13 +675,18 @@ defmodule SymphonyElixir.Chat.StoreTest do
       assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", chat["id"], c.auth, c.server)
     end
 
-    assert {:ok, %{"queued_count" => 1}} = Store.send_message(c.project, third["id"], "Hello", "three", c.auth, c.server)
+    assert {:ok, %{"queued_count" => 1}} = Store.send_message(c.project, third["id"], "delay finish", "three", c.auth, c.server)
     assert {:ok, _} = Store.stop(c.project, first["id"], c.auth, c.server)
     wait_chat(c, first, &(&1["status"] == "interrupted"))
+    assert_receive {:runtime, third_runtime, _, "delay finish"}
+    assert_receive {:phase_ready, ^third_runtime, "delay finish"}
+    send(third_runtime, :continue)
+    wait_chat(c, third, &(&1["status"] == "idle" and &1["queued_count"] == 0))
 
-    for text <- ["error", "auth", "crash", "tool error", "malformed tool"] do
+    for {text, status} <- [{"error", "error"}, {"auth", "error"}, {"crash", "error"}, {"tool error", "idle"}, {"malformed tool", "idle"}] do
       assert {:ok, _} = Store.send_message(c.project, first["id"], text, text, c.auth, c.server)
-      wait_chat(c, first, &(&1["status"] != "running"))
+      assert_receive {:runtime, _, _, ^text}
+      wait_chat(c, first, &(&1["status"] == status and &1["queued_count"] == 0))
     end
 
     GenServer.cast(c.server, {:delta, first["id"], "stale", "must not appear"})
