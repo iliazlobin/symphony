@@ -1015,6 +1015,63 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert retained["conversation_role"] == "legacy"
   end
 
+  test "canonical conversation limits reject only new bindings and retain the existing main chat", c do
+    assert {:ok, main} = Store.ensure_conversation(c.project, nil, c.auth, c.server)
+
+    for number <- 1..499 do
+      assert {:ok, _} = Store.create(c.project, "Retained conversation #{number}", c.auth, c.server)
+    end
+
+    assert length(Path.wildcard(Path.join(c.root, "*.json"))) == 500
+    assert {:error, :chat_history_full} = Store.ensure_conversation(c.project, c.project <> ":11", c.auth, c.server)
+    assert {:ok, existing} = Store.ensure_conversation(c.project, nil, c.auth, c.server)
+    assert existing["id"] == main["id"]
+    assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
+    refute_receive {:runtime, _, _, _}
+  end
+
+  test "a failed dispatch save retains its accepted queue without starting or replaying a runtime", c do
+    chat = create(c)
+    {:ok, authorizations} = Agent.start_link(fn -> 0 end)
+    path = Path.join(c.root, chat["id"] <> ".json")
+    original_authorize = Keyword.fetch!(c.opts, :authorize)
+
+    authorize = fn auth ->
+      count = Agent.get_and_update(authorizations, &{&1 + 1, &1 + 1})
+      # Initial access is checked before acceptance. The dispatch access check occurs
+      # after the queued message is durable but before the running state is persisted.
+      if count == 2, do: File.chmod!(c.root, 0o500)
+      original_authorize.(auth)
+    end
+
+    :sys.replace_state(c.server, &%{&1 | authorize: authorize})
+
+    try do
+      assert {:error, :chat_storage_unavailable} = Store.send_message(c.project, chat["id"], "Accepted followup", "accepted", c.auth, c.server)
+      refute_receive {:runtime, _, _, _}
+      assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: false}}
+      durable = Jason.decode!(File.read!(path))
+      assert durable["status"] == "idle"
+      assert durable["messages"] == []
+      assert [%{"client_id" => "accepted", "text" => "Accepted followup"}] = durable["queue"]
+    after
+      File.chmod!(c.root, 0o700)
+    end
+
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    assert {:ok, restored} = Store.get(c.project, chat["id"], c.auth, server)
+    assert restored["queued_count"] == 1
+    assert restored["queue_paused"]
+    assert {:ok, replay} = Store.send_message(c.project, chat["id"], "Accepted followup", "accepted", c.auth, server)
+    assert replay["queue"] == restored["queue"]
+    refute_receive {:runtime, _, _, _}
+    assert {:ok, _} = Store.resume_queue(c.project, chat["id"], c.auth, server)
+    assert_receive {:runtime, _, _, "Accepted followup"}
+    wait_chat(%{c | server: server}, chat, &(&1["status"] == "idle"))
+    refute_receive {:runtime, _, _, _}
+  end
+
   test "queued messages are durable FIFO turns with original IDs, context, and idempotency", c do
     chat = create(c)
     assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "first", c.auth, c.server)

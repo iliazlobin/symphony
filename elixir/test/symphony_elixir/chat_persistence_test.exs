@@ -245,6 +245,17 @@ defmodule SymphonyElixir.Chat.PersistenceTest do
     Persistence.close(owner)
   end
 
+  test "task binding validation rejects nontext and malformed IDs without coercion" do
+    project = "github:example/project"
+    assert Persistence.valid_task_scope?(project, nil)
+    assert Persistence.valid_task_scope?(project, project <> ":11")
+    assert Persistence.valid_task_scope?("linear:team", "linear:team:ABC-11")
+
+    for invalid <- [11, true, false, %{"id" => "11"}, ["11"], "11", project <> ":011", project <> ":11\n"] do
+      refute Persistence.valid_task_scope?(project, invalid)
+    end
+  end
+
   test "canonical bindings and pending message queues fail closed on malformed durable records", c do
     File.mkdir_p!(c.root)
     task_id = c.chat["project_id"] <> ":11"
@@ -271,7 +282,9 @@ defmodule SymphonyElixir.Chat.PersistenceTest do
       Map.put(record, "queue", [Map.put(entry, "created_at", "invalid")]),
       Map.put(record, "queue", [Map.put(entry, "client_id", nil)]),
       Map.put(record, "queue", [Map.put(entry, "view_context", %{})]),
-      Map.put(record, "message_receipts", %{"next" => "not-a-hash"})
+      Map.put(record, "message_receipts", %{"next" => "not-a-hash"}),
+      Map.put(record, "message_receipts", []),
+      Map.put(record, "message_receipts", nil)
     ]
 
     for invalid_record <- invalid do
