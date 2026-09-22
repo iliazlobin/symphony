@@ -637,6 +637,11 @@ Relative links remain text; open the source issue for repository-relative naviga
 Tracker issues, current runtime and durable holds own the displayed stages; stale sources
 are marked. A terminal issue does not verify a merge or deployment.
 
+Cards and task popups retain an inline execution summary with cumulative tokens,
+attempts and elapsed time against the reported limits. It stays visible in compact view after workers exit;
+unavailable status and missing metrics remain explicit. Task dialogs show Cancel or
+Retry only when applicable; settled candidate review does not offer Retry.
+
 Compact cards show blockers and a short PR/CI summary. Detailed cards and task popups
 include the PR branch, commit and changed-file counts. Expand checks on a detailed
 card or open its popup for individual job results, durations and

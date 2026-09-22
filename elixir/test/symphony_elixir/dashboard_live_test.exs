@@ -186,7 +186,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#filter-priority[role=combobox]")
     assert has_element?(view, "select[aria-label='Sort cards']")
     assert html =~ "Manual order is a browser preference"
-    assert html =~ "Candidate needs review"
+    assert html =~ "Changes requested"
     refute html =~ "Proposed UI"
     refute has_element?(view, "aside")
     refute has_element?(view, "#board-dialog")
@@ -197,7 +197,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     before = GenServer.call(ctx.runtime, :control_snapshot)
     assert has_element?(view, "#board-dispatch-guidance", "Execution is paused")
     assert has_element?(view, "#board-dispatch-guidance", "Ready tasks will not start")
-    assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:2']", "Execution: Idle")
+    assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:2']", "Queued")
 
     render_click(view, "open-settings")
     render_click(view, "settings-tab", %{"tab" => "connections"})
@@ -290,6 +290,149 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#board-dialog")
     refute has_element?(view, "#task-board-app[data-selected-task]")
     assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:2']")
+  end
+
+  test "settled candidate execution remains visible on the card and detail without runtime folds", ctx do
+    board = execution_board(ctx.board, "4", %{"attempts" => 2, "tokens" => 517_755, "runtime_ms" => 188_700, "hold" => "owner_review", "handoff" => approved_handoff()})
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    card = "[data-task-id='github:example/fixture:4']"
+
+    assert has_element?(view, card <> " .execution-summary", "Awaiting your review")
+    assert has_element?(view, card <> " .execution-summary dd[title='Tokens: 517,755 used; limit 1,000,000']", "518k / 1M")
+    assert has_element?(view, card <> " .execution-summary dd[title='Time: 188,700 ms used; limit 3,600,000 ms']", "3m 8s / 1h 0m")
+    assert has_element?(view, card <> " .execution-summary", "2 / 2")
+    refute has_element?(view, card <> " .execution-summary details")
+
+    open_task(view, "4")
+    assert has_element?(view, "#board-dialog .execution-summary", "Awaiting your review")
+    assert has_element?(view, "#board-dialog .execution-summary dd[title='Tokens: 517,755 used; limit 1,000,000']", "518k / 1M")
+    assert has_element?(view, "#board-dialog .execution-summary", "2 / 2")
+    refute has_element?(view, "#board-dialog summary", "Runtime details")
+    refute has_element?(view, "#board-dialog button[phx-value-action=cancel]")
+    refute has_element?(view, "#board-dialog button[phx-value-action=retry]")
+    refute has_element?(view, "#board-dialog .execution-summary", "Unavailable")
+  end
+
+  test "recoverable hold offers retry but exhausted limits explain why another attempt is unavailable", ctx do
+    board = execution_board(ctx.board, "2", %{"attempts" => 1, "tokens" => 250_000, "hold" => "interrupted"})
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    open_task(view, "2")
+    assert has_element?(view, "#board-dialog button[phx-value-action=retry]")
+    refute has_element?(view, "#board-dialog button[phx-value-action=cancel]")
+
+    exhausted = execution_board(ctx.board, "2", %{"attempts" => 2, "tokens" => 250_000, "hold" => "interrupted"})
+    refresh(view, ctx.runtime, exhausted)
+    assert has_element?(view, "#board-dialog .execution-summary", "Attempts limit reached")
+    refute has_element?(view, "#board-dialog button[phx-value-action=retry]")
+
+    tokens = execution_board(ctx.board, "2", %{"attempts" => 1, "tokens" => 1_000_000, "hold" => "token_budget"})
+    refresh(view, ctx.runtime, tokens)
+    assert has_element?(view, "#board-dialog .execution-summary", "Token limit reached")
+    refute has_element?(view, "#board-dialog button[phx-value-action=retry]")
+    refute_received {:settings_command, _}
+  end
+
+  test "settled owner review takes precedence over a lingering continuation retry timer", ctx do
+    retry = %{issue_id: "4", issue_identifier: "GH-4", attempt: 1, due_at: "2099-01-01T00:00:00Z", error: nil}
+    runtime_board = %{ctx.board | runtime: Map.put(ctx.board.runtime, :retrying, [retry])}
+
+    ledger = %{
+      "attempts" => 2,
+      "tokens" => 517_755,
+      "runtime_ms" => 188_700,
+      "hold" => "owner_review",
+      "handoff" => approved_handoff()
+    }
+
+    board = execution_board(runtime_board, "4", ledger)
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    assert has_element?(view, "[data-task-id='github:example/fixture:4'] .execution-summary", "Awaiting your review")
+
+    open_task(view, "4")
+    assert has_element?(view, "#board-dialog .execution-summary", "Awaiting your review")
+    assert has_element?(view, "#board-dialog h3", "Candidate review")
+    assert has_element?(view, "#board-dialog", "Documented the unit-test command")
+    refute has_element?(view, "#board-dialog .execution-summary", "Retry scheduled")
+    refute has_element?(view, "#board-dialog button[phx-value-action=cancel]")
+    refute has_element?(view, "#board-dialog button[phx-value-action=retry]")
+    refute_received {:settings_command, _}
+  end
+
+  test "active execution offers cancellation without retry or retained review claims", ctx do
+    started_at = DateTime.add(DateTime.utc_now(), -12, :second)
+    runtime = put_in(ctx.board.runtime, [:running, Access.at(0), :started_at], DateTime.to_iso8601(started_at))
+
+    board =
+      execution_board(%{ctx.board | runtime: runtime}, "3", %{
+        "attempts" => 2,
+        "tokens" => 100,
+        "runtime_ms" => 1_500,
+        "active" => %{"run_id" => "current-run", "tokens" => 23},
+        "handoff" => approved_handoff()
+      })
+
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    open_task(view, "3")
+    assert has_element?(view, "#board-dialog .execution-summary", "Running")
+    assert has_element?(view, "#board-dialog .execution-summary", "123")
+    html = view |> element("#board-dialog .execution-summary dd[title^='Time:']") |> render()
+    [title] = html |> Floki.parse_fragment!() |> Floki.attribute("dd", "title")
+    assert [_, recorded] = Regex.run(~r/^Time: ([\d,]+) ms used; limit 3,600,000 ms$/, title)
+    elapsed = recorded |> String.replace(",", "") |> String.to_integer()
+    assert elapsed >= 13_500
+    assert elapsed <= DateTime.diff(DateTime.utc_now(), started_at, :millisecond) + 1_500
+    assert has_element?(view, "#board-dialog button[phx-value-action=cancel]")
+    refute has_element?(view, "#board-dialog button[phx-value-action=retry]")
+    refute has_element?(view, "#board-dialog .execution-summary", "Awaiting your review")
+  end
+
+  test "closed tasks and unavailable execution suppress task mutations while preserving usage", ctx do
+    board = execution_board(ctx.board, "5", %{"attempts" => 1, "tokens" => 125_000, "hold" => "interrupted"})
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    open_task(view, "5")
+    assert has_element?(view, "#board-dialog .execution-summary", "Done")
+    assert has_element?(view, "#board-dialog .execution-summary", "125k / 1M")
+    refute has_element?(view, "#board-dialog button[phx-value-action=cancel]")
+    refute has_element?(view, "#board-dialog button[phx-value-action=retry]")
+
+    recoverable = execution_board(ctx.board, "2", %{"attempts" => 1, "tokens" => 125_000, "hold" => "interrupted"})
+    refresh(view, ctx.runtime, recoverable)
+    open_task(view, "2")
+    assert has_element?(view, "#board-dialog button[phx-value-action=retry]")
+    refresh(view, ctx.runtime, %{recoverable | runtime_error: "Controller unavailable"})
+    assert has_element?(view, "#board-dialog .execution-summary", "unavailable")
+    assert has_element?(view, "#board-dialog .execution-summary", "125k / 1M")
+    refute has_element?(view, "#board-dialog button[phx-value-action=cancel]")
+    refute has_element?(view, "#board-dialog button[phx-value-action=retry]")
+  end
+
+  @tag read_only: true
+  test "read-only execution summary retains settled metrics and never offers mutations", ctx do
+    board = execution_board(ctx.board, "2", %{"attempts" => 1, "tokens" => 125_000, "hold" => "interrupted"})
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    open_task(view, "2")
+    assert has_element?(view, "#board-dialog .execution-summary", "125k / 1M")
+    refute has_element?(view, "#board-dialog button[phx-value-action=cancel]")
+    refute has_element?(view, "#board-dialog button[phx-value-action=retry]")
+    refute has_element?(view, "#board-dialog .execution-summary details")
+  end
+
+  test "forged candidate retry cannot prepare or submit a command even with budget remaining", ctx do
+    board = execution_board(ctx.board, "4", %{"attempts" => 1, "tokens" => 100_000, "hold" => "owner_review", "handoff" => approved_handoff()})
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    open_task(view, "4")
+    render_click(view, "prepare-command", %{"action" => "retry", "id" => "github:example/fixture:4"})
+    refute has_element?(view, "#board-dialog button[phx-click=confirm-command]")
+    render_click(view, "confirm-command")
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
   end
 
   @tag :threads_fixture
@@ -418,7 +561,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     {view, _html} = board_view()
     render_click(view, "prepare-command", %{"action" => "pause"})
     assert has_element?(view, "#board-dialog h2", "Settings")
-    assert render(view) =~ "Unlock local operator controls"
+    assert render(view) =~ "Sign in and refresh execution status"
     render_click(view, "confirm-command")
     assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
     render_click(view, "prepare-command", %{"action" => "deploy"})
@@ -747,8 +890,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, ".board-source-state", "GitHub checked")
     assert has_element?(view, ".board-runtime-state", "Controller: Paused · 1 active")
     assert has_element?(view, "#board-context a[href='https://github.com/example/fixture/issues']")
-    assert has_element?(view, card, "Issue: Open")
-    assert has_element?(view, card, "Execution: Paused")
+    assert has_element?(view, card, "Queued · paused")
     assert has_element?(view, card, "Review changes before retrying")
     assert has_element?(view, card <> " a[href='https://github.com/example/fixture/pull/12']", "PR #12")
     assert has_element?(view, card, "Draft")
@@ -1082,6 +1224,22 @@ defmodule SymphonyElixir.DashboardLiveTest do
       "concurrency" => %{"effective" => 5, "default" => 5, "ceiling" => 5, "override" => nil},
       "budgets" => %{"max_attempts" => 3, "max_total_runtime_ms" => 3_600_000, "max_total_tokens" => 200_000}
     })
+  end
+
+  defp execution_board(board, id, values) do
+    ledger = Map.merge(%{"attempts" => 0, "tokens" => 0, "runtime_ms" => 0, "active" => nil, "hold" => nil}, values)
+
+    control =
+      board.control
+      |> put_in(["issues", id], ledger)
+      |> Map.put("settings", %{"budgets" => %{"max_attempts" => 2, "max_total_runtime_ms" => 3_600_000, "max_total_tokens" => 1_000_000}})
+
+    TaskBoard.project(issues(), board.runtime, control, Config.settings!())
+  end
+
+  defp approved_handoff do
+    sha = String.duplicate("a", 40)
+    %{"candidate_sha" => sha, "summary" => "Documented the unit-test command", "review" => %{"candidate_sha" => sha, "verdict" => "approve", "findings" => []}}
   end
 
   defp intake_fields do

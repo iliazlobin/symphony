@@ -206,7 +206,18 @@ input, select {
 .card-title { display: flex; align-items: start; gap: 7px; width: 100%; text-align: left; border: 0; padding: 0; background: transparent; font-size: 13px; font-weight: 500; line-height: 1.45; overflow-wrap: anywhere; }
 .card-title .lane-dot { margin-top: 3px; }
 .card-project { font-size: 11px; color: var(--muted); margin-top: 8px; }
-.card-evidence, .task-evidence { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; margin-top: 8px; font-size: 11px; color: var(--muted); }
+.execution-summary { margin-top: 12px; font-size: 13px; }
+.execution-state { margin: 0; font-weight: 500; color: var(--fg); }
+.execution-metrics { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 8px 0 0; font-variant-numeric: tabular-nums; }
+.execution-metrics > div { display: flex; flex-direction: column; gap: 2px; }
+.execution-metrics dt { font-size: 11px; color: var(--muted); }
+.execution-metrics dd { margin: 0; white-space: nowrap; }
+.execution-note { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.execution-summary.compact { margin-top: 9px; font-size: 11px; }
+.execution-summary.compact .execution-metrics { gap: 5px 14px; margin-top: 6px; }
+.execution-summary.compact .execution-metrics dt { font-size: 10px; }
+.execution-summary.compact .execution-note { font-size: 10px; margin-top: 6px; }
+.execution-actions { margin-top: 12px; }
 .evidence-badge { display: inline-flex; max-width: 100%; padding: 2px 5px; border-radius: 4px; background: var(--soft); font-size: 11px; color: var(--muted); }
 .card-reference-links, .task-reference-links { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 10px; font-size: 11px; }
 .card-pull-requests { margin-top: 10px; }
@@ -218,7 +229,7 @@ input, select {
 .pr-state[data-pr-state=merged] { background: var(--tint); color: var(--accent); }
 .compact-ci { color: var(--muted); }
 .compact-ci-note { color: var(--warn); }
-.dashboard-shell[data-density=compact] .task-card :is(.card-evidence, .card-pull-requests, .card-reference-links, .card-activity) { display: none; }
+.dashboard-shell[data-density=compact] .task-card :is(.card-pull-requests, .card-reference-links, .card-activity) { display: none; }
 .dashboard-shell[data-density=compact][data-single-project=true] .card-project { display: none; }
 .dashboard-shell[data-density=details] .card-pr-summary { display: none; }
 .dashboard-shell[data-density=compact] .priority[data-priority="—"] { display: none; }
@@ -247,7 +258,6 @@ input, select {
 .ci-job-status { display: flex; gap: 8px; margin: 3px 0 0 14px; color: var(--muted); }
 .ci-workflow { margin-top: 8px; color: var(--muted); overflow-wrap: anywhere; }
 .card-more-links { border: 0; padding: 4px 0; background: transparent; color: var(--accent); font-size: 11px; }
-.task-evidence { margin-top: 12px; font-size: 12px; }
 .task-reference-links { margin: 12px 0; }
 .attention-badge { display: block; margin-top: 9px; padding: 4px 6px; border-radius: 4px; font-size: 11px; color: var(--warn); background: var(--warn-bg); }
 .card-activity { font-size: 12px; color: var(--muted); margin-top: 10px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

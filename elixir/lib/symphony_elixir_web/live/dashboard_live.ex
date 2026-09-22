@@ -4,7 +4,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   alias SymphonyElixir.Chat.ViewContext
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, ChatPanel, Endpoint, Markdown, SettingsPanel, TaskIntakePanel}
-  alias SymphonyElixirWeb.{ObservabilityPubSub, Presenter, TaskBoard}
+  alias SymphonyElixirWeb.{ObservabilityPubSub, Presenter, TaskBoard, TaskExecution}
 
   @lanes [{"backlog", "Backlog"}, {"ready", "Ready"}, {"running", "Running"}, {"review", "Review"}, {"done", "Done"}]
   @refresh_ms 30_000
@@ -378,19 +378,31 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp prepare_command(socket, action, task) do
     control = socket.assigns.board.control
 
-    if BrowserAuth.authorized?(socket.assigns.auth) and control["enabled"] == true and is_integer(control["revision"]) do
-      pending = %{
-        action: action,
-        issue_id: task && task.issue_id,
-        identifier: task && task.identifier,
-        revision: control["revision"],
-        id: Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
-      }
+    cond do
+      not controls_available?(socket.assigns) ->
+        {:noreply, socket |> assign(:dialog, :settings) |> assign(:notice, "Sign in and refresh execution status in Settings before changing execution.")}
 
-      {:noreply, socket |> assign(:pending_command, pending) |> assign(:dialog, :confirm)}
-    else
-      {:noreply, socket |> assign(:dialog, :settings) |> assign(:notice, "Unlock local operator controls in Settings before changing execution.")}
+      not task_action_available?(action, task, socket.assigns) ->
+        {:noreply, socket |> assign(:pending_command, nil) |> assign(:notice, "This action is not available for the task’s current state. Review its execution summary.")}
+
+      true ->
+        pending = %{
+          action: action,
+          issue_id: task && task.issue_id,
+          identifier: task && task.identifier,
+          revision: control["revision"],
+          id: Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+        }
+
+        {:noreply, socket |> assign(:pending_command, pending) |> assign(:dialog, :confirm)}
     end
+  end
+
+  defp task_action_available?(action, nil, _assigns), do: action in ["pause", "drain", "resume"]
+
+  defp task_action_available?(action, task, assigns) do
+    summary = execution_summary(task, assigns.board, assigns.payload)
+    (action == "cancel" and summary.cancel?) or (action == "retry" and summary.retry?)
   end
 
   defp prepare_concurrency(socket, limit) do
@@ -573,8 +585,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <span class="priority" data-priority={priority(task.priority)}>{priority(task.priority)}</span></div>
                 <button id={"open-#{card_id(task)}"} class="card-title" phx-click="open-task" phx-value-id={task.id}><span class={"lane-dot lane-dot-#{stage}"} aria-hidden="true"></span><span>{task.title}</span></button>
                 <div class="card-project">{task.project_label}</div>
-                <div class="card-evidence"><span class="evidence-badge">Issue: {display(Map.get(task, :tracker_state))}</span><span>{task_execution(task)}</span></div>
-                <span :if={blocker(task)} class="attention-badge">{blocker(task)}</span>
+                <.execution_summary summary={execution_summary(task, @board, @payload)} compact={true} />
+                <span :if={blocker(task) && is_nil(task.hold)} class="attention-badge">{blocker(task)}</span>
                 <div :if={pull_requests(task) != []} class="card-pr-summary"><span :for={pr <- Enum.take(pull_requests(task), 2)}>
                   <a :if={safe_url(field(pr, :url))} href={safe_url(field(pr, :url))} target="_blank" rel="noopener noreferrer">PR #{field(pr, :number)}</a>
                   <span class="pr-state" data-pr-state={String.downcase(pr_state(pr))}>{pr_state(pr)}</span>
@@ -630,29 +642,30 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <% :task -> %>
               <p class="muted">{@selected.project_label} · {@selected.identifier} · {lane_label(@selected.stage)}</p>
               <button :if={!@chat_open} class="button button-small" phx-click="open-chat">Discuss this task</button>
-              <div class="task-evidence"><span class="evidence-badge">Issue: {display(Map.get(@selected, :tracker_state))}</span><span>{task_execution(@selected)}</span></div>
+              <.execution_summary summary={execution_summary(@selected, @board, @payload)} />
+              <div :if={!@read_only && @controls_available} class="dialog-actions execution-actions">
+                <button :if={@selected.stage == "backlog" && is_nil(@selected.hold)} id="queue-task-button" class="button button-primary" phx-click="queue-task" phx-value-id={@selected.id}>Move to Ready</button>
+                <button :if={execution_summary(@selected, @board, @payload).cancel?} class="button" phx-click="prepare-command" phx-value-action="cancel" phx-value-id={@selected.id}>Cancel execution</button>
+                <button :if={execution_summary(@selected, @board, @payload).retry?} class="button" phx-click="prepare-command" phx-value-action="retry" phx-value-id={@selected.id}>Retry</button>
+              </div>
               <div :if={@selected.stage == "ready" && @dispatch_guidance} id="task-dispatch-guidance" class="board-notice" role="status">
                 <p>{@dispatch_guidance}</p>
                 <button type="button" class="button button-small" phx-click="open-settings" phx-value-tab="execution">Execution settings</button>
               </div>
               <div class="task-reference-links"><a :for={link <- task_links(@selected)} class="button button-small" href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
-              <p :if={blocker(@selected)} class="attention-badge"><strong>Needs attention:</strong> {blocker(@selected)}</p>
+              <p :if={blocker(@selected) && is_nil(@selected.hold)} class="attention-badge"><strong>Needs attention:</strong> {blocker(@selected)}</p>
               <p :if={Map.get(@selected, :completion_evidence)} class="muted">{Map.get(@selected, :completion_evidence)}</p>
               <section :if={pull_requests(@selected) != []} class="dialog-section"><h3>Pull requests</h3><.pull_request :for={pr <- pull_requests(@selected)} pr={pr} compact={false} /></section>
               <section class="dialog-section"><h3>Scope &amp; acceptance</h3><div class="markdown-content">{Markdown.render(@selected.description)}</div></section>
-              <section class="dialog-section"><h3>Codex update</h3><p>{current_activity(@selected, @payload) || "No current worker activity."}</p>
+              <section :if={current_activity(@selected, @payload) || session_id(@selected)} class="dialog-section"><h3>Codex update</h3><p>{current_activity(@selected, @payload)}</p>
                 <button :if={session_id(@selected)} class="button button-small" data-copy={session_id(@selected)}>Copy ID</button>
               </section>
-              <section :if={@selected.handoff} class="dialog-section"><h3>Candidate review</h3>
+              <section :if={settled_handoff?(@selected)} class="dialog-section"><h3>Candidate review</h3>
                 <p :if={is_binary(field(handoff(@selected), :summary))}>{field(handoff(@selected), :summary)}</p>
                 <p>Worker review: {worker_review(@selected)}</p>
                 <p :if={is_binary(field(handoff(@selected), :candidate_sha))} class="task-description">Candidate: <code>{field(handoff(@selected), :candidate_sha)}</code></p>
                 <p class="muted">Worker review is separate from GitHub review, checks, merge and deployment.</p>
                 <details><summary>Handoff details</summary><pre>{pretty(@selected.handoff)}</pre></details>
-              </section>
-              <section :if={!@read_only} class="dialog-section"><h3>Execution</h3><p class="muted">Cancel requests a hold and worker cleanup. Retry clears a hold without resetting the budget; it does not answer a question or approve a candidate.</p>
-                <div class="dialog-actions"><button :if={@selected.stage == "backlog" && is_nil(@selected.hold)} id="queue-task-button" class="button button-primary" phx-click="queue-task" phx-value-id={@selected.id}>Move to Ready</button><button :for={action <- ["cancel", "retry"]} class="button" phx-click="prepare-command" phx-value-action={action} phx-value-id={@selected.id}>{String.capitalize(action)}</button></div>
-                <details><summary>Runtime details</summary><pre>{pretty(@selected.runtime)}</pre></details>
               </section>
             <% :confirm -> %>
               <p>{command_description(@pending_command)}</p>
@@ -753,7 +766,28 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  defp task_execution(task), do: "Execution: " <> display(Map.get(task, :execution_status))
+  defp execution_summary(task, board, payload) do
+    unavailable = runtime_unavailable?(board, payload) or not is_nil(board.source_error)
+    TaskExecution.summary(task, board.control, unavailable)
+  end
+
+  attr(:summary, :map, required: true)
+  attr(:compact, :boolean, default: false)
+
+  defp execution_summary(assigns) do
+    ~H"""
+    <div class={["execution-summary", @compact && "compact"]} aria-label="Execution summary">
+      <p class="execution-state">{@summary.status}</p>
+      <dl :if={@summary.metrics != []} class="execution-metrics">
+        <div :for={metric <- @summary.metrics}>
+          <dt>{metric.label}</dt><dd title={metric.title}>{metric.value}</dd>
+        </div>
+      </dl>
+      <p :if={@summary.note} class="execution-note">{@summary.note}</p>
+    </div>
+    """
+  end
+
   defp blocker(task), do: Map.get(task, :blocker_reason) || task.attention
   defp display(value) when is_binary(value) and value != "", do: value |> String.downcase() |> String.replace("_", " ") |> String.capitalize()
   defp display(_), do: "Unknown"
@@ -762,6 +796,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp field(record, key), do: Map.get(record, key, Map.get(record, Atom.to_string(key)))
   defp pull_requests(task), do: task |> Map.get(:pull_requests, []) |> records()
   defp handoff(task), do: if(is_map(task.handoff), do: task.handoff, else: %{})
+
+  defp settled_handoff?(task) do
+    is_map(task.handoff) and task.hold == "owner_review" and
+      (is_nil(task.runtime) or task.runtime[:status] == "retrying") and is_nil(get_in(task.ledger, ["active"]))
+  end
 
   defp worker_review(task) do
     case field(handoff(task), :review) do

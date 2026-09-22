@@ -123,6 +123,15 @@ GitHub review and checks for the current PR head remain separate from the worker
 candidate review. The source strip shows refresh failures and controller mode;
 “Live updates connected” describes the browser connection only.
 
+Each card and task dialog shows an inline execution summary: current state, cumulative
+tokens, attempts and elapsed time when recorded. The summary remains visible in compact
+view and after a worker exits. Exact counts are available on the metrics; missing or
+stale data is identified explicitly. A settled approved candidate says **Awaiting your
+review** and retains its PR links. **Cancel execution** appears for queued or active
+work; **Retry** appears for recoverable holds only when all reported limits permit it.
+Candidate review, closed issues and exhausted limits do not offer misleading execution
+buttons. Retrying still preserves consumed usage and requires confirmation.
+
 To try updated web code against live work without replacing the installed controller,
 run this from the Symphony checkout with its pinned Elixir runtime and Python dependencies:
 
@@ -157,9 +166,10 @@ but the service's durable action store must be configured and healthy.
 
 Drag cards to arrange the board; there is no Move dropdown. Within a column, choose
 **Display → Sort by → Manual order** first. This saves the order in this browser and does
-not change scheduling priority. Dragging **Ready → Backlog** requests a confirmed
-cancellation; dragging a held **Backlog → Ready** offers a confirmed retry. These
-actions are also available by opening the task and choosing **Cancel** or **Retry**.
+not change scheduling priority. Dragging a queued **Ready → Backlog** requests a confirmed
+cancellation; dragging a held **Backlog → Ready** offers a confirmed retry when its
+remaining limits permit it. These actions are also available by opening the task and
+choosing **Cancel execution** or **Retry** when offered.
 Cancel can stop work claimed since the card was displayed. Retry clears a hold without
 resetting budgets, adding queue labels or supplying a missing answer.
 
