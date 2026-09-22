@@ -127,7 +127,10 @@ assert.equal(submitted, 1, "Shift+Enter stays a newline");
 serverEvents.get("chat-message-sent")({chat_id: "previous-task"});
 assert.equal(draft.value, "Retain this draft");
 draft.focus = () => {};
-serverEvents.get("chat-message-sent")({chat_id: "bound-task"});
+// A delayed acknowledgement cannot erase the next draft in the same chat.
+serverEvents.get("chat-message-sent")({chat_id: "bound-task", accepted_text: "Earlier message"});
+assert.equal(draft.value, "Retain this draft");
+serverEvents.get("chat-message-sent")({chat_id: "bound-task", accepted_text: "Retain this draft"});
 assert.equal(draft.value, "");
 // Cleared auth/project state sends no restoration and cannot retain a drag.
 delete hook.el.dataset.project;

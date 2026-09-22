@@ -485,9 +485,10 @@
         const input = this.el.querySelector("#chat-message-input");
         if (starter && input && !input.disabled) { input.value = starter.dataset.chatPrompt; input.dispatchEvent(new Event("input", {bubbles: true})); input.focus(); this.resizeComposer(); }
       });
-      this.handleEvent("chat-message-sent", ({chat_id}) => {
+      this.handleEvent("chat-message-sent", ({chat_id, accepted_text}) => {
         if (chat_id !== this.el.dataset.chatId) return;
         const input = this.el.querySelector("#chat-message-input");
+        if (input && input.value.trim() && input.value.trim() !== accepted_text) return;
         if (input) { input.value = ""; input.focus(); }
         this.saveView("conversation"); this.saveTab("chat"); this.atBottom = true; this.resizeComposer(); requestAnimationFrame(this.scroll);
       });
