@@ -1012,7 +1012,14 @@ defmodule SymphonyElixir.Chat.Store do
   end
 
   defp conversation_instructions(%{"conversation_role" => "task", "task_id" => task_id}) do
-    "This conversation is permanently associated with task #{task_id}. Use symphony_task_details to refresh it. Task chat messages are management requests, not direct steering of a coding worker."
+    """
+    This conversation is permanently associated with task #{task_id}. You are its one coordinator; use symphony_task_details to refresh observed facts.
+    Use native create_pr_work for a separate PR session, and continue_pr_work with its exact work_id to resume design, implementation, tests or fixes in that session.
+    Each candidate receives a fresh independent reviewer. Only explicit confirmation of the exact proposal queues new or continued native work; ordinary messages do not steer a worker.
+    Confirmed PR work clears only the previous owner_review hold. Other holds, remaining budget, routing labels, controller mode and launch gates still govern admission.
+    Keep each PR session's observed phase, candidate and publication distinct. Never claim a worker ran, tests passed or a PR was published without current evidence.
+    You may prepare or confirm PR work only for this issue; use Main chat for other tasks and project orchestration.
+    """
   end
 
   defp conversation_instructions(_), do: "This is a project conversation for higher-level orchestration: planning, task creation, cancellation, updates and reports."
@@ -1028,6 +1035,7 @@ defmodule SymphonyElixir.Chat.Store do
   defp tool_context(state, chat, auth) do
     %{
       project_id: chat["project_id"],
+      task_id: chat["task_id"],
       tracker_fingerprint: chat["tracker_fingerprint"],
       auth: auth,
       orchestrator: state.orchestrator,
@@ -1055,7 +1063,7 @@ defmodule SymphonyElixir.Chat.Store do
     details =
       proposal["args"]
       |> Map.put("project", chat["project_id"])
-      |> Map.merge(Map.take(proposal, ["queue_labels", "queue_unheld", "expected_revision", "expected_updated_at"]))
+      |> Map.merge(Map.take(proposal, ["queue_labels", "queue_unheld", "expected_revision", "expected_updated_at", "pr_work"]))
 
     proposal = proposal |> Map.put("title", preview["title"] || "Proposed action") |> Map.put("details", details)
     widget = Map.put(proposal, "type", "proposal")

@@ -7,14 +7,28 @@ defmodule SymphonyElixir.Chat.Tools do
 
   @controls ~w(pause drain resume cancel retry set_concurrency)
   @writes ~w(create_task edit_task feedback queue_task unqueue_task)
+  @pr_work_actions ~w(create_pr_work continue_pr_work)
   @stages ~w(backlog ready running review done attention)
   @sorts ~w(updated priority title oldest)
   @task_keys ~w(id issue_id identifier title project project_label stage attention priority updated_at created_at tracker_state completion_evidence source_missing hold github_status)a
   @pr_keys ~w(number title url state draft created_at updated_at review head_ref base_ref author additions deletions changed_files mergeable head_sha relation checks check_total check_details_status)a
   @check_keys ~w(kind name status conclusion url started_at completed_at duration_ms workflow_name run_url run_number run_event)a
-  @proposal_keys ~w(id action args project_id tracker_fingerprint expected_revision expected_updated_at created_at queue_labels queue_unheld task_title task_description)
+  @proposal_keys ~w(id action args project_id tracker_fingerprint expected_revision expected_updated_at created_at queue_labels queue_unheld task_title task_description pr_work)
   @documents ~w(ARCHITECTURE.md WORKFLOW.md PROJECT.md README.md AGENTS.md)
   @errors %{
+    task_scope_mismatch: "Use this task's conversation or Main chat to prepare work for that issue.",
+    pr_work_exists: "This PR work session already exists. Refresh the task before continuing.",
+    pr_work_pending: "A PR work session is already queued or running for this issue. Wait for it to stop before launching more work.",
+    pr_work_not_found: "This PR work session is unavailable. Refresh the task and select an existing session.",
+    pr_work_limit: "This issue has reached its PR work session limit.",
+    pr_work_continuation_required: "Continue an existing PR work session explicitly before resuming execution.",
+    approved_baseline_changed: "The approved base revision changed or is unavailable. Refresh configuration before preparing work.",
+    pr_head_changed: "This PR's candidate or remote head changed. Refresh the task and prepare a new continuation.",
+    pr_identity_changed: "The PR no longer matches this work session's repository, branch or base. Resolve its identity before continuing.",
+    pr_already_merged: "This PR is already merged. Create a separate PR work session for further changes.",
+    pr_evidence_unavailable: "Current PR evidence is unavailable. Restore repository access before continuing.",
+    budget_exhausted: "This issue has exhausted its execution budget. Adjust the configured limit before preparing more work.",
+    issue_running: "This issue still has active execution. Wait for it to stop before launching PR work.",
     invalid_view_context: "This view snapshot is invalid or belongs to another project. Send a fresh message from the board.",
     concurrency_limit_exceeded: "Choose a concurrency limit within the configured project ceiling, or restore its default.",
     invalid_arguments: "Use only the documented fields and allowed values for this tool.",
@@ -92,11 +106,12 @@ defmodule SymphonyElixir.Chat.Tools do
       ),
       spec(
         "symphony_propose_action",
-        "Prepare an exact action preview for operator approval. Never claim a proposal was executed. create_task makes an unqueued backlog issue. queue_task can queue an open, unqueued idle backlog task with no hold. edit_task and unqueue_task require a cancelled, idle task; queueing a cancelled task also retains its hold, so Retry remains separate. Queue changes affect only configured routing labels, never bypass admission or launch gates. Feedback adds a GitHub comment without steering a running worker. set_concurrency persists an admission limit within the configured ceiling; limit:null restores the default. Running work and consumed budgets are unchanged.",
+        "Prepare an exact action preview for operator approval. Never claim a proposal was executed. create_task makes an unqueued backlog issue. queue_task can queue an open, unqueued idle backlog task with no hold. edit_task and unqueue_task require a cancelled, idle task; queueing a cancelled task also retains its hold, so Retry remains separate. Queue changes affect only configured routing labels, never bypass admission or launch gates. Feedback adds a GitHub comment without steering a running worker. set_concurrency persists an admission limit within the configured ceiling; limit:null restores the default. Running work and consumed budgets are unchanged. create_pr_work prepares a separate coding session for an issue; continue_pr_work resumes one exact work_id with the requested instruction. Use task details to select a session. The host binds its branch, approved base and candidate head; never supply those fields. Both require explicit operator confirmation to queue native execution, subject to remaining budget, routing labels, controller mode and launch gates. They clear only a previous owner_review hold; other holds remain. Review and publication policy are unchanged.",
         %{
-          "action" => enum(@controls ++ @writes),
+          "action" => enum(@controls ++ @writes ++ @pr_work_actions),
           "limit" => %{"type" => ["integer", "null"], "minimum" => 1},
           "task_id" => string(240),
+          "work_id" => string(32),
           "title" => string(240),
           "body" => string(16_000),
           "state" => enum(~w(open closed)),
@@ -319,6 +334,7 @@ defmodule SymphonyElixir.Chat.Tools do
         |> Map.merge(string_keys(Map.take(task, ~w(execution_status blocker_reason github_status)a)))
         |> Map.put("description", truncate(task[:description], 32_000))
         |> Map.put("labels", task[:labels] || [])
+        |> Map.put("pr_work", pr_work_details(task))
         |> Map.put("pull_requests", Enum.map(task[:pull_requests] || [], &pull_request_details/1))
         |> Map.put("links", Enum.map(task[:links] || [], &string_keys(Map.take(&1, [:label, :url, :kind]))))
         |> Map.put("checked_at", board[:generated_at])
@@ -407,17 +423,22 @@ defmodule SymphonyElixir.Chat.Tools do
 
     valid =
       Enum.all?(Map.keys(args), &(&1 in allowed)) and Enum.all?(required, &present?(args[&1])) and
-        valid_edit_fields?(args) and valid_title?(args) and (action != "set_concurrency" or Map.has_key?(args, "limit"))
+        valid_edit_fields?(args) and valid_title?(args) and valid_work_argument?(args) and
+        (action != "set_concurrency" or Map.has_key?(args, "limit"))
 
     if valid, do: :ok, else: {:error, :invalid_arguments}
   end
 
+  defp action_fields("create_pr_work"), do: {~w(action task_id body), ~w(task_id body)}
+  defp action_fields("continue_pr_work"), do: {~w(action task_id work_id body), ~w(task_id work_id body)}
   defp action_fields("set_concurrency"), do: {~w(action limit), []}
   defp action_fields("create_task"), do: {~w(action title body), ~w(title body)}
   defp action_fields("edit_task"), do: {~w(action task_id title body state priority), ~w(task_id)}
   defp action_fields("feedback"), do: {~w(action task_id body), ~w(task_id body)}
   defp action_fields(action) when action in ~w(cancel retry queue_task unqueue_task), do: {~w(action task_id), ~w(task_id)}
   defp action_fields(_action), do: {~w(action), []}
+  defp valid_work_argument?(%{"action" => "continue_pr_work", "work_id" => id}), do: work_id?(id)
+  defp valid_work_argument?(_args), do: true
   defp valid_edit_fields?(%{"action" => "edit_task"} = args), do: Enum.any?(~w(title body state priority), &Map.has_key?(args, &1))
   defp valid_edit_fields?(_args), do: true
   defp valid_title?(%{"title" => title}), do: present?(title)
@@ -442,6 +463,16 @@ defmodule SymphonyElixir.Chat.Tools do
     end
   end
 
+  defp proposal_evidence(%{"action" => action} = args, context, settings, board) when action in @pr_work_actions do
+    with :ok <- github_tracker(settings.tracker),
+         {:ok, revision} <- control_revision(board),
+         {:ok, task} <- action_task(args, context, board),
+         :ok <- pr_work_scope(task.issue_id, context),
+         {:ok, evidence} <- pr_work_evidence(action, args, task, context) do
+      {:ok, %{"expected_revision" => revision, "pr_work" => evidence}}
+    end
+  end
+
   defp proposal_evidence(%{"action" => action} = args, context, settings, board) do
     with {:ok, revision} <- control_revision(board),
          {:ok, task} <- action_task(args, context, board),
@@ -454,6 +485,31 @@ defmodule SymphonyElixir.Chat.Tools do
       evidence = if action == "queue_task", do: Map.merge(evidence, %{"task_title" => task.title, "task_description" => task[:description]}), else: evidence
       {:ok, evidence}
     end
+  end
+
+  defp pr_work_evidence("create_pr_work", _args, _task, _context) do
+    base_sha = Config.control_settings().base_sha
+
+    if sha?(base_sha),
+      do: {:ok, %{"work_id" => :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower), "base_sha" => base_sha}},
+      else: {:error, :approved_baseline_changed}
+  end
+
+  defp pr_work_evidence("continue_pr_work", args, task, context) do
+    work = get_in(task, [:ledger, "pr_work", args["work_id"]])
+
+    cond do
+      not is_map(work) or work["id"] != args["work_id"] or work["issue_id"] != task.issue_id -> {:error, :pr_work_not_found}
+      work["tracker_fingerprint"] != context.tracker_fingerprint -> {:error, :tracker_changed}
+      not (is_nil(work["head_sha"]) or sha?(work["head_sha"])) -> {:error, :pr_head_changed}
+      true -> {:ok, %{"work_id" => work["id"], "expected_head_sha" => work["head_sha"]}}
+    end
+  end
+
+  defp pr_work_scope(issue_id, context) do
+    if is_nil(context[:task_id]) or context[:task_id] == context.project_id <> ":" <> issue_id,
+      do: :ok,
+      else: {:error, :task_scope_mismatch}
   end
 
   defp control_revision(%{control: %{"enabled" => true, "revision" => revision}}) when is_integer(revision) and revision >= 0, do: {:ok, revision}
@@ -520,14 +576,35 @@ defmodule SymphonyElixir.Chat.Tools do
         proposal["project_id"] == context.project_id and proposal["tracker_fingerprint"] == context.tracker_fingerprint and
         present?(proposal["created_at"])
 
-    with true <- valid or {:error, :invalid_proposal}, :ok <- validate("symphony_propose_action", args) do
-      action_args(args)
+    with true <- valid or {:error, :invalid_proposal},
+         :ok <- validate("symphony_propose_action", args),
+         :ok <- action_args(args) do
+      validate_pr_work_proposal(proposal, context)
     end
   end
 
   defp validate_proposal(_proposal, _context), do: {:error, :invalid_proposal}
   defp uuid?(id) when is_binary(id), do: String.match?(id, ~r/^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/)
   defp uuid?(_id), do: false
+
+  defp validate_pr_work_proposal(%{"action" => action, "args" => args, "pr_work" => evidence}, context) when action in @pr_work_actions and is_map(evidence) do
+    expected = if action == "create_pr_work", do: ~w(work_id base_sha), else: ~w(work_id expected_head_sha)
+    revision_valid = pr_work_revision?(action, evidence)
+    work_matches = action == "create_pr_work" or args["work_id"] == evidence["work_id"]
+
+    with true <- (Enum.sort(Map.keys(evidence)) == Enum.sort(expected) and work_id?(evidence["work_id"]) and revision_valid and work_matches) or {:error, :invalid_proposal} do
+      pr_work_scope(args["task_id"], context)
+    end
+  end
+
+  defp validate_pr_work_proposal(%{"action" => action}, _context) when action in @pr_work_actions, do: {:error, :invalid_proposal}
+  defp validate_pr_work_proposal(proposal, _context), do: if(Map.has_key?(proposal, "pr_work"), do: {:error, :invalid_proposal}, else: :ok)
+
+  defp pr_work_revision?("create_pr_work", evidence), do: sha?(evidence["base_sha"])
+  defp pr_work_revision?("continue_pr_work", evidence), do: is_nil(evidence["expected_head_sha"]) or sha?(evidence["expected_head_sha"])
+
+  defp work_id?(id), do: is_binary(id) and String.match?(id, ~r/\A[0-9a-f]{32}\z/)
+  defp sha?(sha), do: is_binary(sha) and String.match?(sha, ~r/\A[0-9a-f]{40}\z/)
 
   defp execute(%{"action" => action} = proposal, context, settings, board) when action in @writes do
     with :ok <- complete_board(board),
@@ -559,9 +636,11 @@ defmodule SymphonyElixir.Chat.Tools do
     server = context[:orchestrator] || Orchestrator
 
     result =
-      if action == "set_concurrency",
-        do: BoardActions.settings_command(proposal["args"]["limit"], revision, proposal["id"], context.auth, server),
-        else: BoardActions.command(action, task && task.issue_id, revision, proposal["id"], context.auth, server)
+      cond do
+        action in @pr_work_actions -> BoardActions.pr_work_command(native_payload(proposal), context.auth, server)
+        action == "set_concurrency" -> BoardActions.settings_command(proposal["args"]["limit"], revision, proposal["id"], context.auth, server)
+        true -> BoardActions.command(action, task && task.issue_id, revision, proposal["id"], context.auth, server)
+      end
 
     case result do
       {:error, :unavailable} -> {:error, :write_outcome_unknown}
@@ -574,8 +653,7 @@ defmodule SymphonyElixir.Chat.Tools do
   end
 
   defp recover(proposal, _settings, context) do
-    command = %{"action" => proposal["action"], "issue_id" => proposal["args"]["task_id"], "expected_revision" => proposal["expected_revision"], "command_id" => proposal["id"]}
-    command = if proposal["action"] == "set_concurrency", do: Map.put(command, "limit", proposal["args"]["limit"]), else: command
+    command = native_payload(proposal)
     owner = Application.get_env(:symphony_elixir, :chat_tracker_owner, Orchestrator)
     server = context[:orchestrator] || Orchestrator
 
@@ -584,6 +662,42 @@ defmodule SymphonyElixir.Chat.Tools do
       {:ok, %{"widgets" => [widget]}}
     end
   end
+
+  defp native_payload(proposal) do
+    command = %{"action" => proposal["action"], "issue_id" => proposal["args"]["task_id"], "expected_revision" => proposal["expected_revision"], "command_id" => proposal["id"]}
+
+    cond do
+      proposal["action"] in @pr_work_actions -> command |> Map.merge(proposal["pr_work"]) |> Map.put("instruction", proposal["args"]["body"])
+      proposal["action"] == "set_concurrency" -> Map.put(command, "limit", proposal["args"]["limit"])
+      true -> command
+    end
+  end
+
+  defp pr_work_details(task) do
+    (get_in(task, [:ledger, "pr_work"]) || %{})
+    |> Enum.filter(fn {id, work} -> work_id?(id) and is_map(work) and work["id"] == id and work["issue_id"] == task.issue_id end)
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.take(20)
+    |> Enum.map(fn {id, work} ->
+      %{
+        "id" => id,
+        "phase" => if(work["phase"] in ~w(queued building reviewing owner_review paused), do: work["phase"], else: "unknown"),
+        "summary" => truncate(work["instruction"], 500),
+        "branch" => "codex/gh-#{task.issue_id}-#{id}",
+        "head_sha" => if(sha?(work["head_sha"]), do: work["head_sha"]),
+        "published_head_sha" => if(sha?(work["published_head_sha"]), do: work["published_head_sha"]),
+        "selected" => get_in(task, [:ledger, "selected_work_id"]) == id,
+        "publication" => pr_work_publication(work["publication"], task.project)
+      }
+    end)
+  end
+
+  defp pr_work_publication(%{"pr_number" => number, "pr_url" => url, "status" => status}, "github:" <> repo)
+       when is_integer(number) and number > 0 and status in ~w(draft_pr ready merged) do
+    if url == "https://github.com/#{repo}/pull/#{number}", do: %{"number" => number, "url" => url, "status" => status}
+  end
+
+  defp pr_work_publication(_publication, _project), do: nil
 
   defp action_title(action), do: action |> String.replace("_", " ") |> String.capitalize()
 

@@ -6,7 +6,7 @@ defmodule SymphonyElixir.Chat.ToolsTest do
   alias SymphonyElixir.GitHub.Admission
   alias SymphonyElixir.GitHub.Client, as: GitHubClient
   alias SymphonyElixir.PathSafety
-  alias SymphonyElixirWeb.{BrowserAuth, TaskBoard}
+  alias SymphonyElixirWeb.{BoardActions, BrowserAuth, TaskBoard}
 
   @proposal_id "c63f2004-17cf-4f50-bae7-e1368b8d046a"
 
@@ -40,9 +40,25 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     end
   end
 
+  defmodule CommandOwner do
+    use GenServer
+
+    def start_link(test_pid), do: GenServer.start_link(__MODULE__, test_pid)
+    @impl true
+    def init(test_pid), do: {:ok, test_pid}
+    @impl true
+    def handle_call({:authorized_control_command, command, fingerprint, authorize}, _from, test_pid) do
+      send(test_pid, {:native_command, command, fingerprint, authorize.()})
+      {:reply, Application.get_env(:symphony_elixir, :chat_test_command, {:ok, %{"revision" => 4}}), test_pid}
+    end
+  end
+
   setup do
     adapters = [:chat_board_module, :chat_github_request, :chat_tracker_owner]
-    keys = adapters ++ [:chat_test_board, :chat_test_owner, :chat_test_guard_result, :chat_test_receipt]
+
+    keys =
+      adapters ++ [:chat_test_board, :chat_test_owner, :chat_test_guard_result, :chat_test_receipt, :chat_test_command]
+
     previous = Map.new(keys, &{&1, Application.get_env(:symphony_elixir, &1)})
     previous_token = System.get_env("SYMPHONY_CONTROL_TOKEN")
     token = String.duplicate("t", 40)
@@ -492,6 +508,175 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     end
 
     assert {:error, :command_not_found} = Tools.reconcile(proposal, ctx.context)
+  end
+
+  test "PR work proposals bind host IDs and approved base, and reject model authority", ctx do
+    configure(put_in(ctx.config, [:control, :base_sha], String.duplicate("a", 40)))
+    args = %{"action" => "create_pr_work", "task_id" => "GH-1", "body" => "Add validation tests"}
+    first = propose(ctx.context, args)
+    second = propose(ctx.context, args)
+    assert first["args"] == %{"task_id" => "1", "body" => "Add validation tests"}
+    assert first["expected_revision"] == 3
+    assert first["pr_work"]["base_sha"] == String.duplicate("a", 40)
+    assert first["pr_work"]["work_id"] =~ ~r/\A[0-9a-f]{32}\z/
+    refute first["pr_work"]["work_id"] == second["pr_work"]["work_id"]
+
+    for field <- ~w(work_id base_sha branch workspace_key expected_head_sha builder_thread_id) do
+      assert {:error, :invalid_arguments} = Tools.call("symphony_propose_action", Map.put(args, field, "untrusted"), ctx.context)
+    end
+
+    configure(ctx.config)
+    assert {:error, :approved_baseline_changed} = Tools.call("symphony_propose_action", args, ctx.context)
+  end
+
+  test "PR continuation captures current candidate including explicit nil and fences work identity", ctx do
+    work_id = String.duplicate("b", 32)
+    args = %{"action" => "continue_pr_work", "task_id" => "1", "work_id" => work_id, "body" => "Fix the review findings"}
+    assert {:error, :pr_work_not_found} = Tools.call("symphony_propose_action", args, ctx.context)
+
+    for head <- [nil, String.duplicate("c", 40)] do
+      put_pr_work(ctx, work_id, %{"head_sha" => head})
+      proposal = propose(ctx.context, args)
+      assert proposal["pr_work"] == %{"work_id" => work_id, "expected_head_sha" => head}
+    end
+
+    put_pr_work(ctx, work_id, %{"tracker_fingerprint" => "different"})
+    assert {:error, :tracker_changed} = Tools.call("symphony_propose_action", args, ctx.context)
+    put_pr_work(ctx, work_id, %{"head_sha" => "invalid"})
+    assert {:error, :pr_head_changed} = Tools.call("symphony_propose_action", args, ctx.context)
+    put_pr_work(ctx, work_id, %{"issue_id" => "2"})
+    assert {:error, :pr_work_not_found} = Tools.call("symphony_propose_action", args, ctx.context)
+    assert {:error, :invalid_arguments} = Tools.call("symphony_propose_action", %{args | "work_id" => "../session"}, ctx.context)
+  end
+
+  test "canonical task scope fences PR proposals, confirmation and recovery while main chat may coordinate", ctx do
+    configure(put_in(ctx.config, [:control, :base_sha], String.duplicate("a", 40)))
+    args = %{"action" => "create_pr_work", "task_id" => "GH-1", "body" => "Add validation tests"}
+    own = Map.put(ctx.context, :task_id, "github:example/repo:1")
+    other = Map.put(ctx.context, :task_id, "github:example/repo:2")
+    assert {:error, :task_scope_mismatch} = Tools.call("symphony_propose_action", args, other)
+    proposal = propose(own, args)
+    assert {:error, :task_scope_mismatch} = Tools.confirm(proposal, other)
+    assert {:error, :task_scope_mismatch} = Tools.reconcile(proposal, other)
+    assert {:error, :command_not_found} = Tools.reconcile(proposal, ctx.context)
+    refute_receive {:native_command, _, _, _}
+  end
+
+  test "confirmed PR work preserves exact command and replay payload with guarded owner outcomes", ctx do
+    configure(put_in(ctx.config, [:control, :base_sha], String.duplicate("a", 40)))
+    owner = start_supervised!({CommandOwner, self()})
+    context = Map.put(ctx.context, :orchestrator, owner)
+    proposal = propose(context, %{"action" => "create_pr_work", "task_id" => "1", "body" => "Implement acceptance checks"})
+    assert {:ok, _} = Tools.confirm(proposal, context)
+    assert_receive {:native_command, command, fingerprint, true}
+    assert fingerprint == context.tracker_fingerprint
+
+    assert command ==
+             Map.merge(proposal["pr_work"], %{"action" => "create_pr_work", "issue_id" => "1", "instruction" => "Implement acceptance checks", "command_id" => @proposal_id, "expected_revision" => 3})
+
+    Application.put_env(:symphony_elixir, :chat_test_receipt, {:ok, %{"revision" => 4, "replayed" => true}})
+    assert {:ok, _} = Tools.reconcile(proposal, context)
+    assert_receive {:receipt_read, ^command, ^fingerprint}
+    refute_receive {:native_command, _, _, _}
+
+    failures = [
+      :revision_conflict,
+      :approved_baseline_changed,
+      :pr_work_pending,
+      :pr_work_exists,
+      :pr_head_changed,
+      :pr_already_merged,
+      :pr_identity_changed,
+      :pr_evidence_unavailable,
+      :budget_exhausted
+    ]
+
+    for reason <- failures do
+      Application.put_env(:symphony_elixir, :chat_test_command, {:error, reason})
+      assert {:error, ^reason} = Tools.confirm(proposal, context)
+      assert_receive {:native_command, ^command, ^fingerprint, true}
+      assert Tools.error_message(reason)["code"] == Atom.to_string(reason)
+    end
+
+    Application.put_env(:symphony_elixir, :chat_test_command, {:error, :unavailable})
+    assert {:error, :write_outcome_unknown} = Tools.confirm(proposal, context)
+    assert_receive {:native_command, ^command, ^fingerprint, true}
+    assert {:error, :unauthorized} = Tools.confirm(proposal, %{context | auth: %{}})
+    refute_receive {:native_command, _, _, _}
+  end
+
+  test "PR work board adapter accepts only exact native fields and requires authorization", ctx do
+    assert {:error, :invalid_command} = BoardActions.pr_work_command(%{"action" => "pause"}, ctx.context.auth)
+
+    command = %{
+      "action" => "continue_pr_work",
+      "issue_id" => "1",
+      "command_id" => @proposal_id,
+      "expected_revision" => 3,
+      "work_id" => String.duplicate("b", 32),
+      "instruction" => "Resume",
+      "expected_head_sha" => nil
+    }
+
+    assert {:error, :unauthorized} = BoardActions.pr_work_command(command, %{})
+    assert {:error, :invalid_command} = BoardActions.pr_work_command(Map.delete(command, "expected_head_sha"), ctx.context.auth)
+    assert {:error, :invalid_command} = BoardActions.pr_work_command(Map.put(command, "branch", "untrusted"), ctx.context.auth)
+  end
+
+  test "continuation confirmation and recovery retain nil head and reject altered evidence", ctx do
+    work_id = String.duplicate("b", 32)
+    put_pr_work(ctx, work_id, %{})
+    owner = start_supervised!({CommandOwner, self()})
+    context = Map.put(ctx.context, :orchestrator, owner)
+    proposal = propose(context, %{"action" => "continue_pr_work", "task_id" => "1", "work_id" => work_id, "body" => "Resume the design"})
+    assert {:ok, _} = Tools.confirm(proposal, context)
+    assert_receive {:native_command, command, _, true}
+    assert Map.has_key?(command, "expected_head_sha")
+    assert is_nil(command["expected_head_sha"])
+    refute Map.has_key?(command, "base_sha")
+    assert {:error, :command_not_found} = Tools.reconcile(proposal, context)
+    assert_receive {:receipt_read, ^command, _}
+
+    for evidence <- [
+          nil,
+          %{},
+          Map.delete(proposal["pr_work"], "expected_head_sha"),
+          %{"work_id" => String.duplicate("d", 32), "expected_head_sha" => nil},
+          Map.put(proposal["pr_work"], "branch", "other")
+        ] do
+      invalid = Map.put(proposal, "pr_work", evidence)
+      assert {:error, :invalid_proposal} = Tools.confirm(invalid, context)
+      assert {:error, :invalid_proposal} = Tools.reconcile(invalid, context)
+    end
+
+    assert {:error, :invalid_proposal} = Tools.confirm(Map.delete(proposal, "pr_work"), context)
+    assert {:error, :invalid_proposal} = Tools.confirm(Map.put(propose(context, %{"action" => "pause"}), "pr_work", proposal["pr_work"]), context)
+    refute_receive {:native_command, _, _, _}
+  end
+
+  test "task details expose bounded PR sessions without runtime paths or unsafe publication URLs", ctx do
+    work_id = String.duplicate("b", 32)
+
+    work =
+      put_pr_work(ctx, work_id, %{
+        "instruction" => String.duplicate("x", 700),
+        "phase" => "owner_review",
+        "workspace_key" => "/private/owner",
+        "auth" => "secret",
+        "head_sha" => String.duplicate("c", 40),
+        "publication" => %{"pr_number" => 12, "pr_url" => "https://github.com/example/repo/pull/12", "status" => "ready"}
+      })
+
+    assert {:ok, %{"widgets" => [%{"task" => %{"pr_work" => [details]}}]}} = Tools.call("symphony_task_details", %{"task_id" => "1"}, ctx.context)
+    assert details["id"] == work_id
+    assert details["publication"] == %{"number" => 12, "url" => "https://github.com/example/repo/pull/12", "status" => "ready"}
+    assert String.length(details["summary"]) == 500
+    refute Jason.encode!(details) =~ "/private/owner"
+    refute Jason.encode!(details) =~ "secret"
+
+    put_pr_work(ctx, work_id, Map.put(work, "publication", %{"pr_number" => 12, "pr_url" => "javascript:alert(1)", "status" => "ready"}))
+    assert {:ok, %{"widgets" => [%{"task" => %{"pr_work" => [details]}}]}} = Tools.call("symphony_task_details", %{"task_id" => "1"}, ctx.context)
+    assert is_nil(details["publication"])
   end
 
   test "native confirmation retains revision fencing and durable command IDs", ctx do
@@ -1000,6 +1185,13 @@ defmodule SymphonyElixir.Chat.ToolsTest do
       end)
 
     {port, server}
+  end
+
+  defp put_pr_work(ctx, work_id, fields) do
+    work = Map.merge(%{"id" => work_id, "issue_id" => "1", "tracker_fingerprint" => ctx.context.tracker_fingerprint, "head_sha" => nil}, fields)
+    board = put_in(ctx.board, [:tasks, Access.at(0), :ledger], %{"pr_work" => %{work_id => work}, "selected_work_id" => work_id})
+    Application.put_env(:symphony_elixir, :chat_test_board, board)
+    work
   end
 
   defp propose(context, args) do
