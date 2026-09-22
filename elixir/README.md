@@ -636,7 +636,8 @@ The optional HTTP service serves a LiveView Kanban board with searchable project
 status and priority filters, per-lane sorting, and browser-local manual order.
 The compact board follows the Linear board shown in OpenAI's Symphony demo while
 retaining this fork's GitHub workflow. Project selection stays in the top bar;
-**Filter** opens status and priority selectors. **Display** controls sorting, card
+Status and priority selectors stay visible on the left of the toolbar. **Display**,
+on the right, controls sorting, card
 detail, light/dark appearance and visible columns. Hidden columns remain available
 in the restore rail; selecting a status reveals its column. Display preferences are
 saved only in this browser and do not change scheduling or issue state.

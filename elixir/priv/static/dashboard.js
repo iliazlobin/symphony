@@ -25,7 +25,6 @@
   const TaskBoard = {
     mounted() {
       this.prefs = {project: [], status: [], priority: [], query: "", sort: "manual", order: {}, lane: "ready", density: "compact", theme: "light", hiddenLanes: ["done"]};
-      this.filtersOpen = false;
       this.revealedLanes = new Set();
       this.popup = null;
       this.activeOption = 0;
@@ -53,7 +52,6 @@
         this.prefs.theme = ["light", "dark", "system"].includes(saved.theme) ? saved.theme : "light";
         this.prefs.hiddenLanes = Array.isArray(saved.hiddenLanes) ? [...new Set(saved.hiddenLanes.filter(id => lanes.some(([stage]) => stage === id)))] : ["done"];
         if (this.prefs.hiddenLanes.length === lanes.length) this.prefs.hiddenLanes = this.prefs.hiddenLanes.filter(id => id !== "ready");
-        this.filtersOpen = this.prefs.status.length > 0 || this.prefs.priority.length > 0;
         this.el.querySelector("[data-board-search]").value = this.prefs.query;
         this.el.querySelector("[data-board-sort]").value = this.prefs.sort;
       };
@@ -67,7 +65,6 @@
         const filters = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
         if (initial && !Object.keys(filters).length) return;
         for (const key of ["project", "status", "priority"]) this.prefs[key] = this.filterValues(key, typeof filters[key] === "string" ? filters[key].split(",") : []);
-        if (this.prefs.status.length || this.prefs.priority.length) this.filtersOpen = true;
         this.prefs.query = typeof filters.q === "string" ? filters.q : "";
         this.prefs.sort = ["manual", "priority", "updated", "oldest", "title"].includes(filters.sort) ? filters.sort : "manual";
         this.el.querySelector("[data-board-search]").value = this.prefs.query;
@@ -101,16 +98,6 @@
         });
         return closed;
       };
-      this.setFiltersOpen = (open, restoreFocus = false) => {
-        const panel = this.el.querySelector("[data-filter-panel]");
-        const focused = panel?.contains(document.activeElement);
-        if (!open && this.popup && this.popup !== "project") this.closeFilter();
-        this.filtersOpen = open;
-        if (panel) panel.hidden = !open;
-        const toggle = this.el.querySelector("[data-toggle-filters]");
-        toggle?.setAttribute("aria-expanded", String(open));
-        if (!open && (restoreFocus || focused)) toggle?.focus({preventScroll: true});
-      };
       this.applyAppearance = () => {
         this.el.dataset.density = this.prefs.density;
         this.el.dataset.singleProject = String(this.prefs.project.length === 1 || this.options("project").length === 1);
@@ -121,7 +108,6 @@
         if (density) density.value = this.prefs.density;
         if (selection) selection.value = this.prefs.theme;
         this.el.querySelector("[data-board-sort]").value = this.prefs.sort;
-        this.setFiltersOpen(this.filtersOpen);
       };
       this.setLaneVisible = (stage, visible) => {
         if (!lanes.some(([id]) => id === stage)) return;
@@ -261,7 +247,6 @@
         if (event.key === "Escape") {
           if (this.popup) { const key = this.popup; this.el.querySelector("#filter-" + key)?.focus({preventScroll: true}); this.closeFilter(); }
           else if (this.closeMenus(null, true)) { /* Keep Escape within the open menu. */ }
-          else if (this.filtersOpen) this.setFiltersOpen(false, true);
           else return;
           event.preventDefault(); event.stopPropagation(); return;
         }
@@ -286,8 +271,7 @@
         const menu = event.target.closest("details.board-menu");
         if (menu && event.target.closest("summary")) { this.closeFilter(); this.closeMenus(menu); }
         const button = event.target.closest("button"); if (!button) return;
-        if (button.hasAttribute("data-toggle-filters")) { this.closeMenus(); this.setFiltersOpen(!this.filtersOpen); }
-        else if (button.dataset.hideLane) {
+        if (button.dataset.hideLane) {
           const stage = button.dataset.hideLane;
           this.closeMenus(); this.setLaneVisible(stage, false);
           this.el.querySelector(`[data-show-lane="${stage}"]:not([hidden])`)?.focus({preventScroll: true});
@@ -399,7 +383,7 @@
         if (visible(focused) && !this.el.contains(focused)) { focused.focus({preventScroll: true}); return; }
         const canRestore = visible(previous);
         const target = canRestore ? previous : (previous?.id ? document.getElementById(previous.id) : null);
-        [target, replacement, document.getElementById("settings-button"), document.querySelector("[data-toggle-filters]")].find(visible)?.focus({preventScroll: true});
+        [target, replacement, document.getElementById("settings-button"), document.getElementById("filter-status")].find(visible)?.focus({preventScroll: true});
       });
     }
   };

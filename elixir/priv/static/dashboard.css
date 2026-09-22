@@ -109,10 +109,11 @@ input, select {
 #board-search { flex: 0 1 230px; min-width: 130px; }
 #board-search input { width: 100%; border-color: transparent; padding: 5px 8px; background: var(--soft); font-size: 12px; border-radius: 5px; }
 .board-toolbar { padding: 8px 24px; background: var(--panel); border-bottom: 1px solid var(--line); position: relative; z-index: 5; }
-.toolbar-primary { display: flex; align-items: center; gap: 8px; }
-.toolbar-button, .board-menu > summary { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border-radius: 5px; font-size: 12px; color: var(--fg); }
-.toolbar-button svg, .board-menu svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
-.toolbar-button:hover, .board-menu > summary:hover, .board-menu[open] > summary { background: var(--soft); }
+.toolbar-primary { display: flex; align-items: flex-start; gap: 12px; }
+.toolbar-primary > .display-menu { flex-shrink: 0; margin-left: auto; }
+.board-menu > summary { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border-radius: 5px; font-size: 12px; color: var(--fg); }
+.board-menu svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.board-menu > summary:hover, .board-menu[open] > summary { background: var(--soft); }
 .board-menu { position: relative; margin: 0; }
 .board-menu > summary { list-style: none; cursor: pointer; }
 .board-menu > summary::-webkit-details-marker { display: none; }
@@ -129,9 +130,9 @@ input, select {
 .board-context [data-unavailable=true] { color: var(--warn); }
 .board-context-links a { overflow-wrap: anywhere; }
 .board-source-note { flex-basis: 100%; margin: 0; font-size: 10px; overflow-wrap: anywhere; }
-.filter-row { display: flex; gap: 8px; align-items: center; padding-top: 9px; }
-.filter-row .filter-combo { width: 200px; }
-.filter-row .button { font-size: 12px; padding: 5px 8px; }
+.filter-row { display: flex; flex: 1; min-width: 0; gap: 8px; align-items: center; }
+.filter-row .filter-combo { flex: 1 1 0; max-width: 200px; }
+.filter-row .button { flex-shrink: 0; font-size: 12px; padding: 5px 8px; }
 .filter-combo { position: relative; min-width: 0; }
 .combo-control { display: flex; align-items: center; border: 1px solid var(--line); background: var(--panel); border-radius: 5px; min-width: 0; }
 .combo-control input { border: 0; min-width: 0; width: 100%; padding: 5px 2px 5px 8px; background: transparent; font-size: 12px; }
@@ -337,12 +338,11 @@ summary { cursor: pointer; color: var(--accent); }
   #board-search { order: 3; flex: 1 1 100%; }
   .board-header .header-divider, .board-header .board-heading { display: none; }
   .board-toolbar { padding: 8px 14px; }
-  .toolbar-primary { gap: 3px; }
-  .toolbar-primary .header-spacer { display: none; }
+  .toolbar-primary { gap: 8px; }
   .project-combo { flex: 1; }
   .filter-row { flex-wrap: wrap; gap: 8px; }
-  .filter-row .filter-combo { flex: 1 1 calc(50% - 8px); width: auto; }
-  .filter-row > .button-quiet { padding: 2px 0; }
+  .filter-row .filter-combo { max-width: none; }
+  .filter-row > .button-quiet { flex-basis: 100%; padding: 2px 0; text-align: left; }
   .kanban-board { display: block; overflow-x: visible; min-height: 35dvh; }
   .kanban-lane:not([data-mobile-active=true]) { display: none; }
   .hidden-lanes { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 18px; }
@@ -356,6 +356,7 @@ summary { cursor: pointer; color: var(--accent); }
   input, .combo-control input, .display-field select { font-size: 16px; }
   .filter-row .filter-combo:first-child .combo-options { left: 0; right: auto; }
   .combo-options { width: 245px; }
+  .filter-row .combo-options { max-width: calc(100vw - 128px); }
   .card-title { font-size: 14px; }
   .card-top, .card-project, .card-bottom { font-size: 12px; }
 }
