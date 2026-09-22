@@ -245,6 +245,48 @@ defmodule SymphonyElixir.Chat.PersistenceTest do
     Persistence.close(owner)
   end
 
+  test "canonical bindings and pending message queues fail closed on malformed durable records", c do
+    File.mkdir_p!(c.root)
+    task_id = c.chat["project_id"] <> ":11"
+    id = Persistence.conversation_id(c.chat["project_id"], task_id, "scope")
+
+    entry =
+      %{message() | "id" => String.duplicate("c", 32), "role" => "user", "text" => "Follow up", "status" => "queued", "widgets" => []}
+      |> Map.merge(%{"client_id" => "next", "created_at" => "2026-09-22T00:00:00Z", "view_context" => nil})
+
+    record = c.chat |> Map.merge(%{"id" => id, "conversation_role" => "task", "task_id" => task_id, "queue" => [entry], "queue_paused" => true})
+    path = record_path(c.root, record)
+
+    invalid = [
+      Map.put(record, "conversation_role", "invented"),
+      Map.put(record, "conversation_role", "main"),
+      Map.put(record, "task_id", "github:other/project:11"),
+      Map.put(record, "task_id", c.chat["project_id"] <> ":12"),
+      Map.put(record, "queue_paused", "false"),
+      Map.put(record, "queue", [nil]),
+      Map.put(record, "queue", [entry, entry]),
+      Map.put(record, "queue", List.duplicate(entry, 21)),
+      Map.put(record, "queue", [Map.put(entry, "role", "assistant")]),
+      Map.put(record, "queue", [Map.put(entry, "status", "completed")]),
+      Map.put(record, "queue", [Map.put(entry, "created_at", "invalid")]),
+      Map.put(record, "queue", [Map.put(entry, "client_id", nil)]),
+      Map.put(record, "queue", [Map.put(entry, "view_context", %{})]),
+      Map.put(record, "message_receipts", %{"next" => "not-a-hash"})
+    ]
+
+    for invalid_record <- invalid do
+      bytes = Jason.encode!(invalid_record)
+      File.write!(path, bytes)
+      assert_unavailable_after_release(c.root)
+      assert File.read!(path) == bytes
+    end
+
+    File.write!(path, Jason.encode!(record))
+    {owner, records} = open_when_released(c.root)
+    assert records[id] == record
+    Persistence.close(owner)
+  end
+
   test "record size and conversation count limits reject unbounded persisted state", c do
     {:ok, owner, %{}} = Persistence.open(c.root)
     oversized = Map.put(c.chat, "oversized", String.duplicate("x", 8_000_001))

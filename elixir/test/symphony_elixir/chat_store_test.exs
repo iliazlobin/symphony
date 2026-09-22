@@ -279,7 +279,10 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, _} = Store.send_message(c.project, chat["id"], text, "summary", c.auth, c.server)
     finished = wait_chat(c, chat, &(&1["status"] == "idle"))
     assert {:ok, [summary]} = Store.list(c.project, c.auth, c.server)
-    assert Map.keys(summary) |> Enum.sort() == Enum.sort(~w(id project_id title snippet updated_at status display_status archived message_count pinned))
+
+    assert Map.keys(summary) |> Enum.sort() ==
+             Enum.sort(~w(id project_id title snippet updated_at status display_status archived message_count pinned task_id conversation_role queued_count queue_paused))
+
     assert summary["title"] == text |> String.replace(~r/\s+/, " ") |> String.trim() |> String.slice(0, 80)
     assert summary["snippet"] == "Hello from the project."
     assert summary["display_status"] == "idle"
@@ -301,6 +304,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     refute_receive {:chat_list_updated, _}
 
     assert {:ok, _} = Store.send_message(c.project, chat["id"], "delayed delta", "turn", c.auth, c.server)
+    assert_receive {:chat_list_updated, ^project}
     assert_receive {:chat_list_updated, ^project}
     assert_receive {:runtime, runtime, _, "delayed delta"}
     assert_receive {:phase_ready, ^runtime, "delayed delta"}
@@ -641,7 +645,8 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert_receive {:runtime, pid, _, "wait"}
     wait_chat(c, chat, &(get_in(&1, ["messages", Access.at(-1), "text"]) == "Partial response"))
     assert {:error, :chat_busy} = Store.archive(c.project, chat["id"], c.auth, c.server)
-    assert {:error, :chat_busy} = Store.send_message(c.project, chat["id"], "Again", "next", c.auth, c.server)
+    assert {:ok, %{"queue" => [queued]}} = Store.send_message(c.project, chat["id"], "Again", "queued", c.auth, c.server)
+    assert {:ok, _} = Store.remove_queued(c.project, chat["id"], queued["id"], c.auth, c.server)
     assert {:ok, _} = Store.stop(c.project, chat["id"], c.auth, c.server)
     wait_chat(c, chat, &(&1["status"] == "interrupted"))
     refute Process.alive?(pid)
@@ -667,7 +672,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
       assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", chat["id"], c.auth, c.server)
     end
 
-    assert {:error, :chat_capacity} = Store.send_message(c.project, third["id"], "Hello", "three", c.auth, c.server)
+    assert {:ok, %{"queued_count" => 1}} = Store.send_message(c.project, third["id"], "Hello", "three", c.auth, c.server)
     assert {:ok, _} = Store.stop(c.project, first["id"], c.auth, c.server)
     wait_chat(c, first, &(&1["status"] == "interrupted"))
 
@@ -822,11 +827,12 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert_receive {:action_started, first_pid, ^first_id}
     assert_receive {:action_started, second_pid, ^second_id}
     assert {:error, :chat_capacity} = Store.decide(c.project, third["id"], third_proposal["id"], "confirm", c.auth, c.server)
-    assert {:error, :chat_capacity} = Store.send_message(c.project, third["id"], "Status", "capacity-test", c.auth, c.server)
+    assert {:ok, %{"queued_count" => 1}} = Store.send_message(c.project, third["id"], "Status", "capacity-test", c.auth, c.server)
     assert {:ok, pending} = Store.get(c.project, third["id"], c.auth, c.server)
     assert hd(pending["proposals"])["status"] == "pending"
     send(first_pid, :finish)
     wait_chat(c, first, &(hd(&1["proposals"])["status"] == "completed"))
+    wait_chat(c, third, &(&1["queued_count"] == 0 and &1["status"] == "idle"))
     assert {:ok, _} = Store.decide(c.project, third["id"], third_proposal["id"], "confirm", c.auth, c.server)
     wait_chat(c, third, &(hd(&1["proposals"])["status"] == "completed"))
     send(second_pid, :finish)
@@ -977,6 +983,232 @@ defmodule SymphonyElixir.Chat.StoreTest do
       SymphonyElixir.Workflow.set_workflow_file_path(previous_workflow)
       SymphonyElixir.WorkflowStore.force_reload()
     end
+  end
+
+  test "canonical main and task bindings are unique, immutable and separate from retained legacy chats", c do
+    legacy = create(c)
+    task_id = c.project <> ":11"
+    results = 1..8 |> Task.async_stream(fn _ -> Store.ensure_conversation(c.project, task_id, c.auth, c.server) end) |> Enum.map(fn {:ok, {:ok, chat}} -> chat end)
+    assert length(Enum.uniq_by(results, & &1["id"])) == 1
+    [chat | _] = results
+    assert chat["task_id"] == task_id
+    assert chat["conversation_role"] == "task"
+    assert chat["queue"] == []
+    assert {:error, :chat_busy} = Store.archive(c.project, chat["id"], c.auth, c.server)
+    assert {:ok, main} = Store.ensure_conversation(c.project, nil, c.auth, c.server)
+    assert main["conversation_role"] == "main"
+    refute main["id"] in [chat["id"], legacy["id"]]
+    changed_scope = %{c.auth | tracker_fingerprint: "new"}
+    assert {:ok, other_scope} = Store.ensure_conversation(c.project, task_id, changed_scope, c.server)
+    refute other_scope["id"] == chat["id"]
+
+    for bad <- ["11", "github:test/two:11", c.project <> ":01", c.project <> ":0", c.project <> ":11\n", c.project <> ":../11"] do
+      assert {:error, :invalid_task_scope} = Store.ensure_conversation(c.project, bad, c.auth, c.server)
+    end
+
+    assert {:error, :unauthorized} = Store.ensure_conversation(c.project, task_id, %{}, c.server)
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    assert {:ok, restored} = Store.ensure_conversation(c.project, task_id, c.auth, server)
+    assert restored["id"] == chat["id"]
+    assert {:ok, retained} = Store.get(c.project, legacy["id"], c.auth, server)
+    assert retained["conversation_role"] == "legacy"
+  end
+
+  test "queued messages are durable FIFO turns with original IDs, context, and idempotency", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "first", c.auth, c.server)
+    assert_receive {:runtime, first, _, "wait"}
+    assert_receive {:phase_ready, ^first, "wait"}
+    Phoenix.PubSub.subscribe(SymphonyElixir.PubSub, "chat_project:" <> c.project)
+    assert {:ok, queued} = Store.send_message(c.project, chat["id"], "wait", "second", c.auth, c.server)
+    assert [%{"client_id" => "second", "status" => "queued"} = second] = queued["queue"]
+    assert queued["queued_count"] == 1
+    assert length(queued["messages"]) == 2
+    project = c.project
+    assert_receive {:chat_list_updated, ^project}
+    assert thread_summary(c, chat)["queued_count"] == 1
+    path = Path.join(c.root, chat["id"] <> ".json")
+    assert Jason.decode!(File.read!(path))["queue"] == queued["queue"]
+    refute File.read!(path) =~ "test_pid"
+    assert {:ok, duplicate} = Store.send_message(c.project, chat["id"], " wait ", "second", c.auth, c.server)
+    assert duplicate["queue"] == [second]
+    assert {:error, :message_id_conflict} = Store.send_message(c.project, chat["id"], "different", "second", c.auth, c.server)
+    assert {:ok, %{"queued_count" => 2}} = Store.send_message(c.project, chat["id"], "final", "third", c.auth, c.server)
+    refute_receive {:runtime, _, _, _}
+    send(first, :finish)
+    assert_receive {:runtime, next, thread_id, "wait"}
+    assert is_binary(thread_id)
+    assert {:ok, current} = Store.get(c.project, chat["id"], c.auth, c.server)
+    assert Enum.at(current["messages"], 2)["id"] == second["id"]
+    assert Enum.map(current["messages"], & &1["role"]) == ~w(user assistant user assistant)
+    assert current["queued_count"] == 1
+    send(next, :finish)
+    assert_receive {:runtime, _, ^thread_id, "final"}
+    completed = wait_chat(c, chat, &(&1["status"] == "idle"))
+    assert completed["queued_count"] == 0
+    assert length(completed["messages"]) == 6
+  end
+
+  test "queued entries can be sent next or removed without interrupting the active turn", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "active", c.auth, c.server)
+    assert_receive {:runtime, first, _, "wait"}
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "removed", "remove", c.auth, c.server)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "last", "last", c.auth, c.server)
+    assert {:ok, saved} = Store.send_message(c.project, chat["id"], "wait", "next", c.auth, c.server)
+    [removed, last, next] = saved["queue"]
+    assert {:ok, reordered} = Store.prioritize_queued(c.project, chat["id"], next["id"], c.auth, c.server)
+    assert reordered["queue"] == [next, removed, last]
+    assert Process.alive?(first)
+    assert {:ok, retained} = Store.remove_queued(c.project, chat["id"], removed["id"], c.auth, c.server)
+    assert retained["queue"] == [next, last]
+    assert {:ok, replay} = Store.send_message(c.project, chat["id"], "removed", "remove", c.auth, c.server)
+    assert replay["queue"] == [next, last]
+
+    assert {:error, :queued_message_not_found} =
+             Store.prioritize_queued(c.project, chat["id"], removed["id"], c.auth, c.server)
+
+    assert {:error, :chat_not_found} = Store.remove_queued("github:test/two", chat["id"], next["id"], c.auth, c.server)
+    assert {:error, :unauthorized} = Store.remove_queued(c.project, chat["id"], next["id"], %{}, c.server)
+    assert {:error, :unauthorized} = Store.prioritize_queued(c.project, chat["id"], next["id"], %{}, c.server)
+    send(first, :finish)
+    assert_receive {:runtime, second, _, "wait"}
+    send(second, :finish)
+    assert_receive {:runtime, _, _, "last"}
+    refute_receive {:runtime, _, _, "removed"}
+  end
+
+  test "stop pauses pending work even if the runtime reports success after interruption", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "ignore stop", "active", c.auth, c.server)
+    assert_receive {:runtime, first, _, "ignore stop"}
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "next", "next", c.auth, c.server)
+    assert {:ok, %{"queue_paused" => true}} = Store.stop(c.project, chat["id"], c.auth, c.server)
+    assert_receive :interrupt_received
+    send(first, :finish)
+    saved = wait_chat(c, chat, &(&1["status"] == "interrupted"))
+    assert saved["queued_count"] == 1
+    assert saved["queue_paused"]
+    refute_receive {:runtime, _, _, "next"}
+    assert {:error, :unauthorized} = Store.resume_queue(c.project, chat["id"], %{}, c.server)
+    assert {:ok, _} = Store.resume_queue(c.project, chat["id"], c.auth, c.server)
+    assert_receive {:runtime, _, _, "next"}
+  end
+
+  test "restart retains queued work paused until an authenticated resume", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "active", c.auth, c.server)
+    assert_receive {:runtime, first, _, "wait"}
+    assert {:ok, queued} = Store.send_message(c.project, chat["id"], "resumed", "saved", c.auth, c.server)
+    stop_supervised!(Store)
+    refute Process.alive?(first)
+    server = start_supervised!({Store, c.opts})
+    assert {:ok, restored} = Store.get(c.project, chat["id"], c.auth, server)
+    assert restored["queue"] == queued["queue"]
+    assert restored["queue_paused"]
+    assert {:ok, duplicate} = Store.send_message(c.project, chat["id"], "resumed", "saved", c.auth, server)
+    assert duplicate["queue"] == restored["queue"]
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "after", "after", c.auth, server)
+    refute_receive {:runtime, _, _, _}
+    assert {:ok, _} = Store.resume_queue(c.project, chat["id"], c.auth, server)
+    assert_receive {:runtime, _, _, "resumed"}
+    assert_receive {:runtime, _, _, "after"}
+  end
+
+  test "runtime failure retains the next turn and dispatch rechecks revoked authorization", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "active", c.auth, c.server)
+    assert_receive {:runtime, first, _, "wait"}
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "error", "error", c.auth, c.server)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "after error", "after", c.auth, c.server)
+    send(first, :finish)
+    assert_receive {:runtime, _, _, "error"}
+    failed = wait_chat(c, chat, &(&1["status"] == "error"))
+    assert failed["queue_paused"]
+    assert failed["queued_count"] == 1
+    refute_receive {:runtime, _, _, "after error"}
+    assert {:ok, _} = Store.resume_queue(c.project, chat["id"], c.auth, c.server)
+    assert_receive {:runtime, _, _, "after error"}
+    wait_chat(c, chat, &(&1["status"] == "idle"))
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "active-again", c.auth, c.server)
+    assert_receive {:runtime, active, _, "wait"}
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "auth resume", "auth-resume", c.auth, c.server)
+    Agent.update(c.access, fn _ -> false end)
+    send(active, :finish)
+    refute_receive {:runtime, _, _, "auth resume"}
+    Agent.update(c.access, fn _ -> true end)
+    paused = wait_chat(c, chat, & &1["queue_paused"])
+    assert paused["queued_count"] == 1
+    assert {:ok, _} = Store.resume_queue(c.project, chat["id"], c.auth, c.server)
+    assert_receive {:runtime, _, _, "auth resume"}
+  end
+
+  test "messages waiting for global capacity recheck authorization before any dispatch", c do
+    first = create(c)
+    second = create(c)
+    waiting = create(c)
+    assert {:ok, _} = Store.send_message(c.project, first["id"], "wait", "first", c.auth, c.server)
+    assert_receive {:runtime, first_pid, _, "wait"}
+    assert {:ok, _} = Store.send_message(c.project, second["id"], "wait", "second", c.auth, c.server)
+    assert_receive {:runtime, second_pid, _, "wait"}
+    assert {:ok, %{"queued_count" => 1, "status" => "idle"}} = Store.send_message(c.project, waiting["id"], "capacity followup", "waiting", c.auth, c.server)
+    assert thread_summary(c, waiting)["display_status"] == "queued"
+    Agent.update(c.access, fn _ -> false end)
+    send(first_pid, :finish)
+    refute_receive {:runtime, _, _, "capacity followup"}
+    Agent.update(c.access, fn _ -> true end)
+    paused = wait_chat(c, waiting, & &1["queue_paused"])
+    assert paused["queued_count"] == 1
+    assert {:ok, _} = Store.resume_queue(c.project, waiting["id"], c.auth, c.server)
+    assert_receive {:runtime, _, _, "capacity followup"}
+    send(second_pid, :finish)
+  end
+
+  test "queue capacity is bounded, and a failed queue save stops active work without dispatch", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "active", c.auth, c.server)
+    assert_receive {:runtime, active, _, "wait"}
+    for number <- 1..20, do: assert({:ok, _} = Store.send_message(c.project, chat["id"], "queued #{number}", "queue-#{number}", c.auth, c.server))
+    assert {:error, :chat_queue_full} = Store.send_message(c.project, chat["id"], "overflow", "overflow", c.auth, c.server)
+    assert {:ok, %{"queued_count" => 20}} = Store.get(c.project, chat["id"], c.auth, c.server)
+    block_record(c, chat)
+    assert {:error, :chat_storage_unavailable} = Store.stop(c.project, chat["id"], c.auth, c.server)
+    refute Process.alive?(active)
+    refute_receive {:runtime, _, _, "queued 1"}
+  end
+
+  test "bound task instructions survive missing board context and canonical chats exceed legacy length limit", c do
+    task_id = c.project <> ":11"
+    assert {:ok, chat} = Store.ensure_conversation(c.project, task_id, c.auth, c.server)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "view", "view", c.auth, c.server)
+    assert_receive {:view_runtime, nil, instructions}
+    assert instructions =~ "permanently associated with task #{task_id}"
+    completed = wait_chat(c, chat, &(&1["status"] == "idle"))
+    retained = List.duplicate(hd(completed["messages"]), 400)
+    :sys.replace_state(c.server, fn state -> put_in(state, [:chats, chat["id"], "messages"], retained) end)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "after 400", "after-400", c.auth, c.server)
+    assert_receive {:runtime, _, _, "after 400"}
+    wait_chat(c, chat, &(&1["status"] == "idle"))
+    :sys.replace_state(c.server, fn state -> put_in(state, [:chats, chat["id"], "padding"], String.duplicate("x", 6_500_001)) end)
+    assert {:error, :chat_history_full} = Store.send_message(c.project, chat["id"], "full", "full", c.auth, c.server)
+    assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
+  end
+
+  test "runtime identity changes never silently resume a retained queue", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "active", c.auth, c.server)
+    assert_receive {:runtime, _, _, "wait"}
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "saved", "saved", c.auth, c.server)
+    stop_supervised!(Store)
+    settings = Keyword.fetch!(c.opts, :settings) |> Map.put(:codex_home, c.root <> "/different-runtime")
+    server = start_supervised!({Store, Keyword.put(c.opts, :settings, settings)})
+    assert {:error, :chat_runtime_changed} = Store.resume_queue(c.project, chat["id"], c.auth, server)
+    assert {:error, :chat_runtime_changed} = Store.send_message(c.project, chat["id"], "new", "new", c.auth, server)
+    assert {:ok, saved} = Store.get(c.project, chat["id"], c.auth, server)
+    assert saved["queued_count"] == 1
+    assert saved["queue_paused"]
+    refute_receive {:runtime, _, _, "saved"}
   end
 
   defp block_record(c, chat) do
