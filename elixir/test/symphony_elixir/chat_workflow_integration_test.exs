@@ -14,6 +14,10 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
       projects: 1,
       list: 2,
       create: 3,
+      ensure_conversation: 3,
+      remove_queued: 4,
+      prioritize_queued: 4,
+      resume_queue: 3,
       get: 3,
       rename: 4,
       archive: 3,
@@ -44,6 +48,8 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
           auth: BrowserAuth.context(session, socket),
           project_id: session["project"],
           chat_id: nil,
+          task_id: session["task_id"],
+          task_title: session["task_title"],
           view_context: session["context"]
         )
 
@@ -54,6 +60,9 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
       send_update(ChatPanel, id: "management-chat", refresh_chat: id)
       {:noreply, socket}
     end
+
+    def handle_info({:select_task, id, title}, socket), do: {:noreply, assign(socket, task_id: id, task_title: title)}
+    def handle_info({:chat_panel, :main}, socket), do: {:noreply, assign(socket, task_id: nil, task_title: nil)}
 
     def handle_info({:view_context, context}, socket), do: {:noreply, assign(socket, :view_context, context)}
 
@@ -69,7 +78,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     def render(assigns) do
       ~H"""
       <.live_component module={ChatPanel} id="management-chat" auth={@auth} csrf_token="fixture-only"
-        embedded={true} project_id={@project_id} chat_id={@chat_id} view_context={@view_context} read_only={false} />
+        embedded={true} project_id={@project_id} chat_id={@chat_id} task_id={@task_id} task_title={@task_title} view_context={@view_context} read_only={false} />
       """
     end
   end
@@ -514,7 +523,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     session = %{BrowserAuth.session_key() => ctx.marker, "project" => @project, "context" => snapshot}
     {:ok, view, _html} = live_isolated(local_conn(), PanelHost, session: session)
     view = with_target(view, "#chat-app")
-    render_submit(view, "send-message", %{"message" => "Use this view"})
+    view |> element("#chat-composer") |> render_submit(%{"message" => "Use this view"})
     expected = snapshot
     assert_receive {:view_seen, ^expected, %{"context_status" => "available", "snapshot" => ^expected, "current_tasks" => [%{"issue_id" => "2"}]}}
     chat = wait_chat(ctx, &(&1["status"] == "idle"))
@@ -522,10 +531,55 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     assert user["view_context"] == expected
     send(view.pid, {:view_context, nil})
     assert has_element?(view, "#session-context-content", "No matching board context")
-    render_submit(view, "send-message", %{"message" => "Use this view"})
+    view |> element("#chat-composer") |> render_submit(%{"message" => "Use this view"})
     assert_receive {:view_seen, nil, %{"context_status" => "unavailable", "snapshot" => nil, "current_tasks" => []}}
     chat = wait_chat(ctx, &(&1["status"] == "idle" and length(&1["messages"]) == 4))
     assert chat["messages"] |> Enum.filter(&(&1["role"] == "user")) |> List.last() |> Map.fetch!("view_context") == nil
+    assert Agent.get(ctx.requests, & &1) == []
+  end
+
+  test "task chat queues through the real Store and completes followups while the main chat remains selected", ctx do
+    task_id = @project <> ":2"
+    session = %{BrowserAuth.session_key() => ctx.marker, "project" => @project, "task_id" => task_id, "task_title" => "Clarify retry behavior"}
+    {:ok, view, _html} = live_isolated(local_conn(), PanelHost, session: session)
+    view = with_target(view, "#chat-app")
+    assert {:ok, task_chat} = Store.ensure_conversation(@project, task_id, ctx.auth, ctx.server)
+    assert has_element?(view, "#chat-app[data-chat-id='#{task_chat["id"]}']")
+    view |> element("#chat-composer") |> render_submit(%{"message" => "Wait for thread status"})
+    assert_receive {:model_started, _, nil, "Wait for thread status"}
+    assert_receive {:waiting_for_thread_status, runtime}
+    assert eventually(fn -> has_element?(view, "#send-message-button", "Queue") end)
+    view |> element("#chat-composer") |> render_submit(%{"message" => "Follow up on this task"})
+    assert has_element?(view, "#chat-queue", "1 queued")
+    assert has_element?(view, "#chat-queue", "Follow up on this task")
+    refute has_element?(view, "#chat-messages", "Follow up on this task")
+    assert {:ok, queued} = Store.get(@project, task_chat["id"], ctx.auth, ctx.server)
+    assert queued["queued_count"] == 1
+    refute_received {:model_started, _, _, "Follow up on this task"}
+    view |> element("#main-chat-button") |> render_click()
+    assert {:ok, main_chat} = Store.ensure_conversation(@project, nil, ctx.auth, ctx.server)
+    assert has_element?(view, "#chat-app[data-chat-id='#{main_chat["id"]}']")
+    refute has_element?(view, "#chat-queue")
+    view |> element("#chat-composer") |> render_change(%{"message" => "Keep the orchestration draft"})
+    send(runtime, :finish_status)
+    assert_receive {:model_started, _, "native-integration-thread", "Follow up on this task"}
+
+    assert eventually(fn ->
+             {:ok, current} = Store.get(@project, task_chat["id"], ctx.auth, ctx.server)
+             current["status"] == "idle" and current["queued_count"] == 0 and length(current["messages"]) == 4
+           end)
+
+    assert has_element?(view, "#chat-app[data-chat-id='#{main_chat["id"]}']")
+    assert has_element?(view, "#chat-message-input", "Keep the orchestration draft")
+    refute has_element?(view, "#chat-messages", "Follow up on this task")
+    send(view.pid, {:select_task, task_id, "Clarify retry behavior"})
+    assert has_element?(view, "#chat-app[data-chat-id='#{task_chat["id"]}']")
+    assert has_element?(view, "#chat-messages", "Follow up on this task")
+    assert has_element?(view, "#chat-messages", "Conversation resumed.")
+    refute has_element?(view, "#chat-queue")
+    assert {:ok, summaries} = Store.list(@project, ctx.auth, ctx.server)
+    assert Enum.count(summaries, &(&1["task_id"] == task_id)) == 1
+    assert Enum.count(summaries, &(&1["conversation_role"] == "main")) == 1
     assert Agent.get(ctx.requests, & &1) == []
   end
 
