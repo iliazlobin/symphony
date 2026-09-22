@@ -257,6 +257,17 @@ def codex_server(config: dict) -> None:
         if not os.environ.get(key):
             raise ControlError("Worker must be launched by the process guardian: " + key)
         env[key] = os.environ[key]
+    retained_id = os.environ.get("SYMPHONY_PR_WORK_ID")
+    resume = os.environ.get("SYMPHONY_PR_WORK_RESUME")
+    if retained_id is not None:
+        if (env["SYMPHONY_WORKER_ROLE"] != "builder" or not re.fullmatch(r"[a-f0-9]{32}", retained_id)
+                or resume not in (None, "true")):
+            raise ControlError("Invalid retained builder identity")
+        env["SYMPHONY_PR_WORK_ID"] = retained_id
+        if resume:
+            env["SYMPHONY_PR_WORK_RESUME"] = resume
+    elif resume is not None:
+        raise ControlError("Retained builder resume requires a work identity")
     wrapper = ROOT / "tools/container_worker.py"
     os.execve(sys.executable, [sys.executable, "-I", str(wrapper), "--workspace", str(Path.cwd()),
                              "--codex-home", config["codex_home"], "--image", image, *launch_options], env)

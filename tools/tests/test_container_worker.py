@@ -133,6 +133,75 @@ os.killpg=signal_unreaped
                 self.assertIn("no-new-privileges", command)
                 self.assertNotIn("docker.sock", " ".join(command))
 
+    def test_retained_builder_home_survives_new_guardian_owner_and_reviewer_stays_fresh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace, home = root / "workspace", root / "home"
+            workspace.mkdir()
+            home.mkdir()
+            (home / "config.toml").write_text('model="fixture"\n')
+            work_id = "c" * 32
+            stage = WORKER.prepare_stage_home(workspace, home, "a" * 32, "builder", work_id)
+            (stage / "retained-session").write_text("native-history")
+            again = WORKER.prepare_stage_home(workspace, home, "b" * 32, "builder", work_id, resume=True)
+            self.assertEqual(stage, again)
+            self.assertEqual((again / "retained-session").read_text(), "native-history")
+            for owner in ("a" * 32, "b" * 32):
+                command = WORKER.create_command(workspace, home, "sha256:" + "a" * 64, "builder",
+                                                root / "unused.cid", owner, "/docker", work_id=work_id)
+                self.assertIn(f"type=bind,src={stage},dst=/codex-home", command)
+            fresh_a = WORKER.prepare_stage_home(workspace, home, "a" * 32, "reviewer")
+            fresh_b = WORKER.prepare_stage_home(workspace, home, "b" * 32, "reviewer")
+            self.assertNotEqual(fresh_a, fresh_b)
+            self.assertNotEqual(fresh_a, stage)
+            with self.assertRaises(FileExistsError):
+                WORKER.prepare_stage_home(workspace, home, "d" * 32, "builder", work_id)
+            self.assertEqual((stage / "retained-session").read_text(), "native-history")
+
+    def test_retained_state_rejects_missing_or_foreign_scope_and_unsafe_markers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace, other, home = root / "workspace", root / "other", root / "home"
+            for path in (workspace, other, home):
+                path.mkdir()
+            work_id = "c" * 32
+            args = (workspace, home, "a" * 32, "builder", work_id)
+            with self.assertRaises(FileNotFoundError):
+                WORKER.prepare_stage_home(*args, resume=True)
+            stage = WORKER.prepare_stage_home(*args)
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                WORKER.prepare_stage_home(other, *args[1:], resume=True)
+            marker = stage.parent / "scope.json"
+            original = marker.read_text()
+            marker.chmod(0o644)
+            with self.assertRaisesRegex(ValueError, "marker is invalid"):
+                WORKER.prepare_stage_home(*args, resume=True)
+            marker.chmod(0o600)
+            marker.unlink()
+            target = root / "retained-original"
+            target.write_text(original)
+            marker.symlink_to(target)
+            with self.assertRaisesRegex(ValueError, "marker is invalid"):
+                WORKER.prepare_stage_home(*args, resume=True)
+            self.assertEqual(target.read_text(), original)
+            with self.assertRaises(ValueError):
+                WORKER.prepare_stage_home(workspace, home, "a" * 32, "reviewer", work_id)
+            with self.assertRaises(ValueError):
+                WORKER.prepare_stage_home(workspace, home, "a" * 32, "builder", "../other")
+            with self.assertRaises(ValueError):
+                WORKER.prepare_stage_home(workspace, home, "a" * 32, "builder", resume=True)
+
+    def test_retained_home_parent_symlink_is_never_followed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace, home, target = root / "workspace", root / "home", root / "target"
+            for path in (workspace, home, target):
+                path.mkdir(mode=0o700)
+            (root / "pr-work-state").symlink_to(target, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                WORKER.prepare_stage_home(workspace, home, "a" * 32, "builder", "c" * 32)
+            self.assertEqual(list(target.iterdir()), [])
+
     def test_mutable_images_and_workspace_control_files_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
