@@ -198,7 +198,7 @@
           const date = value => Date.parse(value) || 0;
           const priorityRank = value => /^P[1-9]\d*$/.test(value) ? Number(value.slice(1)) : Number.MAX_SAFE_INTEGER;
           items.sort((a,b) => this.prefs.sort === "priority" ? priorityRank(a.dataset.priority) - priorityRank(b.dataset.priority) : this.prefs.sort === "updated" ? date(b.dataset.updated) - date(a.dataset.updated) : this.prefs.sort === "oldest" ? (date(a.dataset.created) || Infinity) - (date(b.dataset.created) || Infinity) : this.prefs.sort === "title" ? a.dataset.title.localeCompare(b.dataset.title) : rank(a.dataset.taskId) - rank(b.dataset.taskId));
-          items.forEach(item => container.append(item));
+          items.forEach((item, index) => { if (container.children[index] !== item) container.insertBefore(item, container.children[index] || null); });
           const count = items.filter(item => !item.hidden).length;
           lane.hidden = hidden.has(stage);
           const checkbox = this.el.querySelector(`[data-visible-lane="${stage}"]`), hideButton = lane.querySelector(`[data-hide-lane="${stage}"]`);
