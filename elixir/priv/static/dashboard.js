@@ -574,7 +574,10 @@
     mounted() {
       this.abort = new AbortController();
       this.close = (focus = false) => { this.el.open = false; if (focus) this.el.querySelector('summary')?.focus(); };
-      this.el.addEventListener('click', event => { if (event.target.closest('button, a')) this.close(); }, {signal: this.abort.signal});
+      this.el.addEventListener('click', event => {
+        if (event.target.closest('button, a')) this.close();
+        if (event.target.closest('[phx-click="inspect-pr-work"]')) document.getElementById('session-outputs-tab')?.focus({preventScroll: true});
+      }, {signal: this.abort.signal});
       this.el.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); this.close(true); } }, {signal: this.abort.signal});
       document.addEventListener('click', event => { if (!this.el.contains(event.target)) this.close(); }, {signal: this.abort.signal});
       document.addEventListener('focusin', event => { if (!this.el.contains(event.target)) this.close(); }, {signal: this.abort.signal});
