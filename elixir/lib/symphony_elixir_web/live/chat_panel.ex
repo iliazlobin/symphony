@@ -542,6 +542,36 @@ defmodule SymphonyElixirWeb.ChatPanel do
   defp embedded_title(task_id, title), do: if(is_binary(title) and title != "", do: title, else: "Task " <> task_identifier(task_id))
   defp messages(nil), do: []
   defp messages(chat), do: list(chat["messages"])
+
+  defp empty_response?(message) do
+    message["role"] == "assistant" and message["status"] in [nil, "completed"] and
+      String.trim(text(message["text"])) == "" and list(message["widgets"]) == []
+  end
+
+  defp message_timestamp(assigns) do
+    assigns = assign(assigns, :time, message_time(assigns.value))
+
+    ~H"""
+    <time :if={@time} class={@class} datetime={@time.iso} title={@label <> ": " <> @time.full}
+      aria-label={@label <> ": " <> @time.full} data-chat-timestamp data-time-label={@label}>{@time.short}</time>
+    """
+  end
+
+  defp message_time(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} ->
+        %{
+          iso: DateTime.to_iso8601(datetime),
+          short: Calendar.strftime(datetime, "%b %-d, %H:%M UTC"),
+          full: Calendar.strftime(datetime, "%B %-d, %Y at %H:%M:%S UTC")
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  defp message_time(_value), do: nil
   defp list(value) when is_list(value), do: value
   defp list(_value), do: []
   defp map(value) when is_map(value), do: value
@@ -809,9 +839,10 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
             <div id="chat-messages" class="chat-messages" aria-live="off">
               <article :for={message <- messages(@chat)} id={"message-#{message["id"]}"} class={"chat-message chat-message-#{if message["role"] == "user", do: "user", else: "assistant"}"}>
-                <div class="message-meta"><strong>{if message["role"] == "user", do: "You", else: "Symphony"}</strong><span :if={message["status"] == "streaming"} class="streaming-mark">Responding</span><span :if={message["role"] == "assistant" && message["status"] in ["interrupted", "error"]} class="message-outcome">{if message["status"] == "interrupted", do: "Stopped", else: "Failed"}</span></div>
-                <div :if={text(message["text"]) != ""} class="message-text">{text(message["text"])}</div>
-                <span :if={message["status"] in ["streaming", "pending"] && text(message["text"]) == ""} class="chat-thinking" role="status">Working<span aria-hidden="true"> ···</span></span>
+                <div class="message-meta"><strong>{if message["role"] == "user", do: "You", else: "Symphony"}</strong><.message_timestamp value={message["created_at"]} label={if message["role"] == "user", do: "Sent", else: "Response started"} class="message-time" /><span :if={message["status"] == "streaming"} class="streaming-mark">Responding</span><span :if={message["role"] == "assistant" && message["status"] in ["interrupted", "error"]} class="message-outcome">{if message["status"] == "interrupted", do: "Stopped", else: "Failed"}</span></div>
+                <div :if={String.trim(text(message["text"])) != ""} class="message-text">{text(message["text"])}</div>
+                <span :if={empty_response?(message)} class="chat-empty-response">No text response.</span>
+                <span :if={message["status"] in ["streaming", "pending"] && String.trim(text(message["text"])) == ""} class="chat-thinking" role="status">Working<span aria-hidden="true"> ···</span></span>
                 <div :if={list(message["widgets"]) != []} class="chat-widgets">
                   <.widget :for={widget <- list(message["widgets"])} widget={map(widget)} project={@project} busy={@busy} myself={@myself} embedded={@embedded} chat_id={@chat && @chat["id"]} />
                 </div>
@@ -865,7 +896,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
               <div class="chat-queue-heading"><strong>{length(@queued)} queued</strong><span>{if @queue_paused, do: "Paused", else: if(@busy, do: "After the current response", else: "Waiting to send")}</span><button :if={@queue_paused && !@busy} id="resume-queue-button" type="button" class="button button-quiet" phx-target={@myself} phx-click="resume-queue" phx-value-chat_id={@chat["id"]}>Resume queue</button></div>
               <ol>
                 <li :for={{message, index} <- Enum.with_index(@queued)} id={"queued-#{message["id"]}"} class="chat-queued-message">
-                  <span class="chat-queue-position" aria-hidden="true">{index + 1}</span><p title={text(message["text"])}>{text(message["text"])}</p>
+                  <span class="chat-queue-position" aria-hidden="true">{index + 1}</span><div class="chat-queued-content"><p title={text(message["text"])}>{text(message["text"])}</p><.message_timestamp value={message["created_at"]} label="Queued" class="message-time queue-time" /></div>
                   <div class="chat-queue-actions"><button :if={index > 0} type="button" class="button button-quiet" phx-target={@myself} phx-click="prioritize-queued" phx-value-id={message["id"]} phx-value-chat_id={@chat["id"]} title="Send this message next without interrupting the current response">Send next</button><button type="button" class="button button-quiet" phx-target={@myself} phx-click="remove-queued" phx-value-id={message["id"]} phx-value-chat_id={@chat["id"]} aria-label={"Remove queued message #{index + 1}"} title="Remove queued message">×</button></div>
                 </li>
               </ol>

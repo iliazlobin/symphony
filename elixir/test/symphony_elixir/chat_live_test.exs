@@ -439,6 +439,61 @@ defmodule SymphonyElixir.ChatLiveTest do
     refute Enum.any?(Registry.lookup(SymphonyElixir.PubSub, "chat_project:alpha"), &(elem(&1, 0) == view.pid))
   end
 
+  test "message times retain their original instant through streaming and queue dispatch with safe legacy fallbacks", ctx do
+    user = %{"id" => "timed-user", "role" => "user", "text" => "Original request", "created_at" => "2026-09-22T16:05:00+02:00"}
+    assistant = %{"id" => "timed-assistant", "role" => "assistant", "text" => "Working", "status" => "streaming", "created_at" => "2026-09-22T14:06:01Z"}
+    queued = %{"id" => "timed-queue", "role" => "user", "text" => "Follow up", "status" => "queued", "created_at" => "2026-09-22T14:07:02Z"}
+
+    legacy =
+      for {id, stamp} <- [{"missing", nil}, {"invalid", "2026-99-99"}, {"number", 42}],
+          do: %{"id" => id, "role" => "assistant", "text" => "Retained #{id}", "created_at" => stamp}
+
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    chat = chat |> Map.put("messages", [user, assistant | legacy]) |> Map.put("queue", [queued]) |> Map.put("status", "running")
+    FixtureStore.put(chat)
+    {view, _} = chat_view(ctx, "/chat?project=alpha&chat=a1")
+    assert has_element?(view, "#message-timed-user time[datetime='2026-09-22T14:05:00Z'][data-chat-timestamp]", "Sep 22, 14:05 UTC")
+    user_label = "Sent: September 22, 2026 at 14:05:00 UTC"
+    assert has_element?(view, "#message-timed-user time[title='#{user_label}'][aria-label='#{user_label}']")
+    assert has_element?(view, "#message-timed-assistant time[data-time-label='Response started']", "Sep 22, 14:06 UTC")
+    assert has_element?(view, "#queued-timed-queue time[datetime='2026-09-22T14:07:02Z'][data-time-label=Queued]")
+    for id <- ~w(missing invalid number), do: refute(has_element?(view, "#message-#{id} time"))
+
+    completed = assistant |> Map.put("status", "completed") |> Map.put("text", "Response complete")
+    dispatched = Map.put(queued, "status", "completed")
+    FixtureStore.put(chat |> Map.put("messages", [user, completed, dispatched | legacy]) |> Map.put("queue", []) |> Map.put("status", "idle"))
+    assert eventually(fn -> has_element?(view, "#message-timed-assistant", "Response complete") end)
+    assert has_element?(view, "#message-timed-assistant time[datetime='2026-09-22T14:06:01Z']")
+    assert has_element?(view, "#message-timed-queue time[datetime='2026-09-22T14:07:02Z'][data-time-label=Sent]")
+    refute has_element?(view, "#chat-queue")
+  end
+
+  test "empty completed responses stay quiet while active turns, outcomes and tool results remain distinct", ctx do
+    messages =
+      for {id, status, text, widgets} <- [
+            {"empty", "completed", "", []},
+            {"legacy-empty", nil, " \n ", []},
+            {"active", "streaming", "", []},
+            {"pending", "pending", "", []},
+            {"stopped", "interrupted", "", []},
+            {"failed", "error", "", []},
+            {"tools", "completed", "", [%{"type" => "receipt", "summary" => "Task updated"}]},
+            {"text", "completed", "A useful response", []}
+          ],
+          do: %{"id" => id, "role" => "assistant", "status" => status, "text" => text, "widgets" => widgets}
+
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    FixtureStore.put(Map.put(chat, "messages", messages))
+    {view, _} = chat_view(ctx, "/chat?project=alpha&chat=a1")
+    for id <- ~w(empty legacy-empty), do: assert(has_element?(view, "#message-#{id} .chat-empty-response", "No text response."))
+    for id <- ~w(active pending stopped failed tools text), do: refute(has_element?(view, "#message-#{id} .chat-empty-response"))
+    for id <- ~w(active pending), do: assert(has_element?(view, "#message-#{id} .chat-thinking", "Working"))
+    assert has_element?(view, "#message-stopped .message-outcome", "Stopped")
+    assert has_element?(view, "#message-failed .message-outcome", "Failed")
+    assert has_element?(view, "#message-tools .chat-widget-receipt", "Task updated")
+    assert has_element?(view, "#message-text .message-text", "A useful response")
+  end
+
   test "typed widgets link filters and tasks while proposals require explicit confirmation", ctx do
     widgets = [
       %{

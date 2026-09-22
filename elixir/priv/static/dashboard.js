@@ -411,6 +411,18 @@
       this.running = this.el.dataset.running === "true";
       const on = (name, handler) => this.el.addEventListener(name, handler, {signal: this.abort.signal});
       const tabs = ["chat", "context", "outputs", "sources"];
+      const compactTime = new Intl.DateTimeFormat(undefined, {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+      const fullTime = new Intl.DateTimeFormat(undefined, {year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "long"});
+      this.localizeTimes = () => {
+        this.el.querySelectorAll("time[data-chat-timestamp]").forEach(time => {
+          const date = new Date(time.dateTime);
+          if (!Number.isFinite(date.getTime())) return;
+          time.textContent = compactTime.format(date);
+          const description = `${time.dataset.timeLabel}: ${fullTime.format(date)}`;
+          time.title = description;
+          time.setAttribute("aria-label", description);
+        });
+      };
       this.tabKeyFor = chat => this.el.dataset.project ? "symphony.chat.tab.v1:" + this.el.dataset.project + ":" + (chat || "project") : null;
       this.tabKey = () => this.tabKeyFor(this.el.dataset.chatId);
       this.viewKeyFor = chat => this.el.dataset.project ? "symphony.chat.view.v1:" + this.el.dataset.project + ":" + (chat || "project") : null;
@@ -550,12 +562,14 @@
         this.saveView("conversation"); this.saveTab("chat"); this.atBottom = true; this.resizeComposer(); requestAnimationFrame(this.scroll);
       });
       this.loadTab();
+      this.localizeTimes();
       requestAnimationFrame(this.scroll);
     },
     updated() {
       if (this.dragScope !== this.scope()) { this.clearDrag(); this.dragScope = this.scope(); }
       if (this.chatId !== this.el.dataset.chatId) { this.chatId = this.el.dataset.chatId; this.atBottom = true; }
       this.loadTab();
+      this.localizeTimes();
       this.resizeComposer();
       requestAnimationFrame(() => { this.scroll(); this.revealWork(); });
     },
@@ -564,6 +578,7 @@
       this.clearDrag();
       this.loadedTabKey = undefined;
       this.loadTab();
+      this.localizeTimes();
     },
     destroyed() { this.abort.abort(); }
   };

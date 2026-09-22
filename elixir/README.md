@@ -372,8 +372,10 @@ and **Remove** cancels one queued message. Messages run one at a time per conver
 and respect the service concurrency limit. Cards show chat processing and queued counts,
 separately from coding-worker activity. **Stop**, a failed turn or a service restart
 pauses the remaining queue; **Resume queue** continues it after checking current access.
-Conversation
-messages scroll independently of the composer. The selected view and tab are remembered
+Messages show their original sent or response-start time in the browser's local time;
+hover a timestamp for its full date and time zone. Queued messages retain their queue
+time when sent. Older messages without a valid recorded timestamp omit it.
+Conversation messages scroll independently of the composer. The selected view and tab are remembered
 in this browser session. The current-view
 tool resolves fresh authorized task summaries; action previews and browser
 confirmations own all writes. See [management conversations](../ARCHITECTURE.md#management-conversations)
