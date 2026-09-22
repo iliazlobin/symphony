@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Events Concierge host setup and trusted workspace hooks for Symphony."""
+"""Shared Mac host setup and trusted workspace hooks for registered Symphony projects."""
 from __future__ import annotations
 
 import argparse
@@ -24,6 +24,22 @@ REMOTE = "https://github.com/" + REPOSITORY + ".git"
 SHA = re.compile(r"[0-9a-f]{40}")
 WORKER_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 COMMAND_PATH = "/usr/local/bin:/usr/bin:/bin"
+PROJECTS = {
+    "iliazlobin/events-concierge": {"slug": "events-concierge", "port": 8778, "policy": "symphony-codex"},
+    "iliazlobin/symphony": {"slug": "symphony", "port": 8779, "policy": "symphony-self-codex"},
+}
+
+
+def project_settings(repository: str) -> dict:
+    if not isinstance(repository, str) or repository not in PROJECTS:
+        raise ControlError("No reviewed Mac profile exists for this repository")
+    return PROJECTS[repository]
+
+
+def repository_remote(config: dict) -> str:
+    repository = config.get("repository", REPOSITORY)
+    project_settings(repository)
+    return "https://github.com/" + repository + ".git"
 
 
 def run(*args: str, cwd: Path | None = None, env: dict | None = None) -> str:
@@ -55,7 +71,8 @@ def private_directory(path: Path) -> None:
         raise ControlError("Private state directory must be owned by this user with mode 0700")
 
 
-def validate_workflow(workflow: str) -> None:
+def validate_workflow(workflow: str, repository: str = REPOSITORY) -> None:
+    project_settings(repository)
     pieces = workflow.split("---\n", 2)
     if len(pieces) != 3 or pieces[0].strip():
         raise ControlError("Workflow must start with YAML front matter")
@@ -63,7 +80,7 @@ def validate_workflow(workflow: str) -> None:
         settings = yaml.safe_load(pieces[1])
         tracker, controls = settings["tracker"], settings["control"]
         concurrency = settings["agent"]["max_concurrent_agents"]
-        valid = (tracker["kind"] == "github" and tracker["provider"]["repo"] == REPOSITORY
+        valid = (tracker["kind"] == "github" and tracker["provider"]["repo"] == repository
                  and tracker["required_labels"] == ["symphony:ready"]
                  and tracker["active_states"] == ["open"] and tracker["terminal_states"] == ["closed"]
                  and controls["enabled"] is True and controls["initial_mode"] == "paused"
@@ -109,35 +126,42 @@ def permission_config() -> str:
     return "\n".join(sections) + "\n"
 
 
-def initialize(args) -> dict:
+def initialize(args, repository: str = REPOSITORY, profile_bin: Path | None = None) -> dict:
+    project_settings(repository)
+    remote = "https://github.com/" + repository + ".git"
     state = Path(args.state_dir).expanduser().resolve()
     source = Path(args.source).expanduser().resolve()
     base = args.base_sha
+    if type(args.port) is not int or not 1024 <= args.port <= 65535:
+        raise ControlError("Use a dedicated unprivileged controller port")
     if not SHA.fullmatch(base):
         raise ControlError("The source baseline must be a full lowercase commit SHA")
     if run("git", "rev-parse", "--verify", base + "^{commit}", cwd=source) != base:
         raise ControlError("Source baseline does not resolve")
     origin = run("git", "config", "--get", "remote.origin.url", cwd=source)
-    if origin not in (REMOTE, REMOTE[:-4], "git@github.com:" + REPOSITORY + ".git"):
-        raise ControlError("Unexpected Events Concierge source repository")
+    if origin not in (remote, remote[:-4], "git@github.com:" + repository + ".git"):
+        raise ControlError("Source repository does not match the selected project")
     if args.integration_branch and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", args.integration_branch):
         raise ControlError("Invalid integration branch")
     workflow = run("git", "show", base + ":WORKFLOW.md", cwd=source) + "\n"
-    validate_workflow(workflow)
+    validate_workflow(workflow, repository)
     config_file = state / "config.json"
     if config_file.exists():
         raise ControlError("Operator configuration already exists; review changes explicitly")
     private_directory(state)
     for directory in ("workspaces", "logs", "worker-home", "codex", "bin", "receipts"):
         private_directory(state / directory)
+    if repository == "iliazlobin/symphony":
+        for directory in ("chat", "management-codex"):
+            private_directory(state / directory)
     config = {
-        "repository": REPOSITORY, "source_path": str(source), "base_sha": base,
+        "repository": repository, "source_path": str(source), "base_sha": base,
         "integration_branch": args.integration_branch, "state_dir": str(state),
         "workflow_path": str(state / "WORKFLOW.md"), "workspace_root": str(state / "workspaces"),
         "codex_home": str(state / "codex"), "worker_home": str(state / "worker-home"),
         "api_url": "http://127.0.0.1:" + str(args.port),
         "token_file": str(state / "control.token"),
-        "profile_bin": str(Path(__file__).resolve()),
+        "profile_bin": str((profile_bin or Path(__file__)).resolve()),
         "codex_binary": shutil.which("codex") or "/opt/homebrew/bin/codex",
         "worker_launch_enabled": False,
         "rules_source": str(Path.home() / "Workspace/dotfiles/codex/codex_rules.py"),
@@ -178,7 +202,7 @@ def workspace_create(config: dict) -> dict:
            "GIT_TERMINAL_PROMPT": "0"}
     run("git", "clone", "--no-hardlinks", "--no-checkout", config["source_path"], ".", cwd=current, env=env)
     run("git", "checkout", "-b", task_branch(current), config["base_sha"], cwd=current, env=env)
-    run("git", "remote", "set-url", "origin", REMOTE, cwd=current, env=env)
+    run("git", "remote", "set-url", "origin", repository_remote(config), cwd=current, env=env)
     run("git", "remote", "set-url", "--push", "origin", "disabled://host-publishes-candidates", cwd=current, env=env)
     run("git", "config", "credential.helper", "", cwd=current, env=env)
     run("git", "config", "core.hooksPath", "/dev/null", cwd=current, env=env)
@@ -198,7 +222,7 @@ def before_run(config: dict) -> dict:
     branch = run("git", "branch", "--show-current", cwd=current)
     if branch != task_branch(current):
         raise ControlError("Unexpected task branch")
-    if run("git", "remote", "get-url", "origin", cwd=current) != REMOTE:
+    if run("git", "remote", "get-url", "origin", cwd=current) != repository_remote(config):
         raise ControlError("Unexpected source remote")
     run("git", "merge-base", "--is-ancestor", config["base_sha"], "HEAD", cwd=current)
     if (current / ".env").exists():
@@ -222,18 +246,19 @@ def container_launch_options(config: dict) -> list[str]:
     if not isinstance(sandbox, dict):
         raise ControlError("Worker sandbox configuration must be an object")
     root = Path(config["workspace_root"])
+    policy_name = project_settings(config.get("repository", REPOSITORY))["policy"]
     policy = Path(config["state_dir"]) / "worker-apparmor"
     seccomp = ROOT / "profiles/events-concierge/seccomp-codex.json"
-    if (sandbox.get("apparmor_profile") != "symphony-codex"
+    if (sandbox.get("apparmor_profile") != policy_name
             or sandbox.get("workspace_root") != str(root)):
         raise ControlError("Reviewed workspace-scoped worker sandbox configuration is missing")
     content = read_private(policy)
-    if content != render_policy(root):
+    if content != render_policy(root, policy_name):
         raise ControlError("Worker AppArmor source does not match the configured workspace root")
     for name, data in (("apparmor_sha256", content.encode()), ("seccomp_sha256", seccomp.read_bytes())):
         if sandbox.get(name) != hashlib.sha256(data).hexdigest():
             raise ControlError("Worker sandbox policy changed; review and reinstall it before launch")
-    return ["--seccomp-policy", str(seccomp), "--apparmor-profile", "symphony-codex"]
+    return ["--seccomp-policy", str(seccomp), "--apparmor-profile", policy_name]
 
 
 def codex_server(config: dict) -> None:
@@ -295,7 +320,7 @@ def google_oauth_environment(config: dict) -> dict:
 
 
 def start_service(config: dict) -> None:
-    validate_workflow(read_private(Path(config["workflow_path"])))
+    validate_workflow(read_private(Path(config["workflow_path"])), config.get("repository", REPOSITORY))
     binary = ROOT / "elixir/bin/symphony"
     if not binary.is_file():
         raise ControlError("Build Symphony first: cd elixir && mix build")
@@ -312,6 +337,14 @@ def start_service(config: dict) -> None:
         "SYMPHONY_PROFILE_PYTHON": sys.executable,
         "SYMPHONY_OPERATOR_CONFIG": config["_config_path"], "ERL_FLAGS": "+S 4:4",
     })
+    if config.get("repository") == "iliazlobin/symphony":
+        # Native task intake needs its own durable action store even before the
+        # separately authenticated model runtime is configured.
+        env.update({
+            "SYMPHONY_CHAT_STATE": str(Path(config["state_dir"]) / "chat"),
+            "SYMPHONY_CHAT_CODEX_HOME": str(Path(config["state_dir"]) / "management-codex"),
+            "SYMPHONY_CHAT_CODEX_EXECUTABLE": config.get("management_codex_binary", ""),
+        })
     pinned_bin = ROOT / ".runtime/elixir-1.19.5/bin"
     if pinned_bin.is_dir():
         env["PATH"] = str(pinned_bin) + ":/opt/homebrew/opt/erlang@28/bin:" + env.get("PATH", WORKER_PATH)
@@ -322,24 +355,28 @@ def start_service(config: dict) -> None:
                            "--i-understand-that-this-will-be-running-without-the-usual-guardrails"], env)
 
 
-def main() -> int:
+def main(repository: str = REPOSITORY, profile_bin: Path | None = None) -> int:
+    project = project_settings(repository)
+    default_config = DEFAULT_CONFIG.parent.parent / project["slug"] / "config.json"
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config")
     sub = parser.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init")
-    init.add_argument("--state-dir", default=str(DEFAULT_CONFIG.parent))
+    init.add_argument("--state-dir", default=str(default_config.parent))
     init.add_argument("--source", required=True)
     init.add_argument("--base-sha", required=True)
     init.add_argument("--integration-branch", help="Leave unset while the owner selects the target; publication stays blocked")
-    init.add_argument("--port", type=int, default=8777)
+    init.add_argument("--port", type=int, default=project["port"])
     for action in ("workspace-create", "before-run", "codex-server", "run", "install-rules", "login", "doctor"):
         sub.add_parser(action)
     args = parser.parse_args()
     try:
         if args.command == "init":
-            result = initialize(args)
+            result = initialize(args, repository, profile_bin)
         else:
-            config = load_config(args.config)
+            config = load_config(args.config or os.environ.get("SYMPHONY_OPERATOR_CONFIG", str(default_config)))
+            if config.get("repository") != repository:
+                raise ControlError("Operator configuration does not belong to this project profile")
             if args.command == "workspace-create":
                 result = workspace_create(config)
             elif args.command == "before-run":

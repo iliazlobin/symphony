@@ -1473,6 +1473,13 @@ Extension config:
   - Enables the HTTP server extension.
   - `0` requests an ephemeral port for local development and tests.
   - CLI `--port` overrides `server.port` when both are present.
+- `server.project_links` (array, OPTIONAL; default `[]`)
+  - At most 20 unique `{id, label, url}` entries for GitHub projects and trusted browser origins.
+  - URLs use HTTPS or loopback HTTP, with no credentials, path, query or fragment.
+  - Links navigate between independent controllers; they do not route API writes or combine state.
+- `server.session_cookie` (string, OPTIONAL; default `_symphony_elixir_key`)
+  - Use distinct cookie keys for controllers sharing a browser hostname.
+  - HTTP and LiveView use the same configured key; destination authorization remains independent.
 
 Enablement (extension):
 

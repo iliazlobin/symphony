@@ -131,6 +131,21 @@ commands to the native API and owns no scheduling state.
   [`symphony_service.py`](tools/symphony_service.py) manages the scheduler and publication
   broker as separate macOS launch agents; it adds no task scheduler.
 
+## Project controllers
+
+- A controller owns one repository/workflow. The [Symphony project](profiles/symphony/README.md)
+  uses a separate private configuration, service pair, port, ledger, worker home,
+  workspace root, publication receipts and AppArmor policy from Events Concierge.
+- `server.project_links` lists trusted browser origins in the Projects menu. Each
+  destination authenticates independently; navigation neither aggregates data nor
+  transfers operator authority. `server.session_cookie` separates cookies for
+  controllers sharing a hostname and defaults to the existing cookie key.
+- Self-management uses GitHub issues and linked PR evidence through the same native
+  controls. It cannot deploy or activate changes to its own controller from a worker.
+- Initial state is paused with launch and automatic merge disabled. Worker toolchain,
+  authentication, policy installation and combined host capacity need verification
+  before activation; no shared scheduler coordinates capacity across controllers.
+
 ## Execution and ownership
 
 GitHub owns task intent and issue/PR state. The control ledger owns execution

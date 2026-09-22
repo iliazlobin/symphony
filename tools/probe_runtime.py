@@ -26,7 +26,8 @@ def resolve_runtime(profile, repository, image=None, seccomp_policy=None, apparm
             raise ValueError("The service policy selector is unavailable; update probes and launcher together")
         options = selector(config)
         if (not isinstance(options, list) or len(options) != 4 or options[0] != "--seccomp-policy"
-                or options[2:] != ["--apparmor-profile", "symphony-codex"]):
+                or options[2:] not in (["--apparmor-profile", "symphony-codex"],
+                                      ["--apparmor-profile", "symphony-self-codex"])):
             raise ValueError("The service did not select the required reviewed container policies")
         image = config.get("worker_image_id")
         workspace_root = fixture_parent_path(config["workspace_root"])

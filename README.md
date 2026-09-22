@@ -17,6 +17,7 @@ do not define this profile's authorization policy.
 
 - [Architecture and code map](ARCHITECTURE.md)
 - [Events Concierge profile](profiles/events-concierge/profile.py)
+- [Symphony self-management project](profiles/symphony/README.md)
 - [Local operator CLI and MCP client](tools/symphony_control.py)
 - [Mac service and recovery guide](profiles/events-concierge/README.md)
 - [Control configuration and API contract](SPEC.md#appendix-b-controlled-local-execution)

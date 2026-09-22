@@ -13,14 +13,24 @@ import time
 from symphony_control import ControlError, load_config, read_private
 
 ROOT = Path(__file__).resolve().parents[1]
-LABEL = "com.iliazlobin.symphony.events-concierge"
+PROJECTS = {
+    "iliazlobin/events-concierge": "events-concierge",
+    "iliazlobin/symphony": "symphony",
+}
 
 
 def definitions(config):
+    slug = PROJECTS.get(config.get("repository"))
+    if slug is None:
+        raise ControlError("No reviewed service definition exists for this repository")
+    label = "com.iliazlobin.symphony." + slug
+    profile = ROOT / "profiles" / slug / "profile.py"
+    if Path(config["profile_bin"]).resolve() != profile.resolve():
+        raise ControlError("Profile entrypoint does not match the service's repository and release")
     state = Path(config["state_dir"])
     commands = {
-        LABEL: [sys.executable, str(ROOT / "profiles/events-concierge/profile.py"), "--config", config["_config_path"], "run"],
-        LABEL + ".publication": [sys.executable, str(ROOT / "tools/symphony_publish.py"), "--config", config["_config_path"], "watch"],
+        label: [sys.executable, str(profile), "--config", config["_config_path"], "run"],
+        label + ".publication": [sys.executable, str(ROOT / "tools/symphony_publish.py"), "--config", config["_config_path"], "watch"],
     }
     return {label: {
         "Label": label, "ProgramArguments": command, "WorkingDirectory": str(ROOT),

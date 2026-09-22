@@ -23,7 +23,7 @@ import urllib.request
 from symphony_control import ControlError, NoRedirect, load_config, read_private, request_json
 
 REPOSITORY = "iliazlobin/events-concierge"
-REMOTE = "https://github.com/" + REPOSITORY + ".git"
+REPOSITORIES = (REPOSITORY, "iliazlobin/symphony")
 SHA = re.compile(r"[0-9a-f]{40}")
 ISSUE = re.compile(r"[1-9][0-9]*")
 MAX_RESPONSE = 8 * 1024 * 1024
@@ -37,14 +37,17 @@ SENSITIVE_NAMES = ("auth", "security", "secret", "credential", "permission", "po
 
 
 class GitHub:
-    def __init__(self, token: str):
+    def __init__(self, token: str, repository: str = REPOSITORY):
+        if repository not in REPOSITORIES:
+            raise ControlError("No reviewed publisher exists for this repository")
+        self.repository = repository
         if not token or any(c.isspace() for c in token):
             raise ControlError("A valid host GitHub credential is required")
         self.token = token
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
     def request(self, method: str, path: str, body=None, *, missing=False):
-        if not (path == "/repos/" + REPOSITORY or path.startswith("/repos/" + REPOSITORY + "/")
+        if not (path == "/repos/" + self.repository or path.startswith("/repos/" + self.repository + "/")
                 or path == "/graphql") or ".." in path:
             raise ControlError("GitHub request escaped the approved repository API")
         request = urllib.request.Request(
@@ -128,6 +131,10 @@ class CandidateRepository:
 
     def __init__(self, config: dict, issue_id: str, candidate: dict):
         self.config, self.candidate = config, candidate
+        repository = config.get("repository", REPOSITORY)
+        if repository not in REPOSITORIES:
+            raise ControlError("No reviewed publisher exists for this repository")
+        self.remote = "https://github.com/" + repository + ".git"
         self.workspace = owned_workspace(config, candidate["workspace_path"], "GH-" + issue_id)
         review_name = Path(candidate["review_workspace_path"]).name
         if not re.fullmatch(r"GH-" + issue_id + r"-review-[0-9a-f]{16}", review_name):
@@ -192,7 +199,7 @@ class CandidateRepository:
             self.git("merge-base", "--is-ancestor", expected, candidate["candidate_sha"], cwd=self.repository)
         ref = "refs/heads/" + candidate["branch"]
         self.git("push", "--porcelain", "--force-with-lease=" + ref + ":" + (expected or ""),
-                 REMOTE, candidate["candidate_sha"] + ":" + ref, cwd=self.repository, token=token)
+                 self.remote, candidate["candidate_sha"] + ":" + ref, cwd=self.repository, token=token)
 
 
 def glob_matches(path: str, pattern: str) -> bool:
@@ -230,15 +237,18 @@ def low_risk(config: dict, changes: list[dict]) -> None:
 
 class Broker:
     def __init__(self, config: dict, api, snapshot_reader=None, repository_factory=CandidateRepository):
-        if config.get("repository") != REPOSITORY or not SHA.fullmatch(config.get("base_sha", "")):
+        if config.get("repository") not in REPOSITORIES or not SHA.fullmatch(config.get("base_sha", "")):
             raise ControlError("Publication configuration does not identify the approved repository and baseline")
         branch = config.get("integration_branch", "")
         if not isinstance(branch, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch) or ".." in branch or branch.endswith("/"):
             raise ControlError("An explicit valid integration branch is required")
         self.config, self.api, self.repository_factory = config, api, repository_factory
+        self.repository = config["repository"]
+        if isinstance(api, GitHub) and api.repository != self.repository:
+            raise ControlError("GitHub client belongs to a different project")
         self.automatic = False
         self.snapshot_reader = snapshot_reader or (lambda: request_json(config, "/api/v1/control"))
-        self.prefix = "/repos/" + REPOSITORY
+        self.prefix = "/repos/" + self.repository
 
     def candidate(self, issue_id: str):
         if not ISSUE.fullmatch(issue_id):
@@ -268,10 +278,13 @@ class Broker:
 
     def receipt(self, issue_id: str) -> dict:
         path = Path(self.config["state_dir"]) / "receipts" / ("publication-" + issue_id + ".json")
-        return json.loads(read_private(path)) if path.exists() else {}
+        receipt = json.loads(read_private(path)) if path.exists() else {}
+        if receipt and (receipt.get("repository") != self.repository or receipt.get("issue_id") != issue_id):
+            raise ControlError("Publication receipt belongs to a different project or issue")
+        return receipt
 
     def record(self, issue_id: str, candidate: dict, pr: dict, status: str, **extra):
-        result = {"version": 1, "issue_id": issue_id, "repository": REPOSITORY,
+        result = {"version": 1, "issue_id": issue_id, "repository": self.repository,
                   "run_id": candidate["run_id"], "candidate_sha": candidate["candidate_sha"],
                   "base_sha": candidate["base_sha"], "branch": candidate["branch"],
                   "pr_number": pr["number"], "pr_url": pr["html_url"], "status": status,
@@ -283,7 +296,7 @@ class Broker:
         previous = self.receipt(issue_id)
         if previous.get("last_error") == reason:
             return
-        receipt = previous or {"version": 1, "issue_id": issue_id, "repository": REPOSITORY, "status": "blocked"}
+        receipt = previous or {"version": 1, "issue_id": issue_id, "repository": self.repository, "status": "blocked"}
         receipt.update(last_error=reason, updated_at=dt.datetime.now(dt.timezone.utc).isoformat())
         write_receipt(Path(self.config["state_dir"]) / "receipts" / ("publication-" + issue_id + ".json"), receipt)
 
@@ -297,15 +310,16 @@ class Broker:
 
     def base(self, candidate: dict):
         repository = self.api.request("GET", self.prefix)
-        if repository.get("full_name") != REPOSITORY or repository.get("private") is not True:
+        if repository.get("full_name") != self.repository or repository.get("private") is not True:
             raise ControlError("Publication target is not the approved private repository")
         branch = self.api.request("GET", self.prefix + "/branches/" + urllib.parse.quote(self.config["integration_branch"], safe=""))
         if branch.get("commit", {}).get("sha") != candidate["base_sha"]:
             raise ControlError("Integration branch moved from the reviewed baseline; rebuild and review first")
         return branch
 
-    @staticmethod
-    def marker(issue_id: str) -> str:
+    def marker(self, issue_id: str) -> str:
+        if self.repository == "iliazlobin/symphony":
+            return "Symphony task: GH-" + issue_id + "."
         return "<!-- symphony issue=GH-" + issue_id + " -->"
 
     def pr_body(self, issue_id: str, candidate: dict):
@@ -316,17 +330,30 @@ class Broker:
         checks = "\n".join("- " + plain(check["name"]) + ": **" + check["result"] + "** — " + plain(check["details"])
                            for check in candidate.get("checks", [])) or "- No local checks reported."
         limits = "\n".join("- " + plain(value) for value in candidate.get("limitations", [])) or "- No additional limitations reported."
+        evidence = ("Candidate: `" + candidate["candidate_sha"] + "`. Base: `" + candidate["base_sha"]
+                    + "`.\nIndependent reviewer approved this exact commit with no findings.\n\n"
+                    + "The builder recorded the following checks and limitations before independent host review and publication.\n\n"
+                    + "Local checks at builder handoff:\n" + checks + "\n\nLimitations at builder handoff:\n"
+                    + limits + "\n\nDeployment is not part of this pull request.\n")
+        if self.repository == "iliazlobin/symphony":
+            # The host publisher must satisfy this repository's own PR-description gate.
+            summary = " ".join(candidate["summary"].split())
+            preview = plain(summary if len(summary) <= 110 else summary[:107] + "...")
+            return ("#### Context\n\nImplements the scoped task in GitHub. Refs #" + issue_id
+                    + ".\n\n#### TL;DR\n\n*Complete the reviewed implementation for issue GH-" + issue_id + ".*"
+                    + "\n\n#### Summary\n\n- " + preview
+                    + "\n\n#### Alternatives\n\n- Keep the issue scope; broader changes require a separate task."
+                    + "\n\n#### Test Plan\n\n- [x] Independent review of the exact candidate commit."
+                    + "\n- [ ] Required GitHub checks on the published head."
+                    + "\n\n" + self.marker(issue_id) + "\n\nBuilder summary: " + plain(candidate["summary"])
+                    + "\n\n" + evidence)
         return (self.marker(issue_id) + "\n\n" + plain(candidate["summary"]) + "\n\nRefs #" + issue_id
-                + "\n\nCandidate: `" + candidate["candidate_sha"] + "`. Base: `" + candidate["base_sha"]
-                + "`.\nIndependent reviewer approved this exact commit with no findings.\n\n"
-                + "The builder recorded the following checks and limitations before independent host review and publication.\n\n"
-                + "Local checks at builder handoff:\n" + checks + "\n\nLimitations at builder handoff:\n"
-                + limits + "\n\nDeployment is not part of this pull request.\n")
+                + "\n\n" + evidence)
 
     def verify_pr(self, pr: dict, issue_id: str, candidate: dict, *, allow_old_head=False):
         if (pr.get("state") != "open" or self.marker(issue_id) not in pr.get("body", "")
-                or pr.get("head", {}).get("repo", {}).get("full_name") != REPOSITORY
-                or pr.get("base", {}).get("repo", {}).get("full_name") != REPOSITORY
+                or pr.get("head", {}).get("repo", {}).get("full_name") != self.repository
+                or pr.get("base", {}).get("repo", {}).get("full_name") != self.repository
                 or pr["head"].get("ref") != candidate["branch"]
                 or pr["base"].get("ref") != self.config["integration_branch"]
                 or pr["base"].get("sha") != candidate["base_sha"]
@@ -342,9 +369,9 @@ class Broker:
                 if (previous.get("candidate_sha") != candidate["candidate_sha"]
                         or known_pr.get("head", {}).get("sha") != candidate["candidate_sha"]
                         or known_pr.get("head", {}).get("ref") != candidate["branch"]
-                        or known_pr.get("head", {}).get("repo", {}).get("full_name") != REPOSITORY
+                        or known_pr.get("head", {}).get("repo", {}).get("full_name") != self.repository
                         or known_pr.get("base", {}).get("ref") != self.config["integration_branch"]
-                        or known_pr.get("base", {}).get("repo", {}).get("full_name") != REPOSITORY
+                        or known_pr.get("base", {}).get("repo", {}).get("full_name") != self.repository
                         or self.marker(issue_id) not in known_pr.get("body", "")
                         or not SHA.fullmatch(known_pr.get("merge_commit_sha", ""))):
                     raise ControlError("Merged PR does not match the native candidate receipt")
@@ -360,9 +387,9 @@ class Broker:
             raise ControlError("Remote task reference is malformed")
         if remote_sha not in (None, candidate["candidate_sha"]):
             if (previous.get("candidate_sha") != remote_sha or previous.get("branch") != candidate["branch"]
-                    or previous.get("repository") != REPOSITORY or previous.get("issue_id") != issue_id):
+                    or previous.get("repository") != self.repository or previous.get("issue_id") != issue_id):
                 raise ControlError("Refusing to replace a task branch without a matching host publication receipt")
-        query = urllib.parse.urlencode({"state": "open", "head": "iliazlobin:" + candidate["branch"],
+        query = urllib.parse.urlencode({"state": "open", "head": self.repository.split("/")[0] + ":" + candidate["branch"],
                                         "base": self.config["integration_branch"], "per_page": 100})
         prs = self.api.request("GET", self.prefix + "/pulls?" + query)
         if not isinstance(prs, list) or len(prs) > 1:
@@ -537,7 +564,7 @@ def main() -> int:
             return 0
         if args.command == "watch" and not 5 <= args.interval <= 300:
             raise ControlError("Watch interval must be between 5 and 300 seconds")
-        api = GitHub(host_token())
+        api = GitHub(host_token(), config["repository"])
         prior = None
         while True:
             try:

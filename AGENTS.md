@@ -24,4 +24,6 @@ profile is the first consumer; application code and GCP infrastructure live sepa
   the system and links published revisions. Update canonical files instead of creating
   duplicate trackers or report bundles.
 
-The [Mac profile guide](profiles/events-concierge/README.md) owns setup and recovery.
+The [Mac profile guide](profiles/events-concierge/README.md) owns shared setup and recovery.
+The [Symphony project guide](profiles/symphony/README.md) owns self-management onboarding;
+its root `WORKFLOW.md` is separate from the upstream Linear example in `elixir/WORKFLOW.md`.

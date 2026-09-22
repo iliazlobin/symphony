@@ -336,13 +336,22 @@ defmodule SymphonyElixir.Config.Schema do
     embedded_schema do
       field(:port, :integer)
       field(:host, :string, default: "127.0.0.1")
+      field(:project_links, {:array, :map}, default: [])
+      field(:session_cookie, :string, default: "_symphony_elixir_key")
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:port, :host], empty_values: [])
+      |> cast(attrs, [:port, :host, :project_links, :session_cookie], empty_values: [])
       |> validate_number(:port, greater_than_or_equal_to: 0)
+      |> validate_required([:session_cookie])
+      |> validate_format(:session_cookie, ~r/\A_[a-z0-9_]{1,63}\z/)
+      |> validate_change(:project_links, fn :project_links, links ->
+        if SymphonyElixir.ProjectDirectory.valid?(links),
+          do: [],
+          else: [project_links: "must contain unique projects with labels and safe browser origins (maximum 20)"]
+      end)
     end
   end
 

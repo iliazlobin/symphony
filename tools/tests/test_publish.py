@@ -8,10 +8,11 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock
 import urllib.parse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from symphony_publish import Broker, CandidateRepository, ControlError, REPOSITORY, low_risk, publication_lock
+from symphony_publish import Broker, CandidateRepository, ControlError, GitHub, REPOSITORY, low_risk, publication_lock
 
 BASE = "a" * 40
 HEAD = "b" * 40
@@ -21,7 +22,8 @@ MERGED = "c" * 40
 class FakeGitHub:
     token = "host-only-test-token"
 
-    def __init__(self):
+    def __init__(self, repository=REPOSITORY):
+        self.repository = repository
         self.calls = []
         self.issue = {"state": "open", "title": "Improve a guide", "labels": [{"name": "symphony:ready"}, {"name": "symphony:auto-merge"}]}
         self.base = {"commit": {"sha": BASE}, "protected": True}
@@ -37,9 +39,9 @@ class FakeGitHub:
         self.calls.append((method, path, copy.deepcopy(body)))
         if self.before:
             self.before(method, path, body)
-        endpoint = urllib.parse.urlsplit(path).path.removeprefix("/repos/" + REPOSITORY)
+        endpoint = urllib.parse.urlsplit(path).path.removeprefix("/repos/" + self.repository)
         if method == "GET" and endpoint == "":
-            result = {"full_name": REPOSITORY, "private": True}
+            result = {"full_name": self.repository, "private": True}
         elif method == "GET" and endpoint == "/issues/7":
             result = self.issue
         elif method == "GET" and endpoint == "/branches/main":
@@ -56,10 +58,10 @@ class FakeGitHub:
             result = {"check_runs": self.runs, "total_count": len(self.runs)}
         elif method == "POST" and endpoint == "/pulls":
             assert self.pr is None
-            self.pr = {"number": 11, "node_id": "PR_TEST", "html_url": "https://github.com/" + REPOSITORY + "/pull/11",
+            self.pr = {"number": 11, "node_id": "PR_TEST", "html_url": "https://github.com/" + self.repository + "/pull/11",
                        "body": body["body"], "state": "open", "draft": body["draft"], "merged": False,
-                       "head": {"ref": body["head"], "sha": self.ref, "repo": {"full_name": REPOSITORY}},
-                       "base": {"ref": body["base"], "sha": self.base["commit"]["sha"], "repo": {"full_name": REPOSITORY}},
+                       "head": {"ref": body["head"], "sha": self.ref, "repo": {"full_name": self.repository}},
+                       "base": {"ref": body["base"], "sha": self.base["commit"]["sha"], "repo": {"full_name": self.repository}},
                        "mergeable": True, "mergeable_state": "clean"}
             result = self.pr
         elif method == "PATCH" and endpoint == "/pulls/11":
@@ -80,11 +82,13 @@ class FakeGitHub:
 
 
 class PublishTest(unittest.TestCase):
+    repository = REPOSITORY
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         state = Path(self.temp.name).resolve()
-        self.config = {"repository": REPOSITORY, "base_sha": BASE, "integration_branch": "main",
+        self.config = {"repository": self.repository, "base_sha": BASE, "integration_branch": "main",
                        "state_dir": str(state), "workspace_root": str(state / "workspaces"),
                        "auto_merge": {"enabled": False, "allowed_paths": ["docs/**/*.md"], "denied_paths": [],
                                       "max_changed_lines": 80, "required_checks": ["unit"]}}
@@ -96,7 +100,7 @@ class PublishTest(unittest.TestCase):
                           "review": {"candidate_sha": HEAD, "verdict": "approve", "findings": []}}
         self.snapshot = {"enabled": True, "fault": None, "mode": "running", "revision": 3,
                          "issues": {"7": {"hold": "owner_review", "active": None, "handoff": self.candidate}}}
-        self.api = FakeGitHub()
+        self.api = FakeGitHub(self.repository)
         self.pushes = []
         self.changes = [{"path": "docs/guide.md", "added": 4, "deleted": 2, "mode": "100644"}]
         outer = self
@@ -145,6 +149,24 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertNotIn(self.api.token, path.read_text())
 
+    def test_foreign_receipt_and_foreign_pr_are_rejected_before_mutation(self):
+        self.broker.publish("7")
+        self.api.calls.clear()
+        self.pushes.clear()
+        self.api.pr["head"]["repo"]["full_name"] = "example/foreign"
+        with self.assertRaises(ControlError):
+            self.broker.publish("7")
+        self.assertFalse(self.writes())
+        self.assertFalse(self.pushes)
+        path = Path(self.config["state_dir"]) / "receipts/publication-7.json"
+        receipt = json.loads(path.read_text())
+        receipt["repository"] = "example/foreign"
+        path.write_text(json.dumps(receipt))
+        self.api.calls.clear()
+        with self.assertRaisesRegex(ControlError, "different project"):
+            self.broker.publish("7")
+        self.assertFalse(self.api.calls)
+
     def test_only_native_run_fenced_independent_approval_is_accepted(self):
         changes = [lambda: self.snapshot.update(fault="disk failure"),
                    lambda: self.snapshot["issues"]["7"].update(active={"run_id": "other"}),
@@ -170,7 +192,7 @@ class PublishTest(unittest.TestCase):
         for mutation in (lambda: self.api.issue.update(labels=[]),
                          lambda: self.api.base["commit"].update(sha="d" * 40),
                          lambda: setattr(self.api, "ref", "e" * 40)):
-            self.api = FakeGitHub()
+            self.api = FakeGitHub(self.repository)
             self.broker.api = self.api
             mutation()
             with self.assertRaises(ControlError):
@@ -396,6 +418,40 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(len(self.writes()), 1)
         self.api.issue["state"] = "closed"
         self.assertEqual(self.broker.reconcile()["results"][0]["status"], "blocked")
+
+
+class SelfPublishTest(PublishTest):
+    # Exercise publication, stale ownership, retries and merge gates with the
+    # same issue number under the second repository's independent authority.
+    repository = "iliazlobin/symphony"
+
+    def test_self_publication_follows_the_repository_pr_template(self):
+        self.candidate["summary"] = "<" + "A long scoped change. " * 30 + "<!-- template -->\n#### Untrusted heading"
+        self.broker.publish("7")
+        body = self.api.pr["body"]
+        template = (Path(__file__).resolve().parents[2] / ".github/pull_request_template.md").read_text()
+        headings = [line for line in template.splitlines() if line.startswith("#### ")]
+        self.assertEqual([line for line in body.splitlines() if line.startswith("#### ")], headings)
+        self.assertNotIn("<!--", body)
+        self.assertIn("- [x] Independent review of the exact candidate commit.", body)
+        self.assertIn("- [ ] Required GitHub checks on the published head.", body)
+        self.assertIn(self.broker.marker("7"), body)
+        self.assertNotIn(self.broker.marker("70"), body)
+        self.assertEqual(self.broker.publish("7")["status"], "draft_pr")
+
+
+class GitHubScopeTest(unittest.TestCase):
+    def test_each_client_rejects_other_projects_before_sending_credentials(self):
+        for repository, other in [(REPOSITORY, "iliazlobin/symphony"), ("iliazlobin/symphony", REPOSITORY)]:
+            api = GitHub("fixture-token", repository)
+            api.opener = Mock()
+            with self.assertRaisesRegex(ControlError, "escaped"):
+                api.request("POST", "/repos/" + other + "/pulls", {})
+            api.opener.open.assert_not_called()
+            with self.assertRaisesRegex(ControlError, "different project"):
+                Broker({"repository": other, "base_sha": BASE, "integration_branch": "main"}, api)
+        with self.assertRaises(ControlError):
+            GitHub("fixture-token", "example/unregistered")
 
 
 class RealGitIsolationTest(unittest.TestCase):

@@ -58,7 +58,7 @@ def create_command(workspace, codex_home, image, role, cidfile, owner, docker, s
             raise ValueError("Only the reviewed repository seccomp compatibility candidate is supported")
         compatibility = ["--security-opt", "seccomp=" + str(policy)]
     if apparmor_profile is not None:
-        if apparmor_profile != "symphony-codex" or seccomp_policy is None:
+        if apparmor_profile not in ("symphony-codex", "symphony-self-codex") or seccomp_policy is None:
             raise ValueError("Only the reviewed worker AppArmor profile is supported")
         compatibility += ["--security-opt", "apparmor=" + apparmor_profile]
     return [

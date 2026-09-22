@@ -474,7 +474,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
         settings: reported_settings(assigns.board),
         settings_editable: settings_editable?(assigns),
         controls_available: controls_available?(assigns),
-        settings_projects: Enum.map(assigns.board.projects, &Map.put(&1, :url, safe_url(&1.url)))
+        settings_projects: Enum.map(assigns.board.projects, &Map.put(&1, :url, safe_url(&1.url))),
+        project_links: SymphonyElixir.ProjectDirectory.links()
       )
 
     ~H"""
@@ -485,7 +486,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
       <header class="board-header">
         <div class="board-location">
           <a href="/" class="brand"><span class="brand-mark" aria-hidden="true">∿</span> Symphony</a>
-          <span class="header-divider" aria-hidden="true">/</span><span class="board-heading">Projects</span>
+          <span class="header-divider" aria-hidden="true">/</span>
+          <span :if={@project_links == []} class="board-heading">Projects</span>
+          <details :if={@project_links != []} id="project-directory" class="board-menu project-directory">
+            <summary>Projects <span aria-hidden="true">⌄</span></summary>
+            <nav class="project-directory-links" aria-label="Project boards">
+              <a :for={project <- @project_links} href={project["url"]}
+                aria-current={if Enum.any?(@board.projects, &(&1.id == project["id"])), do: "page"}>
+                <strong>{project["label"]}</strong><span>{String.replace_prefix(project["id"], "github:", "")}</span>
+              </a>
+            </nav>
+          </details>
           <span class="header-divider" aria-hidden="true">/</span>
           <div id="board-project-picker" class="filter-combo project-combo" data-filter="project" phx-update="ignore">
             <div class="combo-control"><input id="filter-project" role="combobox" aria-label="Project filter"

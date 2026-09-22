@@ -161,6 +161,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:error, {:missing_workflow_file, ^missing_path, :enoent}} =
              WorkflowStore.settings()
 
+    assert SymphonyElixir.ProjectDirectory.links() == []
+
     assert {:error, {:missing_workflow_file, ^missing_path, :enoent}} =
              WorkflowStore.force_reload()
 
