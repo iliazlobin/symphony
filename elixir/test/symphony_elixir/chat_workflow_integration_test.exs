@@ -148,6 +148,8 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
       end
     end
 
+    defp run_request("Fail this response", _opts, _emit, _tool), do: {:error, :model_unavailable}
+
     defp run_request(_text, _opts, emit, _tool) do
       emit.({:delta, "Conversation resumed."})
       {:ok, %{status: :completed}}
@@ -580,6 +582,38 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     assert {:ok, summaries} = Store.list(@project, ctx.auth, ctx.server)
     assert Enum.count(summaries, &(&1["task_id"] == task_id)) == 1
     assert Enum.count(summaries, &(&1["conversation_role"] == "main")) == 1
+    assert Agent.get(ctx.requests, & &1) == []
+  end
+
+  test "stopped and failed assistant rows remain labelled after later responses complete", ctx do
+    task_id = @project <> ":2"
+    session = %{BrowserAuth.session_key() => ctx.marker, "project" => @project, "task_id" => task_id, "task_title" => "Clarify retry behavior"}
+    {:ok, view, _html} = live_isolated(local_conn(), PanelHost, session: session)
+    view = with_target(view, "#chat-app")
+    assert {:ok, chat} = Store.ensure_conversation(@project, task_id, ctx.auth, ctx.server)
+    view |> element("#chat-composer") |> render_submit(%{"message" => "Wait for thread status"})
+    assert_receive {:waiting_for_thread_status, _runtime}
+    assert {:ok, running} = Store.get(@project, chat["id"], ctx.auth, ctx.server)
+    stopped_id = List.last(running["messages"])["id"]
+    chat_id = chat["id"]
+    assert_push_event(view, "chat-message-sent", %{chat_id: ^chat_id, accepted_text: "Wait for thread status"})
+    view |> element("#chat-composer") |> render_submit(%{"message" => "Continue after stop"})
+    view |> element("#stop-response-button") |> render_click()
+    assert eventually(fn -> has_element?(view, "#resume-queue-button") end)
+    assert has_element?(view, "#message-#{stopped_id} .message-outcome", "Stopped")
+    view |> element("#resume-queue-button") |> render_click()
+    assert_receive {:model_started, _, "native-integration-thread", "Continue after stop"}
+    wait_chat(ctx, &(&1["status"] == "idle" and length(&1["messages"]) == 4))
+    assert eventually(fn -> not has_element?(view, "#chat-queue") end)
+    assert has_element?(view, "#message-#{stopped_id} .message-outcome", "Stopped")
+    view |> element("#chat-composer") |> render_submit(%{"message" => "Fail this response"})
+    failed = wait_chat(ctx, &(&1["status"] == "error"))
+    failed_id = List.last(failed["messages"])["id"]
+    assert eventually(fn -> has_element?(view, "#message-#{failed_id} .message-outcome", "Failed") end)
+    view |> element("#chat-composer") |> render_submit(%{"message" => "Recover this response"})
+    wait_chat(ctx, &(&1["status"] == "idle" and length(&1["messages"]) == 8))
+    assert has_element?(view, "#message-#{failed_id} .message-outcome", "Failed")
+    assert has_element?(view, "#message-#{stopped_id} .message-outcome", "Stopped")
     assert Agent.get(ctx.requests, & &1) == []
   end
 

@@ -256,7 +256,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
              |> assign(session_tab: "chat", workspace_view: "conversation")
              |> assign(:client_id, nonce())
              |> assign(:notice, nil)
-             |> push_event("chat-message-sent", %{chat_id: chat["id"]})
+             |> push_event("chat-message-sent", %{chat_id: chat["id"], accepted_text: text})
              |> navigate(project_id(socket), chat["id"])}
 
           {:error, reason} ->
@@ -719,7 +719,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
             <div id="chat-messages" class="chat-messages" aria-live="off">
               <article :for={message <- messages(@chat)} id={"message-#{message["id"]}"} class={"chat-message chat-message-#{if message["role"] == "user", do: "user", else: "assistant"}"}>
-                <div class="message-meta"><strong>{if message["role"] == "user", do: "You", else: "Symphony"}</strong><span :if={message["status"] == "streaming"} class="streaming-mark">Responding</span></div>
+                <div class="message-meta"><strong>{if message["role"] == "user", do: "You", else: "Symphony"}</strong><span :if={message["status"] == "streaming"} class="streaming-mark">Responding</span><span :if={message["role"] == "assistant" && message["status"] in ["interrupted", "error"]} class="message-outcome">{if message["status"] == "interrupted", do: "Stopped", else: "Failed"}</span></div>
                 <div :if={text(message["text"]) != ""} class="message-text">{text(message["text"])}</div>
                 <span :if={message["status"] in ["streaming", "pending"] && text(message["text"]) == ""} class="chat-thinking" role="status">Working<span aria-hidden="true"> ···</span></span>
                 <div :if={list(message["widgets"]) != []} class="chat-widgets">
