@@ -584,3 +584,17 @@ summary { cursor: pointer; color: var(--accent); }
 .intake-history-item { display: flex; justify-content: space-between; gap: 14px; width: 100%; text-align: left; padding: 12px 4px; border: 0; border-bottom: 1px solid var(--line); background: none; color: var(--fg); font: inherit; cursor: pointer; }
 .intake-history-item span { overflow-wrap: anywhere; }
 .intake-history-item:hover { background: var(--soft); }
+
+/* A task keeps its own conversation and pending messages beside the board. */
+.chat-bound-title strong { overflow-wrap: anywhere; }
+.chat-queue { margin-bottom: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
+.chat-queue-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 9px 12px; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--line); }
+.chat-queue-heading strong { color: var(--fg); font-size: 12px; }
+.chat-queue-heading .button { margin-left: auto; font-size: 11px; }
+.chat-queue ol { list-style: none; margin: 0; padding: 0; max-height: 200px; overflow-y: auto; }
+.chat-queued-message { display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
+.chat-queued-message + .chat-queued-message { border-top: 1px solid var(--line); }
+.chat-queue-position { color: var(--muted); font-size: 11px; min-width: 12px; }
+.chat-queued-message p { margin: 0; min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.chat-queue-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.chat-queue-actions .button { padding: 3px 6px; font-size: 11px; }
