@@ -1106,6 +1106,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     server = start_supervised!({Store, c.opts})
     assert {:ok, restored} = Store.get(c.project, chat["id"], c.auth, server)
     assert restored["queue"] == queued["queue"]
+    assert restored["error"] =~ "Resume queue"
     assert restored["queue_paused"]
     assert {:ok, duplicate} = Store.send_message(c.project, chat["id"], "resumed", "saved", c.auth, server)
     assert duplicate["queue"] == restored["queue"]
@@ -1193,6 +1194,26 @@ defmodule SymphonyElixir.Chat.StoreTest do
     :sys.replace_state(c.server, fn state -> put_in(state, [:chats, chat["id"], "padding"], String.duplicate("x", 6_500_001)) end)
     assert {:error, :chat_history_full} = Store.send_message(c.project, chat["id"], "full", "full", c.auth, c.server)
     assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
+  end
+
+  test "growing history pauses accepted followups before the durable record limit", c do
+    assert {:ok, chat} = Store.ensure_conversation(c.project, nil, c.auth, c.server)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "active", c.auth, c.server)
+    assert_receive {:runtime, pid, _, "wait"}
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "retained", "retained", c.auth, c.server)
+    :sys.replace_state(c.server, fn state -> put_in(state, [:chats, chat["id"], "padding"], String.duplicate("x", 6_500_001)) end)
+    send(pid, :finish)
+    paused = wait_chat(c, chat, & &1["queue_paused"])
+    assert paused["error"] =~ "history is full"
+    assert paused["queued_count"] == 1
+    assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
+    refute_receive {:runtime, _, _, "retained"}
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    assert {:ok, restored} = Store.get(c.project, chat["id"], c.auth, server)
+    assert restored["queue"] == paused["queue"]
+    assert {:ok, %{"queue_paused" => true}} = Store.resume_queue(c.project, chat["id"], c.auth, server)
+    refute_receive {:runtime, _, _, "retained"}
   end
 
   test "runtime identity changes never silently resume a retained queue", c do

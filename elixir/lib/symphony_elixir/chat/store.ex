@@ -469,7 +469,7 @@ defmodule SymphonyElixir.Chat.Store do
     cond do
       chat["archived"] -> {:error, :chat_busy}
       not canonical?(chat) and length(chat["messages"]) >= 400 -> {:error, :start_new_chat}
-      byte_size(Jason.encode!(chat)) > 6_500_000 -> {:error, :chat_history_full}
+      not history_headroom?(chat) -> {:error, :chat_history_full}
       length(queue(chat)) >= 20 -> {:error, :chat_queue_full}
       chat["runtime_identity"] != runtime_identity(state.settings) -> {:error, :chat_runtime_changed}
       true -> :ok
@@ -912,20 +912,24 @@ defmodule SymphonyElixir.Chat.Store do
       entry = hd(queue(chat))
       auth = state.queue_auth[entry["id"]]
 
-      with true <- is_map(auth),
+      with true <- history_headroom?(chat) or {:error, :chat_history_full},
+           true <- is_map(auth),
            {:ok, _} <- authorized_chat(state, chat["project_id"], chat["id"], auth),
            true <- chat["runtime_identity"] == runtime_identity(state.settings) do
         start_turn(state, chat, entry, auth)
       else
-        _ -> pause_queued(state, chat)
+        {:error, :chat_history_full} -> pause_queued(state, chat, "Conversation history is full. Queued messages are saved and paused.")
+        _ -> pause_queued(state, chat, "Queued messages are paused. Sign in and resume the queue to continue.")
       end
     else
       state
     end
   end
 
-  defp pause_queued(state, chat) do
-    chat = chat |> Map.put("queue_paused", true) |> Map.put("error", "Queued messages are paused. Sign in and resume the queue to continue.")
+  defp history_headroom?(chat), do: byte_size(Jason.encode!(chat)) <= 6_500_000
+
+  defp pause_queued(state, chat, reason) do
+    chat = chat |> Map.put("queue_paused", true) |> Map.put("error", reason)
     {_, next} = put(state, chat)
     next
   end
@@ -1174,7 +1178,7 @@ defmodule SymphonyElixir.Chat.Store do
           chat
           |> Map.put("status", "interrupted")
           |> Map.put("activity", nil)
-          |> Map.put("error", "The service restarted. Your saved conversation is available; send a new message to continue.")
+          |> Map.put("error", recovery_message(chat))
           |> update_last(&Map.put(&1, "status", "interrupted")),
         else: chat
 
@@ -1182,6 +1186,12 @@ defmodule SymphonyElixir.Chat.Store do
       %{"status" => "executing"} = proposal, acc -> update_proposal(acc, Map.put(proposal, "status", "unknown"))
       _, acc -> acc
     end)
+  end
+
+  defp recovery_message(chat) do
+    if queue(chat) == [],
+      do: "The service restarted. Your saved conversation is available; send a new message to continue.",
+      else: "The service restarted. Your messages are saved; select Resume queue to continue the queued messages."
   end
 
   defp runtime_error(reason) when reason in [:auth_required, :authentication_required], do: "Sign in to the dedicated management-chat Codex runtime, then try again."
