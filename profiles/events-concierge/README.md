@@ -120,7 +120,10 @@ Done means the tracker is terminal; it does not establish merge, acceptance or d
 
 Cards link the issue, repository and related pull requests. PR draft/merge state,
 GitHub review and checks for the current PR head remain separate from the worker's
-candidate review. The source strip shows refresh failures and controller mode;
+candidate review. Cards preview two PRs; the task dialog lists all associated PRs
+with independent status rows and direct CI links. **Agent review** summarizes the
+reviewed revision once, retaining the reviewer summary and findings without a raw handoff block.
+The source strip shows refresh failures and controller mode;
 “Live updates connected” describes the browser connection only.
 
 Each card and task dialog shows an inline execution summary: current state, cumulative

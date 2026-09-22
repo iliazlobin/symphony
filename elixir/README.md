@@ -642,11 +642,14 @@ attempts and elapsed time against the reported limits. It stays visible in compa
 unavailable status and missing metrics remain explicit. Task dialogs show Cancel or
 Retry only when applicable; settled candidate review does not offer Retry.
 
-Compact cards show blockers and a short PR/CI summary. Detailed cards and task popups
-include the PR branch, commit and changed-file counts. Expand checks on a detailed
-card or open its popup for individual job results, durations and
-workflow/log links. Partial or stale check data stays explicit. Job durations are
-independent; passing CI and conflict-free branches do not establish merge approval.
+Cards preview two associated PRs; the task popup lists every PR with its own state,
+GitHub review, CI summary, short commit and file counts. Each PR's CI link opens its
+checks on GitHub. Partial, stale and unavailable check data remain explicit.
+Agent review appears once for the reviewed candidate, with its reviewer summary and
+findings. The short commit links to GitHub only when the candidate, review and an
+associated PR head all match. Earlier builder notes stay in the durable handoff;
+they are not current PR status. Agent approval,
+GitHub review, passing CI and merging remain separate facts.
 
 Browser controls use the [configured sign-in provider](#browser-sign-in).
 Authentication does not bypass tracker identity, command revision, replay or

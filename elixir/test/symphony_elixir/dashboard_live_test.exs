@@ -308,10 +308,98 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#board-dialog .execution-summary", "Awaiting your review")
     assert has_element?(view, "#board-dialog .execution-summary dd[title='Tokens: 517,755 used; limit 1,000,000']", "518k / 1M")
     assert has_element?(view, "#board-dialog .execution-summary", "2 / 2")
+    assert has_element?(view, "#board-dialog .candidate-review h3", "Agent review")
+    assert has_element?(view, "#board-dialog .candidate-review", "Approved")
+    assert has_element?(view, "#board-dialog .candidate-review code[title='#{String.duplicate("a", 40)}']", "aaaaaaa")
+    candidate_text = view |> element("#board-dialog .candidate-review") |> render() |> Floki.parse_fragment!() |> Floki.text()
+    refute candidate_text =~ String.duplicate("a", 40)
+    refute has_element?(view, "#board-dialog .candidate-review details, #board-dialog .candidate-review pre")
     refute has_element?(view, "#board-dialog summary", "Runtime details")
     refute has_element?(view, "#board-dialog button[phx-value-action=cancel]")
     refute has_element?(view, "#board-dialog button[phx-value-action=retry]")
     refute has_element?(view, "#board-dialog .execution-summary", "Unavailable")
+  end
+
+  test "agent review keeps reviewer findings without repeating historical builder notes or raw handoff JSON", ctx do
+    sha = String.duplicate("a", 40)
+
+    handoff = %{
+      "candidate_sha" => sha,
+      "summary" => "Builder completed the requested update",
+      "checks" => [
+        %{"name" => "Unit tests", "result" => "passed", "details" => "All passed"},
+        %{"name" => "Independent review", "result" => "not_run", "details" => "Review pending after builder handoff"}
+      ],
+      "limitations" => ["Candidate not published at builder handoff"],
+      "review" => %{
+        "candidate_sha" => sha,
+        "verdict" => "request_changes",
+        "summary" => "Handle interrupted retries before publishing",
+        "findings" => [
+          %{"severity" => "high", "path" => "lib/retry.ex", "line" => 42, "description" => "The interrupted attempt remains active"},
+          %{"severity" => "medium", "path" => "<script>bad</script>", "line" => nil, "description" => "Missing coverage for cancellation"}
+        ]
+      }
+    }
+
+    board = execution_board(ctx.board, "4", %{"hold" => "owner_review", "handoff" => handoff})
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    {view, _} = board_view()
+    open_task(view, "4")
+    review = "#board-dialog .candidate-review"
+    assert has_element?(view, review, "Changes requested")
+    assert has_element?(view, review, "Handle interrupted retries before publishing")
+    assert has_element?(view, review <> " .candidate-findings", "lib/retry.ex:42")
+    assert has_element?(view, review <> " .candidate-findings", "The interrupted attempt remains active")
+    assert has_element?(view, review <> " .candidate-findings", "Missing coverage for cancellation")
+    refute has_element?(view, review, "Review pending after builder handoff")
+    refute has_element?(view, review, "Candidate not published at builder handoff")
+    refute has_element?(view, review <> " details, " <> review <> " pre, " <> review <> " script")
+  end
+
+  test "agent review keeps a blocked reason when the reviewer has no findings", ctx do
+    handoff = put_in(approved_handoff(), ["review"], %{"candidate_sha" => String.duplicate("a", 40), "verdict" => "blocked", "summary" => "Repository access failed before review", "findings" => []})
+    board = execution_board(ctx.board, "4", %{"hold" => "owner_review", "handoff" => handoff})
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    {view, _} = board_view()
+    open_task(view, "4")
+    assert has_element?(view, "#board-dialog .candidate-review", "Blocked")
+    assert has_element?(view, "#board-dialog .candidate-review", "Repository access failed before review")
+    refute has_element?(view, "#board-dialog .candidate-review details, #board-dialog .candidate-review pre")
+  end
+
+  test "a single agent review links only an exact candidate and reviewer SHA present on a linked PR", ctx do
+    sha = String.duplicate("a", 40)
+    other_sha = String.duplicate("b", 40)
+
+    prs = [
+      %{number: 12, title: "Reviewed change", url: "https://github.com/example/fixture/pull/12", head_sha: sha},
+      %{number: 11, title: "Same candidate", url: "https://github.com/example/fixture/pull/11", head_sha: sha},
+      %{number: 10, title: "Newer change", url: "https://github.com/example/fixture/pull/10", head_sha: other_sha}
+    ]
+
+    board =
+      ctx.board
+      |> execution_board("4", %{"hold" => "owner_review", "handoff" => approved_handoff()})
+      |> update_task("4", &Map.put(&1, :pull_requests, prs))
+
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    {view, _} = board_view()
+    open_task(view, "4")
+    assert length(Floki.find(Floki.parse_document!(render(view)), "#board-dialog .candidate-review")) == 1
+    assert has_element?(view, "#board-dialog .candidate-review a[href='https://github.com/example/fixture/commit/#{sha}'][title='#{sha}']", "aaaaaaa")
+    refute has_element?(view, "#board-dialog .pull-request-evidence .candidate-review")
+
+    mismatched_review = put_in(approved_handoff(), ["review", "candidate_sha"], other_sha)
+    changed = update_task(board, "4", &Map.put(&1, :handoff, mismatched_review))
+    refresh(view, ctx.runtime, changed)
+    assert has_element?(view, "#board-dialog .candidate-review code[title='#{sha}']", "aaaaaaa")
+    refute has_element?(view, "#board-dialog .candidate-review a")
+
+    different_heads = update_task(board, "4", &Map.put(&1, :pull_requests, Enum.map(prs, fn pr -> %{pr | head_sha: other_sha} end)))
+    refresh(view, ctx.runtime, different_heads)
+    assert has_element?(view, "#board-dialog .candidate-review code[title='#{sha}']", "aaaaaaa")
+    refute has_element?(view, "#board-dialog .candidate-review a")
   end
 
   test "recoverable hold offers retry but exhausted limits explain why another attempt is unavailable", ctx do
@@ -353,7 +441,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
 
     open_task(view, "4")
     assert has_element?(view, "#board-dialog .execution-summary", "Awaiting your review")
-    assert has_element?(view, "#board-dialog h3", "Candidate review")
+    assert has_element?(view, "#board-dialog .candidate-review h3", "Agent review")
     assert has_element?(view, "#board-dialog", "Documented the unit-test command")
     refute has_element?(view, "#board-dialog .execution-summary", "Retry scheduled")
     refute has_element?(view, "#board-dialog button[phx-value-action=cancel]")
@@ -388,6 +476,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#board-dialog button[phx-value-action=cancel]")
     refute has_element?(view, "#board-dialog button[phx-value-action=retry]")
     refute has_element?(view, "#board-dialog .execution-summary", "Awaiting your review")
+    refute has_element?(view, "#board-dialog .candidate-review")
   end
 
   test "closed tasks and unavailable execution suppress task mutations while preserving usage", ctx do
@@ -860,9 +949,44 @@ defmodule SymphonyElixir.DashboardLiveTest do
     candidate = "https://github.com/example/fixture/commit/" <> String.duplicate("b", 40)
 
     prs = [
-      %{number: 12, title: "Fix retries", url: "https://github.com/example/fixture/pull/12", state: "open", draft: true, review: "CHANGES_REQUESTED", checks: "failure"},
-      %{number: 11, title: "Initial fix", url: "https://github.com/example/fixture/pull/11", state: "merged", draft: false, review: "APPROVED", checks: "success"},
-      %{number: 10, title: "Additional fix", url: "https://github.com/example/fixture/pull/10", state: "open", draft: false, review: "REVIEW_REQUIRED", checks: "failure"}
+      %{
+        number: 12,
+        title: "Fix retries",
+        url: "https://github.com/example/fixture/pull/12",
+        state: "open",
+        draft: true,
+        review: "CHANGES_REQUESTED",
+        checks: "failure",
+        mergeable: "conflicting",
+        check_details_status: "available",
+        check_total: 1,
+        check_runs: [%{name: "Retry tests", status: "completed", conclusion: "failure"}]
+      },
+      %{
+        number: 11,
+        title: "Initial fix",
+        url: "https://github.com/example/fixture/pull/11",
+        state: "merged",
+        draft: false,
+        review: "APPROVED",
+        checks: "success",
+        check_details_status: "available",
+        check_total: 2,
+        check_runs: [%{name: "Unit tests", status: "completed", conclusion: "success"}, %{name: "Lint", status: "completed", conclusion: "success"}]
+      },
+      %{
+        number: 10,
+        title: "Additional fix",
+        url: "https://github.com/example/fixture/pull/10",
+        state: "open",
+        draft: false,
+        review: "REVIEW_REQUIRED",
+        checks: "pending",
+        mergeable: "mergeable",
+        check_details_status: "available",
+        check_total: 1,
+        check_runs: [%{name: "Integration tests", status: "in_progress"}]
+      }
     ]
 
     board =
@@ -893,10 +1017,16 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, card, "Queued · paused")
     assert has_element?(view, card, "Review changes before retrying")
     assert has_element?(view, card <> " a[href='https://github.com/example/fixture/pull/12']", "PR #12")
-    assert has_element?(view, card, "Draft")
-    assert has_element?(view, card, "GitHub review: Changes requested")
-    assert has_element?(view, card, "CI: Failure")
-    assert has_element?(view, card, "Merged")
+    assert has_element?(view, card <> " [data-pr-number='12']", "Draft")
+    assert has_element?(view, card <> " [data-pr-number='12']", "GitHub review: Changes requested")
+    assert has_element?(view, card <> " [data-pr-number='12'] a[href='https://github.com/example/fixture/pull/12/checks']", "1 failed")
+    refute has_element?(view, card <> " [data-pr-number='12']", "passed")
+    assert has_element?(view, card <> " [data-pr-number='11']", "Merged")
+    assert has_element?(view, card <> " [data-pr-number='11']", "GitHub review: Approved")
+    assert has_element?(view, card <> " [data-pr-number='11'] a[href='https://github.com/example/fixture/pull/11/checks']", "2 passed")
+    refute has_element?(view, card <> " [data-pr-number='11']", "failed")
+    refute has_element?(view, card <> " [data-pr-number='10']")
+    assert length(Floki.find(Floki.parse_document!(render(view)), card <> " .pull-request-evidence")) == 2
     assert has_element?(view, card <> " .card-pr-summary button", "View all 3 pull requests")
     assert has_element?(view, card <> " .card-reference-links a[href='https://github.com/example/fixture']", "Repository")
     assert has_element?(view, card <> " .card-reference-links a[href='#{candidate}']", "Verified candidate")
@@ -904,12 +1034,25 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, card <> " .card-bottom time[datetime='2026-09-14T11:00:00Z']", "Updated Sep 14")
     assert has_element?(view, ".status-badge-live", "Live updates connected")
     view |> element(card <> " .card-pr-summary button") |> render_click()
+    assert has_element?(view, "#board-dialog h3", "Pull requests")
+    assert has_element?(view, "#board-dialog h3 .section-count", "3")
+    assert length(Floki.find(Floki.parse_document!(render(view)), "#board-dialog .pull-request-evidence")) == 3
     assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/pull/10']", "Additional fix")
     assert has_element?(view, "#board-dialog a[href='#{candidate}']", "Verified candidate")
     assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/issues/2']")
     assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/pull/12']", "Fix retries")
-    assert has_element?(view, "#board-dialog .task-reference-links a[href='https://github.com/example/fixture/pull/12']", "Linked PR")
-    assert has_element?(view, "#board-dialog", "CI: Success")
+    refute has_element?(view, "#board-dialog .task-reference-links a[href='https://github.com/example/fixture/pull/12']")
+    refute has_element?(view, "#board-dialog .task-reference-links a[href='https://github.com/example/fixture/pull/12/checks']")
+    assert has_element?(view, "#board-dialog [data-pr-number='12']", "GitHub review: Changes requested")
+    assert has_element?(view, "#board-dialog [data-pr-number='12']", "Merge conflicts")
+    assert has_element?(view, "#board-dialog [data-pr-number='12'] a[href='https://github.com/example/fixture/pull/12/checks']", "1 failed")
+    assert has_element?(view, "#board-dialog [data-pr-number='11']", "GitHub review: Approved")
+    assert has_element?(view, "#board-dialog [data-pr-number='11'] a[href='https://github.com/example/fixture/pull/11/checks']", "2 passed")
+    assert has_element?(view, "#board-dialog [data-pr-number='10']", "GitHub review: Review required")
+    assert has_element?(view, "#board-dialog [data-pr-number='10']", "No merge conflicts")
+    assert has_element?(view, "#board-dialog [data-pr-number='10'] a[href='https://github.com/example/fixture/pull/10/checks']", "1 running")
+    refute has_element?(view, "#board-dialog [data-pr-number='10']", "passed")
+    refute has_element?(view, ".pull-request-evidence details, .ci-jobs, .ci-job, .ci-workflow")
   end
 
   test "source, runtime and enrichment failures stay explicit without inventing PR checks", ctx do
@@ -927,12 +1070,11 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, ".board-runtime-state", "Paused")
   end
 
-  test "GitHub cards show revision and CI summary with individual jobs in the popup", ctx do
+  test "GitHub cards and popups link directly to compact CI counts without inline job lists", ctx do
     sha = String.duplicate("c", 40)
     run = "https://github.com/example/fixture/actions/runs/42"
 
     job = %{
-      # Concurrent jobs share a workflow; their durations must not be summed.
       name: "Unit tests",
       status: "completed",
       conclusion: "success",
@@ -970,42 +1112,70 @@ defmodule SymphonyElixir.DashboardLiveTest do
     :ok = GenServer.call(ctx.runtime, {:board, update_task(ctx.board, "2", &Map.put(&1, :pull_requests, [pr]))})
     {view, _} = board_view()
     card = "[data-task-id='github:example/fixture:2']"
-    assert has_element?(view, card <> " .pull-request-revision", "codex/task")
-    assert has_element?(view, card <> " a[href='https://github.com/example/fixture/commit/#{sha}']", "ccccccc")
+    assert has_element?(view, card <> " a[href='https://github.com/example/fixture/commit/#{sha}'][title='codex/task → integration · #{sha}']", "ccccccc")
     assert has_element?(view, card <> " a[href='https://github.com/example/fixture/pull/7/files']", "1 file")
     assert has_element?(view, card <> " .pull-request-checks", "GitHub review: No decision")
-    assert has_element?(view, card <> " .ci-details summary", "2 checks · 1 running, 1 passed")
-    refute has_element?(view, card <> " .ci-details[open]")
+    assert has_element?(view, card <> " a[href='https://github.com/example/fixture/pull/7/checks'][title='2 checks · 1 running, 1 passed']", "CI: Pending · 1 running, 1 passed")
+    refute has_element?(view, card <> " details")
 
     open_task(view, "2")
-    assert has_element?(view, "#board-dialog .ci-details[open]")
-    assert has_element?(view, "#board-dialog .pull-request-revision", "integration")
-    assert has_element?(view, "#board-dialog .pull-request-metadata", "By builder")
+    assert has_element?(view, "#board-dialog .pull-request-metadata a[title='codex/task → integration · #{sha}']", "ccccccc")
     assert has_element?(view, "#board-dialog .pull-request-checks", "No merge conflicts")
-    assert has_element?(view, "#board-dialog .ci-job a[href='#{run}/job/1']", "Unit tests")
-    assert has_element?(view, "#board-dialog .ci-job-status", "2m 25s")
-    assert has_element?(view, "#board-dialog .ci-job-status", "In progress")
-    assert has_element?(view, "#board-dialog .ci-workflow a[href='#{run}']", "CI #24")
-    assert length(Floki.find(Floki.parse_document!(render(view)), "#board-dialog .ci-workflow")) == 1
+    assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/pull/7/checks'][title='2 checks · 1 running, 1 passed']", "CI: Pending · 1 running, 1 passed")
+    refute has_element?(view, ".pull-request-evidence details, .ci-jobs, .ci-job, .ci-workflow")
+    refute has_element?(view, "a[href^='#{run}']")
+    refute has_element?(view, "#board-dialog", "Unit tests")
+    refute has_element?(view, "#board-dialog", "Browser checks")
     refute render(view) =~ "Total duration"
   end
 
   test "partial, stale and unsafe CI details cannot imply complete passing checks", ctx do
     job = %{name: "<script>bad</script>", status: "completed", conclusion: "failure", duration_ms: -1, url: "javascript:alert(1)", run_url: "data:text/html,bad"}
-    pr = %{number: 8, title: "Partial CI", url: "https://github.com/example/fixture/pull/8", check_details_status: "partial", check_total: 9, check_runs: [job]}
+    pr = %{number: 8, title: "Partial CI", url: "https://github.com/example/fixture/pull/8", checks: "failure", check_details_status: "partial", check_total: 9, check_runs: [job]}
     board = update_task(ctx.board, "2", &Map.put(&1, :pull_requests, [pr]))
     :ok = GenServer.call(ctx.runtime, {:board, board})
     {view, _} = board_view()
     open_task(view, "2")
-    assert has_element?(view, "#board-dialog .ci-details summary", "1 of 9 checks · 1 failed")
-    assert has_element?(view, "#board-dialog .ci-note", "this list is incomplete")
-    assert has_element?(view, "#board-dialog .ci-job-heading", "<script>bad</script>")
-    refute has_element?(view, "#board-dialog script, #board-dialog .ci-job a, #board-dialog .ci-workflow a")
+    assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/pull/8/checks']", "CI: Failure · 1 failed")
+    assert has_element?(view, "#board-dialog .ci-note", "Incomplete check details: 1 of 9 checks · 1 failed")
+    refute has_element?(view, "#board-dialog script, #board-dialog .ci-job, #board-dialog .ci-workflow")
+    refute has_element?(view, "a[href^='javascript:'], a[href^='data:']")
 
-    stale = %{pr | check_details_status: "stale"}
-    refresh(view, ctx.runtime, update_task(board, "2", &Map.put(&1, :pull_requests, [stale])))
-    assert has_element?(view, "#board-dialog .ci-note", "older commit")
-    refute has_element?(view, "#board-dialog .ci-job")
+    passing_sample = %{pr | check_runs: [%{job | conclusion: "success"}]}
+
+    for checks <- ["failure", "pending"] do
+      sampled = %{passing_sample | checks: checks}
+      refresh(view, ctx.runtime, update_task(board, "2", &Map.put(&1, :pull_requests, [sampled])))
+      assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/pull/8/checks']", "CI: #{String.capitalize(checks)} · 1 passed")
+      assert has_element?(view, "#board-dialog .ci-note", "Incomplete check details: 1 of 9 checks · 1 passed")
+      assert has_element?(view, "[data-task-id='github:example/fixture:2'] .compact-ci", "CI: #{String.capitalize(checks)} · 1 passed")
+    end
+
+    for {status, warning} <- [{"stale", "older commit"}, {"unavailable", "Individual check details unavailable"}] do
+      for checks <- ["success", "failure", "pending", "error", "expected"] do
+        missing_details = %{pr | check_details_status: status, checks: checks}
+        refresh(view, ctx.runtime, update_task(board, "2", &Map.put(&1, :pull_requests, [missing_details])))
+        label = "CI: #{String.capitalize(checks)} · details #{status}"
+        assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/pull/8/checks']", label)
+        assert has_element?(view, "[data-task-id='github:example/fixture:2'] .compact-ci", label)
+        assert has_element?(view, "#board-dialog .ci-note", warning)
+        refute has_element?(view, "#board-dialog [data-pr-number='8']", "1 failed")
+      end
+
+      unknown = %{pr | check_details_status: status, checks: "unknown"}
+      refresh(view, ctx.runtime, update_task(board, "2", &Map.put(&1, :pull_requests, [unknown])))
+      assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/pull/8/checks']", "CI: #{String.capitalize(status)}")
+      assert has_element?(view, "#board-dialog .ci-note", warning)
+      refute has_element?(view, "#board-dialog [data-pr-number='8']", "1 failed")
+    end
+
+    for {checks, label} <- [{"expected", "Expected · no checks"}, {"unknown", "No checks"}] do
+      no_jobs = %{pr | check_details_status: "available", check_total: 0, check_runs: [], checks: checks}
+      refresh(view, ctx.runtime, update_task(board, "2", &Map.put(&1, :pull_requests, [no_jobs])))
+      assert has_element?(view, "#board-dialog a[href='https://github.com/example/fixture/pull/8/checks']", "CI: #{label}")
+      assert has_element?(view, "[data-task-id='github:example/fixture:2'] .compact-ci", "CI: #{label}")
+      refute has_element?(view, "#board-dialog [data-pr-number='8']", "1 failed")
+    end
   end
 
   test "all supplied evidence links reject unsafe URLs and a bare candidate SHA creates no link", ctx do
@@ -1023,8 +1193,9 @@ defmodule SymphonyElixir.DashboardLiveTest do
     :ok = GenServer.call(ctx.runtime, {:board, changed})
     {view, _} = board_view()
     open_task(view, "4")
-    assert has_element?(view, "#board-dialog", "Worker review: Request changes")
-    assert has_element?(view, "#board-dialog details summary", "Handoff details")
+    assert has_element?(view, "#board-dialog .candidate-review", "Changes requested")
+    refute has_element?(view, "#board-dialog details summary", "Handoff details")
+    refute has_element?(view, "#board-dialog .candidate-review pre")
     refute has_element?(view, "a[href^='javascript:']")
     refute has_element?(view, "a[href^='data:']")
     refute has_element?(view, "a[href^='//']")

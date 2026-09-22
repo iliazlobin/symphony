@@ -590,7 +590,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <div :if={pull_requests(task) != []} class="card-pr-summary"><span :for={pr <- Enum.take(pull_requests(task), 2)}>
                   <a :if={safe_url(field(pr, :url))} href={safe_url(field(pr, :url))} target="_blank" rel="noopener noreferrer">PR #{field(pr, :number)}</a>
                   <span class="pr-state" data-pr-state={String.downcase(pr_state(pr))}>{pr_state(pr)}</span>
-                  <span class="compact-ci" title={ci_summary(pr)}>CI: {display(field(pr, :checks))}</span>
+                  <span class="compact-ci" title={ci_summary(pr)}>CI: {ci_status(pr)}</span>
                   <span :if={field(pr, :check_details_status) in ["partial", "stale", "unavailable"]} class="compact-ci-note">Check details: {field(pr, :check_details_status)}</span>
                 </span><button :if={length(pull_requests(task)) > 2} class="card-more-links" phx-click="open-task" phx-value-id={task.id}>View all {length(pull_requests(task))} pull requests</button></div>
                 <div :if={pull_requests(task) != []} class="card-pull-requests">
@@ -652,21 +652,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <p>{@dispatch_guidance}</p>
                 <button type="button" class="button button-small" phx-click="open-settings" phx-value-tab="execution">Execution settings</button>
               </div>
-              <div class="task-reference-links"><a :for={link <- task_links(@selected)} class="button button-small" href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
+              <div class="task-reference-links"><a :for={link <- task_links(@selected, if(pull_requests(@selected) == [], do: ["issue", "repo", "pr", "checks", "candidate"], else: ["issue", "repo", "candidate"]))} class="button button-small" href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
               <p :if={blocker(@selected) && is_nil(@selected.hold)} class="attention-badge"><strong>Needs attention:</strong> {blocker(@selected)}</p>
               <p :if={Map.get(@selected, :completion_evidence)} class="muted">{Map.get(@selected, :completion_evidence)}</p>
-              <section :if={pull_requests(@selected) != []} class="dialog-section"><h3>Pull requests</h3><.pull_request :for={pr <- pull_requests(@selected)} pr={pr} compact={false} /></section>
+              <section :if={pull_requests(@selected) != []} class="dialog-section"><h3>Pull requests <span class="section-count">{length(pull_requests(@selected))}</span></h3><.pull_request :for={pr <- pull_requests(@selected)} pr={pr} compact={false} /></section>
               <section class="dialog-section"><h3>Scope &amp; acceptance</h3><div class="markdown-content">{Markdown.render(@selected.description)}</div></section>
               <section :if={current_activity(@selected, @payload) || session_id(@selected)} class="dialog-section"><h3>Codex update</h3><p>{current_activity(@selected, @payload)}</p>
                 <button :if={session_id(@selected)} class="button button-small" data-copy={session_id(@selected)}>Copy ID</button>
               </section>
-              <section :if={settled_handoff?(@selected)} class="dialog-section"><h3>Candidate review</h3>
-                <p :if={is_binary(field(handoff(@selected), :summary))}>{field(handoff(@selected), :summary)}</p>
-                <p>Worker review: {worker_review(@selected)}</p>
-                <p :if={is_binary(field(handoff(@selected), :candidate_sha))} class="task-description">Candidate: <code>{field(handoff(@selected), :candidate_sha)}</code></p>
-                <p class="muted">Worker review is separate from GitHub review, checks, merge and deployment.</p>
-                <details><summary>Handoff details</summary><pre>{pretty(@selected.handoff)}</pre></details>
-              </section>
+              <.candidate_review :if={settled_handoff?(@selected)} task={@selected} />
             <% :confirm -> %>
               <p>{command_description(@pending_command)}</p>
               <p class="muted">{@pending_command.identifier || "Configured project"} · operator revision {@pending_command.revision}</p>
@@ -802,16 +796,51 @@ defmodule SymphonyElixirWeb.DashboardLive do
       (is_nil(task.runtime) or task.runtime[:status] == "retrying") and is_nil(get_in(task.ledger, ["active"]))
   end
 
-  defp worker_review(task) do
-    case field(handoff(task), :review) do
-      review when is_map(review) -> display(field(review, :verdict))
-      _ -> "Unknown"
-    end
+  defp candidate_review(assigns) do
+    candidate = handoff(assigns.task)
+    review = field(candidate, :review)
+    review = if is_map(review), do: review, else: %{}
+    sha = field(candidate, :candidate_sha)
+    sha = if is_binary(sha) && Regex.match?(~r/\A[0-9a-f]{40}\z/, sha), do: sha
+
+    commit =
+      Enum.find_value(pull_requests(assigns.task), fn pr ->
+        if sha && field(review, :candidate_sha) == sha && field(pr, :head_sha) == sha, do: pr_commit(pr)
+      end)
+
+    assigns =
+      assign(assigns,
+        sha: sha,
+        commit: commit,
+        verdict: review_verdict(field(review, :verdict)),
+        summary: nonempty(field(review, :summary)) || nonempty(field(candidate, :summary)),
+        findings: records(field(review, :findings))
+      )
+
+    ~H"""
+    <section class="dialog-section candidate-review">
+      <div class="candidate-review-heading"><h3>Agent review</h3><span class="evidence-badge">{@verdict}</span>
+        <a :if={@commit} href={@commit.url} title={@sha} target="_blank" rel="noopener noreferrer">{String.slice(@sha, 0, 7)}</a>
+        <code :if={@sha && !@commit} title={@sha}>{String.slice(@sha, 0, 7)}</code>
+      </div>
+      <p :if={@summary} class="candidate-summary">{@summary}</p>
+      <ul :if={@findings != []} class="candidate-findings">
+        <li :for={finding <- @findings}><strong>{display(field(finding, :severity))}</strong><code :if={nonempty(field(finding, :path))}>{field(finding, :path)}<span :if={field(finding, :line)}>:{field(finding, :line)}</span></code><span>{field(finding, :description)}</span></li>
+      </ul>
+    </section>
+    """
   end
+
+  defp review_verdict("approve"), do: "Approved"
+  defp review_verdict("request_changes"), do: "Changes requested"
+  defp review_verdict("blocked"), do: "Blocked"
+  defp review_verdict(_), do: "Unknown"
+  defp nonempty(value) when is_binary(value), do: if(String.trim(value) != "", do: value)
+  defp nonempty(_), do: nil
 
   defp context_links(board), do: board |> Map.get(:context_links, []) |> records() |> valid_links()
 
-  defp task_links(task, kinds \\ ["issue", "repo", "pr", "checks", "candidate"]) do
+  defp task_links(task, kinds) do
     supplied = records(Map.get(task, :links, []))
     fallback = [%{kind: "issue", label: "Open issue in tracker", url: task.url}]
 
@@ -852,43 +881,67 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp pull_request(assigns) do
     pr = assigns.pr
-    label = "PR ##{field(pr, :number)}"
+    url = safe_url(field(pr, :url))
 
     assigns =
       assign(assigns,
-        url: safe_url(field(pr, :url)),
-        label: label,
+        url: url,
+        number: field(pr, :number),
+        label: "PR ##{field(pr, :number)}",
         state: pr_state(pr),
         title: field(pr, :title),
         review: display(field(pr, :review)),
-        checks: display(field(pr, :checks)),
-        head_ref: field(pr, :head_ref),
-        base_ref: field(pr, :base_ref),
-        author: field(pr, :author),
         commit: pr_commit(pr),
         changes: pr_changes(pr),
         mergeability: pr_mergeability(pr),
-        jobs: pr_jobs(pr),
-        workflow_runs: workflow_runs(pr_jobs(pr)),
-        check_details_status: field(pr, :check_details_status),
-        ci_summary: ci_summary(pr)
+        revision: Enum.filter([field(pr, :head_ref), field(pr, :base_ref)], &is_binary/1) |> Enum.join(" → "),
+        checks_url: if(is_binary(url) && Regex.match?(~r{\Ahttps://github\.com/[^/]+/[^/]+/pull/[1-9][0-9]*\z}, url), do: url <> "/checks"),
+        ci_status: ci_status(pr),
+        ci_summary: ci_summary(pr),
+        ci_note: ci_note(pr)
       )
 
     ~H"""
-    <div class={"pull-request-evidence #{if @compact, do: "compact", else: ""}"}>
-      <div class="pull-request-heading"><a :if={@url} href={@url} target="_blank" rel="noopener noreferrer" title={@title}>{@label}<span :if={!@compact && is_binary(@title)}> · {@title}</span></a><strong :if={!@url}>{@label}</strong><span class="evidence-badge">{@state}</span></div>
-      <div :if={@head_ref || @commit} class="pull-request-revision"><code :if={is_binary(@head_ref)}>{@head_ref}</code><span :if={!@compact && is_binary(@base_ref)}>→ <code>{@base_ref}</code></span><a :if={@commit} href={@commit.url} target="_blank" rel="noopener noreferrer" title={@commit.sha}>{String.slice(@commit.sha, 0, 7)}</a></div>
-      <div :if={@changes || (!@compact && @author)} class="pull-request-metadata"><span :if={!@compact && is_binary(@author)}>By {@author}</span><a :if={@changes && @url} href={@url <> "/files"} target="_blank" rel="noopener noreferrer">{@changes.files} {if @changes.files == 1, do: "file", else: "files"}<span class="diff-additions"> +{@changes.additions}</span><span> −{@changes.deletions}</span></a></div>
-      <div class="pull-request-checks"><span>GitHub review: {@review}</span><span>CI: {@checks}</span><span :if={!@compact && @mergeability}>{@mergeability}</span></div>
-      <details :if={@jobs != []} class="ci-details" open={!@compact}>
-        <summary>{@ci_summary}</summary>
-        <p :if={@check_details_status == "partial"} class="ci-note">Some check details are unavailable; this list is incomplete.</p>
-        <div :for={run <- @workflow_runs} class="ci-workflow"><a :if={run.url} href={run.url} target="_blank" rel="noopener noreferrer">{run.name || "Workflow"}<span :if={run.number}> #{run.number}</span> ↗</a><span :if={!run.url}>{run.name}</span><span :if={is_binary(run.event)}> · {String.replace(run.event, "_", " ")}</span></div>
-        <ul class="ci-jobs"><.check_job :for={job <- @jobs} job={job} /></ul>
-      </details>
-      <p :if={@jobs == [] && @ci_summary} class="ci-note">{@ci_summary}</p>
+    <div class={"pull-request-evidence #{if @compact, do: "compact", else: ""}"} data-pr-number={@number}>
+      <div class="pull-request-heading"><a :if={@url} href={@url} target="_blank" rel="noopener noreferrer" title={@title}>{@label}<span :if={!@compact && is_binary(@title)}> · {@title}</span></a><strong :if={!@url}>{@label}</strong><span class="pr-state" data-pr-state={String.downcase(@state)}>{@state}</span></div>
+      <div class="pull-request-checks"><span>GitHub review: {@review}</span>
+        <a :if={@checks_url} href={@checks_url} target="_blank" rel="noopener noreferrer" title={@ci_summary} aria-label={"#{@label} checks: #{@ci_status}"}>CI: {@ci_status} ↗</a>
+        <span :if={!@checks_url} title={@ci_summary}>CI: {@ci_status}</span><span :if={@mergeability}>{@mergeability}</span>
+      </div>
+      <div :if={@commit || @changes} class="pull-request-metadata">
+        <a :if={@commit} href={@commit.url} target="_blank" rel="noopener noreferrer" title={@revision <> " · " <> @commit.sha}>{String.slice(@commit.sha, 0, 7)}</a>
+        <a :if={@changes && @url} href={@url <> "/files"} target="_blank" rel="noopener noreferrer">{@changes.files} {if @changes.files == 1, do: "file", else: "files"}<span class="diff-additions"> +{@changes.additions}</span><span> −{@changes.deletions}</span></a>
+      </div>
+      <p :if={@ci_note} class="ci-note">{@ci_note}</p>
     </div>
     """
+  end
+
+  defp ci_status(pr) do
+    case {field(pr, :check_details_status), pr_jobs(pr)} do
+      {"stale", _} -> ci_missing_details(pr, "Stale")
+      {"unavailable", _} -> ci_missing_details(pr, "Unavailable")
+      {"available", []} -> ci_missing_details(pr, "No checks")
+      {_, [_ | _] = jobs} -> display(field(pr, :checks)) <> " · " <> check_counts(jobs)
+      _ -> display(field(pr, :checks))
+    end
+  end
+
+  defp ci_missing_details(pr, status) do
+    detail = if status == "No checks", do: "no checks", else: "details " <> String.downcase(status)
+
+    case field(pr, :checks) do
+      result when result in ["success", "failure", "pending", "error", "expected"] -> display(result) <> " · " <> detail
+      _ -> status
+    end
+  end
+
+  defp ci_note(pr) do
+    case field(pr, :check_details_status) do
+      "partial" -> "Incomplete check details" <> if(pr_jobs(pr) == [], do: ".", else: ": " <> ci_summary(pr))
+      status when status in ["stale", "unavailable"] -> ci_summary(pr)
+      _ -> nil
+    end
   end
 
   defp pr_commit(pr) do
@@ -936,26 +989,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
     if field(pr, :check_details_status) in ["available", "partial"], do: records(field(pr, :check_runs)), else: []
   end
 
-  defp workflow_runs(jobs) do
-    jobs
-    |> Enum.map(fn job ->
-      name = field(job, :workflow_name)
-      url = safe_url(field(job, :run_url))
-      %{name: name, url: url, number: field(job, :run_number), event: field(job, :run_event)}
-    end)
-    |> Enum.filter(&(&1.url || &1.name))
-    |> Enum.uniq_by(&{&1.url, &1.name, &1.number})
+  defp ci_counts(jobs, total, status) do
+    prefix = if status == "partial" && is_integer(total), do: "#{length(jobs)} of #{total} checks", else: "#{length(jobs)} checks"
+    prefix <> " · " <> check_counts(jobs)
   end
 
-  defp ci_counts(jobs, total, status) do
-    counts =
-      jobs
-      |> Enum.frequencies_by(&check_result/1)
-      |> Enum.sort_by(fn {result, _} -> {check_rank(result), result} end)
-      |> Enum.map_join(", ", fn {result, count} -> "#{count} #{check_count_label(result)}" end)
-
-    prefix = if status == "partial" && is_integer(total), do: "#{length(jobs)} of #{total} checks", else: "#{length(jobs)} checks"
-    prefix <> " · " <> counts
+  defp check_counts(jobs) do
+    jobs
+    |> Enum.frequencies_by(&check_result/1)
+    |> Enum.sort_by(fn {result, _} -> {check_rank(result), result} end)
+    |> Enum.map_join(", ", fn {result, count} -> "#{count} #{check_count_label(result)}" end)
   end
 
   defp check_result(job) do
@@ -972,38 +1015,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp check_rank(result) when result in ["in_progress", "queued", "pending", "waiting", "requested"], do: 1
   defp check_rank("success"), do: 3
   defp check_rank(_), do: 2
-
-  defp job_duration(job) do
-    case field(job, :duration_ms) do
-      ms when is_integer(ms) and ms >= 0 ->
-        seconds = div(ms, 1_000)
-        if seconds < 60, do: "#{seconds}s", else: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
-
-      _ ->
-        nil
-    end
-  end
-
-  defp check_job(assigns) do
-    job = assigns.job
-    result = check_result(job)
-
-    assigns =
-      assign(assigns,
-        name: field(job, :name) || "Unnamed check",
-        url: safe_url(field(job, :url)),
-        result: display(result),
-        tone: if(result == "success", do: "success", else: if(check_rank(result) == 0, do: "failure", else: "pending")),
-        duration: job_duration(job)
-      )
-
-    ~H"""
-    <li class="ci-job">
-      <div class="ci-job-heading"><span class={"ci-indicator #{@tone}"} aria-hidden="true"></span><a :if={@url} href={@url} target="_blank" rel="noopener noreferrer">{@name}</a><span :if={!@url}>{@name}</span></div>
-      <div class="ci-job-status"><span>{@result}</span><span :if={@duration}>{@duration}</span></div>
-    </li>
-    """
-  end
 
   defp current_activity(task, payload) do
     entries = Map.get(payload, :running, []) ++ Map.get(payload, :blocked, [])
