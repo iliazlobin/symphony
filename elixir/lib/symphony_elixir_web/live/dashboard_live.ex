@@ -106,6 +106,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   def handle_info({:chat_panel, :main}, socket), do: main_chat(socket)
 
+  def handle_info({:chat_panel, :select_issue, id}, socket), do: handle_event("select-task", %{"id" => id}, socket)
+  def handle_info({:chat_panel, :issue_card, id}, socket), do: handle_event("open-task", %{"id" => id}, socket)
+
   def handle_info({:chat_panel, :navigate, %{project_id: project, chat_id: id}}, socket) do
     if project == socket.assigns.chat_project do
       {:noreply, socket |> assign(:chat_id, bounded_chat_id(id)) |> refresh_chat_activity()}
@@ -528,9 +531,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
       <div id="board-toolbar" class="board-toolbar" phx-update="ignore">
         <div class="toolbar-primary">
-          <span class="header-spacer"></span>
-          <button type="button" class="button button-quiet toolbar-button" data-toggle-filters aria-expanded="false" aria-controls="board-filter-panel">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M7 12h10M10 17h4" /></svg>Filter</button>
+          <div id="board-filter-panel" class="filter-row">
+            <div :for={key <- ["status", "priority"]} class="filter-combo" data-filter={key}>
+              <div class="combo-control"><input id={"filter-#{key}"} role="combobox" aria-label={"#{String.capitalize(key)} filter"}
+                autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls={"options-#{key}"}
+                placeholder={"#{String.capitalize(key)}: All"} /><button type="button" data-filter-toggle={key} aria-label={"Open #{key} filter"}>⌄</button></div>
+              <div id={"options-#{key}"} class="combo-options" role="listbox" aria-label={"#{String.capitalize(key)} options"} aria-multiselectable="true" hidden></div>
+            </div>
+            <button type="button" class="button button-quiet" data-clear-filters>Clear filters</button>
+          </div>
           <details class="board-menu display-menu">
             <summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9m4 0h3M4 17h3m4 0h9M13 4v6M7 14v6" /></svg>Display</summary>
             <div class="board-menu-panel">
@@ -543,15 +552,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <fieldset class="display-columns"><legend>Visible columns</legend><label :for={{id, label} <- @lanes}><input type="checkbox" data-visible-lane={id} checked={id != "done"} />{label}</label></fieldset>
             </div>
           </details>
-        </div>
-        <div id="board-filter-panel" class="filter-row" data-filter-panel hidden>
-          <div :for={key <- ["status", "priority"]} class="filter-combo" data-filter={key}>
-            <div class="combo-control"><input id={"filter-#{key}"} role="combobox" aria-label={"#{String.capitalize(key)} filter"}
-              autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls={"options-#{key}"}
-              placeholder={"#{String.capitalize(key)}: All"} /><button type="button" data-filter-toggle={key} aria-label={"Open #{key} filter"}>⌄</button></div>
-            <div id={"options-#{key}"} class="combo-options" role="listbox" aria-label={"#{String.capitalize(key)} options"} aria-multiselectable="true" hidden></div>
-          </div>
-          <button type="button" class="button button-quiet" data-clear-filters>Clear filters</button>
         </div>
         <div data-filter-chips class="filter-chips" aria-label="Selected filters"></div>
       </div>
@@ -683,7 +683,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
       <aside id="management-chat-dock" class="management-chat-dock" aria-label="Project chat">
         <.live_component module={ChatPanel} id="management-chat" auth={@auth} csrf_token={@csrf_token}
           embedded={true} project_id={@chat_project} chat_id={@chat_id} task_id={@chat_task_id}
-          task_title={chat_task_title(@board, @chat_task_id)} view_context={@view_context} read_only={@read_only} />
+          task_title={chat_task_title(@board, @chat_task_id)} issue_tasks={@board.tasks} issue_activity={@chat_activity}
+          view_context={@view_context} read_only={@read_only} />
       </aside>
     </section>
     """

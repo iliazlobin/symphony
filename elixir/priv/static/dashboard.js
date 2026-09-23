@@ -4,10 +4,27 @@
   const parse = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };
   const escapeText = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[c]));
   const storage = { get(key) { try { return localStorage.getItem(key); } catch { return null; } }, set(key, value) { try { localStorage.setItem(key, value); } catch { /* Preferences are optional. */ } } };
+  const observeChatDropdown = (details, selector, signal) => {
+    const fit = () => {
+      if (!details.open) return;
+      const menu = details.querySelector(selector), shell = details.closest(".chat-shell");
+      if (!menu || !shell) return;
+      const viewport = window.visualViewport;
+      const bottom = Math.min(shell.getBoundingClientRect().bottom, viewport ? viewport.offsetTop + viewport.height : window.innerHeight);
+      menu.style.setProperty("--chat-menu-space", Math.max(0, Math.floor(bottom - menu.getBoundingClientRect().top - 8)) + "px");
+    };
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(fit) : null;
+    const shell = details.closest(".chat-shell");
+    if (shell) observer?.observe(shell);
+    details.addEventListener("toggle", fit, {signal});
+    window.addEventListener("resize", fit, {signal});
+    window.visualViewport?.addEventListener("resize", fit, {signal});
+    window.visualViewport?.addEventListener("scroll", fit, {signal});
+    return {fit, disconnect: () => observer?.disconnect()};
+  };
   const TaskBoard = {
     mounted() {
       this.prefs = {project: [], status: [], priority: [], query: "", sort: "manual", order: {}, lane: "ready", density: "compact", theme: "light", hiddenLanes: ["done"]};
-      this.filtersOpen = false;
       this.revealedLanes = new Set();
       this.popup = null;
       this.activeOption = 0;
@@ -35,7 +52,6 @@
         this.prefs.theme = ["light", "dark", "system"].includes(saved.theme) ? saved.theme : "light";
         this.prefs.hiddenLanes = Array.isArray(saved.hiddenLanes) ? [...new Set(saved.hiddenLanes.filter(id => lanes.some(([stage]) => stage === id)))] : ["done"];
         if (this.prefs.hiddenLanes.length === lanes.length) this.prefs.hiddenLanes = this.prefs.hiddenLanes.filter(id => id !== "ready");
-        this.filtersOpen = this.prefs.status.length > 0 || this.prefs.priority.length > 0;
         this.el.querySelector("[data-board-search]").value = this.prefs.query;
         this.el.querySelector("[data-board-sort]").value = this.prefs.sort;
       };
@@ -49,7 +65,6 @@
         const filters = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
         if (initial && !Object.keys(filters).length) return;
         for (const key of ["project", "status", "priority"]) this.prefs[key] = this.filterValues(key, typeof filters[key] === "string" ? filters[key].split(",") : []);
-        if (this.prefs.status.length || this.prefs.priority.length) this.filtersOpen = true;
         this.prefs.query = typeof filters.q === "string" ? filters.q : "";
         this.prefs.sort = ["manual", "priority", "updated", "oldest", "title"].includes(filters.sort) ? filters.sort : "manual";
         this.el.querySelector("[data-board-search]").value = this.prefs.query;
@@ -83,16 +98,6 @@
         });
         return closed;
       };
-      this.setFiltersOpen = (open, restoreFocus = false) => {
-        const panel = this.el.querySelector("[data-filter-panel]");
-        const focused = panel?.contains(document.activeElement);
-        if (!open && this.popup && this.popup !== "project") this.closeFilter();
-        this.filtersOpen = open;
-        if (panel) panel.hidden = !open;
-        const toggle = this.el.querySelector("[data-toggle-filters]");
-        toggle?.setAttribute("aria-expanded", String(open));
-        if (!open && (restoreFocus || focused)) toggle?.focus({preventScroll: true});
-      };
       this.applyAppearance = () => {
         this.el.dataset.density = this.prefs.density;
         this.el.dataset.singleProject = String(this.prefs.project.length === 1 || this.options("project").length === 1);
@@ -103,7 +108,6 @@
         if (density) density.value = this.prefs.density;
         if (selection) selection.value = this.prefs.theme;
         this.el.querySelector("[data-board-sort]").value = this.prefs.sort;
-        this.setFiltersOpen(this.filtersOpen);
       };
       this.setLaneVisible = (stage, visible) => {
         if (!lanes.some(([id]) => id === stage)) return;
@@ -243,7 +247,6 @@
         if (event.key === "Escape") {
           if (this.popup) { const key = this.popup; this.el.querySelector("#filter-" + key)?.focus({preventScroll: true}); this.closeFilter(); }
           else if (this.closeMenus(null, true)) { /* Keep Escape within the open menu. */ }
-          else if (this.filtersOpen) this.setFiltersOpen(false, true);
           else return;
           event.preventDefault(); event.stopPropagation(); return;
         }
@@ -268,8 +271,7 @@
         const menu = event.target.closest("details.board-menu");
         if (menu && event.target.closest("summary")) { this.closeFilter(); this.closeMenus(menu); }
         const button = event.target.closest("button"); if (!button) return;
-        if (button.hasAttribute("data-toggle-filters")) { this.closeMenus(); this.setFiltersOpen(!this.filtersOpen); }
-        else if (button.dataset.hideLane) {
+        if (button.dataset.hideLane) {
           const stage = button.dataset.hideLane;
           this.closeMenus(); this.setLaneVisible(stage, false);
           this.el.querySelector(`[data-show-lane="${stage}"]:not([hidden])`)?.focus({preventScroll: true});
@@ -381,7 +383,7 @@
         if (visible(focused) && !this.el.contains(focused)) { focused.focus({preventScroll: true}); return; }
         const canRestore = visible(previous);
         const target = canRestore ? previous : (previous?.id ? document.getElementById(previous.id) : null);
-        [target, replacement, document.getElementById("settings-button"), document.querySelector("[data-toggle-filters]")].find(visible)?.focus({preventScroll: true});
+        [target, replacement, document.getElementById("settings-button"), document.getElementById("filter-status")].find(visible)?.focus({preventScroll: true});
       });
     }
   };
@@ -393,6 +395,18 @@
       this.running = this.el.dataset.running === "true";
       const on = (name, handler) => this.el.addEventListener(name, handler, {signal: this.abort.signal});
       const tabs = ["chat", "context", "outputs", "sources"];
+      const compactTime = new Intl.DateTimeFormat(undefined, {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+      const fullTime = new Intl.DateTimeFormat(undefined, {year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "long"});
+      this.localizeTimes = () => {
+        this.el.querySelectorAll("time[data-chat-timestamp]").forEach(time => {
+          const date = new Date(time.dateTime);
+          if (!Number.isFinite(date.getTime())) return;
+          time.textContent = compactTime.format(date);
+          const description = `${time.dataset.timeLabel}: ${fullTime.format(date)}`;
+          time.title = description;
+          time.setAttribute("aria-label", description);
+        });
+      };
       this.tabKeyFor = chat => this.el.dataset.project ? "symphony.chat.tab.v1:" + this.el.dataset.project + ":" + (chat || "project") : null;
       this.tabKey = () => this.tabKeyFor(this.el.dataset.chatId);
       this.viewKeyFor = chat => this.el.dataset.project ? "symphony.chat.view.v1:" + this.el.dataset.project + ":" + (chat || "project") : null;
@@ -466,6 +480,17 @@
         const input = this.el.querySelector("#chat-message-input");
         if (input) { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 190) + "px"; }
       };
+      this.revealWork = () => {
+        const selected = this.pendingWork;
+        if (!selected) return;
+        if (selected.chat !== this.el.dataset.chatId) { this.pendingWork = null; return; }
+        if (this.el.dataset.sessionTab !== "outputs") return;
+        const article = document.getElementById("pr-work-" + selected.id);
+        if (!article || !this.el.contains(article) || article.dataset.selected !== "true") return;
+        this.pendingWork = null;
+        article.scrollIntoView({block: "nearest"});
+        this.el.querySelector("#session-outputs-tab")?.focus({preventScroll: true});
+      };
       // Scroll does not bubble; capture the retained conversation scroll container.
       this.el.addEventListener("scroll", event => {
         if (event.target.id === "session-chat-content") this.atBottom = event.target.scrollHeight - event.target.scrollTop - event.target.clientHeight < 90;
@@ -493,6 +518,12 @@
       on("click", event => {
         const tab = event.target.closest('[role="tab"][phx-click="session-tab"]');
         if (tab) this.saveTab(tab.getAttribute("phx-value-tab"));
+        const work = event.target.closest('[phx-click="inspect-pr-work"]');
+        if (work) {
+          this.saveTab("outputs");
+          this.pendingWork = {chat: this.el.dataset.chatId, id: work.getAttribute("phx-value-id")};
+          this.el.querySelector("#session-outputs-tab")?.focus({preventScroll: true});
+        }
         const thread = event.target.closest('button[phx-click="open-chat"]');
         if (thread && Date.now() < (this.ignoreThreadClickUntil || 0)) { event.preventDefault(); event.stopPropagation(); return; }
         if (thread) {
@@ -515,22 +546,80 @@
         this.saveView("conversation"); this.saveTab("chat"); this.atBottom = true; this.resizeComposer(); requestAnimationFrame(this.scroll);
       });
       this.loadTab();
+      this.localizeTimes();
       requestAnimationFrame(this.scroll);
     },
     updated() {
       if (this.dragScope !== this.scope()) { this.clearDrag(); this.dragScope = this.scope(); }
       if (this.chatId !== this.el.dataset.chatId) { this.chatId = this.el.dataset.chatId; this.atBottom = true; }
       this.loadTab();
+      this.localizeTimes();
       this.resizeComposer();
-      requestAnimationFrame(this.scroll);
+      requestAnimationFrame(() => { this.scroll(); this.revealWork(); });
     },
     reconnected() {
       // A channel rejoin remounts server state but retains this hook instance.
       this.clearDrag();
       this.loadedTabKey = undefined;
       this.loadTab();
+      this.localizeTimes();
     },
     destroyed() { this.abort.abort(); }
   };
-  window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace};
+  const IssueSwitcher = {
+    mounted() {
+      this.abort = new AbortController();
+      this.menuSize = observeChatDropdown(this.el, ".issue-switcher-menu", this.abort.signal);
+      this.activeId = null;
+      this.input = () => this.el.querySelector('[role="combobox"]');
+      this.options = () => [...this.el.querySelectorAll('[role="option"]')];
+      this.sync = () => {
+        const options = this.options();
+        if (!options.some(option => option.id === this.activeId)) this.activeId = options[0]?.id || null;
+        options.forEach(option => { option.tabIndex = -1; option.dataset.active = String(option.id === this.activeId); });
+        const input = this.input();
+        input?.setAttribute("aria-expanded", String(this.el.open));
+        if (this.el.open && this.activeId) input?.setAttribute("aria-activedescendant", this.activeId);
+        else input?.removeAttribute("aria-activedescendant");
+      };
+      this.close = (focus = false) => { this.el.open = false; this.sync(); if (focus) this.el.querySelector("summary")?.focus(); };
+      this.el.addEventListener("toggle", () => { this.sync(); if (this.el.open) this.input()?.focus({preventScroll: true}); }, {signal: this.abort.signal});
+      this.el.addEventListener("keydown", event => {
+        if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); this.close(true); return; }
+        if (event.target !== this.input()) return;
+        const options = this.options();
+        const current = options.findIndex(option => option.id === this.activeId);
+        let index;
+        if (event.key === "ArrowDown") index = (current + 1) % options.length;
+        else if (event.key === "ArrowUp") index = (current - 1 + options.length) % options.length;
+        else if (event.key === "Enter") { event.preventDefault(); options[current]?.click(); return; }
+        else return;
+        event.preventDefault(); this.activeId = options[index]?.id || null; this.sync(); options[index]?.scrollIntoView({block: "nearest"});
+      }, {signal: this.abort.signal});
+      this.el.addEventListener("click", event => { if (event.target.closest('[role="option"]')) this.close(true); }, {signal: this.abort.signal});
+      document.addEventListener("click", event => { if (!this.el.contains(event.target)) this.close(); }, {signal: this.abort.signal});
+      document.addEventListener("focusin", event => { if (!this.el.contains(event.target)) this.close(); }, {signal: this.abort.signal});
+      this.sync();
+    },
+    beforeUpdate() { this.wasOpen = this.el.open; },
+    updated() { this.el.open = this.wasOpen; this.sync(); this.menuSize.fit(); },
+    destroyed() { this.menuSize.disconnect(); this.abort.abort(); }
+  };
+  const IssuePRMenu = {
+    mounted() {
+      this.abort = new AbortController();
+      this.menuSize = observeChatDropdown(this.el, ".issue-pr-list", this.abort.signal);
+      this.close = (focus = false) => { this.el.open = false; if (focus) this.el.querySelector('summary')?.focus(); };
+      this.el.addEventListener('click', event => {
+        if (event.target.closest('button, a')) this.close();
+      }, {signal: this.abort.signal});
+      this.el.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); this.close(true); } }, {signal: this.abort.signal});
+      document.addEventListener('click', event => { if (!this.el.contains(event.target)) this.close(); }, {signal: this.abort.signal});
+      document.addEventListener('focusin', event => { if (!this.el.contains(event.target)) this.close(); }, {signal: this.abort.signal});
+    },
+    beforeUpdate() { this.wasOpen = this.el.open; },
+    updated() { this.el.open = this.wasOpen; this.menuSize.fit(); },
+    destroyed() { this.menuSize.disconnect(); this.abort.abort(); }
+  };
+  window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace, IssueSwitcher, IssuePRMenu};
 })();

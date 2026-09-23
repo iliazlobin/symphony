@@ -220,6 +220,33 @@ class ProfileTests(unittest.TestCase):
                     self.assertEqual(execute.call_args.args[2]["SYMPHONY_WORKER_ROLE"], role)
                     sync.assert_called_once()
 
+    def test_retained_worker_identity_is_forwarded_only_for_valid_builder_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config = self.sandbox_config(root)
+            home = root / "codex"
+            home.mkdir()
+            (home / "auth.json").write_text("{}")
+            (root / "bin").mkdir()
+            (root / "bin/codex-rules").touch()
+            config.update(worker_launch_enabled=True, codex_home=str(home), worker_image_id="sha256:" + "a" * 64)
+            environment = {"SYMPHONY_CONTAINER_CIDFILE": str(root / "owned.cid"),
+                           "SYMPHONY_CONTAINER_OWNER": "b" * 32, "SYMPHONY_WORKER_ROLE": "builder",
+                           "SYMPHONY_PR_WORK_ID": "c" * 32, "SYMPHONY_PR_WORK_RESUME": "true"}
+            with patch.dict(os.environ, environment, clear=True), patch.object(profile, "run"), \
+                    patch.object(profile.os, "execve") as execute:
+                profile.codex_server(config)
+                env = execute.call_args.args[2]
+                self.assertEqual(env["SYMPHONY_PR_WORK_ID"], "c" * 32)
+                self.assertEqual(env["SYMPHONY_PR_WORK_RESUME"], "true")
+            for changes in ({"SYMPHONY_WORKER_ROLE": "reviewer"}, {"SYMPHONY_PR_WORK_ID": "../other"},
+                            {"SYMPHONY_PR_WORK_RESUME": "false"}, {"SYMPHONY_PR_WORK_ID": ""}):
+                with patch.dict(os.environ, dict(environment, **changes), clear=True), \
+                        patch.object(profile, "run"), patch.object(profile.os, "execve") as execute, \
+                        self.assertRaises(profile.ControlError):
+                    profile.codex_server(config)
+                execute.assert_not_called()
+
     def test_checks_effective_yaml_not_matching_prompt_text(self):
         profile.validate_workflow(WORKFLOW)
         for changed in (WORKFLOW.replace("enabled: true", "enabled: false"), WORKFLOW.replace("initial_mode: paused", "initial_mode: running"), WORKFLOW.replace("max_concurrent_agents: 1", "max_concurrent_agents: 8"), WORKFLOW.replace("iliazlobin/events-concierge", "example/other")):

@@ -122,7 +122,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     def call("invalid", _, _), do: {:error, :invalid_tool}
     def call("malformed", _, _), do: :unavailable
 
-    def call("symphony_view_context", _, ctx), do: {:ok, %{"snapshot" => ctx.view_context}}
+    def call("symphony_view_context", _, ctx), do: {:ok, %{"snapshot" => ctx.view_context, "task_id" => ctx.task_id}}
 
     def call("artifacts", _, ctx) do
       task = %{
@@ -148,6 +148,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
       end
 
       proposal = %{"action" => "feedback", "args" => %{"body" => "Please check this"}, "project_id" => ctx.project_id, "tracker_fingerprint" => ctx.tracker_fingerprint}
+      proposal = ctx.auth[:pr_work_proposal] || proposal
       {:ok, %{"proposal" => proposal, "widgets" => [%{"type" => "proposal"}], "references" => [%{"label" => "Task", "url" => "https://github.com/test/project/issues/1"}]}}
     end
 
@@ -164,6 +165,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     @spec confirm(map(), map()) :: term()
     def confirm(proposal, ctx) do
       send(ctx.auth.test_pid, {:confirmed, proposal})
+      if ctx.auth[:pr_work_proposal], do: send(ctx.auth.test_pid, {:confirmed_scope, ctx.task_id})
       send(ctx.auth.test_pid, {:action_started, self(), proposal["id"]})
 
       case ctx.auth[:action_result] do
@@ -186,6 +188,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     @spec reconcile(map(), map()) :: term()
     def reconcile(proposal, ctx) do
       send(ctx.auth.test_pid, {:reconciled, proposal})
+      if ctx.auth[:pr_work_proposal], do: send(ctx.auth.test_pid, {:reconciled_scope, ctx.task_id})
 
       case ctx.auth[:reconcile_result] do
         :unavailable -> {:error, :github_unavailable}
@@ -672,13 +675,18 @@ defmodule SymphonyElixir.Chat.StoreTest do
       assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", chat["id"], c.auth, c.server)
     end
 
-    assert {:ok, %{"queued_count" => 1}} = Store.send_message(c.project, third["id"], "Hello", "three", c.auth, c.server)
+    assert {:ok, %{"queued_count" => 1}} = Store.send_message(c.project, third["id"], "delay finish", "three", c.auth, c.server)
     assert {:ok, _} = Store.stop(c.project, first["id"], c.auth, c.server)
     wait_chat(c, first, &(&1["status"] == "interrupted"))
+    assert_receive {:runtime, third_runtime, _, "delay finish"}
+    assert_receive {:phase_ready, ^third_runtime, "delay finish"}
+    send(third_runtime, :continue)
+    wait_chat(c, third, &(&1["status"] == "idle" and &1["queued_count"] == 0))
 
-    for text <- ["error", "auth", "crash", "tool error", "malformed tool"] do
+    for {text, status} <- [{"error", "error"}, {"auth", "error"}, {"crash", "error"}, {"tool error", "idle"}, {"malformed tool", "idle"}] do
       assert {:ok, _} = Store.send_message(c.project, first["id"], text, text, c.auth, c.server)
-      wait_chat(c, first, &(&1["status"] != "running"))
+      assert_receive {:runtime, _, _, ^text}
+      wait_chat(c, first, &(&1["status"] == status and &1["queued_count"] == 0))
     end
 
     GenServer.cast(c.server, {:delta, first["id"], "stale", "must not appear"})
@@ -708,6 +716,41 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert List.last(complete["messages"])["text"] == "Feedback saved"
     assert {:ok, _} = Store.decide(c.project, chat["id"], proposal["id"], "confirm", c.auth, c.server)
     refute_receive {:confirmed, _}
+  end
+
+  test "PR work evidence and bound task survive proposal persistence, confirmation and uncertain receipt recovery", c do
+    task_id = c.project <> ":1"
+    evidence = %{"work_id" => String.duplicate("a", 32), "expected_head_sha" => nil}
+
+    proposal = %{
+      "action" => "continue_pr_work",
+      "args" => %{"task_id" => "1", "work_id" => evidence["work_id"], "body" => "Address the review"},
+      "pr_work" => evidence,
+      "project_id" => c.project,
+      "tracker_fingerprint" => "scope"
+    }
+
+    auth = Map.put(c.auth, :pr_work_proposal, proposal)
+    assert {:ok, chat} = Store.ensure_conversation(c.project, task_id, auth, c.server)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "proposal", "pr-proposal", auth, c.server)
+    saved = wait_chat(c, chat, &(&1["status"] == "idle"))
+    [pending] = saved["proposals"]
+    assert pending["pr_work"] == evidence
+    assert pending["details"]["pr_work"] == evidence
+    refute_receive {:confirmed, _}
+
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    assert {:ok, _} = Store.decide(c.project, chat["id"], pending["id"], "confirm", Map.put(auth, :action_result, :unknown), server)
+    assert_receive {:confirmed, payload}
+    assert payload["pr_work"] == evidence
+    assert_receive {:confirmed_scope, ^task_id}
+    wait_chat(%{c | server: server}, chat, &(hd(&1["proposals"])["status"] == "unknown"))
+    assert {:ok, _} = Store.decide(c.project, chat["id"], pending["id"], "reconcile", auth, server)
+    assert_receive {:reconciled, ^payload}
+    assert_receive {:reconciled_scope, ^task_id}
+    refute_receive {:confirmed, _}
+    wait_chat(%{c | server: server}, chat, &(hd(&1["proposals"])["status"] == "completed"))
   end
 
   test "cancelled proposals never execute and uncertain writes reconcile without repeating", c do
@@ -1242,6 +1285,9 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, _} = Store.send_message(c.project, chat["id"], "view", "view", c.auth, c.server)
     assert_receive {:view_runtime, nil, instructions}
     assert instructions =~ "permanently associated with task #{task_id}"
+    assert instructions =~ "continue_pr_work with its exact work_id"
+    assert instructions =~ "fresh independent reviewer"
+    assert_receive {:view_tool, %{"task_id" => ^task_id}}
     completed = wait_chat(c, chat, &(&1["status"] == "idle"))
     retained = List.duplicate(hd(completed["messages"]), 400)
     :sys.replace_state(c.server, fn state -> put_in(state, [:chats, chat["id"], "messages"], retained) end)

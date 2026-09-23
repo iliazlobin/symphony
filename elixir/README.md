@@ -334,6 +334,12 @@ The observability UI now runs on a minimal Phoenix stack:
 The chat panel stays open. Select a task card to open its dedicated conversation;
 closing task details keeps that conversation selected. **Main chat** returns to the
 project conversation for reports and task creation, updates or cancellation.
+The headline picker searches issue numbers, titles, categories and recent activity.
+Issues appear in Running, Ready for review, Needs attention, Ready, Backlog and Done
+groups, newest activity first within each group. The second line links the issue and
+its card; **PRs** lists fetched associated PRs with independent review and CI status,
+and indicates when GitHub evidence is incomplete or unavailable.
+Retained PR work sessions open in **Outputs**, keeping the same issue chat selected.
 Use **New task** to enter a title, outcome, scope, acceptance checks and dependencies.
 **Preview task** saves the exact proposed GitHub issue; **Create task** confirms it.
 Created tasks enter the backlog without execution routing labels. Recent submissions
@@ -352,6 +358,13 @@ Inside the conversation, **Chat**, **Context**,
 the next message's view from snapshots retained with earlier messages. Outputs collect
 the latest 100 distinct issue/PR summaries and action results; original tool results stay
 in message history. Sources retain retrieved references.
+Ask the issue chat to create PR work with a bounded instruction, or continue an existing
+work session to address feedback or checks, then confirm its preview. Each PR work keeps
+its builder thread and checkout across attempts; every candidate gets a fresh reviewer.
+One PR work runs per issue at a time, sharing the issue's cumulative budget. A review
+handoff requires explicit continuation; **Retry** does not replay a completed candidate.
+Previously linked PRs are shown but are not automatically adopted as work sessions.
+Existing routing labels, launch permissions, publication and merge gates still apply.
 GitHub artifact statuses are recorded observations; thread activity updates live.
 You can send follow-ups while a response is running. Up to 20 messages wait in the
 conversation queue above the composer; **Send next** changes the next waiting message
@@ -359,8 +372,10 @@ and **Remove** cancels one queued message. Messages run one at a time per conver
 and respect the service concurrency limit. Cards show chat processing and queued counts,
 separately from coding-worker activity. **Stop**, a failed turn or a service restart
 pauses the remaining queue; **Resume queue** continues it after checking current access.
-Conversation
-messages scroll independently of the composer. The selected view and tab are remembered
+Messages show their original sent or response-start time in the browser's local time;
+hover a timestamp for its full date and time zone. Queued messages retain their queue
+time when sent. Older messages without a valid recorded timestamp omit it.
+Conversation messages scroll independently of the composer. The selected view and tab are remembered
 in this browser session. The current-view
 tool resolves fresh authorized task summaries; action previews and browser
 confirmations own all writes. See [management conversations](../ARCHITECTURE.md#management-conversations)
@@ -621,7 +636,8 @@ The optional HTTP service serves a LiveView Kanban board with searchable project
 status and priority filters, per-lane sorting, and browser-local manual order.
 The compact board follows the Linear board shown in OpenAI's Symphony demo while
 retaining this fork's GitHub workflow. Project selection stays in the top bar;
-**Filter** opens status and priority selectors. **Display** controls sorting, card
+Status and priority selectors stay visible on the left of the toolbar. **Display**,
+on the right, controls sorting, card
 detail, light/dark appearance and visible columns. Hidden columns remain available
 in the restore rail; selecting a status reveals its column. Display preferences are
 saved only in this browser and do not change scheduling or issue state.

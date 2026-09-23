@@ -9,12 +9,67 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 
 OWNER_LABEL = "com.openai.symphony.owner"
 
 
-def create_command(workspace, codex_home, image, role, cidfile, owner, docker, seccomp_policy=None, apparmor_profile=None):
+def stage_path(codex_home, owner, role, work_id=None):
+    if work_id is not None:
+        if role != "builder" or not isinstance(work_id, str) or not re.fullmatch(r"[a-f0-9]{32}", work_id):
+            raise ValueError("Retained PR state requires an identified builder work record")
+        return Path(codex_home).parent / "pr-work-state" / work_id / "builder"
+    return Path(codex_home).parent / "stage-state" / owner / role
+
+
+def private_directory(path, *, create=False):
+    if create:
+        path.mkdir(mode=0o700, exist_ok=True)
+    info = path.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) & 0o077 or path.resolve(strict=True) != path):
+        raise ValueError("Worker session state must be a private owned directory without symlinks")
+
+
+def prepare_stage_home(workspace, codex_home, owner, role, work_id=None, *, resume=False):
+    home = Path(codex_home).resolve(strict=True)
+    stage = stage_path(home, owner, role, work_id)
+    if work_id is None:
+        if resume:
+            raise ValueError("Resume requires a retained PR work identity")
+        stage.mkdir(parents=True, mode=0o700, exist_ok=False)
+        return stage
+    state_root = stage.parent.parent
+    private_directory(state_root, create=not resume)
+    private_directory(stage.parent, create=not resume)
+    marker = stage.parent / "scope.json"
+    expected = {"version": 1, "work_id": work_id, "workspace": str(Path(workspace).resolve(strict=True)), "codex_home": str(home)}
+    if resume:
+        info = marker.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or info.st_size > 4096):
+            raise ValueError("Retained work scope marker is invalid")
+        if json.loads(marker.read_text()) != expected:
+            raise ValueError("Retained work scope does not match this workspace")
+        private_directory(stage)
+    else:
+        # An ambiguous first startup is retained for operator recovery, never overwritten.
+        stage.mkdir(mode=0o700, exist_ok=False)
+        with open(os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
+            json.dump(expected, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        for directory in (stage.parent, state_root, home.parent):
+            descriptor = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+    return stage
+
+
+def create_command(workspace, codex_home, image, role, cidfile, owner, docker, seccomp_policy=None, apparmor_profile=None, work_id=None):
     workspace = Path(workspace).resolve(strict=True)
     codex_home = Path(codex_home).resolve(strict=True)
     cidfile = Path(cidfile).resolve()
@@ -38,7 +93,7 @@ def create_command(workspace, codex_home, image, role, cidfile, owner, docker, s
     if not (codex_home / "config.toml").is_file():
         raise ValueError("Reviewed worker config is missing")
 
-    stage_home = codex_home.parent / "stage-state" / owner / role
+    stage_home = stage_path(codex_home, owner, role, work_id)
     stage_mounts = ["--mount", f"type=bind,src={stage_home},dst=/codex-home"]
     for filename in ("config.toml", "AGENTS.md", "auth.json"):
         source = codex_home / filename
@@ -93,9 +148,14 @@ def main():
         os.environ.get("SYMPHONY_WORKER_ROLE", "builder"),
         os.environ["SYMPHONY_CONTAINER_CIDFILE"],
         os.environ["SYMPHONY_CONTAINER_OWNER"], docker, args.seccomp_policy, args.apparmor_profile,
+        work_id=os.environ.get("SYMPHONY_PR_WORK_ID"),
     )
-    stage_home = Path(args.codex_home).resolve().parent / "stage-state" / os.environ["SYMPHONY_CONTAINER_OWNER"] / os.environ.get("SYMPHONY_WORKER_ROLE", "builder")
-    stage_home.mkdir(parents=True, mode=0o700, exist_ok=False)
+    resume = os.environ.get("SYMPHONY_PR_WORK_RESUME")
+    if resume not in (None, "true"):
+        raise ValueError("Invalid retained session resume flag")
+    prepare_stage_home(args.workspace, args.codex_home, os.environ["SYMPHONY_CONTAINER_OWNER"],
+                       os.environ.get("SYMPHONY_WORKER_ROLE", "builder"), os.environ.get("SYMPHONY_PR_WORK_ID"),
+                       resume=resume == "true")
     docker_env = {key: value for key, value in os.environ.items() if key not in ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG")}
     context = subprocess.run([docker, "context", "inspect", "colima", "--format", "{{.Endpoints.docker.Host}}"], env=docker_env, capture_output=True, text=True, timeout=10, check=True)
     endpoint = context.stdout.strip()
