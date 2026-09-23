@@ -226,7 +226,7 @@ defmodule SymphonyElixirWeb.ChatNavigation do
   defp timestamp(_value), do: nil
 
   defp safe_url(value) when is_binary(value) do
-    with false <- String.match?(value, ~r/[\x00-\x20\x7f]/),
+    with false <- String.match?(value, ~r/[\\\x00-\x20\x7f]/),
          {:ok, %URI{scheme: scheme, host: host, userinfo: nil}} <- URI.new(value),
          true <- scheme in ["http", "https"] and is_binary(host) and host != "" do
       value

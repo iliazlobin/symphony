@@ -169,7 +169,15 @@ defmodule SymphonyElixirWeb.ChatNavigationTest do
   end
 
   test "unsafe URLs and malformed timestamps are never exposed or invented" do
-    for url <- ["javascript:alert(1)", "//example.com/1", "https://user:secret@example.com/1", "https://example.com/with space", "https://"] do
+    for url <- [
+          "javascript:alert(1)",
+          "//example.com/1",
+          "https://user:secret@example.com/1",
+          "https://example.com/with space",
+          "https://example.com\\evil/path",
+          "https://example.com/path\\part",
+          "https://"
+        ] do
       [group] = ChatNavigation.issues([task("1", "ready", url: url, pull_requests: [%{number: 1, url: url, updated_at: "2026-99-99"}])], %{}, @project)
       row = hd(group.issues)
       assert row.url == nil
