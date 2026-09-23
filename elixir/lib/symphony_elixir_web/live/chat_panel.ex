@@ -759,7 +759,12 @@ defmodule SymphonyElixirWeb.ChatPanel do
         <div :if={!@embedded} class="chat-title"><strong>{if @workspace_view == "list", do: "Chats", else: selected_title(@chat, @chats)}</strong><span class="muted">{if @workspace_view == "list", do: project_label(@project), else: conversation_status(@chat)}</span></div>
         <div :if={@embedded && @issue} class="issue-chat-identity">
           <details id="issue-pr-menu" class="issue-pr-menu" phx-hook="IssuePRMenu">
-            <summary aria-label="Pull requests for this issue">PRs <span>{@pr_evidence.label}</span><span aria-hidden="true">⌄</span></summary>
+            <summary aria-label="Pull requests for this issue">
+              <span>Pull requests</span>
+              <span class="issue-pr-count">{@pr_evidence.label}</span>
+              <span :if={@chat && thread_status(@chat) not in ["idle", "new"]} class="issue-chat-activity" data-status={thread_status(@chat)}>{thread_status_label(@chat)}</span>
+              <svg class="issue-pr-chevron" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+            </summary>
             <div class="issue-pr-list">
               <form class="issue-pr-search" phx-change="search-prs" phx-submit="search-prs" phx-target={@myself} role="search">
                 <input id="issue-pr-search" type="search" name="query" value={@pr_query} placeholder="Search PRs or status…" aria-label="Search pull requests and work sessions" autocomplete="off" phx-debounce="150" />
@@ -778,13 +783,14 @@ defmodule SymphonyElixirWeb.ChatPanel do
               </div>
               <p :if={@pr_query != "" && @issue_prs == [] && @issue_works == []} class="issue-options-empty">No matching pull requests or work sessions.</p>
               </div>
+              <div class="issue-pr-footer">
+                <a :if={safe_url(@issue.url)} href={safe_url(@issue.url)} target="_blank" rel="noopener noreferrer" class="issue-github-link">{@issue.identifier} ↗</a>
+                <span :if={!safe_url(@issue.url)}>{@issue.identifier}</span>
+                <button id="issue-card-link" class="button button-quiet" phx-click="issue-card" phx-target={@myself}>View card</button>
+                <span class="issue-chat-state" data-stage={@issue.stage}>{String.capitalize(@issue.stage)}</span>
+              </div>
             </div>
           </details>
-          <a :if={safe_url(@issue.url)} href={safe_url(@issue.url)} target="_blank" rel="noopener noreferrer" class="issue-github-link">{@issue.identifier} ↗</a>
-          <span :if={!safe_url(@issue.url)}>{@issue.identifier}</span>
-          <button id="issue-card-link" class="button button-quiet" phx-click="issue-card" phx-target={@myself}>View card</button>
-          <span class="issue-chat-state" data-stage={@issue.stage}>{String.capitalize(@issue.stage)}</span>
-          <span :if={@chat && thread_status(@chat) not in ["idle", "new"]} class="issue-chat-activity" data-status={thread_status(@chat)}>{thread_status_label(@chat)}</span>
         </div>
         <div :if={@embedded && is_nil(@issue)} class="chat-title chat-bound-title"><span class="muted">{project_label(@project)} · {conversation_status(@chat)}</span></div>
       </div>
