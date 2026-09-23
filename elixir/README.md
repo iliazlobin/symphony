@@ -642,7 +642,9 @@ detail, light/dark appearance and visible columns. Hidden columns remain availab
 in the restore rail; selecting a status reveals its column. Display preferences are
 saved only in this browser and do not change scheduling or issue state.
 Click a card's background to select its task chat without opening a dialog. The title
-opens task details; issue, PR and CI links open directly in GitHub. Focus a card and
+is a link that opens scrollable task details; issue, PR and CI links open directly in GitHub.
+Additional PRs expand inside the card without opening task details.
+Details retain their scroll position during refresh and return to the top when you open another issue. Focus a card and
 press Enter or Space to select it. Selection survives reload and browser navigation;
 dragging still moves or reorders cards. Card details and Settings open as native dialogs
 with Close and Escape. Settings has

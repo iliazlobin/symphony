@@ -807,6 +807,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     render_click(view, "select-task", %{"id" => "github:example/fixture:2"})
     render(view)
     assert :sys.get_state(view.pid).socket.assigns.chat_id == first
+    title_path = "/?" <> URI.encode_query(Map.put(filters, "task", "github:example/fixture:2"))
+    assert has_element?(view, "a.card-title[href='#{title_path}'][data-phx-link=patch]", "Ready fixture")
     view |> element("[data-task-id='github:example/fixture:2'] .card-title") |> render_click()
     assert has_element?(view, "#board-dialog h2", "Ready fixture")
     assert :sys.get_state(view.pid).socket.assigns.chat_id == first
@@ -1400,15 +1402,22 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, card <> " [data-pr-number='11']", "GitHub review: Approved")
     assert has_element?(view, card <> " [data-pr-number='11'] a[href='https://github.com/example/fixture/pull/11/checks']", "2 passed")
     refute has_element?(view, card <> " [data-pr-number='11']", "failed")
-    refute has_element?(view, card <> " [data-pr-number='10']")
-    assert length(Floki.find(Floki.parse_document!(render(view)), card <> " .pull-request-evidence")) == 2
-    assert has_element?(view, card <> " .card-pr-summary button", "View all 3 pull requests")
+    card_html = Floki.parse_document!(render(view))
+    assert length(Floki.find(card_html, card <> " .card-pull-requests > .pull-request-evidence")) == 2
+
+    for preview <- [".card-pr-summary", ".card-pull-requests"] do
+      assert has_element?(view, card <> " " <> preview <> " > details > [data-pr-number='10']")
+      assert length(Floki.find(card_html, card <> " " <> preview <> " > details > .pull-request-evidence")) == 1
+    end
+
+    assert has_element?(view, card <> " .card-pr-summary details summary", "More pull requests (1)")
+    refute has_element?(view, card <> " [phx-click=open-task]")
     assert has_element?(view, card <> " .card-reference-links a[href='https://github.com/example/fixture']", "Repository")
     assert has_element?(view, card <> " .card-reference-links a[href='#{candidate}']", "Verified candidate")
     assert has_element?(view, card <> " .card-reference-links a[href='https://github.com/example/fixture/pull/12/checks']", "PR #12 checks")
     assert has_element?(view, card <> " .card-bottom time[datetime='2026-09-14T11:00:00Z']", "Updated Sep 14")
     assert has_element?(view, ".status-badge-live", "Live updates connected")
-    view |> element(card <> " .card-pr-summary button") |> render_click()
+    view |> element(card <> " .card-title") |> render_click()
     assert has_element?(view, "#board-dialog h3", "Pull requests")
     assert has_element?(view, "#board-dialog h3 .section-count", "3")
     assert length(Floki.find(Floki.parse_document!(render(view)), "#board-dialog .pull-request-evidence")) == 3

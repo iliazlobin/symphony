@@ -339,6 +339,7 @@
       this.previous = document.activeElement;
       this.taskId = this.previous?.closest("[data-task-id]")?.dataset.taskId;
       this.bodyOverflow = document.body.style.overflow;
+      this.contentKey = this.el.dataset.contentKey;
       this.abort = new AbortController();
       this.closeDialog = () => this.el.dataset.eventTarget ? this.pushEventTo(this.el, "close-dialog", {}) : this.pushEvent("close-dialog", {});
       document.addEventListener("focusin", event => { if (event.target !== document.body && event.target !== document.documentElement) this.lastFocused = event.target; }, {signal: this.abort.signal});
@@ -367,8 +368,12 @@
       this.showDialog();
       this.el.querySelector(this.closeSelector)?.focus();
     },
+    beforeUpdate() { this.scrollPosition = this.el.scrollTop; },
     updated() {
+      const changed = this.contentKey !== this.el.dataset.contentKey;
+      this.contentKey = this.el.dataset.contentKey;
       this.showDialog();
+      this.el.scrollTop = changed ? 0 : (this.scrollPosition ?? this.el.scrollTop);
       if (!this.nonmodal && !this.el.contains(document.activeElement)) this.el.querySelector(this.closeSelector)?.focus({preventScroll: true});
     },
     destroyed() {
