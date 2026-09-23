@@ -12,7 +12,7 @@ class ChatWorkspaceHookTests(unittest.TestCase):
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
-const sent = [], listeners = new Map(), saved = new Map(), elements = new Map();
+const sent = [], listeners = new Map(), saved = new Map(), elements = new Map(), serverEvents = new Map();
 const sandbox = {
   window: {}, AbortController, requestAnimationFrame: () => {},
   sessionStorage: {getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value)}
@@ -29,7 +29,7 @@ const hook = {
     querySelectorAll: selector => selector === "#chat-thread-list [data-thread-id]" ? rows : []
   },
   pushEventTo: (target, event, payload) => sent.push({target, event, payload}),
-  handleEvent: () => {}
+  handleEvent: (name, handler) => serverEvents.set(name, handler)
 };
 const key = id => "symphony.chat.tab.v1:github:example/repo:" + id;
 const viewKey = id => "symphony.chat.view.v1:github:example/repo:" + id;
@@ -107,6 +107,31 @@ assert.equal(sent.length, count, "live source pin change invalidates drag");
 rows[0].dataset.pinned = "false";
 drag(); hook.el.dataset.workspaceView = "conversation"; hook.updated();
 assert.equal(hook.draggedThread, null, "view switch clears pending drag");
+// Embedded task conversations cannot restore the retired list view.
+hook.el.dataset.embedded = "true";
+hook.el.dataset.chatId = "bound-task";
+saved.set(viewKey("bound-task"), "list");
+const beforeViews = sent.filter(item => item.event === "restore-workspace-view").length;
+hook.updated();
+assert.equal(sent.filter(item => item.event === "restore-workspace-view").length, beforeViews);
+// Enter queues follow-ups while the current response is running.
+hook.el.dataset.running = "true";
+let submitted = 0;
+const input = {id: "chat-message-input", value: "Next instruction", disabled: false, closest: () => null,
+  form: {requestSubmit() {submitted++;}}};
+listeners.get("keydown")({target: input, key: "Enter", shiftKey: false, isComposing: false, preventDefault() {}});
+assert.equal(submitted, 1);
+listeners.get("keydown")({target: input, key: "Enter", shiftKey: true, isComposing: false, preventDefault() {}});
+assert.equal(submitted, 1, "Shift+Enter stays a newline");
+// An acknowledgement from the old conversation cannot clear the new draft.
+serverEvents.get("chat-message-sent")({chat_id: "previous-task"});
+assert.equal(draft.value, "Retain this draft");
+draft.focus = () => {};
+// A delayed acknowledgement cannot erase the next draft in the same chat.
+serverEvents.get("chat-message-sent")({chat_id: "bound-task", accepted_text: "Earlier message"});
+assert.equal(draft.value, "Retain this draft");
+serverEvents.get("chat-message-sent")({chat_id: "bound-task", accepted_text: "Retain this draft"});
+assert.equal(draft.value, "");
 // Cleared auth/project state sends no restoration and cannot retain a drag.
 delete hook.el.dataset.project;
 delete hook.el.dataset.chatId;

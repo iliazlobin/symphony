@@ -41,6 +41,7 @@ defmodule SymphonyElixir.Application do
       SymphonyElixir.AgentRuntimeSupervisor,
       SymphonyElixir.Chat.Store,
       SymphonyElixirWeb.BrowserSessions,
+      SymphonyElixirWeb.BoardCache,
       SymphonyElixir.HttpServer,
       SymphonyElixir.StatusDashboard
     ]

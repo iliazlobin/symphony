@@ -92,5 +92,6 @@ binary or changing authentication still requires its normal approved restart.
 
 A Symphony PR changes a candidate checkout, not the running controller. Review and
 merge do not restart the service. Deploy a tested release separately, preserve each
-project's state, and follow the [baseline and recovery procedure](../events-concierge/README.md#change-the-baseline)
-using this project's profile entrypoint and explicit configuration path.
+project's state, and follow the [local release update procedure](../events-concierge/README.md#update-the-local-symphony-release)
+using this project's profile entrypoint and explicit configuration path. Changing a task's
+source baseline is a separate [operation](../events-concierge/README.md#change-the-baseline).

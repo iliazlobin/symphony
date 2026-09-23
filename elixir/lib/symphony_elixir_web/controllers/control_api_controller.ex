@@ -27,11 +27,31 @@ defmodule SymphonyElixirWeb.ControlApiController do
     if conn.halted do
       conn
     else
-      case Orchestrator.control_command(params, orchestrator()) do
+      authorize = current_authorization(conn)
+      scope = Orchestrator.tracker_fingerprint()
+
+      case Orchestrator.control_command_guarded(params, scope, orchestrator(), authorize) do
         {:ok, payload} -> json(conn, payload)
+        {:error, :unauthorized} -> error(conn, 401, :unauthorized)
         {:error, reason} when reason in @conflict_reasons -> error(conn, 409, reason)
         {:error, reason} when reason in [:invalid_command, :concurrency_limit_exceeded] -> error(conn, 400, reason)
         {:error, reason} -> error(conn, 503, reason)
+      end
+    end
+  end
+
+  @spec publication(Conn.t(), map()) :: Conn.t()
+  def publication(conn, params) do
+    conn = authorize(conn)
+
+    if conn.halted do
+      conn
+    else
+      case Orchestrator.record_pr_publication(params, orchestrator()) do
+        {:ok, payload} -> json(conn, payload)
+        {:error, :invalid_publication} -> error(conn, 400, :invalid_publication)
+        {:error, reason} when reason in [:control_unavailable, :unavailable] -> error(conn, 503, reason)
+        {:error, reason} -> error(conn, 409, reason)
       end
     end
   end
@@ -62,5 +82,11 @@ defmodule SymphonyElixirWeb.ControlApiController do
   end
 
   defp error(conn, status, reason), do: conn |> put_status(status) |> json(%{error: %{code: to_string(reason)}})
+
+  defp current_authorization(conn) do
+    ["Bearer " <> supplied] = get_req_header(conn, "authorization")
+    fn -> is_binary(Config.control_token()) and Plug.Crypto.secure_compare(Config.control_token(), supplied) end
+  end
+
   defp orchestrator, do: Endpoint.config(:orchestrator) || Orchestrator
 end

@@ -42,14 +42,23 @@ defmodule SymphonyElixir.Codex.AppServer do
     worker_host = Keyword.get(opts, :worker_host)
     controlled = Config.control_settings().enabled
     profile = Keyword.get(opts, :profile, :builder)
-    startup_context = %{controlled: controlled, profile: profile, issue: opts[:issue]}
+
+    startup_context = %{
+      controlled: controlled,
+      profile: profile,
+      issue: opts[:issue],
+      pr_work_id: opts[:pr_work_id],
+      thread_id: opts[:thread_id]
+    }
+
     original_binding = DynamicTool.bind()
     dynamic_tool_binding = if controlled, do: Map.put(original_binding, :tool_specs, []), else: original_binding
 
-    with :ok <- validate_controlled_profile(controlled, profile),
+    with :ok <- validate_retained_session(controlled, profile, opts[:pr_work_id], opts[:thread_id]),
+         :ok <- validate_controlled_profile(controlled, profile),
          :ok <- validate_controlled_host(controlled, worker_host),
          {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
-         {:ok, port} <- start_port(expanded_workspace, worker_host, dynamic_tool_binding, profile) do
+         {:ok, port} <- start_port(expanded_workspace, worker_host, dynamic_tool_binding, startup_context) do
       metadata = port_metadata(port, worker_host)
 
       with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host, profile),
@@ -214,11 +223,11 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_port(workspace, nil, dynamic_tool_binding, profile) do
+  defp start_port(workspace, nil, dynamic_tool_binding, context) do
     if Config.control_settings().enabled do
       ProcessGroup.open(local_launch_command(dynamic_tool_binding),
         cd: workspace,
-        env: tracker_secret_port_env(dynamic_tool_binding) ++ [{~c"SYMPHONY_WORKER_ROLE", String.to_charlist(to_string(profile))}],
+        env: tracker_secret_port_env(dynamic_tool_binding) ++ worker_environment(context),
         line: @port_line_bytes
       )
     else
@@ -229,6 +238,14 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp start_port(workspace, worker_host, dynamic_tool_binding, _profile) when is_binary(worker_host) do
     remote_command = remote_launch_command(workspace, dynamic_tool_binding)
     SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
+  end
+
+  defp worker_environment(context) do
+    [
+      {~c"SYMPHONY_WORKER_ROLE", String.to_charlist(to_string(context.profile))},
+      {~c"SYMPHONY_PR_WORK_ID", if(context.pr_work_id, do: String.to_charlist(context.pr_work_id), else: false)},
+      {~c"SYMPHONY_PR_WORK_RESUME", if(context.thread_id, do: ~c"true", else: false)}
+    ]
   end
 
   defp start_unmanaged_port(workspace, dynamic_tool_binding) do
@@ -331,6 +348,16 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
+  defp validate_retained_session(_controlled, _profile, nil, nil), do: :ok
+
+  defp validate_retained_session(true, :builder, work_id, thread_id) when is_binary(work_id) do
+    valid = String.match?(work_id, ~r/^[a-f0-9]{32}$/) and (is_nil(thread_id) or valid_thread_id?(thread_id))
+    if valid, do: :ok, else: {:error, :invalid_retained_session}
+  end
+
+  defp validate_retained_session(_controlled, _profile, _work_id, _thread_id), do: {:error, :invalid_retained_session}
+  defp valid_thread_id?(id), do: is_binary(id) and String.match?(id, ~r/^[A-Za-z0-9_-]{1,128}$/)
+
   defp validate_controlled_profile(true, profile) when profile not in [:builder, :reviewer],
     do: {:error, :invalid_controlled_worker_profile}
 
@@ -353,8 +380,10 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp do_start_session(port, workspace, session_policies, dynamic_tool_binding, context) do
     with :ok <- startup_phase(context, :initialize, fn -> send_initialize(port) end) do
-      startup_phase(context, :thread_start, fn ->
-        start_thread(port, workspace, session_policies, dynamic_tool_binding)
+      phase = if context.thread_id, do: :thread_resume, else: :thread_start
+
+      startup_phase(context, phase, fn ->
+        start_thread(port, workspace, session_policies, dynamic_tool_binding, context)
       end)
     end
   end
@@ -378,7 +407,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp startup_phase(_context, _phase, operation), do: operation.()
 
-  defp startup_thread(%{thread_id: thread_id}), do: " thread_id=#{thread_id}"
+  defp startup_thread(%{thread_id: thread_id}) when is_binary(thread_id), do: " thread_id=#{thread_id}"
   defp startup_thread(_context), do: ""
 
   defp startup_context(%{issue: %{id: _, identifier: _} = issue}), do: " " <> issue_context(issue)
@@ -392,10 +421,11 @@ defmodule SymphonyElixir.Codex.AppServer do
          port,
          workspace,
          %{approval_policy: approval_policy, thread_sandbox: thread_sandbox} = policies,
-         dynamic_tool_binding
+         dynamic_tool_binding,
+         context
        ) do
     send_message(port, %{
-      "method" => "thread/start",
+      "method" => if(context.thread_id, do: "thread/resume", else: "thread/start"),
       "id" => @thread_start_id,
       "params" =>
         %{
@@ -405,17 +435,34 @@ defmodule SymphonyElixir.Codex.AppServer do
         }
         |> legacy_sandbox_parameter(not is_nil(policies[:profile]), "sandbox", thread_sandbox)
         |> Map.merge(profile_parameters(policies[:profile], :thread))
+        |> retained_thread_parameters(context)
     })
 
     case await_response(port, @thread_start_id) do
       {:ok, %{"thread" => thread_payload} = response} ->
-        with :ok <- verify_permission_profile(response, policies[:profile]) do
+        with :ok <- verify_permission_profile(response, policies[:profile]),
+             :ok <- verify_retained_thread(response, context, workspace) do
           parse_thread_payload(thread_payload)
         end
 
       other ->
         other
     end
+  end
+
+  defp retained_thread_parameters(params, %{thread_id: nil, pr_work_id: nil}), do: params
+  defp retained_thread_parameters(params, %{thread_id: nil}), do: Map.put(params, "ephemeral", false)
+  defp retained_thread_parameters(params, %{thread_id: id}), do: Map.put(params, "threadId", id)
+
+  defp verify_retained_thread(_response, %{pr_work_id: nil}, _workspace), do: :ok
+
+  defp verify_retained_thread(response, context, workspace) do
+    id = get_in(response, ["thread", "id"])
+
+    if valid_thread_id?(id) and (is_nil(context.thread_id) or id == context.thread_id) and
+         response["cwd"] == workspace and response["approvalPolicy"] == "never",
+       do: :ok,
+       else: {:error, :retained_thread_mismatch}
   end
 
   defp parse_thread_payload(%{"id" => thread_id}), do: {:ok, thread_id}

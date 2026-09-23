@@ -36,10 +36,13 @@ defmodule SymphonyElixir.CandidatePipeline do
 
   @spec run(Path.t(), map(), keyword(), (map() -> term())) :: {:ok, map()} | {:error, term()}
   def run(workspace, issue, opts, on_message) do
-    with {:ok, base_sha} <- approved_base(workspace),
+    with :ok <- verify_work_scope(workspace, issue, opts),
+         {:ok, base_sha} <- approved_base(workspace),
          {:ok, builder} <- build(workspace, issue, opts, on_message),
          {:ok, candidate} <- read_candidate(workspace),
+         :ok <- verify_work_branch(candidate, opts[:pr_work]),
          {:ok, _} <- git(workspace, ["merge-base", "--is-ancestor", base_sha, candidate.candidate_sha]),
+         :ok <- checkpoint_work_head(candidate, opts),
          {:ok, review_workspace} <- review_checkout(workspace, candidate.candidate_sha),
          {:ok, reviewer} <- review(review_workspace, issue, base_sha, candidate, on_message),
          {:ok, review} <- review_result(reviewer, candidate.candidate_sha),
@@ -54,8 +57,60 @@ defmodule SymphonyElixir.CandidatePipeline do
          builder_session_id: builder.session_id,
          reviewer_session_id: reviewer.session_id,
          review: review
-       })}
+       })
+       |> work_evidence(opts[:pr_work], builder)}
     end
+  end
+
+  defp verify_work_scope(workspace, issue, opts) do
+    case opts[:pr_work] do
+      nil -> :ok
+      work -> verify_work_scope(workspace, issue, work, opts[:checkpoint_pr_work])
+    end
+  end
+
+  defp verify_work_scope(workspace, issue, work, checkpoint) do
+    with {:ok, key} <- Workspace.pr_work_key(issue, work),
+         true <- Path.expand(workspace) == Path.join(Config.local_workspace_root(), key),
+         true <- is_function(checkpoint, 1) and valid_instruction?(work["instruction"]) and valid_work_head?(work),
+         :ok <- verify_work_branch(workspace, work),
+         :ok <- verify_revision(workspace, work["working_head_sha"] || work["head_sha"] || work["base_sha"]) do
+      :ok
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :invalid_pr_work_scope}
+    end
+  end
+
+  defp verify_work_branch(_candidate, nil), do: :ok
+  defp verify_work_branch(%{branch: branch}, work), do: if(branch == work["branch"], do: :ok, else: {:error, :pr_work_branch_mismatch})
+
+  defp verify_work_branch(workspace, work) do
+    with {:ok, branch} <- git(workspace, ["symbolic-ref", "--short", "HEAD"]),
+         do: verify_work_branch(%{branch: branch}, work)
+  end
+
+  defp valid_work_head?(%{"head_sha" => head} = work) do
+    working = work["working_head_sha"]
+
+    valid_sha_or_nil?(head) and valid_sha_or_nil?(working) and
+      ((is_nil(head) and is_nil(working)) or nonempty?(work["builder_thread_id"]))
+  end
+
+  defp valid_work_head?(_work), do: false
+  defp valid_sha_or_nil?(nil), do: true
+  defp valid_sha_or_nil?(sha), do: is_binary(sha) and String.match?(sha, ~r/^[a-f0-9]{40}$/)
+
+  defp checkpoint_work_head(candidate, opts) do
+    if opts[:pr_work], do: opts[:checkpoint_pr_work].(%{"working_head_sha" => candidate.candidate_sha}), else: :ok
+  end
+
+  defp valid_instruction?(value), do: is_binary(value) and String.trim(value) != "" and byte_size(value) <= 16_000
+
+  defp work_evidence(candidate, nil, _builder), do: candidate
+
+  defp work_evidence(candidate, work, builder) do
+    Map.merge(candidate, %{work_id: work["id"], expected_head_sha: work["head_sha"], builder_thread_id: builder.thread_id})
   end
 
   defp approved_base(workspace) do
@@ -141,7 +196,26 @@ defmodule SymphonyElixir.CandidatePipeline do
         checks or policies to manufacture a passing result. A separate reviewer follows.
         """
 
-    AppServer.run(workspace, prompt, issue, profile: :builder, on_message: role_messages(on_message, :builder))
+    case opts[:pr_work] do
+      nil -> AppServer.run(workspace, prompt, issue, profile: :builder, on_message: role_messages(on_message, :builder))
+      work -> build_work(workspace, prompt, issue, work, opts[:checkpoint_pr_work], on_message)
+    end
+  end
+
+  defp build_work(workspace, prompt, issue, work, checkpoint, on_message) do
+    prompt =
+      prompt <> "\nPR work #{work["id"]} on #{work["branch"]}. Keep this work scoped to the following confirmed instruction. Other issue work belongs to separate sessions.\n" <> work["instruction"]
+
+    session_opts = [issue: issue, profile: :builder, pr_work_id: work["id"], thread_id: work["builder_thread_id"]]
+
+    with {:ok, session} <- AppServer.start_session(workspace, session_opts) do
+      try do
+        with :ok <- checkpoint.(%{"builder_thread_id" => session.thread_id}),
+             do: AppServer.run_turn(session, prompt, issue, on_message: role_messages(on_message, :builder))
+      after
+        AppServer.stop_session(session)
+      end
+    end
   end
 
   defp review(workspace, issue, base_sha, candidate, on_message) do
