@@ -211,9 +211,10 @@ input, select {
 .card-top a:hover { text-decoration: underline; }
 .priority { font-size: 11px; border-radius: 4px; padding: 0 4px; background: var(--soft); }
 .priority[data-priority=P1] { color: var(--warn); background: var(--warn-bg); }
-.card-title { display: inline-flex; align-items: start; gap: 7px; max-width: 100%; text-align: left; border: 0; padding: 0; background: transparent; font-size: 13px; font-weight: 500; line-height: 1.45; overflow-wrap: anywhere; }
+.card-title-row { display: flex; align-items: start; gap: 7px; }
+.card-title { display: inline; color: var(--fg); text-decoration: none; min-width: 0; max-width: 100%; text-align: left; border: 0; padding: 0; background: transparent; font-size: 13px; font-weight: 500; line-height: 1.45; overflow-wrap: anywhere; }
 .card-title:hover { text-decoration: underline; text-underline-offset: 2px; }
-.card-title .lane-dot { margin-top: 3px; }
+.card-title-row .lane-dot { margin-top: 3px; flex-shrink: 0; }
 .card-project { font-size: 11px; color: var(--muted); margin-top: 8px; }
 .execution-summary { margin-top: 12px; font-size: 13px; }
 .execution-state { margin: 0; font-weight: 500; color: var(--fg); }
@@ -232,6 +233,8 @@ input, select {
 .card-pull-requests { margin-top: 10px; }
 .card-pr-summary { display: flex; flex-direction: column; gap: 5px; margin-top: 9px; font-size: 10px; }
 .card-pr-summary > span { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.card-more-links { margin: 0; }
+.card-more-links > summary { font-size: 11px; }
 .card-pr-summary a { text-decoration: none; }
 .card-pr-summary a:hover { text-decoration: underline; }
 .pr-state { padding: 1px 4px; border-radius: 3px; color: var(--muted); background: var(--soft); }
@@ -288,6 +291,9 @@ input, select {
 .board-dialog {
   width: min(720px, calc(100vw - 32px));
   max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 12px;

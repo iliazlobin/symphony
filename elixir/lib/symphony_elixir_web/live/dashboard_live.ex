@@ -589,7 +589,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <div class="card-top"><a :if={safe_url(task.url)} href={safe_url(task.url)} target="_blank" rel="noopener noreferrer"
                   aria-label={"Open #{task.identifier} in the issue tracker"}>{task.identifier}</a><span :if={!safe_url(task.url)}>{task.identifier}</span>
                   <span class="priority" data-priority={priority(task.priority)}>{priority(task.priority)}</span></div>
-                <button id={"open-#{card_id(task)}"} class="card-title" phx-click="open-task" phx-value-id={task.id}><span class={"lane-dot lane-dot-#{stage}"} aria-hidden="true"></span><span>{task.title}</span></button>
+                <div class="card-title-row"><span class={"lane-dot lane-dot-#{stage}"} aria-hidden="true"></span>
+                  <.link id={"open-#{card_id(task)}"} class="card-title" patch={board_path(Map.put(@url_filters, "task", task.id))}>{task.title}</.link>
+                </div>
                 <div class="card-project">{task.project_label}</div>
                 <.card_chat_status activity={Map.get(@chat_activity, task.id)} />
                 <.execution_summary summary={execution_summary(task, @board, @payload)} compact={true} />
@@ -601,10 +603,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     title={ci_summary(pr)} aria-label={"PR ##{field(pr, :number)} checks: #{ci_status(pr)}"}>CI: {ci_status(pr)} ↗</a>
                   <span :if={!pr_checks_url(pr)} class="compact-ci" title={ci_summary(pr)}>CI: {ci_status(pr)}</span>
                   <span :if={field(pr, :check_details_status) in ["partial", "stale", "unavailable"]} class="compact-ci-note">Check details: {field(pr, :check_details_status)}</span>
-                </span><button :if={length(pull_requests(task)) > 2} class="card-more-links" phx-click="open-task" phx-value-id={task.id}>View all {length(pull_requests(task))} pull requests</button></div>
+                </span><details :if={length(pull_requests(task)) > 2} class="card-more-links">
+                    <summary>More pull requests ({length(pull_requests(task)) - 2})</summary>
+                    <.pull_request :for={pr <- Enum.drop(pull_requests(task), 2)} pr={pr} compact={true} />
+                  </details></div>
                 <div :if={pull_requests(task) != []} class="card-pull-requests">
                   <.pull_request :for={pr <- Enum.take(pull_requests(task), 2)} pr={pr} compact={true} />
-                  <button :if={length(pull_requests(task)) > 2} class="card-more-links" phx-click="open-task" phx-value-id={task.id}>View all {length(pull_requests(task))} pull requests</button>
+                  <details :if={length(pull_requests(task)) > 2} class="card-more-links">
+                    <summary>More pull requests ({length(pull_requests(task)) - 2})</summary>
+                    <.pull_request :for={pr <- Enum.drop(pull_requests(task), 2)} pr={pr} compact={true} />
+                  </details>
                 </div>
                 <div :if={task_links(task, ["repo", "candidate", "checks"]) != []} class="card-reference-links"><a :for={link <- task_links(task, ["repo", "candidate", "checks"])} href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
                 <p :if={current_activity(task, @payload)} class="card-activity">{current_activity(task, @payload)}</p>
@@ -636,7 +644,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       <footer class="board-footer"><span class="status-stack"><span class="status-badge-live">Live updates connected</span><span class="status-badge-offline">Disconnected · last-known state</span></span>
         <span>Manual order is a browser preference; scheduling follows repository policy.</span></footer>
 
-      <dialog :if={@dialog} id="board-dialog" class="board-dialog" phx-hook="BoardDialog" data-nonmodal={to_string(@dialog == :task)} aria-labelledby="dialog-title">
+      <dialog :if={@dialog} id="board-dialog" class="board-dialog" phx-hook="BoardDialog" data-nonmodal={to_string(@dialog == :task)} data-content-key={if @dialog == :task, do: @selected.id, else: @dialog} aria-labelledby="dialog-title">
         <div class="dialog-inner"><div class="dialog-heading"><h2 id="dialog-title">{dialog_title(@dialog, @selected, @pending_command)}</h2>
           <button id="close-dialog" class="button button-quiet" phx-click="close-dialog" aria-label="Close dialog">Close ×</button></div>
           <p :if={@notice} class="board-notice" role="status">{@notice}</p>
