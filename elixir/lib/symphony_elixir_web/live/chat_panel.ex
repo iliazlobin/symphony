@@ -136,13 +136,6 @@ defmodule SymphonyElixirWeb.ChatPanel do
     end
   end
 
-  def handle_event("issue-card", _params, socket) do
-    if socket.assigns.embedded and BrowserAuth.authorized?(socket.assigns.auth) and socket.assigns.task_id,
-      do: send(self(), {:chat_panel, :issue_card, socket.assigns.task_id})
-
-    {:noreply, socket}
-  end
-
   def handle_event("close-panel", _params, socket) do
     send(self(), {:chat_panel, :close})
     {:noreply, socket |> subscribe(nil) |> subscribe_project(nil)}
@@ -745,12 +738,6 @@ defmodule SymphonyElixirWeb.ChatPanel do
                 </button>
               </div>
               <p :if={@issue_groups == [] && @issue_query != ""} class="issue-options-empty">No matching issues. Try a category, issue number or recent activity.</p>
-            </div>
-            <div :if={@issue} class="issue-picker-links">
-              <a :if={safe_url(@issue.url)} href={safe_url(@issue.url)} target="_blank" rel="noopener noreferrer" class="issue-github-link">{@issue.identifier} ↗</a>
-              <span :if={!safe_url(@issue.url)}>{@issue.identifier}</span>
-              <button id="issue-card-link" class="button button-quiet" phx-click="issue-card" phx-target={@myself}>View card</button>
-              <span class="issue-chat-state" data-stage={@issue.stage}>{String.capitalize(@issue.stage)}</span>
             </div>
           </div>
         </details>

@@ -287,7 +287,8 @@ The issue chat coordinates all PR work on that issue. Its headline picker groups
 Running, Ready for review, Needs attention, Ready, Backlog and Done, then sorts each
 group by the newest issue, worker, chat, PR or check activity. Search matches categories,
 identifiers, titles and latest activity. Issue rows include creation date, priority,
-PR count and latest update; the picker contains the selected issue's GitHub/card links.
+PR count and latest update. Each issue appears once in the picker. Board card titles
+open details; clicking outside or pressing Escape closes them without clearing selection.
 The PR selector includes explicit GitHub links and exact Symphony publisher markers
 for that issue, excluding incidental cross-references. This attribution is display
 evidence, not execution authority. Incomplete evidence remains labeled; work-session

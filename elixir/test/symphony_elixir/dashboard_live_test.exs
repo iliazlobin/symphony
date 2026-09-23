@@ -491,7 +491,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert_patch(view, "/")
 
     open_task(view, "2")
-    assert has_element?(view, "dialog#board-dialog h2", "Ready fixture")
+    assert has_element?(view, "dialog#board-dialog h2[tabindex='-1'][data-dialog-focus]", "Ready fixture")
+    refute has_element?(view, "#board-dialog #close-dialog")
     assert has_element?(view, "#task-board-app[data-selected-task='github:example/fixture:2']")
     assert has_element?(view, "#board-dialog", "Acceptance for fixture 2")
     assert has_element?(view, "#lane-running [data-task-id='github:example/fixture:3']")
@@ -734,7 +735,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   @tag :threads_fixture
-  test "issue headline searches categories, selects the canonical chat and links its card and all PRs", ctx do
+  test "issue headline searches categories, selects the canonical chat and lists only issues and PRs", ctx do
     prs =
       for n <- 1..4, do: %{number: n, title: "Change #{n}", url: "https://github.com/example/fixture/pull/#{n}", state: if(n == 4, do: "merged", else: "open"), checks: "success", review: "approved"}
 
@@ -765,7 +766,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     render(view)
     assert has_element?(view, "#task-board-app[data-selected-task='github:example/fixture:2']")
     refute has_element?(view, "#board-dialog")
-    assert has_element?(view, "#issue-switcher a[href='https://github.com/example/fixture/issues/2'][target=_blank]", "GH-2")
+    refute has_element?(view, "#issue-switcher .issue-picker-links, #issue-switcher #issue-card-link, #issue-switcher .issue-github-link")
     refute has_element?(view, "#issue-pr-menu .issue-github-link")
     refute has_element?(view, "#issue-pr-menu #issue-card-link")
     refute has_element?(view, "#issue-pr-menu .issue-work-options")
@@ -801,8 +802,6 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#session-outputs-content")
     assert has_element?(view, "#session-chat-content:not([hidden])")
     assert :sys.get_state(view.pid).socket.assigns.chat_id == id
-    view |> element("#issue-card-link") |> render_click()
-    assert has_element?(view, "#board-dialog h2", "Ready fixture")
     id = :sys.get_state(view.pid).socket.assigns.chat_id
     render_click(chat, "select-issue", %{"id" => "github:other/project:99"})
     assert :sys.get_state(view.pid).socket.assigns.chat_id == id

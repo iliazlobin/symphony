@@ -415,13 +415,21 @@
         if (!this.el.open) { if (nonmodal) this.el.show(); else this.el.showModal(); }
       };
       this.closeSelector = this.el.dataset.closeSelector || "#close-dialog";
+      this.focusDialog = () => (this.el.querySelector(this.closeSelector) || this.el.querySelector("[data-dialog-focus]"))?.focus({preventScroll: true});
+      document.addEventListener("click", event => {
+        // LiveView links replace the card themselves; a second patch can overwrite their URL.
+        if (event.target.closest("a[data-phx-link]")) return;
+        if (this.nonmodal && this.el.open && !this.el.contains(event.target)) this.closeDialog();
+      }, {capture: true, signal: this.abort.signal});
+      document.addEventListener("keydown", event => {
+        if (this.nonmodal && this.el.open && event.key === "Escape") {
+          event.preventDefault(); event.stopPropagation();
+          if (!event.repeat) this.closeDialog();
+        }
+      }, {capture: true, signal: this.abort.signal});
       this.el.addEventListener("cancel", event => { event.preventDefault(); this.closeDialog(); }, {signal: this.abort.signal});
       this.el.addEventListener("keydown", event => {
-        if (this.nonmodal) {
-          if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); this.closeDialog(); }
-          return;
-        }
-        if (event.key !== "Tab") return;
+        if (this.nonmodal || event.key !== "Tab") return;
         const controls = [...this.el.querySelectorAll('button, a[href], input, select, textarea, summary, [tabindex]')]
           .filter(control => !control.disabled && control.tabIndex >= 0 && control.getClientRects().length);
         const first = controls[0], last = controls[controls.length - 1];
@@ -430,7 +438,7 @@
       }, {signal: this.abort.signal});
       this.el.addEventListener("click", event => { if (event.target !== this.el) return; const rect = this.el.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) this.closeDialog(); }, {signal: this.abort.signal});
       this.showDialog();
-      this.el.querySelector(this.closeSelector)?.focus();
+      this.focusDialog();
     },
     beforeUpdate() { this.scrollPosition = this.el.scrollTop; },
     updated() {
@@ -438,7 +446,7 @@
       this.contentKey = this.el.dataset.contentKey;
       this.showDialog();
       this.el.scrollTop = changed ? 0 : (this.scrollPosition ?? this.el.scrollTop);
-      if (!this.nonmodal && !this.el.contains(document.activeElement)) this.el.querySelector(this.closeSelector)?.focus({preventScroll: true});
+      if (!this.nonmodal && !this.el.contains(document.activeElement)) this.focusDialog();
     },
     destroyed() {
       this.abort.abort();
