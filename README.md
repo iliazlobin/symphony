@@ -35,7 +35,9 @@ GitHub remains the task and publication record. See the
 [operator guide](profiles/events-concierge/README.md#operate) for setup and limits.
 
 Each issue has one coordinator chat, with a searchable activity-grouped issue picker
-and links to its card and associated PRs, with incomplete GitHub evidence identified.
+showing creation time, priority, PR count and links to the issue/card. Its PR selector
+lists only explicitly linked or Symphony-published PRs for that issue; incidental
+mentions are excluded and incomplete GitHub evidence is identified.
 Confirmed PR work sessions retain their own
 builder thread and checkout across design, implementation and follow-up validation.
 They run sequentially within the issue budget, with a fresh reviewer for each candidate;

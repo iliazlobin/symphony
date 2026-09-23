@@ -132,6 +132,22 @@ defmodule SymphonyElixirWeb.ChatNavigationTest do
     end
   end
 
+  test "issue picker retains creation time, priority and PR evidence without inventing missing metadata" do
+    for priority <- [1, 2, 3, 4, nil, 0, 5, "1"] do
+      issue = task("1", "backlog", created_at: ~U[2026-09-22 21:27:05Z], priority: priority, github_status: "available", pull_requests: [%{number: 9}, %{number: 10}])
+      [%{issues: [row]}] = ChatNavigation.issues([issue], %{}, @project)
+      assert row.created_at == "2026-09-22T21:27:05Z"
+      assert row.priority == if(priority in 1..4, do: priority)
+      assert row.pull_request_count == 2
+      assert row.github_status == "available"
+    end
+
+    [%{issues: [missing]}] = ChatNavigation.issues([task("2", "backlog", created_at: "unknown", github_status: "unavailable")], %{}, @project)
+    assert missing.created_at == nil
+    assert missing.priority == nil
+    assert missing.github_status == "unavailable"
+  end
+
   test "retains all PRs, puts active PRs first and normalizes status and evidence" do
     prs = [
       %{number: 1, title: "Merged latest", state: "MERGED", updated_at: "2026-09-22T12:00:00Z"},

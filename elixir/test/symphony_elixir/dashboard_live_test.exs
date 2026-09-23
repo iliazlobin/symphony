@@ -765,7 +765,10 @@ defmodule SymphonyElixir.DashboardLiveTest do
     render(view)
     assert has_element?(view, "#task-board-app[data-selected-task='github:example/fixture:2']")
     refute has_element?(view, "#board-dialog")
-    assert has_element?(view, ".issue-chat-identity a[href='https://github.com/example/fixture/issues/2'][target=_blank]", "GH-2")
+    assert has_element?(view, "#issue-switcher a[href='https://github.com/example/fixture/issues/2'][target=_blank]", "GH-2")
+    refute has_element?(view, "#issue-pr-menu .issue-github-link")
+    refute has_element?(view, "#issue-pr-menu #issue-card-link")
+    refute has_element?(view, "#issue-pr-menu .issue-work-options")
     assert has_element?(view, "#issue-pr-menu summary", "4")
     for n <- 1..4, do: assert(has_element?(view, "#issue-pr-menu a[href='https://github.com/example/fixture/pull/#{n}']", "PR ##{n}"))
     assert has_element?(view, "#issue-pr-menu [data-pr-number='4']", "Merged")
@@ -787,10 +790,10 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#issue-pr-menu [data-pr-number='2']")
     refute has_element?(view, "#issue-pr-menu [data-pr-number='4']")
     render_change(chat, "search-prs", %{"query" => "not-a-real-pr"})
-    assert has_element?(view, "#issue-pr-menu", "No matching pull requests or work sessions.")
-    render_change(chat, "search-prs", %{"query" => "address checks"})
-    assert has_element?(view, "#issue-pr-menu [phx-value-id='#{work_id}']")
-    refute has_element?(view, "#issue-pr-menu [data-pr-number]")
+    assert has_element?(view, "#issue-pr-menu", "No matching pull requests.")
+    render_change(chat, "search-prs", %{"query" => "PR #1"})
+    assert has_element?(view, "#issue-pr-menu [data-pr-number='1'] [phx-value-id='#{work_id}']")
+    refute has_element?(view, "#issue-pr-menu [data-pr-number='2']")
     id = :sys.get_state(view.pid).socket.assigns.chat_id
     view |> element("#issue-pr-menu [phx-value-id='#{work_id}']") |> render_click()
     assert has_element?(view, "#board-dialog .issue-work-session[data-work-id='#{work_id}']", "Address PR checks")
@@ -808,6 +811,46 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   @tag :threads_fixture
+  test "issue picker shows compact metadata and the PR selector follows only the selected issue", ctx do
+    prs = for number <- [7, 8], do: %{number: number, title: "Task change #{number}", url: "https://github.com/example/fixture/pull/#{number}", state: "open"}
+    unpublished_id = String.duplicate("b", 32)
+    foreign_id = String.duplicate("c", 32)
+
+    works = %{
+      unpublished_id => %{"id" => unpublished_id, "issue_id" => "2", "phase" => "queued"},
+      foreign_id => %{"id" => foreign_id, "issue_id" => "3", "publication" => %{"pr_number" => 7, "pr_url" => "https://github.com/example/fixture/pull/7"}}
+    }
+
+    board =
+      ctx.board
+      |> update_task("2", &%{&1 | created_at: "2026-09-22T21:27:05Z", priority: 2, github_status: "available", pull_requests: prs, ledger: %{"pr_work" => works}})
+      |> update_task("3", &%{&1 | created_at: nil, priority: nil, github_status: "unavailable", pull_requests: [%{number: 99, title: "Another issue's PR", state: "merged"}]})
+
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    row = "#issue-options [data-issue-id='github:example/fixture:2']"
+    assert has_element?(view, row <> " time[datetime='2026-09-22T21:27:05Z']", "Created Sep 22")
+    assert has_element?(view, row <> " .issue-option-priority", "P2")
+    assert has_element?(view, row <> " .issue-option-pr-count", "2 PRs")
+    other = "#issue-options [data-issue-id='github:example/fixture:3']"
+    assert has_element?(view, other, "Created —")
+    assert has_element?(view, other, "Priority —")
+    assert has_element?(view, other <> " .issue-option-pr-count", "1+ PR")
+
+    render_click(view, "select-task", %{"id" => "github:example/fixture:2"})
+    render(view)
+    for number <- [7, 8], do: assert(has_element?(view, "#issue-pr-menu [data-pr-number='#{number}']"))
+    refute has_element?(view, "#issue-pr-menu [data-pr-number='99']")
+    refute has_element?(view, "#issue-pr-menu [phx-value-id='#{unpublished_id}']")
+    refute has_element?(view, "#issue-pr-menu [phx-value-id='#{foreign_id}']")
+
+    render_click(view, "select-task", %{"id" => "github:example/fixture:3"})
+    render(view)
+    assert has_element?(view, "#issue-pr-menu [data-pr-number='99']")
+    refute has_element?(view, "#issue-pr-menu [data-pr-number='7']")
+  end
+
+  @tag :threads_fixture
   test "issue PR menu distinguishes unavailable and partial evidence from verified empty", ctx do
     board = update_task(ctx.board, "2", &%{&1 | github_status: "available", pull_requests: []})
     :ok = GenServer.call(ctx.runtime, {:board, board})
@@ -815,6 +858,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     render_click(view, "select-task", %{"id" => "github:example/fixture:2"})
     render(view)
     assert has_element?(view, "#issue-pr-menu summary", "Pull requests 0")
+    assert has_element?(view, "#issue-options [data-issue-id='github:example/fixture:2'] .issue-option-pr-count", "0 PRs")
     assert has_element?(view, "#issue-pr-menu", "No linked pull requests yet.")
 
     for {status, label, message} <- [
@@ -826,6 +870,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
         ] do
       refresh(view, ctx.runtime, update_task(board, "2", &%{&1 | github_status: status}))
       assert has_element?(view, "#issue-pr-menu summary", label)
+      assert has_element?(view, "#issue-options [data-issue-id='github:example/fixture:2'] .issue-option-pr-count", "PRs —")
       assert has_element?(view, "#issue-pr-menu [role=status]", message)
       refute has_element?(view, "#issue-pr-menu summary", "Pull requests 0")
       refute has_element?(view, "#issue-pr-menu", "No linked pull requests yet.")

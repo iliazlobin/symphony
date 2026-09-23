@@ -113,7 +113,7 @@ defmodule SymphonyElixir.GitHub.Board do
       repository(owner: $owner, name: $name) { nameWithOwner #{issues} }
     }
     fragment BoardPullRequest on PullRequest {
-      number title url state isDraft reviewDecision headRefOid createdAt updatedAt repository { nameWithOwner }
+      number title url body state isDraft reviewDecision headRefOid createdAt updatedAt repository { nameWithOwner }
       headRefName baseRefName author { login } additions deletions changedFiles mergeable
       commits(last: 1) { nodes { commit { oid statusCheckRollup {
         state contexts(first: #{@check_limit}) {
@@ -179,8 +179,15 @@ defmodule SymphonyElixir.GitHub.Board do
 
   defp connection(_connection, _direction), do: {[], true}
 
-  defp referenced_pr(%{"target" => %{"number" => number, "repository" => %{"nameWithOwner" => repo}}, "source" => %{"__typename" => "PullRequest"} = pr}, number, repo),
-    do: [{pr, "referenced"}]
+  defp referenced_pr(%{"target" => %{"number" => number, "repository" => %{"nameWithOwner" => repo}}, "source" => %{"__typename" => "PullRequest", "body" => body} = pr}, number, repo)
+       when is_binary(body) do
+    # The host publisher marks issue ownership; a casual mention is not attribution.
+    attributed =
+      Regex.scan(~r/<!-- symphony issue=GH-(\d+)(?: work=[a-f0-9]{32})? -->/, body)
+      |> Enum.any?(fn [_, issue_id] -> issue_id == Integer.to_string(number) end)
+
+    if attributed, do: [{pr, "published"}], else: []
+  end
 
   defp referenced_pr(_event, _number, _repo), do: []
 

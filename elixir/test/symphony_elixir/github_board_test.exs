@@ -19,10 +19,10 @@ defmodule SymphonyElixir.GitHub.BoardTest do
     :ok
   end
 
-  test "one bounded query enriches exact linked and referenced PRs without changing tasks or scheduling" do
+  test "one bounded query enriches linked and issue-published PRs without changing tasks or scheduling" do
     owner = self()
     linked = pr(7, %{"reviewDecision" => nil})
-    referenced = pr(8, %{"state" => "MERGED", "isDraft" => false, "reviewDecision" => "APPROVED"})
+    referenced = pr(8, %{"state" => "MERGED", "isDraft" => false, "reviewDecision" => "APPROVED", "body" => "<!-- symphony issue=GH-1 -->"})
     data = evidence([linked], [event(referenced), event(linked)])
 
     respond(fn method, path, params, body, settings ->
@@ -53,7 +53,7 @@ defmodule SymphonyElixir.GitHub.BoardTest do
     assert card.execution_status == "idle"
     assert card.github_status == "available"
     assert [referenced, linked] = card.pull_requests
-    assert %{number: 8, state: "merged", draft: false, relation: "referenced", review: "approved"} = referenced
+    assert %{number: 8, state: "merged", draft: false, relation: "published", review: "approved"} = referenced
     assert %{number: 7, draft: true, relation: "linked", review: "no_decision"} = linked
     assert Enum.all?(card.pull_requests, &(&1.head_sha == @sha and &1.checks == "success"))
     assert Enum.all?(card.pull_requests, &(&1.created_at == "2026-09-14T01:00:00Z" and &1.updated_at == "2026-09-15T02:00:00Z"))
@@ -224,6 +224,27 @@ defmodule SymphonyElixir.GitHub.BoardTest do
     refs = [event(pr(7), 99), event(pr(8), 1, "other/repo"), %{"source" => %{"__typename" => "Issue"}}]
     respond(payload(evidence([], refs)))
     assert [%{pull_requests: [], github_status: "available"}] = Board.enrich(board(), settings()).tasks
+  end
+
+  test "only explicit links and exact publisher attribution include PRs, never incidental mentions" do
+    refs = [
+      event(pr(9, %{"body" => "<!-- symphony issue=GH-1 -->\nRefs #1"})),
+      event(pr(10, %{"body" => "<!-- symphony issue=GH-1 work=#{String.duplicate("a", 32)} -->"})),
+      event(pr(11, %{"body" => "Related #1 tracks a follow-up; this PR does not implement it."})),
+      event(pr(12, %{"body" => "<!-- symphony issue=GH-11 -->"})),
+      event(pr(13, %{"body" => "<!-- symphony issue=GH-1 work=invalid -->"}))
+    ]
+
+    respond(payload(evidence([pr(7), pr(8)], refs)))
+    [card] = Board.enrich(board(), settings()).tasks
+    assert Enum.map(card.pull_requests, & &1.number) == [10, 9, 8, 7]
+    assert card.github_status == "available"
+    assert Enum.count(card.pull_requests, &(&1.relation == "published")) == 2
+
+    for body <- [nil, 42, [], "", "<!-- symphony issue=GH-01 -->"] do
+      respond(payload(evidence([], [event(pr(15, %{"body" => body}))])))
+      assert [%{pull_requests: [], github_status: "available"}] = Board.enrich(board(), settings()).tasks
+    end
   end
 
   test "missing, changed and malformed issue identity cannot enrich a stale card" do
