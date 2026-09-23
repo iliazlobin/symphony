@@ -543,11 +543,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
       <div id="board-toolbar" class="board-toolbar" phx-update="ignore">
         <div class="toolbar-primary">
           <div id="board-filter-panel" class="filter-row">
-            <div :for={key <- ["status", "priority"]} class="filter-combo" data-filter={key}>
-              <div class="combo-control"><input id={"filter-#{key}"} role="combobox" aria-label={"#{String.capitalize(key)} filter"}
+            <div :for={{key, label} <- [{"status", "Status"}, {"priority", "Priority"}, {"milestone", "Milestone"}, {"label", "Tags"}, {"assignee", "Assignee"}]} class="filter-combo" data-filter={key}>
+              <div class="combo-control"><input id={"filter-#{key}"} role="combobox" aria-label={"#{label} filter"}
                 autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls={"options-#{key}"}
-                placeholder={"#{String.capitalize(key)}: All"} /><button type="button" data-filter-toggle={key} aria-label={"Open #{key} filter"}>⌄</button></div>
-              <div id={"options-#{key}"} class="combo-options" role="listbox" aria-label={"#{String.capitalize(key)} options"} aria-multiselectable="true" hidden></div>
+                placeholder={"#{label}: All"} /><button type="button" data-filter-toggle={key} aria-label={"Open #{label} filter"}>⌄</button></div>
+              <div id={"options-#{key}"} class="combo-options" role="listbox" aria-label={"#{label} options"} aria-multiselectable="true" hidden></div>
             </div>
             <button type="button" class="button button-quiet" data-clear-filters>Clear filters</button>
           </div>
@@ -596,6 +596,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <article :for={task <- Enum.filter(@board.tasks, &(&1.stage == stage))} id={card_id(task)} class="task-card" draggable={to_string(!@read_only)}
                 tabindex="0" aria-label={"#{task.identifier}: #{task.title}"} aria-describedby="card-selection-help" aria-current={if @chat_task_id == task.id, do: "true"}
                 data-task-id={task.id} data-selected={to_string(@chat_task_id == task.id)} data-project={task.project} data-priority={priority(task.priority)} data-attention={to_string(not is_nil(task.attention))}
+                data-labels={Jason.encode!(Map.get(task, :labels, []))} data-milestone={Jason.encode!(Map.get(task, :milestone))} data-assignees={Jason.encode!(Map.get(task, :assignees, []))}
                 data-title={task.title} data-identifier={task.identifier} data-created={task.created_at || ""} data-updated={task.updated_at || ""}>
                 <div class="card-top"><a :if={safe_url(task.url)} href={safe_url(task.url)} target="_blank" rel="noopener noreferrer"
                   aria-label={"Open #{task.identifier} in the issue tracker"}>{task.identifier}</a><span :if={!safe_url(task.url)}>{task.identifier}</span>
@@ -1111,7 +1112,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp url_filters(params),
-    do: params |> Map.take(["project", "status", "priority", "q", "sort"]) |> Map.reject(fn {_key, value} -> not is_binary(value) or byte_size(value) > 2_000 or value == "" end)
+    do:
+      params
+      |> Map.take(["project", "status", "priority", "milestone", "label", "assignee", "q", "sort"])
+      |> Map.reject(fn {_key, value} -> not is_binary(value) or byte_size(value) > 2_000 or value == "" end)
 
   defp board_path(filters), do: if(filters == %{}, do: "/", else: "/?" <> URI.encode_query(filters))
 
@@ -1237,7 +1241,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     params = URI.decode_query(uri.query || "")
 
     if uri.path == "/" && is_nil(uri.host) && is_nil(uri.scheme) && is_nil(uri.fragment) && params["project"] == project do
-      {:ok, Map.take(params, ["project", "status", "priority", "q", "sort", "task"])}
+      {:ok, Map.take(params, ["project", "status", "priority", "milestone", "label", "assignee", "q", "sort", "task"])}
     else
       :error
     end

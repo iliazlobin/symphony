@@ -57,6 +57,24 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     :ok
   end
 
+  test "board retains issue filter metadata and defaults for missing tracker rows" do
+    milestone = %{id: "3", title: "Release one", state: "open", url: "https://github.com/example/repo/milestone/3"}
+    assigned = issue("1", milestone: milestone, assignee_id: "octocat", assignees: ["octocat", "reviewer"])
+    control = %{"issues" => %{"3" => %{"hold" => "cancelled"}}}
+    board = TaskBoard.project([assigned, issue("2")], %{}, control, settings())
+
+    assert task(board.tasks, "1").milestone == milestone
+    assert task(board.tasks, "1").assignees == ["octocat", "reviewer"]
+    assert task(board.tasks, "1").stage == "ready"
+
+    for id <- ["2", "3"] do
+      assert task(board.tasks, id).milestone == nil
+      assert task(board.tasks, id).assignees == []
+    end
+
+    assert task(board.tasks, "3").source_missing
+  end
+
   test "raw GitHub backlog remains visible, dependencies gate Ready, and PRs are excluded" do
     backlog = issue("1", labels: [], description: nil)
     ready = issue("2")

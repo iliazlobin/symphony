@@ -251,6 +251,8 @@ defmodule SymphonyElixirWeb.TaskBoard do
       updated_at: iso8601(issue.updated_at),
       description: issue.description,
       labels: issue.labels,
+      milestone: issue.milestone,
+      assignees: issue.assignees,
       runtime: runtime,
       handoff: handoff,
       hold: hold,

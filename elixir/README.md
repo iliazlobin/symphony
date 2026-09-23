@@ -635,14 +635,21 @@ you.
 ## Web task board
 
 The optional HTTP service serves a LiveView Kanban board with searchable project,
-status and priority filters, per-lane sorting, and browser-local manual order.
+status, priority, milestone, tag and assignee filters, per-lane sorting, and browser-local manual order.
 The compact board follows the Linear board shown in OpenAI's Symphony demo while
 retaining this fork's GitHub workflow. Project selection stays in the top bar;
-Status and priority selectors stay visible on the left of the toolbar. **Display**,
+The task filters stay visible on the left of the toolbar. **Display**,
 on the right, controls sorting, card
 detail, light/dark appearance and visible columns. Hidden columns remain available
 in the restore rail; selecting a status reveals its column. Display preferences are
 saved only in this browser and do not change scheduling or issue state.
+Milestones, tags and assignees come from GitHub issue metadata; tags include ordinary
+categories and `work:*` labels. Select multiple values to match any of them within a
+filter; different filters combine to narrow the result. Use **No milestone**, **No tags**
+or **Unassigned** to find missing metadata. Options reflect all loaded tasks, including
+hidden columns. Filters survive reload and are retained in board links and chat view
+context; a saved selection with no matching tasks stays selected until cleared.
+Metadata filters do not change queue eligibility, ownership or execution permissions.
 Click a card's background to select its task chat without opening a dialog. Only the title
 text links to scrollable task details; space beside wrapped title lines selects the chat.
 Issue, PR and CI links open directly in GitHub.

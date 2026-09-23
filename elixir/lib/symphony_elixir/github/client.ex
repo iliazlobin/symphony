@@ -193,7 +193,9 @@ defmodule SymphonyElixir.GitHub.Client do
         description: issue["body"],
         state: state,
         url: issue["html_url"],
-        assignee_id: get_in(issue, ["assignee", "login"]),
+        assignee_id: assignee_login(issue["assignee"]),
+        assignees: extract_assignees(issue),
+        milestone: extract_milestone(issue["milestone"]),
         labels: extract_labels(issue),
         priority: extract_priority(issue),
         blocked_by: [],
@@ -234,6 +236,42 @@ defmodule SymphonyElixir.GitHub.Client do
   end
 
   defp extract_labels(_issue), do: []
+
+  defp extract_assignees(%{"assignees" => assignees}) when is_list(assignees) do
+    assignees
+    |> Enum.map(&assignee_login/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp extract_assignees(issue) do
+    case assignee_login(issue["assignee"]) do
+      nil -> []
+      login -> [login]
+    end
+  end
+
+  defp assignee_login(%{"login" => login}) when is_binary(login), do: normalize_string(login)
+  defp assignee_login(_assignee), do: nil
+
+  defp extract_milestone(%{"number" => number, "title" => title, "state" => state} = milestone)
+       when is_integer(number) and number > 0 and state in ["open", "closed"] do
+    case normalize_string(title) do
+      nil -> nil
+      title -> %{id: Integer.to_string(number), title: title, state: state, url: milestone_url(milestone["html_url"])}
+    end
+  end
+
+  defp extract_milestone(_milestone), do: nil
+
+  defp milestone_url(url) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host, userinfo: nil} when scheme in ["http", "https"] and is_binary(host) -> url
+      _ -> nil
+    end
+  end
+
+  defp milestone_url(_url), do: nil
 
   # A task has one management priority. Conflicting labels remain unset rather
   # than silently choosing a different ordering from the user's preview.
