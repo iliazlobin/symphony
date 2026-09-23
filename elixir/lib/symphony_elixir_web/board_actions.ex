@@ -47,7 +47,29 @@ defmodule SymphonyElixirWeb.BoardActions do
       not BrowserAuth.authorized?(context) ->
         {:error, :unauthorized}
 
-      fields == [] or Enum.sort(Map.keys(command)) != Enum.sort(fields) ->
+      fields == [] or Enum.sort(Map.keys(Map.delete(command, "feedback"))) != Enum.sort(fields) ->
+        {:error, :invalid_command}
+
+      true ->
+        Orchestrator.control_command_guarded(
+          command,
+          context.tracker_fingerprint,
+          orchestrator,
+          fn -> BrowserAuth.authorized?(context) end
+        )
+    end
+  end
+
+  @doc "Record explicit human acceptance through the native owner; no merge or publication is implied."
+  @spec accept_command(map(), BrowserAuth.context(), GenServer.server()) :: {:ok, map()} | {:error, term()}
+  def accept_command(command, context, orchestrator \\ Orchestrator) do
+    fields = ~w(action issue_id command_id expected_revision expected_candidate_sha expected_updated_at expected_tracker_state)
+
+    cond do
+      not BrowserAuth.authorized?(context) ->
+        {:error, :unauthorized}
+
+      command["action"] != "accept_task" or Enum.sort(Map.keys(command)) != Enum.sort(fields) ->
         {:error, :invalid_command}
 
       true ->

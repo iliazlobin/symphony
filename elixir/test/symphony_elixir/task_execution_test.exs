@@ -3,6 +3,32 @@ defmodule SymphonyElixir.TaskExecutionTest do
 
   alias SymphonyElixirWeb.TaskExecution
 
+  test "closed unaccepted review awaits acceptance without misleading retry controls" do
+    for ledger <- [%{}, %{"attempts" => 1, "tokens" => 10, "runtime_ms" => 10}] do
+      task = task(%{stage: "review", tracker_state: "closed", hold: "interrupted", ledger: ledger})
+      summary = TaskExecution.summary(task, control())
+      assert summary.status == "Awaiting acceptance"
+      refute summary.cancel?
+      refute summary.retry?
+      assert TaskExecution.summary(%{task | runtime: %{status: "running"}}, control()).status == "Running"
+      assert TaskExecution.summary(put_in(task, [:ledger, "active"], %{}), control()).status == "Needs reconciliation"
+    end
+  end
+
+  test "explicit rework displays its bounded attempt cycle while retaining lifetime usage" do
+    task = task(%{stage: "ready", ledger: %{"attempts" => 6, "attempt_base" => 5, "tokens" => 517_755, "runtime_ms" => 189_000}, hold: "interrupted"})
+    summary = TaskExecution.summary(task, control())
+    assert metric(summary, "Attempts").value == "1 / 2"
+    assert metric(summary, "Attempts").title =~ "6 lifetime attempts"
+    assert summary.retry?
+    assert metric(summary, "Tokens").value == "518k / 1M"
+    assert metric(TaskExecution.summary(task, %{"enabled" => false}), "Attempts").value == "6"
+
+    for base <- [7, -1, nil, "5"] do
+      assert metric(TaskExecution.summary(put_in(task, [:ledger, "attempt_base"], base), control()), "Attempts").value == "— / 2"
+    end
+  end
+
   test "settled candidate shows retained totals and owner review without worker controls" do
     task = task(%{hold: "owner_review", handoff: %{"review" => %{"verdict" => "approve"}}})
     summary = TaskExecution.summary(task, control())

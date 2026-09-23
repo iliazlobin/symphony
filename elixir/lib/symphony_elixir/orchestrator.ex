@@ -7,7 +7,8 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, ControlLedger, PRWork, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, ControlLedger, IssueAcceptance}
+  alias SymphonyElixir.{PRWork, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -1679,7 +1680,14 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_call(:control_snapshot, _from, state) do
     state = refresh_runtime_config(state)
     payload = if state.control, do: ControlLedger.snapshot(state.control), else: %{"enabled" => false}
-    payload = payload |> Map.put("fault", state.control_fault) |> Map.put("settings", runtime_settings(state)) |> Map.put("tracker_fingerprint", tracker_fingerprint())
+
+    payload =
+      payload
+      |> Map.put("fault", state.control_fault)
+      |> Map.put("settings", runtime_settings(state))
+      |> Map.put("tracker_fingerprint", tracker_fingerprint())
+      |> Map.put("instance_id", if(state.control, do: inspect(state.control.lock)))
+
     {:reply, payload, state}
   end
 
@@ -1904,8 +1912,11 @@ defmodule SymphonyElixir.Orchestrator do
     result =
       with :ok <- validate_pr_work_command(state, command),
            true <- context == pr_work_context() or {:error, :tracker_changed},
+           {:ok, verified_context} <- acceptance_context(state, command, context),
+           true <- context == pr_work_context() or {:error, :tracker_changed},
            true <- authorize.() == true or {:error, :unauthorized},
-           do: ControlLedger.command(state.control, command, state.max_concurrent_agents, context)
+           true <- state.control.settings == Config.control_settings() or {:error, :control_configuration_changed_restart_required},
+           do: ControlLedger.command(state.control, command, state.max_concurrent_agents, verified_context)
 
     case result do
       {:ok, ledger, result, replayed} ->
@@ -1916,6 +1927,9 @@ defmodule SymphonyElixir.Orchestrator do
       {:error, {:control_persistence, _} = reason} ->
         {:reply, {:error, :control_unavailable}, control_failure(state, reason)}
 
+      {:error, :control_configuration_changed_restart_required = reason} ->
+        {:reply, {:error, :control_unavailable}, control_failure(state, reason)}
+
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
@@ -1924,6 +1938,41 @@ defmodule SymphonyElixir.Orchestrator do
   defp pr_work_context do
     repository = Config.settings!().tracker.provider["repo"]
     %{tracker_fingerprint: tracker_fingerprint(), base_sha: Config.control_settings().base_sha, repository: repository}
+  end
+
+  defp acceptance_context(state, %{"action" => "accept_task"} = command, context) do
+    id = command["issue_id"]
+
+    if is_nil(state.control.data["commands"][command["command_id"]]) do
+      cond do
+        not IssueAcceptance.valid_command?(command) -> {:error, :invalid_command}
+        command["expected_revision"] != state.control.data["revision"] -> {:error, :revision_conflict}
+        acceptance_active?(state, id) -> {:error, :task_still_active}
+        true -> verify_acceptance_issue(id, context)
+      end
+    else
+      {:ok, context}
+    end
+  end
+
+  defp acceptance_context(_state, _command, context), do: {:ok, context}
+
+  defp acceptance_active?(state, id),
+    do: Map.has_key?(state.running, id) or Map.has_key?(state.retry_attempts, id) or Map.has_key?(state.blocked, id)
+
+  defp verify_acceptance_issue(id, context) do
+    tracker = Config.settings!().tracker
+    source = if tracker.kind == "github", do: Application.get_env(:symphony_elixir, :github_client_module, SymphonyElixir.GitHub.Client), else: Tracker
+
+    with {:ok, [%Issue{id: ^id, dispatchable: true} = issue]} <- source.fetch_issues_by_ids([id]),
+         true <- tracker.kind != "github" or (issue.native_ref || %{})["repo"] == tracker.provider["repo"],
+         %DateTime{} = updated <- issue.updated_at do
+      verified = %{id: id, state: issue.state, updated_at: DateTime.to_iso8601(updated), terminal: MapSet.member?(terminal_state_set(), normalize_issue_state(issue.state))}
+      {:ok, Map.put(context, :acceptance_issue, verified)}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :task_not_found}
+    end
   end
 
   defp validate_pr_work_command(state, command) do

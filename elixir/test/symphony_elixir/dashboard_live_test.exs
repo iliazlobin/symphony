@@ -174,7 +174,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
         terminal_states: ["closed"],
         required_labels: ["ready"]
       },
-      control: %{enabled: true, state_path: Workflow.workflow_file_path() <> ".control.json"},
+      control: %{enabled: true, state_path: Workflow.workflow_file_path() <> ".control.json", base_sha: String.duplicate("b", 40)},
       observability: %{dashboard_enabled: false}
     }
 
@@ -239,7 +239,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#project-directory a[href='http://localhost:8779/']", "Symphony")
     refute has_element?(view, "#project-directory a[href='http://localhost:8779/'][aria-current]")
     refute has_element?(view, "#project-directory a[data-phx-link]")
-    assert has_element?(view, "#lane-ready [data-project='github:example/fixture']")
+    assert has_element?(view, "#lane-work [data-project='github:example/fixture']")
     refute has_element?(view, ".task-card[data-project='github:iliazlobin/symphony']")
     assert Endpoint.session_options()[:key] == "_symphony_fixture_project"
     conn = get(build_conn(), "/")
@@ -250,10 +250,10 @@ defmodule SymphonyElixir.DashboardLiveTest do
   test "renders real projected tasks in all lanes with top filters and truthful evidence" do
     {view, html} = board_view()
     assert has_element?(view, "#lane-backlog [data-task-id='github:example/fixture:1']")
-    assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:2']")
-    assert has_element?(view, "#lane-running [data-task-id='github:example/fixture:3']")
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:2']")
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:3']")
     assert has_element?(view, "#lane-review [data-task-id='github:example/fixture:4']")
-    assert has_element?(view, "#lane-done [data-task-id='github:example/fixture:5']")
+    assert has_element?(view, "#lane-review [data-task-id='github:example/fixture:5']")
     assert has_element?(view, ".board-header .board-location #board-project-picker[phx-update=ignore] #filter-project[role=combobox]")
     refute has_element?(view, "#board-toolbar #filter-project")
     assert has_element?(view, "#filter-status[role=combobox]")
@@ -266,6 +266,9 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute html =~ "Proposed UI"
     assert has_element?(view, "#management-chat-dock")
     refute has_element?(view, "#board-dialog")
+    refute has_element?(view, "[data-hidden-lanes], [data-visible-lane], [data-hide-lane]")
+    refute has_element?(view, ".board-summary button[phx-click=refresh]")
+    assert length(Floki.find(Floki.parse_document!(html), ".kanban-lane")) == 4
   end
 
   test "reload renders the last complete board before a blocked refresh and skips synchronous snapshot IO", ctx do
@@ -406,7 +409,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     before = GenServer.call(ctx.runtime, :control_snapshot)
     assert has_element?(view, "#board-dispatch-guidance", "Execution is paused")
     assert has_element?(view, "#board-dispatch-guidance", "Ready tasks will not start")
-    assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:2']", "Queued")
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:2']", "Queued")
 
     render_click(view, "open-settings")
     render_click(view, "settings-tab", %{"tab" => "connections"})
@@ -431,7 +434,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refresh(view, ctx.runtime, draining)
     assert has_element?(view, "#board-dispatch-guidance", "Execution is draining")
     assert has_element?(view, "#board-dispatch-guidance", "Active work can finish")
-    assert has_element?(view, "#lane-running [data-task-id='github:example/fixture:3']")
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:3']")
     open_task(view, "3")
     refute has_element?(view, "#task-dispatch-guidance")
 
@@ -484,7 +487,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     {view, _html} = board_view()
     view |> element("#settings-button") |> render_click()
     assert has_element?(view, "dialog#board-dialog[phx-hook=BoardDialog] h2", "Settings")
-    assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:2']")
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:2']")
     assert has_element?(view, "#board-dialog input[type=password][name=operator_token]")
     view |> element("#close-dialog") |> render_click()
     refute has_element?(view, "#board-dialog")
@@ -494,11 +497,11 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "dialog#board-dialog h2", "Ready fixture")
     assert has_element?(view, "#task-board-app[data-selected-task='github:example/fixture:2']")
     assert has_element?(view, "#board-dialog", "Acceptance for fixture 2")
-    assert has_element?(view, "#lane-running [data-task-id='github:example/fixture:3']")
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:3']")
     render_click(view, "close-dialog")
     refute has_element?(view, "#board-dialog")
     assert has_element?(view, "#task-board-app[data-selected-task='github:example/fixture:2']")
-    assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:2']")
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:2']")
   end
 
   test "settled candidate execution remains visible on the card and detail without runtime folds", ctx do
@@ -693,7 +696,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     :ok = GenServer.call(ctx.runtime, {:board, board})
     view = authorized_board_view()
     open_task(view, "5")
-    assert has_element?(view, "#board-dialog .execution-summary", "Done")
+    assert has_element?(view, "#board-dialog .execution-summary", "Awaiting")
     assert has_element?(view, "#board-dialog .execution-summary", "125k / 1M")
     refute has_element?(view, "#board-dialog button[phx-value-action=cancel]")
     refute has_element?(view, "#board-dialog button[phx-value-action=retry]")
@@ -754,8 +757,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     view = authorized_board_view()
     assert has_element?(view, "#issue-switcher #issue-search[role=combobox][aria-autocomplete=list]")
     categories = view |> element("#issue-options") |> render() |> Floki.parse_fragment!() |> Floki.find("[data-issue-category]") |> Enum.map(&(Floki.attribute(&1, "data-issue-category") |> hd()))
-    assert hd(categories) == "running"
-    assert List.last(categories) == "done"
+    assert hd(categories) == "work"
+    assert List.last(categories) == "backlog"
     chat = with_target(view, "#chat-app")
     render_change(chat, "search-issues", %{"query" => "ready for review"})
     assert has_element?(view, "#issue-options [data-issue-category=review]")
@@ -1113,7 +1116,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     incomplete = %{incomplete | source_error: "Tracker unavailable", generated_at: "2099-01-01T00:00:00Z"}
     refresh(view, ctx.runtime, incomplete)
     assert has_element?(view, "#board-dialog h2", "Ready fixture")
-    assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:2']")
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:2']")
     assert render(view) =~ "Tracker unavailable"
     refute render(view) =~ "Incomplete metadata"
     refute render(view) =~ "2099-01-01T00:00:00Z"
@@ -1127,10 +1130,10 @@ defmodule SymphonyElixir.DashboardLiveTest do
     render_click(view, "move-task", %{"id" => "github:example/fixture:missing", "stage" => "done"})
     assert render(view) =~ "Task unavailable"
     render_click(view, "move-task", %{"id" => "github:example/fixture:2", "stage" => "done"})
-    assert has_element?(view, "#board-dialog h2", "Ready fixture")
-    assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:2']")
+    refute has_element?(view, "#board-dialog")
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:2']")
     refute has_element?(view, "#lane-done [data-task-id='github:example/fixture:2']")
-    assert render(view) =~ "Running, Review and Done follow confirmed work"
+    assert render(view) =~ "The agent sends completed work to Review"
   end
 
   test "unauthorized commands route to Settings and confirmation does not mutate the board", ctx do
@@ -1146,7 +1149,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert render(view) =~ "Unsupported action"
     render_click(view, "move-task", %{"id" => "github:example/fixture:2", "stage" => "backlog"})
     assert has_element?(view, "#board-dialog h2", "Settings")
-    assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:2']")
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:2']")
   end
 
   test "new task requires operator access instead of redirecting to GitHub" do
@@ -1208,7 +1211,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     view = authorized_board_view()
     render_click(view, "move-task", %{"id" => "github:example/fixture:1", "stage" => "ready"})
     assert_receive {:intake_prepared, id, %{"action" => "queue_task", "task_id" => "1"}}
-    assert has_element?(view, "#board-dialog h2", "Move task to Ready")
+    assert has_element?(view, "#board-dialog h2", "Move task to Work")
     assert has_element?(view, "#task-action-preview h4", "Fresh queue task title")
     assert has_element?(view, "#task-action-preview", "Current scope and acceptance")
     refute has_element?(view, "#task-action-preview h4", "Backlog fixture")
@@ -1223,7 +1226,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert GenServer.call(ctx.runtime, :control_snapshot)["mode"] == "paused"
     assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
     refresh(view, ctx.runtime, update_task(ctx.board, "1", &%{&1 | stage: "ready"}))
-    assert has_element?(view, "#lane-ready [data-task-id='github:example/fixture:1']")
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:1']")
     assert has_element?(view, "#task-action-preview", "Action completed")
   end
 
@@ -1887,6 +1890,39 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "[phx-click=confirm-command]")
   end
 
+  test "review acceptance requires a preview and retains exact evidence", ctx do
+    board = settings_board(ctx.board)
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    render_click(view, "move-task", %{"id" => "github:example/fixture:4", "stage" => "done"})
+    assert has_element?(view, "#board-dialog", "records your acceptance")
+    refute_receive {:settings_command, _}
+    render_click(view, "confirm-command")
+    assert_receive {:settings_command, command}
+    assert command["action"] == "accept_task"
+    assert command["issue_id"] == "4"
+    assert command["expected_candidate_sha"] == String.duplicate("a", 40)
+    assert command["expected_updated_at"] == "2026-09-14T11:00:00Z"
+    assert command["expected_revision"] == 0
+  end
+
+  test "return to Work includes human corrections and only submits after confirmation", ctx do
+    board = settings_board(ctx.board)
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    render_click(view, "move-task", %{"id" => "github:example/fixture:4", "stage" => "work"})
+    assert has_element?(view, "#task-rework-form textarea[aria-label=Corrections]")
+    render_submit(view, "prepare-rework", %{"rework" => %{"work_id" => "new", "instruction" => "Fix the README example"}})
+    assert has_element?(view, "#board-dialog .rework-preview", "Fix the README example")
+    refute_receive {:settings_command, _}
+    render_click(view, "confirm-command")
+    assert_receive {:settings_command, command}
+    assert command["action"] == "create_pr_work"
+    assert command["instruction"] == "Fix the README example"
+    assert command["issue_id"] == "4"
+    assert command["feedback"] == []
+  end
+
   defp settings_board(board) do
     put_in(board.control["settings"], %{
       "concurrency" => %{"effective" => 5, "default" => 5, "ceiling" => 5, "override" => nil},
@@ -1940,7 +1976,12 @@ defmodule SymphonyElixir.DashboardLiveTest do
     render_async(view)
   end
 
-  defp update_task(board, id, update), do: %{board | tasks: Enum.map(board.tasks, fn task -> if task.issue_id == id, do: update.(task), else: task end)}
+  defp update_task(board, id, update), do: %{board | tasks: Enum.map(board.tasks, fn task -> if task.issue_id == id, do: updated_task(task, update), else: task end)}
+
+  defp updated_task(task, update) do
+    next = update.(task)
+    Map.put(next, :lane, if(next.stage in ["ready", "running"], do: "work", else: next.stage))
+  end
 
   defp issues do
     for {id, title, state, labels} <- [

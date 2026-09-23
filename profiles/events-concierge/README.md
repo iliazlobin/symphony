@@ -89,12 +89,12 @@ queue-label changes are available in the web board, GitHub and the optional web 
 
 **Web board.** Open the configured browser origin; this Mac uses
 [Symphony](http://localhost:8778/) with Google sign-in. Real tracker issues,
-runtime activity and durable holds appear in Backlog, Ready, Running, Review and
-Done. Select the project beside **Projects**; **Filter** contains status and priority. Search and
+runtime activity and durable holds appear in Backlog, Work, Review and Done.
+The always-visible filters narrow status, priority, milestone, labels and assignee. Search and
 sorting apply within each lane. Manual drag ordering is saved in this browser and
 does not change scheduler priority. GitHub issues without a priority remain unspecified.
 
-Click a card or **Settings** to open a popup above the board. **Close**, **Escape**,
+Click a card to select its chat; click only its title text or **Settings** to open a popup above the board. **Close**, **Escape**,
 or clicking outside the popup returns to the same filters and position. Settings
 has **Execution**, **AI & chat**, and **Connections** tabs:
 
@@ -116,7 +116,8 @@ only browser preferences are editable there.
 
 Tracker/control failures retain last-known cards with an explicit warning. The board
 refreshes tracker data every 30 seconds; runtime messages also update over LiveView.
-Done means the tracker is terminal; it does not establish merge, acceptance or deployment.
+Done records human acceptance on controlled boards. Closing an issue or merging a PR
+alone leaves it in Review until accepted. Acceptance does not merge code or deploy it.
 
 Cards link the issue, repository and related pull requests. PR draft/merge state,
 GitHub review and checks for the current PR head remain separate from the worker's
@@ -127,7 +128,7 @@ The source strip shows refresh failures and controller mode;
 “Live updates connected” describes the browser connection only.
 
 Each card and task dialog shows an inline execution summary: current state, cumulative
-tokens, attempts and elapsed time when recorded. The summary remains visible in compact
+tokens and elapsed time, plus attempts in the current correction cycle when recorded. The summary remains visible in compact
 view and after a worker exits. Exact counts are available on the metrics; missing or
 stale data is identified explicitly. A settled approved candidate says **Awaiting your
 review** and retains its PR links. **Cancel execution** appears for queued or active
@@ -161,37 +162,47 @@ but the service's durable action store must be configured and healthy.
 
 | Stage | What you do | What Symphony does |
 | --- | --- | --- |
-| Backlog | Create and confirm a task with its outcome, scope, checks and dependencies. | Creates the GitHub issue and keeps the submission receipt. No worker starts. |
-| Ready | Drag a fresh Backlog task to Ready, or open it and choose **Move to Ready**, then confirm **Queue task**. | Adds `symphony:ready` in GitHub and checks dependencies, holds, budget and capacity before dispatch. A paused controller stays paused. |
-| Running | Answer blockers or cancel the task when needed. | Starts an isolated builder, records progress and runs a separate reviewer against the candidate commit. |
-| Review | Review the candidate, PR and CI; request changes or mark the PR ready and merge when acceptable. | Retains the candidate and review evidence, holds further execution and lets the publication broker publish eligible work as a draft PR. Automatic merge requires a separately enabled policy. |
-| Done | Confirm the outcome and close the GitHub issue, or merge a PR that closes it. | Reflects the closed issue on the board. A PR merge alone does not always close the issue; deployment remains a separate approved action. |
+| Backlog | Create and confirm the outcome, scope, checks and dependencies. | Creates an unqueued GitHub issue and keeps the receipt. |
+| Work | Drag from Backlog or choose **Move to Work**, then confirm **Queue task**. | Queues the issue; starts eligible work by priority, dependencies, budgets and concurrency; runs a builder and independent reviewer. |
+| Review | Inspect the candidate, PRs and checks; merge code when needed. Choose **Return to Work** for corrections. | Retains the candidate and review evidence. A confirmed correction starts or continues a PR session and returns the issue to Work. |
+| Done | Drag from Review or choose **Accept · Done**, then confirm acceptance. | Records acceptance against the current issue and candidate; retains usage and evidence. It does not close the GitHub issue, merge or deploy. |
 
-Drag cards to arrange the board; there is no Move dropdown. Within a column, choose
-**Display → Sort by → Manual order** first. This saves the order in this browser and does
-not change scheduling priority. Dragging a queued **Ready → Backlog** requests a confirmed
-cancellation; dragging a held **Backlog → Ready** offers a confirmed retry when its
-remaining limits permit it. These actions are also available by opening the task and
-choosing **Cancel execution** or **Retry** when offered.
+Work includes queued and running tasks. The agent moves completed work to Review.
+A merged PR or closed issue is not acceptance; existing closed issues without an
+acceptance record also appear in Review. Accepted tasks cannot be retried or requeued.
+Reopen a closed GitHub issue before returning it to Work for further corrections.
+
+**Return to Work** accepts written corrections, selected GitHub issue/PR comments, or
+both. Continue an eligible existing PR session or start a new one from the configured
+approved baseline. The preview binds the selected text revisions and exact PR head.
+Confirmation renews the bounded attempt allowance for that correction cycle; cumulative
+token and time budgets remain unchanged. Incoming comments never start agents by themselves.
+
+Comment counts show working, addressed, blocked and remaining feedback. Bounded GitHub
+reads share the board cache; partial or unavailable data is identified. Each selected
+comment needs an evidence-backed disposition in the candidate handoff. A single GitHub
+issue reply tracks the selected PR session’s current batch with 👀 working, ✅ addressed and ❗ blocked,
+plus queued status and source links. Its durable local delivery journal prevents blind
+reposting after uncertain writes. It does not resolve review threads or accept the task.
+Several comments can be handled in one PR session; the working count is not a worker count.
+
+There is no Move dropdown, manual Refresh button or hidden-column rail. The board
+refreshes automatically; use filters to hide tasks. Within a column, choose
+**Display → Sort by → Manual order** before dragging to reorder. This browser preference
+does not change scheduler priority. **Work → Backlog** offers confirmed cancellation;
+**Backlog → Work** on a held task offers Retry when remaining limits allow it.
 Cancel can stop work claimed since the card was displayed. Retry clears a hold without
 resetting budgets, adding queue labels or supplying a missing answer.
 
-Dragging a fresh Backlog task to Ready opens an exact queue preview. Confirming adds
-the configured routing labels to the existing GitHub issue; closing or cancelling
-the preview does not queue it. Pending actions and receipts can be reopened from
-**New task → Recent submissions**. An uncertain result offers **Check outcome**,
-which reads the existing result without repeating the write. Other cross-column drops
-cannot manually mark work Running, Review or Done. GitHub remains the task tracker;
-this action adds no separate queue and does not resume a paused controller.
+Queueing opens an exact preview and adds the configured routing labels to the existing
+GitHub issue. Closing the preview does not queue it. Pending actions and receipts reopen
+from **New task → Recent submissions**; use **Check outcome** after an uncertain result.
+The native scheduler remains the only execution queue; queueing does not resume a paused controller.
 
-**Ready but idle.** Ready means the issue is queued; it does not mean a worker is
-running. Check **Settings → Execution**. If the controller is paused or draining,
-review the queued tasks and explicitly confirm **Resume** when you want new work
-to start. The board and Ready task details explain this wait while controller
-status is available. Opening Execution settings does not change operating mode.
-If already running, inspect dependencies, holds, remaining budget, concurrency and
-the host launch gate. The normal tracker poll is 30 seconds. An unavailable source
-means status is unknown; do not repeatedly retry or reset the task.
+**Work but idle.** Check **Settings → Execution** for a paused or draining controller.
+Review queued work before confirming **Resume**. Otherwise inspect dependencies, holds,
+remaining budget, concurrency and the worker launch gate. Normal tracker polling is
+30 seconds. Unavailable status is unknown, not a reason to repeatedly retry or reset.
 
 The cumulative token budget uses Codex's reported input and output tokens, including
 cached input. A short task can therefore reach its budget while repeatedly reading
