@@ -248,10 +248,18 @@ defmodule SymphonyElixir.DashboardLiveTest do
   @tag :project_directory
   test "project navigation links independent boards without changing the selected task owner" do
     {view, _html} = board_view()
-    assert has_element?(view, "#project-directory a[href='http://localhost:8778/'][aria-current=page]", "Current project")
-    assert has_element?(view, "#project-directory a[href='http://localhost:8779/']", "Symphony")
-    refute has_element?(view, "#project-directory a[href='http://localhost:8779/'][aria-current]")
-    refute has_element?(view, "#project-directory a[data-phx-link]")
+    refute has_element?(view, "#project-directory")
+    assert has_element?(view, "#board-project-picker #filter-project[placeholder='Current project'][title='Current project']")
+    assert has_element?(view, "#board-project-picker [aria-label='Open project selector']")
+    refute has_element?(view, "#board-project-picker [aria-multiselectable]")
+
+    links = view |> render() |> Floki.parse_document!() |> Floki.attribute("#task-board-app", "data-project-links") |> hd() |> Jason.decode!()
+
+    assert links == [
+             %{"id" => "github:example/fixture", "label" => "Current project", "url" => "http://localhost:8778/"},
+             %{"id" => "github:iliazlobin/symphony", "label" => "Symphony", "url" => "http://localhost:8779/"}
+           ]
+
     assert has_element?(view, "#lane-work [data-project='github:example/fixture']")
     refute has_element?(view, ".task-card[data-project='github:iliazlobin/symphony']")
     assert Endpoint.session_options()[:key] == "_symphony_fixture_project"
@@ -269,6 +277,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#lane-review [data-task-id='github:example/fixture:5']")
     assert has_element?(view, ".board-header .board-location #board-project-picker[phx-update=ignore] #filter-project[role=combobox]")
     refute has_element?(view, "#board-toolbar #filter-project")
+    refute has_element?(view, "#project-directory")
+    assert has_element?(view, "#filter-project[placeholder='example/fixture']")
     assert has_element?(view, "#filter-status[role=combobox]")
     assert has_element?(view, "#filter-priority[role=combobox]")
     for key <- ~w(milestone label assignee), do: assert(has_element?(view, "#board-filter-panel #filter-#{key}[role=combobox]"))

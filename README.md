@@ -25,8 +25,9 @@ do not define this profile's authorization policy.
 ### Web operation in this fork
 
 The local service includes a Kanban task board and optional project-specific Astra
-chat with streaming replies, saved conversations, task widgets and filtered board
-links. Chat uses bounded management tools to read work and preview authorized
+chat with streaming replies and a project → task → feature-agent hierarchy. Parent
+agents supervise children and process their reports in durable conversations. A versioned
+graph connects the agents, issues and PR work for future visualization. Chat uses bounded management tools to read work and preview authorized
 changes; coding remains with the scheduler's workers. Browser access supports Google
 sign-in with an explicit operator allowlist; existing local installations retain
 operator-token login until configured. Google sign-in does not sign in the model or

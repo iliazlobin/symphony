@@ -553,11 +553,15 @@ defmodule SymphonyElixirWeb.ChatPanel do
   defp queueing?(chat), do: busy?(chat) or queued(chat) != []
   defp task_identifier(task_id), do: task_id |> String.split(":") |> List.last() |> then(&("#" <> &1))
 
-  defp project_agent_title(project) do
+  defp project_agent_name(project) do
     id = project && project["id"]
     directory = Enum.find(ProjectDirectory.links(), &(&1["id"] == id))
     name = (directory && directory["label"]) || (project && (project["label"] || id))
-    if is_binary(name) and String.trim(name) != "", do: String.trim(name) <> " · Project agent", else: "Project agent"
+    if is_binary(name) and String.trim(name) != "", do: String.trim(name)
+  end
+
+  defp project_agent_title(project) do
+    if name = project_agent_name(project), do: name <> " project agent", else: "Project agent"
   end
 
   defp matches_project_agent?(title, query) do
@@ -566,7 +570,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
   defp embedded_title(task_id, title), do: if(is_binary(title) and title != "", do: title, else: "Task " <> task_identifier(task_id))
   attr(:name, :string, required: true)
-  attr(:role, :string, required: true, values: ["task", "feature"])
+  attr(:role, :string, required: true, values: ["project", "task", "feature"])
 
   @spec agent_label(map()) :: Phoenix.LiveView.Rendered.t()
   def agent_label(assigns) do
@@ -577,6 +581,66 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
   defp messages(nil), do: []
   defp messages(chat), do: list(chat["messages"])
+
+  defp message_author(assigns) do
+    assigns = assign(assigns, :author, message_identity(assigns.message, assigns.agent))
+
+    ~H"""
+    <.agent_label :if={@author.role} name={@author.name} role={@author.role} />
+    <span :if={is_nil(@author.role)} class="message-author" title={@author.name}>{@author.name}</span>
+    """
+  end
+
+  defp message_identity(%{"origin" => origin} = message, _agent) when origin in ["agent_message", "agent_evidence"] do
+    fallback = if origin == "agent_evidence", do: "Feature reports", else: "Agent"
+    source = String.trim(text(message["source_name"]))
+    name = if source == "", do: fallback, else: source
+
+    case Regex.run(~r/\A(.+) (project|task|feature) agent\z/u, name) do
+      [_, name, role] -> %{name: name, role: role}
+      _ -> %{name: name, role: nil}
+    end
+  end
+
+  defp message_identity(%{"origin" => "pr_update"}, _agent), do: %{name: "PR update", role: nil}
+  defp message_identity(%{"role" => "assistant"}, agent), do: agent
+  defp message_identity(_message, _agent), do: %{name: "You", role: nil}
+
+  defp message_kind(%{"origin" => "agent_message", "agent_kind" => "report"}), do: "Report"
+  defp message_kind(%{"origin" => "agent_message", "agent_kind" => "instruction"}), do: "Instruction"
+  defp message_kind(%{"origin" => "agent_evidence"}), do: "Evidence"
+  defp message_kind(_message), do: nil
+
+  defp message_time_label(message) do
+    case {message["origin"], message["role"]} do
+      {"agent_message", _} -> "Received"
+      {origin, _} when origin in ["agent_evidence", "pr_update"] -> "Observed"
+      {_, "user"} -> "Sent"
+      _ -> "Response started"
+    end
+  end
+
+  defp message_style(%{"origin" => origin}) when origin in ["agent_message", "agent_evidence"], do: "agent"
+  defp message_style(%{"role" => "user"}), do: "user"
+  defp message_style(_message), do: "assistant"
+
+  defp agent_progress(chat) do
+    chat = map(chat)
+    goal = map(chat["agent_goal"])
+    pending = Enum.filter(list(chat["agent_outbox"]), &(&1["status"] == "pending"))
+
+    %{
+      notice: text(chat["agent_notice"]),
+      goal: if(text(goal["text"]) != "" and goal["status"] in ~w(active achieved blocked), do: goal),
+      reports: Map.get(map(chat["agent_delivery_counts"]), "report", Enum.count(pending, &(&1["kind"] == "report"))),
+      instructions: Map.get(map(chat["agent_delivery_counts"]), "instruction", Enum.count(pending, &(&1["kind"] == "instruction"))),
+      queued_reports: Enum.count(queued(chat), &(&1["origin"] == "agent_message" and &1["agent_kind"] == "report"))
+    }
+  end
+
+  defp agent_progress_visible?(progress), do: progress.notice != "" || progress.goal || progress.reports + progress.instructions + progress.queued_reports > 0
+  defp count_label(1, singular, _plural), do: "1 " <> singular
+  defp count_label(count, _singular, plural), do: "#{count} " <> plural
 
   defp empty_response?(message) do
     message["role"] == "assistant" and message["status"] in [nil, "completed"] and
@@ -715,6 +779,32 @@ defmodule SymphonyElixirWeb.ChatPanel do
     end
   end
 
+  defp selected_session(sessions, session_id, chat) do
+    Enum.find(sessions, &(&1.id == session_id)) || Enum.find(sessions, &(&1.id == map(chat)["agent_session_id"]))
+  end
+
+  defp task_agent_name(%{title: title}, _task_id, _title), do: title
+  defp task_agent_name(_issue, nil, _title), do: "Task"
+  defp task_agent_name(_issue, task_id, title), do: embedded_title(task_id, title)
+
+  defp current_agent(assigns, selected_session, issue, task_name) do
+    chat = map(assigns.chat)
+
+    cond do
+      selected_session -> %{name: selected_session.name, role: "feature"}
+      issue || assigns.task_id -> %{name: task_name, role: "task"}
+      chat["conversation_role"] in ["task", "pr"] -> retained_agent(chat)
+      true -> %{name: project_agent_name(assigns.project) || "Symphony", role: "project"}
+    end
+  end
+
+  defp retained_agent(chat) do
+    %{
+      name: chat["agent_name"] || chat["title"] || "Untitled",
+      role: if(chat["conversation_role"] == "pr", do: "feature", else: "task")
+    }
+  end
+
   @impl true
   def render(assigns) do
     project = assigns.project && assigns.project["id"]
@@ -722,12 +812,15 @@ defmodule SymphonyElixirWeb.ChatPanel do
     prs = if issue, do: ChatNavigation.pull_requests(issue), else: []
     retained = assigns.chats |> Enum.filter(&(&1["task_id"] == assigns.task_id)) |> Enum.map(& &1["session_id"])
     sessions = Sessions.options(issue, [assigns.session_id | retained])
-    selected_session = Enum.find(sessions, &(&1.id == assigns.session_id))
+    selected_session = selected_session(sessions, assigns.session_id, assigns.chat)
+    task_name = task_agent_name(issue, assigns.task_id, assigns.task_title)
 
     assigns =
       assign(assigns,
         issue: issue,
-        task_agent_name: if(issue, do: issue.title, else: if(assigns.task_id, do: embedded_title(assigns.task_id, assigns.task_title), else: "Task")),
+        task_agent_name: task_name,
+        agent: current_agent(assigns, selected_session, issue, task_name),
+        agent_progress: agent_progress(assigns.chat),
         project_agent_title: project_agent_title(assigns.project),
         issue_groups: ChatNavigation.issues(assigns.issue_tasks, assigns.issue_activity, project, assigns.issue_query),
         issue_sessions: matching_sessions(sessions, assigns.pr_query),
@@ -811,7 +904,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
                 phx-click="select-pr-session" phx-value-id="" phx-target={@myself}><.agent_label name={@task_agent_name} role="task" /><span class="agent-description">Manages the entire task and coordinates feature agents</span></button>
               <p :if={@pr_evidence.message} class="issue-options-empty" role="status">{@pr_evidence.message}</p>
               <div :for={session <- @issue_sessions} class="issue-pr-option" data-pr-number={session.pr && session.pr.number} data-session-id={session.id}>
-                <button type="button" class="issue-pr-select" aria-pressed={to_string(@session_id == session.id)}
+                <button type="button" class="issue-pr-select" aria-pressed={to_string(!is_nil(@selected_session) && @selected_session.id == session.id)}
                   phx-click="select-pr-session" phx-value-id={session.id} phx-target={@myself}>
                   <.agent_label name={session.name} role="feature" /><span class="pr-state" data-pr-state={session.pr && session.pr.state}>{session.status}</span>
                 </button>
@@ -884,6 +977,15 @@ defmodule SymphonyElixirWeb.ChatPanel do
             <p :if={is_nil(@list_error) && matching_chats(@chats, @thread_query) == []} class="chat-detail-empty">{if @thread_query == "", do: "No chats yet. Start a new chat for this project.", else: "No chats match your search."}</p>
           </section>
           <div id="chat-conversation-detail" class="chat-conversation-detail" hidden={@workspace_view != "conversation"}>
+          <div :if={agent_progress_visible?(@agent_progress)} id="agent-progress" class="agent-progress" aria-label="Agent goal and reports">
+            <p :if={@agent_progress.notice != ""} class="agent-report-status" role="status">{@agent_progress.notice}</p>
+            <div :if={@agent_progress.goal} class="agent-goal"><span class="agent-goal-status" data-goal-status={@agent_progress.goal["status"]}>{String.capitalize(@agent_progress.goal["status"])} goal</span><span class="agent-goal-text" title={@agent_progress.goal["text"]}>{@agent_progress.goal["text"]}</span></div>
+            <div :if={@agent_progress.reports + @agent_progress.instructions + @agent_progress.queued_reports > 0} class="agent-report-status" role="status">
+              <span :if={@agent_progress.reports > 0} data-pending-reports={@agent_progress.reports} title="Waiting to be delivered to the parent agent">{count_label(@agent_progress.reports, "report pending", "reports pending")}</span>
+              <span :if={@agent_progress.instructions > 0} data-pending-instructions={@agent_progress.instructions} title="Waiting to be delivered to a child agent">{count_label(@agent_progress.instructions, "instruction pending", "instructions pending")}</span>
+              <span :if={@agent_progress.queued_reports > 0} data-queued-reports={@agent_progress.queued_reports}>{count_label(@agent_progress.queued_reports, "report queued for review", "reports queued for review")}</span>
+            </div>
+          </div>
           <div id="session-chat-content" class="chat-scroll" role={if @embedded, do: "region", else: "tabpanel"} tabindex="0" aria-label={if @embedded, do: "Conversation"} aria-labelledby={if !@embedded, do: "session-chat-tab"} hidden={!@embedded && @session_tab != "chat"}>
             <div :if={messages(@chat) == []} class="chat-empty">
               <span class="chat-orbit" aria-hidden="true">∿</span><h1>{if @embedded && @task_id, do: "Let’s work on this task", else: "What’s next for #{project_label(@project)}?"}</h1>
@@ -896,8 +998,8 @@ defmodule SymphonyElixirWeb.ChatPanel do
             </div>
 
             <div id="chat-messages" class="chat-messages" aria-live="off">
-              <article :for={message <- messages(@chat)} id={"message-#{message["id"]}"} class={"chat-message chat-message-#{if message["role"] == "user", do: "user", else: "assistant"}"}>
-                <div class="message-meta"><.agent_label :if={message["role"] == "assistant" && message["origin"] != "pr_update" && @issue} name={if @selected_session, do: @selected_session.name, else: @task_agent_name} role={if @selected_session, do: "feature", else: "task"} /><strong :if={message["role"] != "assistant" || message["origin"] == "pr_update" || is_nil(@issue)}>{if(message["role"] == "user", do: "You", else: if(message["origin"] == "pr_update", do: "PR update", else: "Symphony"))}</strong><.message_timestamp value={message["created_at"]} label={if message["origin"] == "pr_update", do: "Observed", else: if(message["role"] == "user", do: "Sent", else: "Response started")} class="message-time" /><span :if={message["status"] == "streaming"} class="streaming-mark">Responding</span><span :if={message["role"] == "assistant" && message["status"] in ["interrupted", "error"]} class="message-outcome">{if message["status"] == "interrupted", do: "Stopped", else: "Failed"}</span></div>
+              <article :for={message <- messages(@chat)} id={"message-#{message["id"]}"} class={"chat-message chat-message-#{message_style(message)}"}>
+                <div class="message-meta"><.message_author message={message} agent={@agent} /><span :if={message_kind(message)} class="message-kind">{message_kind(message)}</span><.message_timestamp value={message["created_at"]} label={message_time_label(message)} class="message-time" /><span :if={message["status"] == "streaming"} class="streaming-mark">Responding</span><span :if={message["role"] == "assistant" && message["status"] in ["interrupted", "error"]} class="message-outcome">{if message["status"] == "interrupted", do: "Stopped", else: "Failed"}</span></div>
                 <div :if={String.trim(text(message["text"])) != ""} class="message-text">{text(message["text"])}</div>
                 <span :if={empty_response?(message)} class="chat-empty-response">No text response.</span>
                 <span :if={message["status"] in ["streaming", "pending"] && String.trim(text(message["text"])) == ""} class="chat-thinking" role="status">Working<span aria-hidden="true"> ···</span></span>
@@ -945,7 +1047,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
               <div class="chat-queue-heading"><strong>{length(@queued)} queued</strong><span>{if @queue_paused, do: "Paused", else: if(@busy, do: "After the current response", else: "Waiting to send")}</span><button :if={@queue_paused && !@busy} id="resume-queue-button" type="button" class="button button-quiet" phx-target={@myself} phx-click="resume-queue" phx-value-chat_id={@chat["id"]}>Resume queue</button></div>
               <ol>
                 <li :for={{message, index} <- Enum.with_index(@queued)} id={"queued-#{message["id"]}"} class="chat-queued-message">
-                  <span class="chat-queue-position" aria-hidden="true">{index + 1}</span><div class="chat-queued-content"><p title={text(message["text"])}>{text(message["text"])}</p><.message_timestamp value={message["created_at"]} label="Queued" class="message-time queue-time" /></div>
+                  <span class="chat-queue-position" aria-hidden="true">{index + 1}</span><div class="chat-queued-content"><div class="chat-queued-source"><.message_author message={message} agent={@agent} /><span :if={message_kind(message)} class="message-kind">{message_kind(message)}</span></div><p title={text(message["text"])}>{text(message["text"])}</p><.message_timestamp value={message["created_at"]} label="Queued" class="message-time queue-time" /></div>
                   <div class="chat-queue-actions"><button :if={index > 0} type="button" class="button button-quiet" phx-target={@myself} phx-click="prioritize-queued" phx-value-id={message["id"]} phx-value-chat_id={@chat["id"]} title="Send this message next without interrupting the current response">Send next</button><button type="button" class="button button-quiet" phx-target={@myself} phx-click="remove-queued" phx-value-id={message["id"]} phx-value-chat_id={@chat["id"]} aria-label={"Remove queued message #{index + 1}"} title="Remove queued message">×</button></div>
                 </li>
               </ol>

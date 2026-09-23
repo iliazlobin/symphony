@@ -156,10 +156,52 @@ defmodule SymphonyElixir.Chat.Persistence do
   end
 
   defp valid_chat?(chat) do
-    metadata_valid?(chat) and binding_valid?(chat) and queue_valid?(chat) and report_receipts_valid?(chat) and
+    metadata_valid?(chat) and hierarchy_valid?(chat) and binding_valid?(chat) and queue_valid?(chat) and
+      report_receipts_valid?(chat) and
       collection?(chat["client_ids"], &is_binary/1) and collection?(chat["context"], &is_map/1) and
       collection?(chat["messages"], &message_valid?/1) and collection?(chat["proposals"], &proposal_valid?/1)
   end
+
+  defp hierarchy_valid?(chat) do
+    optional_id?(chat["parent_id"]) and optional_id?(chat["alias_of"]) and
+      valid_agent_session?(chat) and
+      (is_nil(chat["agent_name"]) or bounded_string?(chat["agent_name"], 16_000)) and goal_valid?(chat["agent_goal"]) and
+      valid_chains?(Map.get(chat, "agent_chains", %{})) and
+      valid_task_refs?(Map.get(chat, "agent_task_refs", []), chat["project_id"]) and
+      valid_outbox?(Map.get(chat, "agent_outbox", []), chat)
+  end
+
+  defp valid_outbox?(outbox, chat), do: is_list(outbox) and Enum.all?(outbox, &outbox_valid?(&1, chat))
+
+  defp valid_task_refs?(refs, project) when is_list(refs),
+    do: length(refs) <= 500 and Enum.uniq(refs) == refs and Enum.all?(refs, &(is_binary(&1) and valid_task_scope?(project, &1)))
+
+  defp valid_task_refs?(_, _), do: false
+
+  defp valid_agent_session?(%{"agent_session_id" => id} = chat),
+    do: is_nil(id) or (chat["conversation_role"] == "pr" and Sessions.valid_id?(id))
+
+  defp valid_agent_session?(_), do: true
+
+  defp valid_chains?(chains) when is_map(chains),
+    do: Enum.all?(chains, fn {id, count} -> valid_id?(id) and is_integer(count) and count in 1..24 end)
+
+  defp valid_chains?(_), do: false
+
+  defp optional_id?(nil), do: true
+  defp optional_id?(id), do: valid_id?(id)
+  defp bounded_string?(value, limit), do: is_binary(value) and String.valid?(value) and byte_size(value) <= limit
+  defp goal_valid?(nil), do: true
+  defp goal_valid?(goal) when is_map(goal), do: bounded_string?(goal["text"], 8000) and goal["status"] in ~w(active achieved blocked) and valid_id?(goal["set_by"]) and is_binary(goal["updated_at"])
+  defp goal_valid?(_), do: false
+
+  defp outbox_valid?(event, chat) when is_map(event) do
+    Enum.all?(~w(id source_id target_id root root_chat), &valid_id?(event[&1])) and event["source_id"] == chat["id"] and
+      bounded_string?(event["text"], 8000) and bounded_string?(event["source_name"], 16_200) and event["kind"] in ~w(instruction report) and
+      event["status"] in ~w(pending delivered) and is_integer(event["depth"]) and event["depth"] in 1..6 and is_binary(event["created_at"])
+  end
+
+  defp outbox_valid?(_, _), do: false
 
   defp binding_valid?(%{"conversation_role" => "pr"} = chat) do
     is_nil(chat["kind"]) and is_binary(chat["task_id"]) and valid_task_scope?(chat["project_id"], chat["task_id"]) and
@@ -232,10 +274,19 @@ defmodule SymphonyElixir.Chat.Persistence do
 
   defp message_valid?(message) when is_map(message) do
     Enum.all?(~w(id text status), &is_binary(message[&1])) and
-      message["role"] in ["user", "assistant"] and collection?(message["widgets"], &is_map/1) and report_message_valid?(message)
+      message["role"] in ["user", "assistant"] and collection?(message["widgets"], &is_map/1) and report_message_valid?(message) and
+      agent_message_valid?(message)
   end
 
   defp message_valid?(_), do: false
+
+  defp agent_message_valid?(%{"origin" => "agent_message"} = message) do
+    message["role"] == "user" and Enum.all?(~w(source_agent agent_root agent_root_chat), &valid_id?(message[&1])) and
+      bounded_string?(message["source_name"], 16_200) and message["agent_kind"] in ~w(instruction report) and
+      is_integer(message["agent_depth"]) and message["agent_depth"] in 1..6
+  end
+
+  defp agent_message_valid?(_), do: true
 
   defp report_message_valid?(%{"origin" => "pr_update"} = message),
     do: message["role"] == "assistant" and message["status"] == "completed" and Sessions.valid_id?(message["session_id"]) and byte_size(message["text"]) <= 8_000

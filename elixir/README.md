@@ -374,13 +374,26 @@ The task agent can inspect feature agent state with `symphony_pr_session` and pr
 `continue_pr_work` with an instruction for that agent. A feature agent restricts controls to
 its own retained worker; all actions still require confirmation and fresh ownership checks.
 Previously linked PRs support discussion without automatically adopting a coding worker.
-If a worker publication arrives later, the earlier discussion remains separately accessible.
+A verified publication binds the earlier discussion to the same feature agent. Historical
+duplicates reconcile when idle; old links resolve to the canonical conversation without
+losing messages, receipts or queued work.
+PRs linked to several issues share one feature agent: verified native work selects its
+owning task, and other issues reference it. Before publication, the first retained
+discussion owns the conversation. Active turns and pending reports delay reconciliation.
 Existing routing labels, launch permissions, publication and merge gates still apply.
 Worker progress, review handoffs and GitHub state changes are checked every 15 seconds
 and recorded as **PR update** messages in the task agent and matching feature agent conversations.
-Reports survive restart, retain the latest 80 updates per conversation and do not start
-model turns or workers. Missing or stale checks never imply completion; issue acceptance
+Reports survive restart and retain the latest 80 updates per conversation. With valid
+authorization, new evidence queues a task-agent reasoning turn; it never starts a coding
+worker. Without authorization, the saved evidence waits for an authenticated interaction. Missing or stale checks never imply completion; issue acceptance
 remains separate from PR merge.
+The project, task and feature agents form a graph with stable IDs and typed supervision
+and reporting edges. Parents delegate to direct children; children report upward,
+including an automatic report after each completed reply. Parent agents process reports,
+revise goals and can delegate follow-ups. Chat shows the source agent, goals and pending
+reports inline. Each user-initiated chain is bounded to 24 deliveries and depth six;
+Stop pauses supervision and restart requires fresh authorization. The graph is exported
+by `Chat.Store.agent_graph/3` and the `symphony_agent_graph` tool for future visualization.
 You can send follow-ups while a response is running. Up to 20 messages wait in the
 conversation queue above the composer; **Send next** changes the next waiting message
 and **Remove** cancels one queued message. Messages run one at a time per conversation

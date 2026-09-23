@@ -105,7 +105,7 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     specs = Tools.specs()
 
     assert Enum.map(specs, & &1["name"]) ==
-             ~w(symphony_view_context symphony_project_status symphony_search_tasks symphony_pr_session symphony_task_details symphony_read_project_document symphony_propose_action)
+             ~w(symphony_agent_graph symphony_delegate symphony_report symphony_set_goal symphony_view_context symphony_project_status symphony_search_tasks symphony_pr_session symphony_task_details symphony_read_project_document symphony_propose_action)
 
     assert Enum.all?(specs, &(&1["inputSchema"]["additionalProperties"] == false))
     refute Jason.encode!(specs) =~ "github_api"

@@ -10,7 +10,7 @@ defmodule SymphonyElixir.Chat.Sessions do
   @spec options(map() | nil, [String.t() | nil]) :: [map()]
   def options(nil, _retained), do: []
 
-  def options(task, retained) do
+  def options(task, _retained) do
     works = ChatNavigation.work_sessions(task)
     prs = ChatNavigation.pull_requests(task)
 
@@ -36,24 +36,19 @@ defmodule SymphonyElixir.Chat.Sessions do
       |> Enum.reject(fn work -> Enum.any?(published, &(&1.work && &1.work.id == work.id)) end)
       |> Enum.map(&%{id: "work:" <> &1.id, title: &1.title, name: &1.name, discussion: false, label: &1.title, status: &1.phase, pr: nil, work: &1})
 
-    # A discussion opened before the publication receipt must keep its history and
-    # remain read-only when a native worker is subsequently associated with the PR.
-    discussions =
-      published
-      |> Enum.filter(&(&1.work && "pr:#{&1.pr.number}" in retained))
-      |> Enum.map(&%{&1 | id: "pr:#{&1.pr.number}", title: "PR ##{&1.pr.number} · Discussion", discussion: true, work: nil})
-
-    pending ++ published ++ discussions
+    pending ++ published
   end
 
   @spec resolve(map(), String.t(), String.t()) :: {:ok, map()} | {:error, atom()}
   def resolve(task, id, fingerprint) do
     with true <- valid_id?(id),
-         %{} = option <- Enum.find(options(task, [id]), &(&1.id == id)),
+         %{} = option <- Enum.find(options(task), &(&1.id == id or (&1.pr && "pr:#{&1.pr.number}" == id))),
          true <- valid_binding?(task, option, fingerprint) do
       {:ok,
        %{
          "session_id" => id,
+         "agent_session_id" => option.id,
+         "agent_name" => option.name,
          "task_id" => task.id,
          "work_id" => option.work && option.work.id,
          "pr_number" => (option.pr && option.pr.number) || (option.work && option.work.pr_number),
@@ -80,7 +75,7 @@ defmodule SymphonyElixir.Chat.Sessions do
   @spec reports(map(), String.t(), String.t() | nil) :: [map()]
   def reports(task, fingerprint, session_id \\ nil) do
     options(task, [session_id])
-    |> Enum.filter(&((is_nil(session_id) or &1.id == session_id) and valid_binding?(task, &1, fingerprint)))
+    |> Enum.filter(&((is_nil(session_id) or &1.id == session_id or (&1.pr && "pr:#{&1.pr.number}" == session_id)) and valid_binding?(task, &1, fingerprint)))
     |> Enum.flat_map(&reports_for(task, &1))
     |> Enum.take(100)
   end

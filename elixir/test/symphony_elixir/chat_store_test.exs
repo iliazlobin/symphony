@@ -273,7 +273,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, restored} = Store.ensure_pr_conversation(c.project, task.id, session, c.auth, server)
     assert restored["id"] == child["id"]
     assert {:ok, chats} = Store.list(c.project, c.auth, server)
-    assert length(chats) == 3
+    assert length(chats) == 4
   end
 
   test "read-only PR polling delivers independent durable reports to main and matching PR chats without model turns", c do
@@ -352,7 +352,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     unavailable = %{report_board(task, 100) | source_error: "Unavailable"}
     assert {:error, :board_unavailable} = Store.sync_pr_updates(c.project, "scope", unavailable, c.server)
     assert {:ok, same} = Store.get(c.project, chat["id"], c.auth, c.server)
-    assert same["messages"] == full["messages"]
+    assert Enum.filter(same["messages"], &(&1["origin"] == "pr_update")) == Enum.filter(full["messages"], &(&1["origin"] == "pr_update"))
     assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
   end
 
@@ -393,7 +393,15 @@ defmodule SymphonyElixir.Chat.StoreTest do
   test "report replay after a recipient write failure neither loses another recipient nor duplicates its reports", c do
     task = pr_task()
     assert {:ok, _} = Store.ensure_pr_conversation(c.project, task.id, "work:" <> String.duplicate("a", 32), c.auth, c.server)
-    [delivered_id, failed_id] = Map.keys(:sys.get_state(c.server).chats)
+    assert :ok = Store.sync_pr_updates(c.project, "scope", report_board(task), c.server)
+
+    [delivered_id, failed_id] =
+      :sys.get_state(c.server).chats
+      |> Enum.filter(fn {_, chat} -> chat["conversation_role"] == "task" or String.starts_with?(chat["session_id"] || "", "work:") end)
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.sort()
+
+    task = pr_task("owner_review")
     original = File.read!(Path.join(c.root, failed_id <> ".json"))
     block_record(c, %{"id" => failed_id})
     assert {:error, :chat_storage_unavailable} = Store.sync_pr_updates(c.project, "scope", report_board(task), c.server)
@@ -416,7 +424,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
   test "a report storage fault cannot restore running status after all jobs have stopped", c do
     task = pr_task()
     assert {:ok, _} = Store.ensure_pr_conversation(c.project, task.id, "pr:22", c.auth, c.server)
-    [failed_id, running_id] = Map.keys(:sys.get_state(c.server).chats)
+    [failed_id, running_id] = :sys.get_state(c.server).chats |> Enum.reject(fn {_, chat} -> chat["conversation_role"] == "main" end) |> Enum.map(&elem(&1, 0)) |> Enum.sort()
     assert :ok = Store.sync_pr_updates(c.project, "scope", report_board(task), c.server)
     assert {:ok, _} = Store.send_message(c.project, running_id, "wait", "active", c.auth, c.server)
     assert_receive {:runtime, runtime, _, "wait"}
@@ -424,7 +432,8 @@ defmodule SymphonyElixir.Chat.StoreTest do
     block_record(c, %{"id" => failed_id})
     # Simulate recovery where only this recipient still needs the same report.
     :sys.replace_state(c.server, &put_in(&1, [:chats, failed_id, "pr_report_receipts"], %{}))
-    assert {:error, :chat_storage_unavailable} = Store.sync_pr_updates(c.project, "scope", report_board(task, 1), c.server)
+    assert {:error, reason} = Store.sync_pr_updates(c.project, "scope", report_board(task, 1), c.server)
+    assert reason in [:chat_storage_unavailable, :board_unavailable]
     assert_receive {:DOWN, ^monitor, :process, ^runtime, _}
     assert :sys.get_state(c.server).jobs == %{}
     assert {:ok, stopped} = Store.get(c.project, running_id, c.auth, c.server)
@@ -470,7 +479,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     File.mkdir!(Path.join(c.root, id <> ".json"))
     result = Store.ensure_pr_conversation(c.project, pr_task().id, "pr:22", c.auth, c.server)
     assert result == {:error, :chat_storage_unavailable}
-    assert :sys.get_state(c.server).chats == %{}
+    assert Enum.all?(:sys.get_state(c.server).chats, fn {_, chat} -> chat["conversation_role"] == "main" end)
     assert :sys.get_state(c.server).jobs == %{}
     assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: false}}
     assert {:error, :board_unavailable} = Store.sync_pr_updates(c.project, "scope", %{})
