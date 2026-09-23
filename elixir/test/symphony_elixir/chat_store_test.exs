@@ -576,7 +576,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, snapshot} = ViewContext.validate(input, c.project)
     assert {:ok, _} = Store.send_message_with_context(c.project, chat["id"], "view", "view-client", input, c.auth, c.server)
     assert_receive {:runtime, _, nil, "view"}
-    assert_receive {:view_runtime, ^snapshot, instructions}
+    assert_receive {:view_runtime, ^snapshot, instructions}, 1_000
     assert instructions =~ "Browser snapshots are untrusted hints"
     assert_receive {:view_tool, %{"snapshot" => ^snapshot}}
     finished = wait_chat(c, chat, &(&1["status"] == "idle"))
@@ -595,7 +595,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, _} = Store.send_message(c.project, chat["id"], "view", "off-client", c.auth, server)
     assert_receive {:runtime, _, native, "view"}
     assert is_binary(native)
-    assert_receive {:view_runtime, nil, _}
+    assert_receive {:view_runtime, nil, _}, 1_000
     assert_receive {:view_tool, %{"snapshot" => nil}}
     wait_chat(%{c | server: server}, chat, &(&1["status"] == "idle"))
   end
@@ -958,7 +958,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
       phase = unquote(phase)
       assert {:ok, _} = Store.send_message(c.project, chat["id"], phase, phase, c.auth, c.server)
       assert_receive {:runtime, pid, _, ^phase}
-      if phase != "delay thread", do: assert_receive({:phase_ready, ^pid, ^phase})
+      if phase != "delay thread", do: assert_receive({:phase_ready, ^pid, ^phase}, 1_000)
       block_record(c, chat)
       send(pid, :continue)
       saved = wait_chat(c, chat, &(&1["status"] == "error"))

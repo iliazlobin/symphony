@@ -101,7 +101,7 @@ defmodule SymphonyElixir.GitHub.Board do
             pageInfo { hasPreviousPage }
             nodes { ... on CrossReferencedEvent {
               target { ... on Issue { number repository { nameWithOwner } } }
-              source { __typename ...BoardPullRequest }
+              source { __typename ... on PullRequest { body } ...BoardPullRequest }
             } }
           }
         }
@@ -179,8 +179,16 @@ defmodule SymphonyElixir.GitHub.Board do
 
   defp connection(_connection, _direction), do: {[], true}
 
-  defp referenced_pr(%{"target" => %{"number" => number, "repository" => %{"nameWithOwner" => repo}}, "source" => %{"__typename" => "PullRequest"} = pr}, number, repo),
-    do: [{pr, "referenced"}]
+  defp referenced_pr(%{"target" => %{"number" => number, "repository" => %{"nameWithOwner" => repo}}, "source" => %{"__typename" => "PullRequest", "body" => body} = pr}, number, repo)
+       when is_binary(body) do
+    # The host publisher marks issue ownership; a casual mention is not attribution.
+    attributed =
+      [~r/<!-- symphony issue=GH-(\d+)(?: work=[a-f0-9]{32})? -->/, ~r/^Symphony task: GH-(\d+)(?:; work [a-f0-9]{32})?\.\r?$/m]
+      |> Enum.flat_map(&Regex.scan(&1, body))
+      |> Enum.any?(fn [_, issue_id] -> issue_id == Integer.to_string(number) end)
+
+    if attributed, do: [{pr, "published"}], else: []
+  end
 
   defp referenced_pr(_event, _number, _repo), do: []
 

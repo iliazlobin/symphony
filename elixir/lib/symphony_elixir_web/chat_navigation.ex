@@ -106,6 +106,9 @@ defmodule SymphonyElixirWeb.ChatNavigation do
       identifier: text(field(task, :identifier)),
       url: safe_url(field(task, :url)),
       stage: field(task, :stage),
+      created_at: timestamp(field(task, :created_at)),
+      priority: priority(field(task, :priority)),
+      github_status: field(task, :github_status),
       category: category,
       activity_at: event.at,
       activity_label: event.label,
@@ -237,6 +240,8 @@ defmodule SymphonyElixirWeb.ChatNavigation do
 
   defp safe_url(_value), do: nil
   defp normalized(value, allowed), do: if(String.downcase(text(value)) in allowed, do: String.downcase(text(value)), else: "unknown")
+  defp priority(value) when value in 1..4, do: value
+  defp priority(_value), do: nil
   defp nonnegative(value) when is_integer(value) and value >= 0, do: value
   defp nonnegative(_value), do: nil
   defp records(value) when is_list(value), do: Enum.filter(value, &is_map/1)

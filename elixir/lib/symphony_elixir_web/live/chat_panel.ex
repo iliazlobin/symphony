@@ -700,9 +700,8 @@ defmodule SymphonyElixirWeb.ChatPanel do
       assign(assigns,
         issue: issue,
         issue_groups: ChatNavigation.issues(assigns.issue_tasks, assigns.issue_activity, project, assigns.issue_query),
-        issue_prs: matching_prs(prs, assigns.pr_query),
+        issue_prs: matching_prs(prs, works, assigns.pr_query),
         pr_evidence: pr_evidence(issue && issue[:github_status], length(prs)),
-        issue_works: matching_works(works, assigns.pr_query),
         authorized: BrowserAuth.authorized?(assigns.auth),
         google_auth: BrowserAuth.google_enabled?(),
         running: running?(assigns.chat),
@@ -735,11 +734,23 @@ defmodule SymphonyElixirWeb.ChatPanel do
                 <button :for={item <- group.issues} id={"issue-option-" <> Base.url_encode64(item.id, padding: false)} type="button" role="option" aria-selected={to_string(@task_id == item.id)}
                   phx-click="select-issue" phx-value-id={item.id} phx-target={@myself} class="issue-option" data-issue-id={item.id}>
                   <span class="issue-option-title"><span>{item.identifier}</span><span class="issue-option-name">{item.title}</span></span>
-                  <span class="issue-option-activity"><span>{item.activity_label}</span><time :if={item.activity_at} datetime={item.activity_at} title={item.activity_at}>{compact_updated_at(item.activity_at)}</time></span>
+                  <span class="issue-option-meta">
+                    <time :if={item.created_at} datetime={item.created_at} title={"Created " <> item.created_at}>{compact_created_at(item.created_at)}</time>
+                    <span :if={is_nil(item.created_at)} title="Creation time unavailable">Created —</span>
+                    <span class="issue-option-priority" data-priority={item.priority || "none"} title={if item.priority, do: "Priority P#{item.priority}", else: "Priority not set"}>{if item.priority, do: "P#{item.priority}", else: "Priority —"}</span>
+                    <span class="issue-option-pr-count" title={pr_evidence(item.github_status, item.pull_request_count).message || "Pull requests attributed to this issue"}>{issue_pr_count(item)}</span>
+                    <time :if={item.activity_at} class="issue-option-updated" datetime={item.activity_at} title={item.activity_label <> ": " <> item.activity_at}>{compact_updated_at(item.activity_at)}</time>
+                  </span>
                   <span :if={item.preview not in [nil, ""]} class="issue-option-preview">{item.preview}</span>
                 </button>
               </div>
               <p :if={@issue_groups == [] && @issue_query != ""} class="issue-options-empty">No matching issues. Try a category, issue number or recent activity.</p>
+            </div>
+            <div :if={@issue} class="issue-picker-links">
+              <a :if={safe_url(@issue.url)} href={safe_url(@issue.url)} target="_blank" rel="noopener noreferrer" class="issue-github-link">{@issue.identifier} ↗</a>
+              <span :if={!safe_url(@issue.url)}>{@issue.identifier}</span>
+              <button id="issue-card-link" class="button button-quiet" phx-click="issue-card" phx-target={@myself}>View card</button>
+              <span class="issue-chat-state" data-stage={@issue.stage}>{String.capitalize(@issue.stage)}</span>
             </div>
           </div>
         </details>
@@ -767,27 +778,17 @@ defmodule SymphonyElixirWeb.ChatPanel do
             </summary>
             <div class="issue-pr-list">
               <form class="issue-pr-search" phx-change="search-prs" phx-submit="search-prs" phx-target={@myself} role="search">
-                <input id="issue-pr-search" type="search" name="query" value={@pr_query} placeholder="Search PRs or status…" aria-label="Search pull requests and work sessions" autocomplete="off" phx-debounce="150" />
+                <input id="issue-pr-search" type="search" name="query" value={@pr_query} placeholder="Search pull requests or status…" aria-label="Search pull requests" autocomplete="off" phx-debounce="150" />
               </form>
               <div class="issue-pr-results">
               <p :if={@pr_evidence.message} class="issue-options-empty" role="status">{@pr_evidence.message}</p>
               <div :for={pr <- @issue_prs} class="issue-pr-option" data-pr-number={pr.number}>
                 <div><a :if={pr.url} href={pr.url} target="_blank" rel="noopener noreferrer">PR #{pr.number} · {pr.title}</a><span :if={!pr.url}>PR #{pr.number} · {pr.title}</span><span class="pr-state" data-pr-state={pr.state}>{pr.status}</span></div>
-                <div class="issue-pr-meta"><span>Review: {pr.review}</span><a :if={pr.checks_url} href={pr.checks_url} target="_blank" rel="noopener noreferrer">CI: {pr.ci} ↗</a><span :if={!pr.checks_url}>CI: {pr.ci}</span></div>
+                <div class="issue-pr-meta"><span>Review: {String.capitalize(String.replace(pr.review, "_", " "))}</span><a :if={pr.checks_url} href={pr.checks_url} target="_blank" rel="noopener noreferrer">CI: {String.capitalize(pr.ci)} ↗</a><span :if={!pr.checks_url}>CI: {String.capitalize(pr.ci)}</span>
+                  <button :for={work <- pr.works} type="button" class="issue-pr-work-link" phx-click="inspect-pr-work" phx-target={@myself} phx-value-id={work.id} title="View PR work details">{work.phase} →</button>
+                </div>
               </div>
-              <div :if={@issue_works != []} class="issue-work-options">
-                <span class="issue-group-label">Work sessions</span>
-                <button :for={work <- @issue_works} type="button" class="issue-work-option" phx-click="inspect-pr-work" phx-target={@myself} phx-value-id={work.id}>
-                  <span>{work.title}</span><span>{work.phase} →</span>
-                </button>
-              </div>
-              <p :if={@pr_query != "" && @issue_prs == [] && @issue_works == []} class="issue-options-empty">No matching pull requests or work sessions.</p>
-              </div>
-              <div class="issue-pr-footer">
-                <a :if={safe_url(@issue.url)} href={safe_url(@issue.url)} target="_blank" rel="noopener noreferrer" class="issue-github-link">{@issue.identifier} ↗</a>
-                <span :if={!safe_url(@issue.url)}>{@issue.identifier}</span>
-                <button id="issue-card-link" class="button button-quiet" phx-click="issue-card" phx-target={@myself}>View card</button>
-                <span class="issue-chat-state" data-stage={@issue.stage}>{String.capitalize(@issue.stage)}</span>
+              <p :if={@pr_query != "" && @issue_prs == []} class="issue-options-empty">No matching pull requests.</p>
               </div>
             </div>
           </details>
@@ -1028,12 +1029,29 @@ defmodule SymphonyElixirWeb.ChatPanel do
     """
   end
 
-  defp matching_prs(prs, query) do
-    Enum.filter(prs, &matches_search?(["PR ##{&1.number}", &1.title, &1.state, &1.status, &1.review, &1.ci], query))
+  defp matching_prs(prs, works, query) do
+    prs
+    |> Enum.filter(&matches_search?(["PR ##{&1.number}", &1.title, &1.state, &1.status, &1.review, &1.ci], query))
+    |> Enum.map(fn pr ->
+      sessions = Enum.filter(works, &(is_integer(pr.number) and is_binary(pr.url) and &1.pr_number == pr.number and &1.pr_url == pr.url))
+      Map.put(pr, :works, sessions)
+    end)
   end
 
-  defp matching_works(works, query) do
-    Enum.filter(works, &matches_search?([&1.title, &1.phase, &1.instruction, &1.summary], query))
+  defp compact_created_at(value) do
+    {:ok, datetime, _offset} = DateTime.from_iso8601(value)
+    "Created " <> Calendar.strftime(datetime, "%b %-d")
+  end
+
+  defp issue_pr_count(item) do
+    count = item.pull_request_count
+    label = if count == 1, do: "PR", else: "PRs"
+
+    cond do
+      item.github_status == "available" -> "#{count} #{label}"
+      count > 0 -> "#{count}+ #{label}"
+      true -> "PRs —"
+    end
   end
 
   defp matches_search?(values, query) do

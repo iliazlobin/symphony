@@ -250,9 +250,12 @@ selecting a card switches to it, and closing its details keeps that chat selecte
 **Main chat** in the issue picker opens the project's orchestration conversation for reports, task creation,
 updates and cancellation. Write proposals still require confirmation of the exact action.
 The headline picker groups issues by activity category, with Done last, and sorts each
-group newest first. Search a category, issue number, title or recent activity. The second
-line starts with **PRs**, then the GitHub issue, its board card and inline status. Search
-the PR menu by number, title or status; choose a retained work session to inspect it on the card.
+group newest first. Rows show creation date, priority, PR count and latest update;
+exact timestamps are available on hover. Search a category, issue number, title or
+recent activity. The selected issue's GitHub and card shortcuts stay in that picker.
+The full-width **Pull requests** selector lists only GitHub-linked or Symphony-published
+PRs for the issue. Incidental mentions are excluded. Search by number, title or status;
+a published PR's retained work session opens its details on the card.
 Switching cards preserves each conversation's draft. Board chat shows messages and
 actions directly, while task details and PR work stay on the card. Prior conversations remain
 available through the full-page `/chat` history with search, pins and ordering.
