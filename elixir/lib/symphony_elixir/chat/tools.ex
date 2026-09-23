@@ -2,7 +2,7 @@ defmodule SymphonyElixir.Chat.Tools do
   @moduledoc "Project-bound management tools. Model calls can prepare writes; only an operator confirms them."
 
   alias SymphonyElixir.Chat.{GitHub, ViewContext}
-  alias SymphonyElixir.{Config, Orchestrator}
+  alias SymphonyElixir.{Config, Orchestrator, TaskDraft}
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, TaskBoard}
 
   @controls ~w(pause drain resume cancel retry set_concurrency)
@@ -16,7 +16,7 @@ defmodule SymphonyElixir.Chat.Tools do
   @proposal_keys ~w(id action args project_id tracker_fingerprint expected_revision expected_updated_at created_at queue_labels queue_unheld task_title task_description pr_work)
   @documents ~w(ARCHITECTURE.md WORKFLOW.md PROJECT.md README.md AGENTS.md)
   @errors %{
-    task_scope_mismatch: "Use this task's conversation or Main chat to prepare work for that issue.",
+    task_scope_mismatch: "Use this task's conversation or the project agent to prepare work for that issue.",
     pr_work_exists: "This PR work session already exists. Refresh the task before continuing.",
     pr_work_pending: "A PR work session is already queued or running for this issue. Wait for it to stop before launching more work.",
     pr_work_not_found: "This PR work session is unavailable. Refresh the task and select an existing session.",
@@ -106,13 +106,15 @@ defmodule SymphonyElixir.Chat.Tools do
       ),
       spec(
         "symphony_propose_action",
-        "Prepare an exact action preview for operator approval. Never claim a proposal was executed. create_task makes an unqueued backlog issue. queue_task can queue an open, unqueued idle backlog task with no hold. edit_task and unqueue_task require a cancelled, idle task; queueing a cancelled task also retains its hold, so Retry remains separate. Queue changes affect only configured routing labels, never bypass admission or launch gates. Feedback adds a GitHub comment without steering a running worker. set_concurrency persists an admission limit within the configured ceiling; limit:null restores the default. Running work and consumed budgets are unchanged. create_pr_work prepares a separate coding session for an issue; continue_pr_work resumes one exact work_id with the requested instruction. Use task details to select a session. The host binds its branch, approved base and candidate head; never supply those fields. Both require explicit operator confirmation to queue native execution, subject to remaining budget, routing labels, controller mode and launch gates. They clear only a previous owner_review hold; other holds remain. Review and publication policy are unchanged.",
+        "Prepare an exact action preview for operator approval. Never claim a proposal was executed. create_task makes an unqueued backlog issue. Supply title, description and verification; do not combine these fields with body. The legacy body form remains available for existing callers. queue_task can queue an open, unqueued idle backlog task with no hold. edit_task and unqueue_task require a cancelled, idle task; queueing a cancelled task also retains its hold, so Retry remains separate. Queue changes affect only configured routing labels, never bypass admission or launch gates. Feedback adds a GitHub comment without steering a running worker. set_concurrency persists an admission limit within the configured ceiling; limit:null restores the default. Running work and consumed budgets are unchanged. create_pr_work prepares a separate coding session for an issue; continue_pr_work resumes one exact work_id with the requested instruction. Use task details to select a session. The host binds its branch, approved base and candidate head; never supply those fields. Both require explicit operator confirmation to queue native execution, subject to remaining budget, routing labels, controller mode and launch gates. They clear only a previous owner_review hold; other holds remain. Review and publication policy are unchanged.",
         %{
           "action" => enum(@controls ++ @writes ++ @pr_work_actions),
           "limit" => %{"type" => ["integer", "null"], "minimum" => 1},
           "task_id" => string(240),
           "work_id" => string(32),
           "title" => string(240),
+          "description" => string(4_000),
+          "verification" => string(4_000),
           "body" => string(16_000),
           "state" => enum(~w(open closed)),
           "priority" => %{"type" => "integer", "minimum" => 1, "maximum" => 4}
@@ -346,6 +348,7 @@ defmodule SymphonyElixir.Chat.Tools do
 
   defp dispatch("symphony_propose_action", args, context, settings, board) do
     with :ok <- complete_board(board),
+         {:ok, args} <- prepare_action_args(args),
          :ok <- action_args(args),
          {:ok, evidence} <- proposal_evidence(args, context, settings, board) do
       action_args = normalized_action_args(args, context, board)
@@ -370,6 +373,19 @@ defmodule SymphonyElixir.Chat.Tools do
   defp task_with_pull_requests(task), do: task_view(task) |> Map.put("pull_requests", Enum.map(task[:pull_requests] || [], &(Map.take(&1, @pr_keys) |> string_keys())))
 
   defp string_keys(map), do: Map.new(map, fn {key, value} -> {Atom.to_string(key), value} end)
+
+  defp prepare_action_args(%{"action" => "create_task"} = args) do
+    if Map.has_key?(args, "description") or Map.has_key?(args, "verification") do
+      case TaskDraft.action_args(Map.delete(args, "action")) do
+        {:ok, normalized} -> {:ok, normalized}
+        {:error, _reason} -> {:error, :invalid_arguments}
+      end
+    else
+      {:ok, args}
+    end
+  end
+
+  defp prepare_action_args(args), do: {:ok, args}
 
   defp normalized_action_args(%{"task_id" => id} = args, context, board) do
     {:ok, task} = find_task(id, context, board)

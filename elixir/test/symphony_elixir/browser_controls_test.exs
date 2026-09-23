@@ -51,6 +51,25 @@ defmodule SymphonyElixir.BrowserControlsTest do
     %{pid: pid, token: token, marker: marker, authorization: authorization, workflow: workflow, config: config}
   end
 
+  test "acceptance rejects missing browser authority and malformed fields before dispatch", ctx do
+    command = %{
+      "action" => "accept_task",
+      "issue_id" => "7",
+      "command_id" => "accept",
+      "expected_revision" => 0,
+      "expected_candidate_sha" => nil,
+      "expected_updated_at" => "2026-09-23T00:00:00Z",
+      "expected_tracker_state" => "closed"
+    }
+
+    assert {:error, :unauthorized} = BoardActions.accept_command(command, %{})
+    assert {:error, :unauthorized} = BoardActions.accept_command(command, %{ctx.authorization | tracker_fingerprint: "foreign"}, ctx.pid)
+    assert {:error, :invalid_command} = BoardActions.accept_command(Map.delete(command, "expected_updated_at"), ctx.authorization, ctx.pid)
+    assert {:error, :invalid_command} = BoardActions.accept_command(Map.put(command, "extra", true), ctx.authorization, ctx.pid)
+    assert {:error, :invalid_command} = BoardActions.accept_command(%{command | "action" => "deploy"}, ctx.authorization, ctx.pid)
+    assert Orchestrator.control_snapshot(ctx.pid)["revision"] == 0
+  end
+
   test "settings commands keep browser auth, tracker scope and revision guards", ctx do
     assert {:error, :unauthorized} = BoardActions.settings_command(1, 0, "unauthorized", %{})
     assert {:error, :unauthorized} = BoardActions.settings_command(1, 0, "foreign", %{ctx.authorization | tracker_fingerprint: "foreign"}, ctx.pid)

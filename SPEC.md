@@ -2378,12 +2378,32 @@ read-only configured `budgets` and the retained `base_sha`; it contains no crede
 | `create_pr_work` | Retain a new PR work identity for `issue_id`, with a 32-character lowercase hexadecimal `work_id`, bounded `instruction` and exact configured `base_sha`. Releases only a prior review hold; preserves other holds and launch gates. |
 | `continue_pr_work` | Select existing `work_id` with a new bounded `instruction` and exact `expected_head_sha` (explicit `null` before a candidate). Releases only the issue's review hold; other holds require their existing recovery path. |
 
+`accept_task` records human acceptance of an idle, reviewable issue. It MUST bind
+`issue_id`, the expected tracker state/update timestamp and nullable candidate SHA,
+plus the existing command ID and revision. The native owner revalidates tracker scope
+and those observations before atomically retaining acceptance. Accepted issues MUST
+not admit further work; this command does not close an issue, merge or deploy.
+The explicit Accept action or a Review-to-Done drop MAY submit this command directly
+without a second confirmation dialog. An uncertain response MUST retain its command
+identity for a deliberate retry; stale evidence MUST NOT be refreshed and retried automatically.
+
 PR work commands MUST share the native revision, authorization and idempotency boundary.
 The owner MUST derive branch and workspace names, verify fresh issue eligibility and
 reject concurrent work on the same issue. Work identities MUST be immutable and retained
 before a PR number exists. A completed work requires explicit continuation; generic Retry
 MUST NOT silently replay it. Per-issue budgets include every PR work and review attempt.
 The control snapshot includes the tracker fingerprint and retained PR work records.
+An explicitly confirmed new or continued correction cycle renews only its attempt
+allowance. Lifetime attempts and cumulative token/runtime charges remain retained.
+Automatic retry MUST NOT renew that allowance.
+
+Optional selected feedback MUST retain bounded source text, identity and revision in
+the work record. The candidate MUST return one addressed/blocked disposition with
+evidence per selected revision; addressed requires independent review approval.
+New or edited remote comments alone MUST NOT schedule work. The host MAY maintain one
+issue status reply for confirmed selections, using scoped source links and durable
+write intents; uncertain POST outcomes MUST reconcile without blind reposting.
+
 
 Both routes require `Authorization: Bearer $SYMPHONY_CONTROL_TOKEN`; the token MUST
 have at least 32 bytes. The Mac profile binds loopback, accepts only loopback Host
@@ -2492,6 +2512,20 @@ they do not constitute admission, completion or scheduler priority. Missing sour
 data preserves last-known tasks with explicit uncertainty. Tracker-terminal issues
 are not evidence of merge, acceptance or deployment.
 
+Controlled boards expose Backlog, Work, Review and Done. Human queueing moves Backlog
+to Work; native completion moves Work to Review. Only explicit human acceptance moves
+Review to Done, even when GitHub reports merged PRs or a closed issue. Review may return
+to Work through a confirmed correction command. Upstream/control-disabled projection
+retains its tracker semantics. Columns remain visible; filters control which tasks are
+shown. Board data refreshes automatically.
+
+The task creation form exposes title, description and verification. Its Create action
+submits through the durable action store without a separate preview. Project-agent
+proposals accept the same fields and retain explicit confirmation before execution.
+Both paths MUST share validation and issue-body construction while preserving recovery
+of existing body-based actions. Recent submission history refreshes automatically
+without clearing an unsent draft or replaying a write.
+
 Optional GitHub enrichment reads explicit issue/PR relationships and reports draft
 state, GitHub review decisions and checks tied to the current PR head. Enrichment
 failure MUST NOT remove otherwise valid issue data or imply successful checks.
@@ -2516,7 +2550,7 @@ controlling another repository. The bearer API authentication boundary is unchan
 
 Dialogs do not suspend execution. Closing or disconnecting the browser cannot
 cancel work. Browser controls expose pause, drain, resume, concurrency settings,
-cancel and retry operations; optional management chat adds bounded tracker edits.
+cancel, retry, acceptance and correction operations; optional management chat adds bounded tracker edits.
 Missing-input delivery, repair and publication workflows remain separate owners. Remote identity and ingress are
 not provided by the local login mechanism.
 

@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.GitHub.Board do
   @moduledoc "Optional, bounded GitHub evidence for the read-only board; never changes scheduling."
 
-  alias SymphonyElixir.GitHub.Client
+  alias SymphonyElixir.GitHub.{Client, Feedback}
 
   @issue_limit 50
   @check_limit 20
@@ -94,6 +94,10 @@ defmodule SymphonyElixir.GitHub.Board do
         """
         issue_#{task.issue_id}: issue(number: #{task.issue_id}) {
           number url updatedAt
+          comments(last: 20) {
+            totalCount pageInfo { hasPreviousPage }
+            nodes { id url body updatedAt author { __typename login } }
+          }
           closedByPullRequestsReferences(first: 5, includeClosedPrs: true) {
             pageInfo { hasNextPage } nodes { ...BoardPullRequest }
           }
@@ -115,6 +119,21 @@ defmodule SymphonyElixir.GitHub.Board do
     fragment BoardPullRequest on PullRequest {
       number title url state isDraft reviewDecision headRefOid createdAt updatedAt repository { nameWithOwner }
       headRefName baseRefName author { login } additions deletions changedFiles mergeable
+      comments(last: 20) {
+        totalCount pageInfo { hasPreviousPage }
+        nodes { id url body updatedAt author { __typename login } }
+      }
+      reviews(last: 20, states: [APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED]) {
+        totalCount pageInfo { hasPreviousPage }
+        nodes { id url body updatedAt state author { __typename login } }
+      }
+      reviewThreads(last: 10) {
+        totalCount pageInfo { hasPreviousPage }
+        nodes { isResolved comments(last: 3) {
+          totalCount pageInfo { hasPreviousPage }
+          nodes { id url body updatedAt state author { __typename login } }
+        } }
+      }
       commits(last: 1) { nodes { commit { oid statusCheckRollup {
         state contexts(first: #{@check_limit}) {
           totalCount pageInfo { hasNextPage }
@@ -139,18 +158,18 @@ defmodule SymphonyElixir.GitHub.Board do
     {tasks, incomplete} =
       Enum.map_reduce(board.tasks, truncated, fn task, incomplete ->
         case index[task.issue_id] do
-          {:ok, prs, partial} ->
+          {:ok, prs, partial, feedback} ->
             links = Enum.flat_map(prs, &pr_links/1)
             status = evidence_status(partial)
-            task = %{task | pull_requests: prs, links: base_links(task) ++ links, github_status: status}
+            task = %{task | pull_requests: prs, links: base_links(task) ++ links, github_status: status} |> Map.put(:feedback, feedback)
             {task, incomplete or partial}
 
           nil ->
             status = empty_status(task)
-            {%{task | pull_requests: [], links: base_links(task), github_status: status}, incomplete}
+            {%{task | pull_requests: [], links: base_links(task), github_status: status} |> Map.put(:feedback, Feedback.unavailable()), incomplete}
 
           _ ->
-            {%{task | pull_requests: [], links: base_links(task), github_status: "unavailable"}, true}
+            {%{task | pull_requests: [], links: base_links(task), github_status: "unavailable"} |> Map.put(:feedback, Feedback.unavailable()), true}
         end
       end)
 
@@ -166,7 +185,15 @@ defmodule SymphonyElixir.GitHub.Board do
       references = Enum.flat_map(events, &referenced_pr(&1, number, repo))
       parsed = Enum.map(linked ++ references, fn {pr, relation} -> pull_request(pr, repo, relation) end)
       prs = parsed |> Enum.reject(&is_nil/1) |> Enum.uniq_by(& &1.number) |> Enum.sort_by(& &1.number, :desc)
-      {:ok, prs, linked_partial or events_partial or Enum.any?(parsed, &is_nil/1)}
+      partial = linked_partial or events_partial or Enum.any?(parsed, &is_nil/1)
+
+      raw_prs =
+        Enum.zip(linked ++ references, parsed)
+        |> Enum.reject(fn {_raw, parsed} -> is_nil(parsed) end)
+        |> Enum.map(fn {{raw, _relation}, _parsed} -> raw end)
+        |> Enum.uniq_by(& &1["number"])
+
+      {:ok, prs, partial, Feedback.collect(issue, raw_prs, task, repo, partial)}
     else
       {:error, :stale_issue}
     end
@@ -344,7 +371,12 @@ defmodule SymphonyElixir.GitHub.Board do
   end
 
   defp unavailable(board, message) do
-    tasks = Enum.map(board.tasks, &%{&1 | pull_requests: [], links: base_links(&1), github_status: if(&1.source_missing, do: "source_missing", else: "unavailable")})
+    tasks =
+      Enum.map(board.tasks, fn task ->
+        %{task | pull_requests: [], links: base_links(task), github_status: if(task.source_missing, do: "source_missing", else: "unavailable")}
+        |> Map.put(:feedback, Feedback.unavailable())
+      end)
+
     %{board | tasks: tasks, enrichment_error: message}
   end
 end

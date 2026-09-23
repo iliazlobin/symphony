@@ -54,9 +54,17 @@ defmodule SymphonyElixirWeb.TaskExecution do
 
     %{
       tokens: total_tokens(number(ledger["tokens"]), active),
-      attempts: number(ledger["attempts"]),
+      attempts: cycle_attempts(ledger),
+      lifetime_attempts: number(ledger["attempts"]),
       runtime_ms: total_runtime(number(ledger["runtime_ms"]), active, runtime)
     }
+  end
+
+  defp cycle_attempts(ledger) do
+    case {number(ledger["attempts"]), number(Map.get(ledger, "attempt_base", 0))} do
+      {total, base} when is_integer(total) and is_integer(base) and base <= total -> total - base
+      _ -> nil
+    end
   end
 
   defp total_tokens(settled, nil), do: settled
@@ -92,9 +100,17 @@ defmodule SymphonyElixirWeb.TaskExecution do
   defp metrics(usage, budgets, available?) do
     [
       metric("Tokens", usage.tokens, number(budgets["max_total_tokens"]), &compact_number/1, available?),
-      metric("Attempts", usage.attempts, number(budgets["max_attempts"]), &Integer.to_string/1, available?),
+      attempts_metric(usage, budgets, available?),
       metric("Time", usage.runtime_ms, number(budgets["max_total_runtime_ms"]), &duration/1, available?)
     ]
+  end
+
+  defp attempts_metric(usage, budgets, available?) do
+    metric = metric("Attempts", usage.attempts, number(budgets["max_attempts"]), &Integer.to_string/1, available?)
+
+    if is_integer(usage.attempts) and usage.attempts != usage.lifetime_attempts,
+      do: %{metric | title: metric.title <> " in this work cycle; " <> exact(usage.lifetime_attempts, "Attempts") <> " lifetime attempts"},
+      else: metric
   end
 
   defp uncontrolled_metrics(%{ledger: ledger} = task, available?) when map_size(ledger) > 0 do
@@ -102,7 +118,7 @@ defmodule SymphonyElixirWeb.TaskExecution do
 
     [
       recorded_metric("Tokens", usage.tokens, &compact_number/1, available?),
-      recorded_metric("Attempts", usage.attempts, &Integer.to_string/1, available?),
+      recorded_metric("Attempts", usage.lifetime_attempts, &Integer.to_string/1, available?),
       recorded_metric("Time", usage.runtime_ms, &duration/1, available?)
     ]
     |> Enum.reject(&is_nil/1)
@@ -173,6 +189,7 @@ defmodule SymphonyElixirWeb.TaskExecution do
     runtime = task[:runtime]
 
     cond do
+      awaiting_acceptance?(task, runtime) -> {"Awaiting acceptance", nil, false, false}
       settled_review?(task, runtime) -> review_state(task[:handoff])
       is_map(runtime) -> runtime_state(runtime)
       not is_nil(get_in(task, [:ledger, "active"])) -> {"Needs reconciliation", "A reserved execution has no current worker status.", false, false}
@@ -181,6 +198,11 @@ defmodule SymphonyElixirWeb.TaskExecution do
       task[:stage] == "ready" -> ready_state(control, usage, budgets)
       true -> {"Not queued", nil, false, false}
     end
+  end
+
+  defp awaiting_acceptance?(task, runtime) do
+    task[:stage] == "review" and (task[:tracker_terminal] == true or task[:tracker_state] == "closed") and
+      is_nil(runtime) and is_nil(get_in(task, [:ledger, "active"]))
   end
 
   defp settled_review?(%{hold: "owner_review"} = task, runtime) do

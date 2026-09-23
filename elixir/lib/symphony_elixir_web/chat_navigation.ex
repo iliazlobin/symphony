@@ -2,18 +2,16 @@ defmodule SymphonyElixirWeb.ChatNavigation do
   @moduledoc "Pure issue navigation projected from the board and its project-bound chat summaries."
 
   @categories [
-    %{id: "running", label: "Running"},
+    %{id: "work", label: "Work"},
     %{id: "review", label: "Ready for review"},
     %{id: "attention", label: "Needs attention"},
-    %{id: "ready", label: "Ready"},
     %{id: "backlog", label: "Backlog"},
     %{id: "done", label: "Done"}
   ]
   @synonyms %{
-    "running" => "processing working active in progress",
+    "work" => "work processing working active in progress running ready queued scheduled",
     "review" => "ready for review candidate approval",
     "attention" => "needs attention blocked failed error paused confirmation",
-    "ready" => "ready queued scheduled",
     "backlog" => "backlog pending unstarted",
     "done" => "done completed closed finished"
   }
@@ -109,6 +107,7 @@ defmodule SymphonyElixirWeb.ChatNavigation do
       created_at: timestamp(field(task, :created_at)),
       priority: priority(field(task, :priority)),
       github_status: field(task, :github_status),
+      lane: lane(task),
       category: category,
       activity_at: event.at,
       activity_label: event.label,
@@ -126,16 +125,23 @@ defmodule SymphonyElixirWeb.ChatNavigation do
   end
 
   defp category(task, activity) do
-    stage = field(task, :stage)
+    lane = lane(task)
     runtime = field(task, :runtime)
 
     cond do
-      stage == "done" -> "done"
-      stage == "running" or field(runtime, :status) == "running" or chat_running?(activity) -> "running"
-      stage == "review" -> "review"
+      lane == "done" -> "done"
+      field(task, :stage) == "running" or field(runtime, :status) == "running" or chat_running?(activity) -> "work"
+      lane == "review" -> "review"
       attention?(task, activity) -> "attention"
-      stage == "ready" -> "ready"
+      lane == "work" -> "work"
       true -> "backlog"
+    end
+  end
+
+  defp lane(task) do
+    case field(task, :lane) || field(task, :stage) do
+      stage when stage in ["ready", "running"] -> "work"
+      stage -> stage
     end
   end
 

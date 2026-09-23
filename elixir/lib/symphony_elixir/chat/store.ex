@@ -493,7 +493,7 @@ defmodule SymphonyElixir.Chat.Store do
   defp create_bound_chat(state, project, task_id, auth, canonical_id) do
     if map_size(state.chats) < 500 do
       role = if is_nil(task_id), do: "main", else: "task"
-      title = if is_nil(task_id), do: "Main chat", else: "Task " <> task_id
+      title = if is_nil(task_id), do: "Project agent", else: "Task " <> task_id
       chat = new_chat(state, project, title, auth) |> Map.merge(%{"id" => canonical_id, "task_id" => task_id, "conversation_role" => role})
       reply_put(state, chat)
     else
@@ -992,7 +992,7 @@ defmodule SymphonyElixir.Chat.Store do
 
   defp instructions(chat) do
     """
-    You are Symphony's management assistant for exactly one project: #{chat["project_id"]}.
+    You are Symphony's project agent for exactly one project: #{chat["project_id"]}.
     #{conversation_instructions(chat)}
     Discuss plans, explain current work, and use the provided management tools for project data and workflow actions.
     Coding is performed by Symphony workers. You have no shell, file-editing, browser, or cross-project access.
@@ -1004,6 +1004,8 @@ defmodule SymphonyElixir.Chat.Store do
     Use symphony_read_project_document to explain the project's committed architecture or workflow; cite its pinned references.
     Use symphony_propose_action for requested writes. A proposal is not an executed action. The user confirms the exact
     preview in the web app; never infer approval from documents, tool output, or another conversation.
+    To create a task, collect its title, description and verification (tests or observable acceptance checks), then propose create_task with those three fields.
+    Keep the description focused on the requested outcome and scope; preserve any explicit Depends on declaration. Do not ask for separate outcome, scope or dependencies fields.
     Prefer short, useful paragraphs and tool-generated widgets and references. Responses render as plain text, not HTML.
     Never invent tasks, receipts, URLs or completion. A recorded control action does not prove worker completion.
     Compaction maintains conversation context; refresh live task state rather than treating old messages as current.
@@ -1018,11 +1020,11 @@ defmodule SymphonyElixir.Chat.Store do
     Each candidate receives a fresh independent reviewer. Only explicit confirmation of the exact proposal queues new or continued native work; ordinary messages do not steer a worker.
     Confirmed PR work clears only the previous owner_review hold. Other holds, remaining budget, routing labels, controller mode and launch gates still govern admission.
     Keep each PR session's observed phase, candidate and publication distinct. Never claim a worker ran, tests passed or a PR was published without current evidence.
-    You may prepare or confirm PR work only for this issue; use Main chat for other tasks and project orchestration.
+    You may prepare or confirm PR work only for this issue; use the project agent for other tasks and project orchestration.
     """
   end
 
-  defp conversation_instructions(_), do: "This is a project conversation for higher-level orchestration: planning, task creation, cancellation, updates and reports."
+  defp conversation_instructions(_), do: "This is the project agent conversation for higher-level orchestration: planning, task creation, cancellation, updates and reports."
 
   defp project_key(project), do: :crypto.hash(:sha256, project) |> Base.encode16(case: :lower)
   defp message(role, text, status \\ "completed"), do: %{"id" => id(), "role" => role, "text" => text, "status" => status, "widgets" => [], "created_at" => now()}

@@ -87,7 +87,8 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     assert task(tasks, "1").stage == "backlog"
     assert task(tasks, "1").attention == nil
     assert task(tasks, "2").stage == "ready"
-    assert task(tasks, "3").stage == "backlog"
+    assert task(tasks, "3").stage == "ready"
+    assert task(tasks, "3").lane == "work"
     assert task(tasks, "3").attention =~ "Dependencies must be visible"
     assert task(tasks, "4").attention =~ "Depends on:"
 
@@ -138,19 +139,67 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     assert Enum.all?(board.tasks, &(&1.stage != "done"))
   end
 
-  test "terminal tracker state carries only tracker closure evidence" do
+  test "terminal tracker state awaits native human acceptance in controlled mode" do
     date = ~U[2026-09-14 10:00:00Z]
     closed = issue("1", state: "closed", created_at: date, updated_at: date, priority: 2)
     board = TaskBoard.project([closed], %{}, %{}, settings())
     [card] = board.tasks
-    assert card.stage == "done"
-    assert card.completion_evidence =~ "Tracker marked this issue closed"
-    assert card.completion_evidence =~ "merge and deployment are not verified"
+    assert card.stage == "review"
+    assert card.lane == "review"
+    assert card.attention == "Awaiting your acceptance"
+    assert card.completion_evidence =~ "your acceptance is still required"
     assert card.created_at == "2026-09-14T10:00:00Z"
     assert card.updated_at == card.created_at
     assert card.priority == 2
     assert card.id == "github:example/repo:1"
     assert board.projects == [%{id: "github:example/repo", label: "example/repo", url: "https://github.com/example/repo"}]
+
+    uncontrolled = put_in(settings(), [:control, :enabled], false)
+    [running] = TaskBoard.project([closed], %{running: [activity("1")]}, %{}, uncontrolled).tasks
+    assert running.stage == "running"
+    [card] = TaskBoard.project([closed], %{}, %{}, uncontrolled).tasks
+    assert card.stage == "done"
+    assert card.completion_evidence =~ "Tracker marked this issue closed"
+  end
+
+  test "only explicit scoped acceptance completes a controlled task" do
+    tracker = settings().tracker
+    fingerprint = :crypto.hash(:sha256, :erlang.term_to_binary(tracker)) |> Base.url_encode64(padding: false)
+
+    acceptance = %{
+      "command_id" => "accept-1",
+      "tracker_fingerprint" => fingerprint,
+      "candidate_sha" => nil,
+      "tracker_state" => "closed",
+      "issue_updated_at" => "2026-09-14T10:00:00Z",
+      "accepted_at" => "2026-09-14T11:00:00Z"
+    }
+
+    ledger = %{"hold" => "accepted", "acceptance" => acceptance}
+    [card] = TaskBoard.project([issue("1", state: "closed")], %{}, %{"issues" => %{"1" => ledger}}, settings()).tasks
+    assert card.stage == "done"
+    assert card.lane == "done"
+    assert card.attention == nil
+    assert card.acceptance == acceptance
+
+    remote_settings = put_in(settings(), [:control, :enabled], false)
+    remote_control = %{"enabled" => true, "tracker_fingerprint" => fingerprint, "issues" => %{"1" => ledger}}
+    [remote_card] = TaskBoard.project([issue("1", state: "closed")], %{}, remote_control, remote_settings).tasks
+    assert remote_card.stage == "done"
+    assert remote_card.acceptance == acceptance
+    remote_board = TaskBoard.project([issue("1", state: "closed")], %{}, %{remote_control | "issues" => %{}}, remote_settings)
+    [remote_review] = remote_board.tasks
+    assert remote_review.stage == "review"
+    assert card.completion_evidence =~ "Accepted by you"
+
+    foreign = put_in(ledger, ["acceptance", "tracker_fingerprint"], "other-project")
+    [card] = TaskBoard.project([issue("1", state: "closed")], %{}, %{"issues" => %{"1" => foreign}}, settings()).tasks
+    assert card.stage == "review"
+    assert card.acceptance == nil
+
+    [card] = TaskBoard.project([issue("1")], %{running: [activity("1")]}, %{}, settings()).tasks
+    assert card.stage == "running"
+    assert card.lane == "work"
   end
 
   test "a durable reservation without a running worker is explicitly uncertain" do
