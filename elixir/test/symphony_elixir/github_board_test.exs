@@ -247,6 +247,18 @@ defmodule SymphonyElixir.GitHub.BoardTest do
     end
   end
 
+  test "plain publisher attribution retains Symphony PRs and requires the exact issue and marker" do
+    for body <- ["Symphony task: GH-1.", "Refs #1\n\nSymphony task: GH-1; work #{String.duplicate("a", 32)}.\r\n\nBuilder summary"] do
+      respond(payload(evidence([], [event(pr(9, %{"body" => body}))])))
+      assert [%{pull_requests: [%{number: 9, relation: "published"}]}] = Board.enrich(board(), settings()).tasks
+    end
+
+    for body <- ["Symphony task: GH-11.", "Symphony task: GH-01.", "Symphony task: GH-1; work invalid.", "Mentions Symphony task: GH-1.", "Symphony task: GH-1. extra"] do
+      respond(payload(evidence([], [event(pr(9, %{"body" => body}))])))
+      assert [%{pull_requests: [], github_status: "available"}] = Board.enrich(board(), settings()).tasks
+    end
+  end
+
   test "missing, changed and malformed issue identity cannot enrich a stale card" do
     for data <- [
           nil,

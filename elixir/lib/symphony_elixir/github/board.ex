@@ -183,7 +183,8 @@ defmodule SymphonyElixir.GitHub.Board do
        when is_binary(body) do
     # The host publisher marks issue ownership; a casual mention is not attribution.
     attributed =
-      Regex.scan(~r/<!-- symphony issue=GH-(\d+)(?: work=[a-f0-9]{32})? -->/, body)
+      [~r/<!-- symphony issue=GH-(\d+)(?: work=[a-f0-9]{32})? -->/, ~r/^Symphony task: GH-(\d+)(?:; work [a-f0-9]{32})?\.\r?$/m]
+      |> Enum.flat_map(&Regex.scan(&1, body))
       |> Enum.any?(fn [_, issue_id] -> issue_id == Integer.to_string(number) end)
 
     if attributed, do: [{pr, "published"}], else: []

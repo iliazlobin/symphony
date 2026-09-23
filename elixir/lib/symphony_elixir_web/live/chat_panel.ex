@@ -785,7 +785,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
               <div :for={pr <- @issue_prs} class="issue-pr-option" data-pr-number={pr.number}>
                 <div><a :if={pr.url} href={pr.url} target="_blank" rel="noopener noreferrer">PR #{pr.number} · {pr.title}</a><span :if={!pr.url}>PR #{pr.number} · {pr.title}</span><span class="pr-state" data-pr-state={pr.state}>{pr.status}</span></div>
                 <div class="issue-pr-meta"><span>Review: {String.capitalize(String.replace(pr.review, "_", " "))}</span><a :if={pr.checks_url} href={pr.checks_url} target="_blank" rel="noopener noreferrer">CI: {String.capitalize(pr.ci)} ↗</a><span :if={!pr.checks_url}>CI: {String.capitalize(pr.ci)}</span>
-                  <button :for={work <- pr.works} type="button" class="issue-pr-work-link" phx-click="inspect-pr-work" phx-target={@myself} phx-value-id={work.id} title={work.instruction}>{work.phase} →</button>
+                  <button :for={work <- pr.works} type="button" class="issue-pr-work-link" phx-click="inspect-pr-work" phx-target={@myself} phx-value-id={work.id} title="View PR work details">{work.phase} →</button>
                 </div>
               </div>
               <p :if={@pr_query != "" && @issue_prs == []} class="issue-options-empty">No matching pull requests.</p>
