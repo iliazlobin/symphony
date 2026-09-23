@@ -471,20 +471,52 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     assert_finished()
   end
 
-  test "project agent rejects incomplete or mixed task draft fields", ctx do
+  test "project agent accepts a title-only task and confirmation creates it without queueing", ctx do
+    proposal = propose(ctx.context, %{"action" => "create_task", "title" => "Investigate slow board loading"})
+    assert proposal["args"] == %{"title" => "Investigate slow board loading", "body" => "Depends on: none"}
+
+    script([
+      fn "GET", "/repos/example/repo/issues", params, nil, _ ->
+        assert params["state"] == "all"
+        {:ok, %{status: 200, body: []}}
+      end,
+      fn "POST", "/repos/example/repo/issues", %{}, body, _ ->
+        assert body["title"] == "Investigate slow board loading"
+        assert body["labels"] == []
+        assert String.starts_with?(body["body"], "Depends on: none")
+        refute body["body"] =~ "## Description"
+        refute body["body"] =~ "## Verification"
+        {:ok, %{status: 201, body: Map.put(body, "number", 3)}}
+      end
+    ])
+
+    assert {:ok, %{"widgets" => [%{"summary" => summary}]}} = Tools.confirm(proposal, ctx.context)
+    assert summary =~ "execution was not queued"
+    assert_finished()
+  end
+
+  test "project agent accepts either optional detail independently and omits blank sections", ctx do
+    base = %{"action" => "create_task", "title" => "New"}
+    assert propose(ctx.context, Map.put(base, "description", "Description"))["args"]["body"] == "## Description\n\nDescription\n\nDepends on: none"
+    assert propose(ctx.context, Map.put(base, "verification", "Check it"))["args"]["body"] == "## Verification\n\nCheck it\n\nDepends on: none"
+    assert propose(ctx.context, Map.merge(base, %{"description" => " \n ", "verification" => ""}))["args"]["body"] == "Depends on: none"
+  end
+
+  test "project agent rejects malformed or mixed task draft fields", ctx do
     args = %{"action" => "create_task", "title" => "New", "description" => "Description", "verification" => "Check it"}
 
     for invalid <- [
-          Map.delete(args, "description"),
-          Map.delete(args, "verification"),
-          Map.put(args, "description", " "),
-          Map.put(args, "verification", " "),
+          Map.delete(args, "title"),
+          Map.put(args, "title", " "),
+          Map.put(args, "description", nil),
+          Map.put(args, "verification", 1),
           Map.put(args, "body", "Different body"),
           Map.put(args, "priority", 1),
           Map.put(args, "title", String.duplicate("x", 201)),
           Map.put(args, "description", "Depends on: unknown"),
           Map.put(args, "description", "Depends on: none\nDepends on: #2"),
-          Map.put(args, "description", String.duplicate("x", 4_001))
+          Map.put(args, "description", String.duplicate("x", 4_001)),
+          Map.put(args, "verification", String.duplicate("x", 4_001))
         ] do
       assert {:error, :invalid_arguments} = Tools.call("symphony_propose_action", invalid, ctx.context)
     end

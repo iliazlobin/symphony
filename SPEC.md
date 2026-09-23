@@ -2519,7 +2519,7 @@ to Work through a confirmed correction command. Upstream/control-disabled projec
 retains its tracker semantics. Columns remain visible; filters control which tasks are
 shown. Board data refreshes automatically.
 
-The task creation form exposes title, description and verification. Its Create action
+The task creation form requires a title; description and verification are optional and may be empty. Its Create action
 submits through the durable action store without a separate preview. Project-agent
 proposals accept the same fields and retain explicit confirmation before execution.
 Both paths MUST share validation and issue-body construction while preserving recovery

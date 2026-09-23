@@ -152,7 +152,8 @@ Use `--config /absolute/path/to/config.json` for another configured profile.
 The profile binds the repository to the controller address; the current controller
 API does not attest repository identity in its response.
 
-**New task** opens a compact form with **Title**, **Description** and **Test (verification)**.
+**New task** opens a compact form with a required **Title** and optional **Description** and **Test (verification)**.
+Description and verification can be left empty.
 Choose **Create task** to submit those fields directly. It appears in GitHub as an unqueued
 backlog issue; creating it does not start a worker. The form's recent submissions
 retain completed receipts and unfinished actions and refresh automatically. If the result is uncertain, use
@@ -173,7 +174,7 @@ valid authorization is available. See [agent graph and delivery](../../ARCHITECT
 
 | Stage | What you do | What Symphony does |
 | --- | --- | --- |
-| Backlog | Enter a title, description and verification, then choose **Create task**. | Creates an unqueued GitHub issue and keeps the receipt. |
+| Backlog | Enter a title, optionally add description and verification, then choose **Create task**. | Creates an unqueued GitHub issue and keeps the receipt. |
 | Work | Drag from Backlog or choose **Move to Work**, then confirm **Queue task**. | Queues the issue; starts eligible work by priority, dependencies, budgets and concurrency; runs a builder and independent reviewer. |
 | Review | Inspect the candidate, PRs and checks; merge code when needed. Choose **Return to Work** for corrections. | Retains the candidate and review evidence. A confirmed correction starts or continues a PR session and returns the issue to Work. |
 | Done | Drag from Review or choose **Accept · Done**. This directly records acceptance, without another popup. | Checks the current issue and candidate, records acceptance, and retains usage and evidence. It does not close the GitHub issue, merge or deploy. |
