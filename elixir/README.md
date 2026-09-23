@@ -332,7 +332,7 @@ The observability UI now runs on a minimal Phoenix stack:
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
 The chat panel stays open. Select a task card to open its dedicated conversation;
-closing task details keeps that conversation selected. **Main chat** in the issue picker returns to the
+closing task details keeps that conversation selected. **Project name · Project agent** in the issue picker returns to the
 project conversation for reports and task creation, updates or cancellation.
 The headline picker searches issue numbers, titles, categories and recent activity.
 Issues appear in Work, Ready for review, Needs attention, Backlog and Done
@@ -341,10 +341,11 @@ followed by links to the issue and its card and the current status. The PR menu 
 fetched associated PRs by number, title, status, review or CI,
 and indicates when GitHub evidence is incomplete or unavailable.
 Retained PR work sessions open on the issue card, keeping the same issue chat selected.
-Use **New task** to enter a title, outcome, scope, acceptance checks and dependencies.
-**Preview task** saves the exact proposed GitHub issue; **Create task** confirms it.
+Use **New task** to enter **Title**, **Description** and **Test (verification)**.
+**Create task** submits once without a separate preview. The project agent accepts the
+same fields and still presents its exact proposal for human confirmation.
 Created tasks enter the backlog without execution routing labels. Recent submissions
-retain receipts and unfinished actions across reconnects. If the result is uncertain,
+refresh automatically and retain receipts and unfinished actions across reconnects. If the result is uncertain,
 use **Check outcome** to reconcile it before creating another request. This form uses
 the durable action store and works without a model turn or subscription login.
 The board and full-page chat share `ChatPanel`. The dock retains board filters and

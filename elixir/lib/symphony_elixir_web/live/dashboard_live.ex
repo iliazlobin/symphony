@@ -28,6 +28,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:intake_task, nil)
       |> assign(:intake_subscription, nil)
       |> assign(:pending_command, nil)
+      |> assign(:acceptance_commands, %{})
       |> assign(:settings_tab, "execution")
       |> assign(:concurrency_draft, nil)
       |> assign(:chat_health, "Not checked")
@@ -83,6 +84,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   def handle_info(:refresh_board, socket) do
     Process.send_after(self(), :refresh_board, @refresh_ms)
+    refresh_intake_history(socket)
     {:noreply, refresh_board(socket)}
   end
 
@@ -96,6 +98,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     if project == socket.assigns.chat_project_subscription,
       do: send_update(ChatPanel, id: "management-chat", refresh_threads: project)
 
+    refresh_intake_history(socket)
     {:noreply, refresh_chat_activity(socket)}
   end
 
@@ -177,7 +180,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
     selected = socket.assigns.selected
     current = selected && Enum.find(result.tasks, &(&1.id == selected.id))
     socket = if socket.assigns.payload_revision == payload_revision, do: refresh_payload(socket, result), else: socket
-    socket = socket |> assign(:board, result) |> assign(:selected, current) |> assign(:loading, false)
+    review_ids = for task <- result.tasks, task.stage == "review", do: task.id
+
+    socket =
+      socket
+      |> assign(:board, result)
+      |> assign(:selected, current)
+      |> assign(:loading, false)
+      |> update(:acceptance_commands, &Map.take(&1, review_ids))
 
     socket =
       if selected && is_nil(current) && socket.assigns.dialog == :task do
@@ -361,7 +371,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
     result =
       cond do
         pending.action == "set_concurrency" -> BoardActions.settings_command(pending.limit, pending.revision, pending.id, socket.assigns.auth, orchestrator())
-        pending.action == "accept_task" -> BoardActions.accept_command(pending.command, socket.assigns.auth, orchestrator())
         pending.action in ["create_pr_work", "continue_pr_work"] -> BoardActions.pr_work_command(pending.command, socket.assigns.auth, orchestrator())
         true -> BoardActions.command(pending.action, pending.issue_id, pending.revision, pending.id, socket.assigns.auth, orchestrator())
       end
@@ -431,10 +440,46 @@ defmodule SymphonyElixirWeb.DashboardLive do
           id: Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
         }
 
-        pending = if action == "accept_task", do: Map.put(pending, :command, acceptance_command(pending, task)), else: pending
-        {:noreply, socket |> assign(:pending_command, pending) |> assign(:dialog, :confirm)}
+        if action == "accept_task",
+          do: accept_task(socket, task, pending),
+          else: {:noreply, socket |> assign(:pending_command, pending) |> assign(:dialog, :confirm)}
     end
   end
+
+  defp accept_task(socket, task, pending) do
+    command = Map.get_lazy(socket.assigns.acceptance_commands, task.id, fn -> acceptance_command(pending, task) end)
+    socket = update(socket, :acceptance_commands, &Map.put(&1, task.id, command))
+
+    case BoardActions.accept_command(command, socket.assigns.auth, orchestrator()) do
+      {:ok, _receipt} ->
+        socket =
+          socket
+          |> clear_card_context()
+          |> assign(:pending_command, nil)
+          |> assign(:notice, command_receipt("accept_task"))
+          |> refresh_board()
+
+        {:noreply, push_patch(socket, to: board_location(socket))}
+
+      {:error, reason} ->
+        # A lost response may have committed; another deliberate click replays the
+        # exact command. Rejected stale evidence requires a fresh human action.
+        socket =
+          if reason in [:unavailable, :control_unavailable],
+            do: socket,
+            else: update(socket, :acceptance_commands, &Map.delete(&1, task.id))
+
+        {:noreply, socket |> assign(:notice, acceptance_error(reason)) |> refresh_board()}
+    end
+  end
+
+  defp acceptance_error(reason) when reason in [:revision_conflict, :task_changed, :candidate_changed],
+    do: "The task changed. Review its updated details before accepting it again."
+
+  defp acceptance_error(reason) when reason in [:unavailable, :control_unavailable],
+    do: "Acceptance could not be confirmed. Check the task status; accepting again safely checks the same request."
+
+  defp acceptance_error(reason), do: command_error(reason)
 
   defp acceptance_command(pending, task) do
     %{
@@ -693,7 +738,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       <footer class="board-footer"><span class="status-stack"><span class="status-badge-live">Live updates connected</span><span class="status-badge-offline">Disconnected · last-known state</span></span>
         <span>Manual order is a browser preference; scheduling follows repository policy.</span></footer>
 
-      <dialog :if={@dialog} id="board-dialog" class="board-dialog" phx-hook="BoardDialog" data-nonmodal={to_string(@dialog == :task)} data-content-key={if @dialog == :task, do: @selected.id, else: @dialog} aria-labelledby="dialog-title">
+      <dialog :if={@dialog} id="board-dialog" class="board-dialog" phx-hook="BoardDialog" data-kind={@dialog} data-nonmodal={to_string(@dialog == :task)} data-content-key={if @dialog == :task, do: @selected.id, else: @dialog} aria-labelledby="dialog-title">
         <div class="dialog-inner"><div class="dialog-heading"><h2 id="dialog-title">{dialog_title(@dialog, @selected, @pending_command)}</h2>
           <button id="close-dialog" class="button button-quiet" phx-click="close-dialog" aria-label="Close dialog">Close ×</button></div>
           <p :if={@notice} class="board-notice" role="status">{@notice}</p>
@@ -711,7 +756,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <.feedback_details task={@selected} />
               <div :if={!@read_only && @controls_available} class="dialog-actions execution-actions">
                 <button :if={@selected.stage == "backlog" && is_nil(@selected.hold)} id="queue-task-button" class="button button-primary" phx-click="queue-task" phx-value-id={@selected.id}>Move to Work</button>
-                <button :if={@selected.stage == "review"} class="button button-primary" phx-click="prepare-command" phx-value-action="accept_task" phx-value-id={@selected.id}>Accept · Done</button>
+                <button :if={@selected.stage == "review"} class="button button-primary" phx-click="prepare-command" phx-value-action="accept_task" phx-value-id={@selected.id} phx-disable-with="Accepting…">Accept · Done</button>
                 <button :if={@selected.stage == "review"} class="button" phx-click="move-task" phx-value-stage="work" phx-value-id={@selected.id}>Return to Work</button>
                 <button :if={execution_summary(@selected, @board, @payload).cancel?} class="button" phx-click="prepare-command" phx-value-action="cancel" phx-value-id={@selected.id}>Cancel execution</button>
                 <button :if={execution_summary(@selected, @board, @payload).retry?} class="button" phx-click="prepare-command" phx-value-action="retry" phx-value-id={@selected.id}>Retry</button>
@@ -786,6 +831,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
     """
   end
 
+  defp refresh_intake_history(socket) do
+    if socket.assigns.dialog in [:new_task, :queue_task],
+      do: send_update(TaskIntakePanel, id: "task-intake", refresh_history: true)
+  end
+
   defp refresh_board(%{assigns: %{loading: true}} = socket), do: socket
 
   defp refresh_board(socket) do
@@ -806,6 +856,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         |> assign(:chat_activity, %{})
         |> assign(:selected, nil)
         |> assign(:pending_command, nil)
+        |> assign(:acceptance_commands, %{})
         |> sync_chat_selection()
       end
 
@@ -1427,13 +1478,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp command_description("cancel"),
     do: "Hold this issue and request cleanup of any active worker, including a worker claimed since the board was read. Cancellation is not complete until cleanup is confirmed."
 
-  defp command_description("accept_task"), do: "Accept this issue and move it to Done. This records your acceptance; it does not merge code or deploy."
-
   defp command_description(action) when action in ["create_pr_work", "continue_pr_work"],
     do: "Return this issue to Work with the corrections below. Priority, concurrency and remaining token/time budgets still apply. Selected comments get an automatically updated GitHub status reply."
 
   defp command_description("retry"), do: "Clear this issue’s hold without resetting its budget. An eligible task can start again; this does not deliver an answer or automatically repair a candidate."
-  defp command_label("accept_task"), do: "acceptance"
   defp command_label(action) when action in ["create_pr_work", "continue_pr_work"], do: "return to Work"
   defp command_label("set_concurrency"), do: "change"
   defp command_label(action), do: action

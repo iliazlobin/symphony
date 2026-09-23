@@ -152,20 +152,21 @@ Use `--config /absolute/path/to/config.json` for another configured profile.
 The profile binds the repository to the controller address; the current controller
 API does not attest repository identity in its response.
 
-**New task** opens a form in the board. Fill in the title, outcome, scope, acceptance
-checks and dependencies (`none` when there are none), then choose **Preview task**.
-Review the exact issue and choose **Create task**. It appears in GitHub as an unqueued
+**New task** opens a compact form with **Title**, **Description** and **Test (verification)**.
+Choose **Create task** to submit those fields directly. It appears in GitHub as an unqueued
 backlog issue; creating it does not start a worker. The form's recent submissions
-retain completed receipts and unfinished actions. If the result is uncertain, use
+retain completed receipts and unfinished actions and refresh automatically. If the result is uncertain, use
 **Check outcome** rather than creating another request. Model access is not required,
-but the service's durable action store must be configured and healthy.
+but the service's durable action store must be configured and healthy. The description
+can include a `Depends on: #12, #34` declaration; otherwise dependencies default to none.
+The project agent accepts the same three fields and presents its exact creation proposal for confirmation.
 
 | Stage | What you do | What Symphony does |
 | --- | --- | --- |
-| Backlog | Create and confirm the outcome, scope, checks and dependencies. | Creates an unqueued GitHub issue and keeps the receipt. |
+| Backlog | Enter a title, description and verification, then choose **Create task**. | Creates an unqueued GitHub issue and keeps the receipt. |
 | Work | Drag from Backlog or choose **Move to Work**, then confirm **Queue task**. | Queues the issue; starts eligible work by priority, dependencies, budgets and concurrency; runs a builder and independent reviewer. |
 | Review | Inspect the candidate, PRs and checks; merge code when needed. Choose **Return to Work** for corrections. | Retains the candidate and review evidence. A confirmed correction starts or continues a PR session and returns the issue to Work. |
-| Done | Drag from Review or choose **Accept · Done**, then confirm acceptance. | Records acceptance against the current issue and candidate; retains usage and evidence. It does not close the GitHub issue, merge or deploy. |
+| Done | Drag from Review or choose **Accept · Done**. This directly records acceptance, without another popup. | Checks the current issue and candidate, records acceptance, and retains usage and evidence. It does not close the GitHub issue, merge or deploy. |
 
 Work includes queued and running tasks. The agent moves completed work to Review.
 A merged PR or closed issue is not acceptance; existing closed issues without an
@@ -260,7 +261,7 @@ into running workers, automatic repairs and web publication remain separate work
 select a project beside **Projects** in the top header and sign in through the configured
 browser provider. Chat stays open beside the board. Each card has one durable conversation;
 selecting a card switches to it, and closing its details keeps that chat selected.
-**Main chat** in the issue picker opens the project's orchestration conversation for reports, task creation,
+**Project name · Project agent** in the issue picker opens the project's orchestration conversation for reports, task creation,
 updates and cancellation. Write proposals still require confirmation of the exact action.
 The headline picker groups issues by activity category, with Done last, and sorts each
 group newest first. Rows show creation date, priority, PR count and latest update;

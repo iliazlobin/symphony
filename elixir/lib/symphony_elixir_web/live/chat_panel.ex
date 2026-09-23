@@ -3,6 +3,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
   use Phoenix.LiveComponent
 
   alias SymphonyElixir.Chat.Artifacts
+  alias SymphonyElixir.ProjectDirectory
   alias SymphonyElixirWeb.{BrowserAuth, ChatNavigation, Endpoint}
 
   @impl true
@@ -547,7 +548,18 @@ defmodule SymphonyElixirWeb.ChatPanel do
   defp queue_paused?(chat), do: is_map(chat) and chat["queue_paused"] == true
   defp queueing?(chat), do: busy?(chat) or queued(chat) != []
   defp task_identifier(task_id), do: task_id |> String.split(":") |> List.last() |> then(&("#" <> &1))
-  defp embedded_title(nil, _title), do: "Main chat"
+
+  defp project_agent_title(project) do
+    id = project && project["id"]
+    directory = Enum.find(ProjectDirectory.links(), &(&1["id"] == id))
+    name = (directory && directory["label"]) || (project && (project["label"] || id))
+    if is_binary(name) and String.trim(name) != "", do: String.trim(name) <> " · Project agent", else: "Project agent"
+  end
+
+  defp matches_project_agent?(title, query) do
+    String.contains?(String.downcase(title <> " project orchestration main chat"), String.downcase(query))
+  end
+
   defp embedded_title(task_id, title), do: if(is_binary(title) and title != "", do: title, else: "Task " <> task_identifier(task_id))
   defp messages(nil), do: []
   defp messages(chat), do: list(chat["messages"])
@@ -699,6 +711,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
     assigns =
       assign(assigns,
         issue: issue,
+        project_agent_title: project_agent_title(assigns.project),
         issue_groups: ChatNavigation.issues(assigns.issue_tasks, assigns.issue_activity, project, assigns.issue_query),
         issue_prs: matching_prs(prs, works, assigns.pr_query),
         pr_evidence: pr_evidence(issue && issue[:github_status], length(prs)),
@@ -720,15 +733,15 @@ defmodule SymphonyElixirWeb.ChatPanel do
         <a :if={!@embedded} href="/" class="brand">∿ Symphony</a>
         <nav :if={!@embedded} class="workspace-tabs" aria-label="Workspace"><a href={board_path(@project && @project["id"])}>Board</a><a href={chat_path(@project && @project["id"])} aria-current="page">Chat</a></nav>
         <details :if={@embedded && @authorized && is_nil(@unavailable)} id="issue-switcher" class="issue-switcher" phx-hook="IssueSwitcher">
-          <summary aria-label="Choose issue conversation"><span>{if @task_id, do: embedded_title(@task_id, @task_title), else: "Main chat"}</span><span aria-hidden="true">⌄</span></summary>
+          <summary aria-label="Choose issue conversation"><span>{if @task_id, do: embedded_title(@task_id, @task_title), else: @project_agent_title}</span><span aria-hidden="true">⌄</span></summary>
           <div class="issue-switcher-menu">
             <form phx-change="search-issues" phx-target={@myself} role="search">
               <input id="issue-search" name="query" value={@issue_query} placeholder="Search issues, categories or activity…" autocomplete="off"
                 role="combobox" aria-label="Search issue conversations" aria-autocomplete="list" aria-expanded="false" aria-controls="issue-options" phx-debounce="150" />
             </form>
             <div id="issue-options" class="issue-options" role="listbox" aria-label="Issues by category and activity">
-              <button :if={@issue_query == "" || String.contains?("main chat orchestration", String.downcase(@issue_query))} id="issue-option-main" type="button" role="option" aria-selected={to_string(is_nil(@task_id))}
-                phx-click="main-chat" phx-target={@myself} class="issue-option issue-option-main"><span class="issue-option-name">Main chat</span><span>Project orchestration</span></button>
+              <button :if={matches_project_agent?(@project_agent_title, @issue_query)} id="issue-option-main" type="button" role="option" aria-selected={to_string(is_nil(@task_id))}
+                phx-click="main-chat" phx-target={@myself} class="issue-option issue-option-main"><span class="issue-option-name">{@project_agent_title}</span><span>Create tasks, coordinate work, and report progress</span></button>
               <div :for={group <- @issue_groups} role="group" aria-label={group.label} class="issue-option-group" data-issue-category={group.id}>
                 <div class="issue-group-label">{group.label}<span>{length(group.issues)}</span></div>
                 <button :for={item <- group.issues} id={"issue-option-" <> Base.url_encode64(item.id, padding: false)} type="button" role="option" aria-selected={to_string(@task_id == item.id)}
@@ -754,7 +767,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
             </div>
           </div>
         </details>
-        <span :if={@embedded && (!@authorized || !is_nil(@unavailable))}>{if @task_id, do: "Issue chat", else: "Main chat"}</span><span class="header-spacer"></span>
+        <span :if={@embedded && (!@authorized || !is_nil(@unavailable))}>{if @task_id, do: "Issue chat", else: @project_agent_title}</span><span class="header-spacer"></span>
         <button :if={!@embedded && @authorized && is_nil(@unavailable)} id="new-chat-button" class="button button-primary" phx-target={@myself} phx-click="new-chat" disabled={is_nil(@project)}>+ New chat</button>
       </header>
 

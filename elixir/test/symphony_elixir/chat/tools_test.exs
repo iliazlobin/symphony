@@ -379,8 +379,12 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     assert {:error, :control_unavailable} = Tools.call("symphony_propose_action", args, ctx.context)
   end
 
-  test "creating tasks never grants the required dispatch label", ctx do
-    proposal = propose(ctx.context, %{"action" => "create_task", "title" => "New", "body" => "Depends on: none"})
+  test "project agent creates the same simple task draft and never grants the dispatch label", ctx do
+    fields = %{"title" => "New", "description" => "Document the unit-test command.", "verification" => "The README matches the configured test command."}
+    assert {:ok, normalized} = SymphonyElixir.TaskDraft.action_args(fields)
+    proposal = propose(ctx.context, Map.put(fields, "action", "create_task"))
+    assert proposal["args"] == Map.delete(normalized, "action")
+    assert Map.keys(proposal["args"]) |> Enum.sort() == ["body", "title"]
 
     script([
       fn "GET", "/repos/example/repo/issues", params, nil, _ ->
@@ -390,6 +394,8 @@ defmodule SymphonyElixir.Chat.ToolsTest do
       fn "POST", "/repos/example/repo/issues", %{}, body, _ ->
         assert body["labels"] == []
         assert body["title"] == "New"
+        assert body["body"] =~ normalized["body"]
+        assert body["body"] =~ "Depends on: none"
         {:ok, %{status: 201, body: Map.put(body, "number", 3)}}
       end
     ])
@@ -397,6 +403,29 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     assert {:ok, %{"widgets" => [%{"summary" => summary}]}} = Tools.confirm(proposal, ctx.context)
     assert summary =~ "execution was not queued"
     assert_finished()
+  end
+
+  test "project agent rejects incomplete or mixed task draft fields", ctx do
+    args = %{"action" => "create_task", "title" => "New", "description" => "Description", "verification" => "Check it"}
+
+    for invalid <- [
+          Map.delete(args, "description"),
+          Map.delete(args, "verification"),
+          Map.put(args, "description", " "),
+          Map.put(args, "verification", " "),
+          Map.put(args, "body", "Different body"),
+          Map.put(args, "priority", 1),
+          Map.put(args, "title", String.duplicate("x", 201)),
+          Map.put(args, "description", "Depends on: unknown"),
+          Map.put(args, "description", "Depends on: none\nDepends on: #2"),
+          Map.put(args, "description", String.duplicate("x", 4_001))
+        ] do
+      assert {:error, :invalid_arguments} = Tools.call("symphony_propose_action", invalid, ctx.context)
+    end
+
+    proposal = propose(ctx.context, Map.put(args, "description", "Implement after prerequisite.\nDepends on: #2"))
+    assert proposal["args"]["body"] =~ "Depends on: #2"
+    refute proposal["args"]["body"] =~ "Depends on: none"
   end
 
   test "new task idempotency finds an existing marker and never repeats POST", ctx do
