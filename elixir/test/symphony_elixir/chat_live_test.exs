@@ -13,7 +13,15 @@ defmodule SymphonyElixir.ChatLiveTest do
     def start_link(chats), do: GenServer.start_link(__MODULE__, chats, name: __MODULE__)
     def init(chats), do: {:ok, chats}
 
-    def projects(_auth), do: {:ok, [%{"id" => "alpha", "label" => "Alpha project"}, %{"id" => "beta", "label" => "Beta project"}]}
+    def projects(_auth),
+      do:
+        {:ok,
+         [
+           %{"id" => "alpha", "label" => "Alpha project"},
+           %{"id" => "beta", "label" => "Beta project"},
+           %{"id" => "github:example/repo", "label" => "example/repo"},
+           %{"id" => "github:example/fallback"}
+         ]}
 
     def list(project, _auth),
       do:
@@ -208,7 +216,7 @@ defmodule SymphonyElixir.ChatLiveTest do
       if previous_token, do: System.put_env("SYMPHONY_CONTROL_TOKEN", previous_token), else: System.delete_env("SYMPHONY_CONTROL_TOKEN")
     end)
 
-    %{marker: marker, token: token}
+    %{marker: marker, token: token, config: config}
   end
 
   test "anonymous browsers cannot load messages or project history" do
@@ -805,7 +813,7 @@ defmodule SymphonyElixir.ChatLiveTest do
   test "embedded chat stays open and selects one retained conversation per task and main", ctx do
     view = embedded_view(ctx, view_context())
     assert has_element?(view, "#chat-app[data-chat-id=a1][data-embedded=true]")
-    assert has_element?(view, ".chat-header", "Main chat")
+    assert has_element?(view, ".chat-header", "Alpha project · Project agent")
     refute has_element?(view, "#new-chat-button")
     refute has_element?(view, "button[phx-click=close-panel]")
     refute has_element?(view, "#back-to-chats")
@@ -840,6 +848,27 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert has_element?(view, "#chat-app[data-chat-id=a1]")
     assert has_element?(view, "#chat-message-input", "Main draft")
     assert has_element?(view, "#session-chat-content:not([hidden])")
+  end
+
+  test "project agent uses the configured project name and remains searchable with scoped fallbacks", ctx do
+    config = Map.put(ctx.config, :server, %{project_links: [%{id: "github:example/repo", label: "Friendly project", url: "http://localhost:8778"}]})
+    File.write!(Workflow.workflow_file_path(), "---\n" <> Jason.encode!(config) <> "\n---\nFixture")
+    :ok = WorkflowStore.force_reload()
+    view = embedded_view(ctx, view_context())
+    send(view.pid, {:project, "github:example/repo"})
+    assert has_element?(view, "#issue-switcher summary", "Friendly project · Project agent")
+    assert has_element?(view, "#issue-option-main", "Friendly project · Project agent")
+    render_change(view, "search-issues", %{"query" => "friendly"})
+    assert has_element?(view, "#issue-option-main")
+    render_change(view, "search-issues", %{"query" => "Project agent"})
+    assert has_element?(view, "#issue-option-main")
+    render_change(view, "search-issues", %{"query" => "unrelated"})
+    refute has_element?(view, "#issue-option-main")
+    send(view.pid, {:project, "github:example/fallback"})
+    assert has_element?(view, "#issue-switcher summary", "github:example/fallback · Project agent")
+    send(view.pid, {:read_only, true})
+    assert has_element?(view, ".chat-header", "Project agent")
+    refute has_element?(view, "#issue-switcher")
   end
 
   test "queued messages stay separate from history and can be reordered removed and resumed", ctx do

@@ -2383,6 +2383,9 @@ read-only configured `budgets` and the retained `base_sha`; it contains no crede
 plus the existing command ID and revision. The native owner revalidates tracker scope
 and those observations before atomically retaining acceptance. Accepted issues MUST
 not admit further work; this command does not close an issue, merge or deploy.
+The explicit Accept action or a Review-to-Done drop MAY submit this command directly
+without a second confirmation dialog. An uncertain response MUST retain its command
+identity for a deliberate retry; stale evidence MUST NOT be refreshed and retried automatically.
 
 PR work commands MUST share the native revision, authorization and idempotency boundary.
 The owner MUST derive branch and workspace names, verify fresh issue eligibility and
@@ -2515,6 +2518,13 @@ Review to Done, even when GitHub reports merged PRs or a closed issue. Review ma
 to Work through a confirmed correction command. Upstream/control-disabled projection
 retains its tracker semantics. Columns remain visible; filters control which tasks are
 shown. Board data refreshes automatically.
+
+The task creation form exposes title, description and verification. Its Create action
+submits through the durable action store without a separate preview. Project-agent
+proposals accept the same fields and retain explicit confirmation before execution.
+Both paths MUST share validation and issue-body construction while preserving recovery
+of existing body-based actions. Recent submission history refreshes automatically
+without clearing an unsent draft or replaying a write.
 
 Optional GitHub enrichment reads explicit issue/PR relationships and reports draft
 state, GitHub review decisions and checks tied to the current PR head. Enrichment

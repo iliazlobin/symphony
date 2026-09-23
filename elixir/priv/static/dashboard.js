@@ -397,12 +397,23 @@
       this.showDialog();
       this.el.querySelector(this.closeSelector)?.focus();
     },
-    beforeUpdate() { this.scrollPosition = this.el.scrollTop; },
+    beforeUpdate() {
+      this.scrollPosition = this.el.scrollTop;
+      this.focusedControl = document.activeElement;
+      const control = this.focusedControl;
+      this.textSelection = typeof control?.selectionStart === "number"
+        ? [control.selectionStart, control.selectionEnd, control.selectionDirection] : null;
+    },
     updated() {
       const changed = this.contentKey !== this.el.dataset.contentKey;
       this.contentKey = this.el.dataset.contentKey;
       this.showDialog();
       this.el.scrollTop = changed ? 0 : (this.scrollPosition ?? this.el.scrollTop);
+      const control = this.focusedControl;
+      if (!changed && control?.isConnected && !control.disabled && control !== document.body && control !== document.documentElement && control.getClientRects().length && (this.nonmodal || this.el.contains(control))) {
+        control.focus({preventScroll: true});
+        if (this.textSelection) control.setSelectionRange(...this.textSelection);
+      }
       if (!this.nonmodal && !this.el.contains(document.activeElement)) this.el.querySelector(this.closeSelector)?.focus({preventScroll: true});
     },
     destroyed() {

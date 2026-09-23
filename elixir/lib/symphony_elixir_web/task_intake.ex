@@ -12,7 +12,7 @@ defmodule SymphonyElixirWeb.TaskIntake do
     chat_not_found: "This saved task action is unavailable in the current project.",
     project_not_found: "Select an available project before preparing a task action.",
     project_changed: "The project configuration changed. Reload the board before preparing another action.",
-    invalid_submission: "Check the task fields before previewing the task.",
+    invalid_submission: "Check the task fields before creating the task.",
     submission_id_conflict: "This submission already contains a different action. Open a new form to prepare a new action.",
     invalid_decision: "This action cannot be confirmed in its current state. Refresh it and check any uncertain outcome.",
     chat_busy: "This action is still in progress. Wait for its result before continuing.",

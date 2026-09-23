@@ -1,11 +1,11 @@
 defmodule SymphonyElixirWeb.TaskIntakePanel do
-  @moduledoc "Deterministic task forms and durable, explicitly confirmed tracker actions."
+  @moduledoc "Simple task creation and durable tracker action recovery."
   use Phoenix.LiveComponent
 
-  alias SymphonyElixir.GitHub.Admission
+  alias SymphonyElixir.TaskDraft
   alias SymphonyElixirWeb.{BrowserAuth, Endpoint, Markdown, TaskIntake}
 
-  @fields ~w(title outcome scope acceptance dependencies)
+  @fields ~w(title description verification)
 
   @impl true
   def mount(socket) do
@@ -26,6 +26,15 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
   end
 
   @impl true
+  def update(%{refresh_history: true}, socket) do
+    if socket.assigns.read_only or not BrowserAuth.authorized?(socket.assigns.auth) do
+      {:ok, clear_private_state(socket)}
+    else
+      socket = if socket.assigns.record, do: load_record(socket, socket.assigns.record["id"]), else: socket
+      {:ok, refresh_history(socket)}
+    end
+  end
+
   def update(%{refresh_action: id}, socket) do
     if socket.assigns.read_only or not BrowserAuth.authorized?(socket.assigns.auth) do
       {:ok, clear_private_state(socket)}
@@ -60,14 +69,13 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
     {:noreply, socket |> assign(:draft, fields(params)) |> validate_draft()}
   end
 
-  def handle_event("prepare", %{"task" => params}, socket) when is_map(params) do
+  def handle_event("create", %{"task" => params}, socket) when is_map(params) do
     socket = assign(socket, :draft, fields(params))
 
     if is_nil(socket.assigns.record) do
-      with :ok <- field_lengths(socket.assigns.draft),
-           {:ok, args} <- action_args(socket),
+      with {:ok, args} <- TaskDraft.action_args(socket.assigns.draft),
            {:ok, record} <- prepare_action(socket, args) do
-        {:noreply, socket |> put_record(record) |> refresh_history()}
+        {:noreply, socket |> put_record(record) |> confirm_creation() |> refresh_history()}
       else
         {:error, reason} -> {:noreply, show_error(socket, reason)}
       end
@@ -92,11 +100,6 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
 
   def handle_event("open-action", %{"id" => id}, socket), do: {:noreply, load_record(socket, id)}
 
-  def handle_event("refresh-actions", _params, socket) do
-    socket = if socket.assigns.record, do: load_record(socket, socket.assigns.record["id"]), else: socket
-    {:noreply, refresh_history(socket)}
-  end
-
   def handle_event("new-draft", _params, socket) do
     status = proposal(socket.assigns.record)["status"]
 
@@ -118,51 +121,29 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
 
   def handle_event(_event, _params, socket), do: {:noreply, socket}
 
-  defp action_args(%{assigns: %{draft: draft}}) do
-    with :ok <- required(draft, ~w(title outcome scope acceptance dependencies)),
-         {:ok, _} <- Admission.validate_declaration("Depends on: " <> draft["dependencies"]),
-         false <- Enum.any?(~w(outcome scope acceptance), &String.match?(draft[&1], ~r/^\s*depends on\b/im)) do
-      body = "## Outcome\n\n#{draft["outcome"]}\n\n## Scope\n\n#{draft["scope"]}\n\n## Acceptance checks\n\n#{draft["acceptance"]}\n\nDepends on: #{draft["dependencies"]}"
-      {:ok, %{"action" => "create_task", "title" => draft["title"], "body" => body}}
+  defp confirm_creation(socket) do
+    if proposal(socket.assigns.record)["status"] == "pending" do
+      case call(socket, :decide, [socket.assigns.project_id, socket.assigns.record["id"], "confirm"]) do
+        {:ok, record} -> put_record(socket, record)
+        {:error, reason} -> show_error(socket, reason)
+      end
     else
-      true -> {:error, :duplicate_dependencies}
-      {:error, reason} when is_binary(reason) -> {:error, {:invalid_dependency_declaration, reason}}
-      error -> error
+      socket
     end
-  end
-
-  defp required(draft, fields) do
-    if Enum.all?(fields, &(is_binary(draft[&1]) and String.trim(draft[&1]) != "")), do: :ok, else: {:error, :required_fields}
   end
 
   defp fields(params), do: Map.new(@fields, fn key -> {key, if(is_binary(params[key]), do: params[key], else: "")} end)
 
-  defp field_lengths(draft) do
-    Enum.reduce_while(@fields, :ok, fn field, :ok ->
-      value = draft[field] || ""
-
-      if byte_size(value) <= field_limit(field) do
-        {:cont, :ok}
-      else
-        {:halt, {:error, {:field_too_long, field, field_limit(field)}}}
-      end
-    end)
-  end
-
-  defp field_limit("title"), do: 200
-  defp field_limit("dependencies"), do: 400
-  defp field_limit(_), do: 4_000
-
   defp validate_draft(socket) do
-    case field_lengths(socket.assigns.draft) do
+    case TaskDraft.validate_lengths(socket.assigns.draft) do
       :ok -> assign(socket, :notice, nil)
       {:error, reason} -> show_error(socket, reason)
     end
   end
 
-  defp initial_draft, do: %{"title" => "", "outcome" => "", "scope" => "", "acceptance" => "", "dependencies" => "none"}
+  defp initial_draft, do: Map.new(@fields, &{&1, ""})
 
-  defp open_intake(%{assigns: %{task: nil}} = socket), do: refresh_history(socket)
+  defp open_intake(%{assigns: %{task: nil}} = socket), do: refresh_history(socket, true)
 
   defp open_intake(socket) do
     args = %{"action" => "queue_task", "task_id" => socket.assigns.task.issue_id}
@@ -191,12 +172,12 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
     :exit, _ -> {:error, :unavailable}
   end
 
-  defp refresh_history(socket) do
+  defp refresh_history(socket, recover_pending \\ false) do
     case call(socket, :list, [socket.assigns.project_id]) do
       {:ok, records} ->
         socket = assign(socket, :records, records)
         pending = Enum.find(records, &(proposal(&1)["status"] in ~w(pending executing unknown)))
-        if is_nil(socket.assigns.record) and pending, do: put_record(socket, pending), else: socket
+        if recover_pending and is_nil(socket.assigns.record) and pending, do: put_record(socket, pending), else: socket
 
       {:error, reason} ->
         show_error(socket, reason)
@@ -211,7 +192,11 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
   end
 
   defp put_record(socket, record) do
-    if proposal(record)["status"] == "completed", do: send(self(), {:task_intake, :changed})
+    previous = socket.assigns.record
+
+    if proposal(record)["status"] == "completed" and (is_nil(previous) or previous["id"] != record["id"] or proposal(previous)["status"] != "completed"),
+      do: send(self(), {:task_intake, :changed})
+
     socket |> subscribe(record["id"]) |> assign(record: record, notice: nil)
   end
 
@@ -235,8 +220,7 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
     "#{label} exceeds the #{limit}-byte limit. Shorten it explicitly or edit the issue in GitHub; the text has not been truncated."
   end
 
-  defp error_message(:required_fields), do: "Complete the required fields before previewing the task."
-  defp error_message(:duplicate_dependencies), do: "Use the Dependencies field for dependency declarations. Remove any Depends on lines from the other sections."
+  defp error_message(:required_fields), do: "Add a title, description and verification before creating the task."
   defp error_message(:project_required), do: "Select one project on the board before creating or changing tasks."
   defp error_message(reason), do: TaskIntake.error_message(reason)
   defp proposal(%{"proposals" => [proposal | _]}), do: proposal
@@ -284,26 +268,22 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
       <p class="muted">{String.replace_prefix(@project_id || "Select one project", "github:", "")}</p>
       <p :if={@notice} class="board-warning" role="alert">{@notice}</p>
       <div :if={@authorized && @project_id && is_nil(@record) && is_nil(@task)}>
-        <p>Create a GitHub issue in Backlog. Saving does not start a worker.</p>
-        <form id="task-intake-form" phx-target={@myself} phx-change="draft" phx-submit="prepare" class="intake-form">
-          <label><span>Title</span><input name="task[title]" value={@draft["title"]} maxlength="200" required /></label>
+        <form id="task-intake-form" phx-target={@myself} phx-change="draft" phx-submit="create" class="intake-form intake-create-form">
+          <label class="intake-title"><span>Title</span><input name="task[title]" value={@draft["title"]} maxlength="200" required placeholder="What needs to be done?" /></label>
           <div class="intake-fields">
-            <label><span>Outcome</span><textarea name="task[outcome]" rows="2" maxlength="4000" required placeholder="What should be true when this is done?">{@draft["outcome"]}</textarea></label>
-            <label><span>Scope</span><textarea name="task[scope]" rows="3" maxlength="4000" required placeholder="What to change and what to leave alone">{@draft["scope"]}</textarea></label>
-            <label><span>Acceptance checks</span><textarea name="task[acceptance]" rows="3" maxlength="4000" required placeholder="Observable checks that prove completion">{@draft["acceptance"]}</textarea></label>
-            <label><span>Dependencies</span><input name="task[dependencies]" value={@draft["dependencies"]} maxlength="400" required placeholder="none or #12, #34" /><small>Use none, or issue numbers from this repository: #12, #34.</small></label>
+            <label class="intake-description"><span>Description</span><textarea name="task[description]" rows="4" maxlength="4000" required placeholder="Describe the change and any useful context">{@draft["description"]}</textarea></label>
+            <label class="intake-verification"><span>Test (verification)</span><textarea name="task[verification]" rows="3" maxlength="4000" required placeholder="How will we know it works?">{@draft["verification"]}</textarea></label>
           </div>
-          <div class="dialog-actions"><button type="submit" class="button button-primary" phx-disable-with="Preparing…">Preview task</button></div>
+          <div class="dialog-actions"><button type="submit" class="button button-primary" phx-disable-with="Creating…">Create task</button></div>
         </form>
       </div>
-      <section :if={@record} id="task-action-preview" class="dialog-section" aria-label="Action preview">
-        <div class="widget-heading"><h3>{if @proposal["action"] == "queue_task", do: "Queue task", else: "Create backlog task"}</h3><span class="evidence-badge">{@proposal["status"]}</span></div>
+      <section :if={@record} id="task-action-preview" class="dialog-section intake-result" aria-label="Task submission">
+        <div class="widget-heading"><h3>{if @proposal["action"] == "queue_task", do: "Queue task", else: "Task submission"}</h3><span class="evidence-badge">{@proposal["status"]}</span></div>
         <h4 :if={@args["title"]}>{@args["title"]}</h4>
         <p :if={@proposal["action"] == "queue_task"}>Task: {@args["task_id"]}</p>
         <h4 :if={@proposal["task_title"]}>{@proposal["task_title"]}</h4>
         <div :if={@proposal["task_description"]} class="markdown-content intake-preview-body">{Markdown.render(@proposal["task_description"])}</div>
-        <div :if={@args["body"]} class="markdown-content intake-preview-body">{Markdown.render(@args["body"])}</div>
-        <p :if={@proposal["action"] == "create_task" && @proposal["status"] == "pending"} class="muted">Will create a backlog issue without queue labels. This will not start a worker.</p>
+        <div :if={@args["body"] && @proposal["status"] == "pending"} class="markdown-content intake-preview-body">{Markdown.render(@args["body"])}</div>
         <div :if={@proposal["action"] == "queue_task" && @proposal["status"] == "pending"} class="queue-preview">
           <p>Add queue labels: <strong>{Enum.join(@proposal["queue_labels"] || [], ", ")}</strong>.</p>
           <p>This makes the task eligible for work. When the controller is running, Symphony can start it after checking dependencies, budget and capacity. A paused controller stays paused.</p>
@@ -320,7 +300,7 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
       </section>
       <button :if={@task && @authorized && @proposal["status"] in [nil, "cancelled", "failed"]} class="button" phx-target={@myself} phx-click="preview-queue">Preview queue action</button>
       <section class="dialog-section intake-history" aria-label="Recent submissions">
-        <div class="widget-heading"><h3>Recent submissions</h3><button class="button button-small" phx-target={@myself} phx-click="refresh-actions">Refresh</button></div>
+        <div class="widget-heading"><h3>Recent submissions</h3></div>
         <p :if={@records == []} class="muted">No recorded actions for this project.</p>
         <button :for={record <- @records} type="button" class="intake-history-item" phx-target={@myself} phx-click="open-action" phx-value-id={record["id"]}>
           <span>{history_label(record)}</span><span class="muted">{proposal(record)["status"]}</span>
