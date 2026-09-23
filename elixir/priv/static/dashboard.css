@@ -653,14 +653,7 @@ summary { cursor: pointer; color: var(--accent); }
 .issue-option-main > span, .issue-options-empty { color: var(--muted); font-size: 11px; }
 .issue-options-empty { margin: 8px; line-height: 1.5; }
 .issue-chat-identity { width: 100%; min-width: 0; font-size: 12px; }
-.issue-github-link { font-weight: 400; white-space: nowrap; text-decoration: none; }
-.issue-github-link:hover { text-decoration: underline; }
-.issue-chat-state, .issue-chat-activity { color: var(--muted); font-size: 11px; white-space: nowrap; }
-.issue-chat-state { display: inline-flex; align-items: center; gap: 5px; }
-.issue-chat-state::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--muted); }
-.issue-chat-state[data-stage=running]::before { background: var(--warn); }
-.issue-chat-state[data-stage=review]::before { background: #d86e83; }
-.issue-chat-state[data-stage=done]::before { background: var(--accent); }
+.issue-chat-activity { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .issue-pr-menu { position: relative; width: 100%; min-width: 0; }
 .issue-pr-menu > summary { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 42px; box-sizing: border-box; color: var(--fg); background: var(--panel); cursor: pointer; list-style: none; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 12px; }
 .issue-pr-menu > summary:hover, .issue-pr-menu[open] > summary { background: var(--soft); }
@@ -677,9 +670,6 @@ summary { cursor: pointer; color: var(--accent); }
 .issue-pr-option > div:first-child { display: flex; align-items: start; justify-content: space-between; gap: 8px; font-size: 12px; }
 .issue-pr-option > div:first-child > a, .issue-pr-option > div:first-child > span:first-child { min-width: 0; overflow-wrap: anywhere; }
 .issue-pr-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; color: var(--muted); font-size: 10px; }
-.issue-picker-links { display: flex; align-items: center; flex-wrap: wrap; flex-shrink: 0; gap: 6px 10px; border-top: 1px solid var(--line); padding: 8px 6px 0; margin-top: 6px; font-size: 11px; }
-.issue-picker-links .button { padding: 4px 6px; font-size: inherit; }
-.issue-picker-links .issue-chat-state { margin-left: auto; }
 .issue-pr-work-link { padding: 0; border: 0; background: transparent; color: var(--accent); font: inherit; cursor: pointer; }
 .issue-pr-work-link:hover { text-decoration: underline; }
 .issue-work-sessions { margin-bottom: 24px; }

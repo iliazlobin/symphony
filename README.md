@@ -35,7 +35,8 @@ GitHub remains the task and publication record. See the
 [operator guide](profiles/events-concierge/README.md#operate) for setup and limits.
 
 Each issue has one coordinator chat, with a searchable activity-grouped issue picker
-showing creation time, priority, PR count and links to the issue/card. Its PR selector
+showing creation time, priority, PR count and latest activity. Card titles open details;
+click outside or press Escape to dismiss them. Its PR selector
 lists only explicitly linked or Symphony-published PRs for that issue; incidental
 mentions are excluded and incomplete GitHub evidence is identified.
 Confirmed PR work sessions retain their own
