@@ -787,7 +787,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#issue-pr-menu #issue-card-link")
     refute has_element?(view, "#issue-pr-menu .issue-work-options")
     assert has_element?(view, "#issue-pr-menu summary", "4")
-    for n <- 1..4, do: assert(has_element?(view, "#issue-pr-menu a[href='https://github.com/example/fixture/pull/#{n}']", "GitHub"))
+    for n <- 1..4, do: assert(has_element?(view, "#issue-pr-menu a[href='https://github.com/example/fixture/pull/#{n}']", "PR ##{n}"))
     assert has_element?(view, "#issue-pr-menu [data-pr-number='4']", "Merged")
     assert has_element?(view, ".issue-chat-identity > details:first-child#issue-pr-menu")
     refute has_element?(view, "#main-chat-button")
@@ -807,24 +807,24 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#issue-pr-menu [data-pr-number='2']")
     refute has_element?(view, "#issue-pr-menu [data-pr-number='4']")
     render_change(chat, "search-prs", %{"query" => "not-a-real-pr"})
-    assert has_element?(view, "#issue-pr-menu", "No matching pull requests.")
+    assert has_element?(view, "#issue-pr-menu", "No matching feature agents.")
     render_change(chat, "search-prs", %{"query" => "PR #1"})
     assert has_element?(view, "#issue-pr-menu [data-pr-number='1'] [phx-value-id='work:#{work_id}']")
     refute has_element?(view, "#issue-pr-menu [data-pr-number='2']")
     id = :sys.get_state(view.pid).socket.assigns.chat_id
     view |> element("#issue-pr-menu [phx-value-id='work:#{work_id}']") |> render_click()
     refute has_element?(view, "#board-dialog")
-    assert has_element?(view, "#issue-pr-menu summary", "PR #1 · Change 1")
+    assert has_element?(view, "#issue-pr-menu summary", "Change 1 feature agent")
     refute :sys.get_state(view.pid).socket.assigns.chat_id == id
     assert :sys.get_state(view.pid).socket.assigns.chat_session_id == "work:" <> work_id
     pr_chat = :sys.get_state(view.pid).socket.assigns.chat_id
     view |> element("#pr-session-main") |> render_click()
-    assert has_element?(view, "#issue-pr-menu summary", "Main thread")
+    assert has_element?(view, "#issue-pr-menu summary", "Ready fixture task agent")
     assert :sys.get_state(view.pid).socket.assigns.chat_id == id
     refute :sys.get_state(view.pid).socket.assigns.chat_id == pr_chat
     open_task(view, "2")
     assert has_element?(view, "#board-dialog .issue-work-session[data-work-id='#{work_id}']", "Session retained")
-    assert has_element?(view, "#board-dialog a", "Issue chat")
+    assert has_element?(view, "#board-dialog a", "Ready fixture task agent")
     view |> element("#board-dialog .issue-work-session[data-work-id='#{work_id}'] a[data-phx-link]") |> render_click()
     refute has_element?(view, "#board-dialog")
     assert :sys.get_state(view.pid).socket.assigns.chat_id == pr_chat
@@ -847,10 +847,10 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, card <> " .card-pr-summary .card-pr-overflow", "… +2")
     view |> element(card <> " .card-pr-summary .card-pr-overflow") |> render_click()
     assert has_element?(view, "#board-dialog [data-pr-number='5']")
-    view |> element("#board-dialog [data-pr-number='5'] a[aria-label='Open PR #5 chat']") |> render_click()
+    view |> element("#board-dialog [data-pr-number='5'] a[aria-label='Open PR #5 feature agent']") |> render_click()
     assert_push_event(view, "focus-chat-session", %{})
     refute has_element?(view, "#board-dialog")
-    assert has_element?(view, "#issue-pr-menu summary", "PR #5 · Change 5")
+    assert has_element?(view, "#issue-pr-menu summary", "Change 5 feature agent")
     assert :sys.get_state(view.pid).socket.assigns.chat_session_id == "pr:5"
     selected = :sys.get_state(view.pid).socket.assigns.chat_id
     path = "/?" <> URI.encode_query(%{"chat_task" => "github:example/fixture:2", "chat_session" => "pr:5"})
@@ -858,7 +858,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert :sys.get_state(view.pid).socket.assigns.chat_id == selected
     assert has_element?(view, "#pr-session-main")
     view |> element("#pr-session-main") |> render_click()
-    assert has_element?(view, "#issue-pr-menu summary", "Main thread")
+    assert has_element?(view, "#issue-pr-menu summary", "Ready fixture task agent")
     assert is_nil(:sys.get_state(view.pid).socket.assigns.chat_session_id)
     refute :sys.get_state(view.pid).socket.assigns.chat_id == selected
   end
@@ -873,7 +873,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#board-dialog")
     refute_push_event(view, "focus-chat-session", %{})
     open_task(view, "2")
-    view |> element("#board-dialog .task-reference-links a", "Issue chat") |> render_click()
+    view |> element("#board-dialog .task-reference-links a", "Ready fixture task agent") |> render_click()
     assert_push_event(view, "focus-chat-session", %{})
     refute has_element?(view, "#board-dialog")
   end
@@ -931,7 +931,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     view = authorized_board_view()
     render_click(view, "select-task", %{"id" => "github:example/fixture:2"})
     render(view)
-    assert has_element?(view, "#issue-pr-menu summary", "Main thread 0")
+    assert has_element?(view, "#issue-pr-menu summary", "Ready fixture task agent 0")
     assert has_element?(view, "#issue-options [data-issue-id='github:example/fixture:2'] .issue-option-pr-count", "0 PRs")
     assert has_element?(view, "#issue-pr-menu", "No linked pull requests yet.")
 
@@ -946,7 +946,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
       assert has_element?(view, "#issue-pr-menu summary", label)
       assert has_element?(view, "#issue-options [data-issue-id='github:example/fixture:2'] .issue-option-pr-count", "PRs —")
       assert has_element?(view, "#issue-pr-menu [role=status]", message)
-      refute has_element?(view, "#issue-pr-menu summary", "Main thread 0")
+      refute has_element?(view, "#issue-pr-menu summary", "Ready fixture task agent 0")
       refute has_element?(view, "#issue-pr-menu", "No linked pull requests yet.")
     end
 
@@ -957,7 +957,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#issue-pr-menu [role=status]", "PR details are incomplete.")
     for n <- 1..2, do: assert(has_element?(view, "#issue-pr-menu [data-pr-number='#{n}']", "Known PR #{n}"))
     refresh(view, ctx.runtime, update_task(partial, "2", &%{&1 | github_status: "available"}))
-    assert has_element?(view, "#issue-pr-menu summary", "Main thread 2")
+    assert has_element?(view, "#issue-pr-menu summary", "Ready fixture task agent 2")
     refute has_element?(view, "#issue-pr-menu [role=status]")
   end
 

@@ -1156,7 +1156,7 @@ defmodule SymphonyElixir.Chat.Store do
 
   defp instructions(chat) do
     """
-    You are Symphony's project agent for exactly one project: #{chat["project_id"]}.
+    You are Symphony's agent for exactly one project: #{chat["project_id"]}.
     #{conversation_instructions(chat)}
     Discuss plans, explain current work, and use the provided management tools for project data and workflow actions.
     Coding is performed by Symphony workers. You have no shell, file-editing, browser, or cross-project access.
@@ -1180,27 +1180,27 @@ defmodule SymphonyElixir.Chat.Store do
 
   defp conversation_instructions(%{"conversation_role" => "pr", "task_id" => task_id, "session_id" => session}) do
     """
-    This conversation belongs only to task #{task_id}, PR session #{session}. Use symphony_pr_session to read fresh identity, worker status and results.
+    You are the feature agent for task #{task_id}, PR session #{session}. You own this feature's lifecycle within the task. Use symphony_pr_session to read fresh identity, worker status and results.
     Discuss and coordinate this PR's design, implementation, testing, validation and check fixes. Send requested instructions to its retained coding agent
     with continue_pr_work for its exact work_id through the normal confirmed action flow. An attributed PR without a native work_id is discussion context only;
-    never adopt another worker or invent a session. Use the issue main thread to create new PR work or coordinate other sessions.
+    never adopt another worker or invent a session. Use the task agent to create new PR work or coordinate other feature agents.
     You may propose continue_pr_work, cancel or retry only for this exact session; cancellation and retry require it to be the currently selected native work.
-    Worker and GitHub milestones report back to the issue main thread automatically. Never treat reports as permission to execute work.
+    Worker and GitHub milestones report back to the task agent automatically. Never treat reports as permission to execute work.
     """
   end
 
   defp conversation_instructions(%{"conversation_role" => "task", "task_id" => task_id}) do
     """
-    This conversation is permanently associated with task #{task_id}. You are its one coordinator; use symphony_task_details to refresh observed facts.
-    Use native create_pr_work for a separate PR session, and continue_pr_work with its exact work_id to resume design, implementation, tests or fixes in that session.
+    You are the task agent, permanently associated with task #{task_id}. You are responsible for the entire task: planning, coordinating feature agents, tracking progress and reporting the outcome.
+    Use symphony_task_details to refresh observed facts. Use native create_pr_work for a separate feature agent backed by a PR session, and continue_pr_work with its exact work_id to resume design, implementation, tests or fixes in that session.
     Each candidate receives a fresh independent reviewer. Only explicit confirmation of the exact proposal queues new or continued native work; ordinary messages do not steer a worker.
     Confirmed PR work clears only the previous owner_review hold. Other holds, remaining budget, routing labels, controller mode and launch gates still govern admission.
-    Keep each PR session's observed phase, candidate and publication distinct. Never claim a worker ran, tests passed or a PR was published without current evidence.
+    Keep each feature agent's observed phase, candidate and publication distinct. Never claim a worker ran, tests passed or a PR was published without current evidence.
     You may prepare or confirm PR work only for this issue; use the project agent for other tasks and project orchestration.
     """
   end
 
-  defp conversation_instructions(_), do: "This is the project agent conversation for higher-level orchestration: planning, task creation, cancellation, updates and reports."
+  defp conversation_instructions(_), do: "You are Symphony's project agent for higher-level orchestration: planning, task creation, cancellation, updates and reports."
 
   defp project_key(project), do: :crypto.hash(:sha256, project) |> Base.encode16(case: :lower)
   defp message(role, text, status \\ "completed"), do: %{"id" => id(), "role" => role, "text" => text, "status" => status, "widgets" => [], "created_at" => now()}

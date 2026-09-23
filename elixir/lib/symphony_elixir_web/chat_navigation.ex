@@ -81,6 +81,7 @@ defmodule SymphonyElixirWeb.ChatNavigation do
         %{
           id: id,
           title: if(is_integer(publication["pr_number"]), do: "PR ##{publication["pr_number"]}", else: "PR session #{String.slice(id, 0, 8)}"),
+          name: work_name(work, id, task),
           pr_number: publication["pr_number"],
           pr_url: safe_url(publication["pr_url"]),
           phase: work_phase(work["phase"]),
@@ -97,6 +98,17 @@ defmodule SymphonyElixirWeb.ChatNavigation do
       |> Enum.take(20)
     else
       []
+    end
+  end
+
+  defp work_name(work, id, task) do
+    publication = work["publication"] || %{}
+    pr = Enum.find(pull_requests(task), &(&1.number == publication["pr_number"] and &1.url == publication["pr_url"]))
+    name = if pr && String.trim(pr.title) != "", do: pr.title, else: work["instruction"]
+
+    case name |> text() |> String.trim() |> String.split(~r/\R/u, parts: 2) |> hd() do
+      "" -> "Feature #{String.slice(id, 0, 8)}"
+      name -> name
     end
   end
 

@@ -16,19 +16,19 @@ defmodule SymphonyElixir.Chat.Tools do
   @proposal_keys ~w(id action args project_id tracker_fingerprint expected_revision expected_updated_at created_at queue_labels queue_unheld task_title task_description pr_work)
   @documents ~w(ARCHITECTURE.md WORKFLOW.md PROJECT.md README.md AGENTS.md)
   @errors %{
-    pr_session_unavailable: "This PR session is no longer available for this issue. Refresh the issue and select a session.",
-    pr_session_scope_mismatch: "Use the issue main thread to coordinate another PR. This chat can control only its own PR session.",
-    pr_session_read_only: "This PR has no retained coding agent. Use the issue main thread to create new PR work.",
+    pr_session_unavailable: "This feature agent is no longer available for this task. Refresh the task and select an agent.",
+    pr_session_scope_mismatch: "Use the task agent to coordinate another feature. This feature agent can control only its own PR session.",
+    pr_session_read_only: "This PR has no retained coding agent. Use the task agent to create new feature work.",
     task_scope_mismatch: "Use this task's conversation or the project agent to prepare work for that issue.",
-    pr_work_exists: "This PR work session already exists. Refresh the task before continuing.",
-    pr_work_pending: "A PR work session is already queued or running for this issue. Wait for it to stop before launching more work.",
-    pr_work_not_found: "This PR work session is unavailable. Refresh the task and select an existing session.",
-    pr_work_limit: "This issue has reached its PR work session limit.",
-    pr_work_continuation_required: "Continue an existing PR work session explicitly before resuming execution.",
+    pr_work_exists: "This feature agent already exists. Refresh the task before continuing.",
+    pr_work_pending: "A feature agent is already queued or running for this task. Wait for it to stop before launching more work.",
+    pr_work_not_found: "This feature agent is unavailable. Refresh the task and select an existing agent.",
+    pr_work_limit: "This task has reached its feature agent limit.",
+    pr_work_continuation_required: "Continue an existing feature agent explicitly before resuming execution.",
     approved_baseline_changed: "The approved base revision changed or is unavailable. Refresh configuration before preparing work.",
     pr_head_changed: "This PR's candidate or remote head changed. Refresh the task and prepare a new continuation.",
     pr_identity_changed: "The PR no longer matches this work session's repository, branch or base. Resolve its identity before continuing.",
-    pr_already_merged: "This PR is already merged. Create a separate PR work session for further changes.",
+    pr_already_merged: "This PR is already merged. Create a separate feature agent for further changes.",
     pr_evidence_unavailable: "Current PR evidence is unavailable. Restore repository access before continuing.",
     budget_exhausted: "This issue has exhausted its execution budget. Adjust the configured limit before preparing more work.",
     issue_running: "This issue still has active execution. Wait for it to stop before launching PR work.",
@@ -102,7 +102,7 @@ defmodule SymphonyElixir.Chat.Tools do
       }),
       spec(
         "symphony_pr_session",
-        "Read an issue's PR session, its retained coding agent and latest results. In a PR chat omit both fields to use its immutable binding. In the issue main thread provide task_id and session_id from task details. A missing work_id means discussion-only PR context.",
+        "Read a feature agent's PR session, retained coding worker and latest results. In a feature agent chat omit both fields to use its immutable binding. In the task agent chat provide task_id and session_id from task details. A missing work_id means discussion-only PR context.",
         %{"task_id" => string(240), "session_id" => string(48)}
       ),
       spec("symphony_task_details", "Read one task in this chat's project, including its description and current execution evidence.", %{"task_id" => string(240)}, ["task_id"]),

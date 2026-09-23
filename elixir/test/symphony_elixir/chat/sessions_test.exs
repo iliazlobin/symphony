@@ -6,7 +6,7 @@ defmodule SymphonyElixir.Chat.SessionsTest do
   test "PR options retain native identity after publication and reject unbound or foreign sessions" do
     task = task()
     id = "work:" <> String.duplicate("a", 32)
-    assert [%{id: ^id, pr: nil}] = Sessions.options(task)
+    assert [%{id: ^id, pr: nil, name: "Implement", discussion: false}] = Sessions.options(task)
     assert {:ok, %{"work_id" => work_id, "pr_number" => nil}} = Sessions.resolve(task, id, "scope")
     assert work_id == String.duplicate("a", 32)
     refute Sessions.valid_id?("pr:0")
@@ -18,10 +18,12 @@ defmodule SymphonyElixir.Chat.SessionsTest do
 
     published = put_in(task, [:ledger, "pr_work", work_id, "publication"], %{"pr_number" => 7, "pr_url" => "https://github.com/example/repo/pull/7"})
     published = Map.put(published, :pull_requests, [pr()])
-    assert [%{id: ^id, pr: %{number: 7}}] = Sessions.options(published)
+    assert [%{id: ^id, pr: %{number: 7}, name: "Fix", discussion: false}] = Sessions.options(published)
     assert {:ok, %{"work_id" => ^work_id, "pr_number" => 7}} = Sessions.resolve(published, id, "scope")
     external = %{published | ledger: %{}}
+    assert [%{discussion: true}] = Sessions.options(external)
     assert {:ok, %{"work_id" => nil}} = Sessions.resolve(external, "pr:7", "scope")
+    assert [%{name: "PR #7"}] = Sessions.options(%{external | pull_requests: [%{pr() | title: ""}]})
     foreign = %{external | pull_requests: [%{pr() | url: "https://github.com/other/repo/pull/7"}]}
     assert {:error, :pr_session_unavailable} = Sessions.resolve(foreign, "pr:7", "scope")
     assert {:error, :pr_session_unavailable} = Sessions.resolve(Map.put(external, :source_missing, true), "pr:7", "scope")

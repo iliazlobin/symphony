@@ -34,13 +34,14 @@ change worker permissions. Authenticated browsers invoke native operator control
 GitHub remains the task and publication record. See the
 [operator guide](profiles/events-concierge/README.md#operate) for setup and limits.
 
-Each issue has one coordinator chat, with a searchable activity-grouped issue picker
+Each issue has one task agent responsible for the entire task, with a searchable activity-grouped issue picker
 showing creation time, priority, PR count and latest activity. Card titles open details;
 click outside or press Escape to dismiss them. The full-width PR selector shows the
-selected conversation, with the issue's **Main thread** first. PR chats and card shortcuts
-cover only linked or Symphony-published PRs. Compact cards show three PRs, then an overflow link.
-The main thread receives worker and GitHub milestone updates and can propose instructions
-for retained PR agents. Confirmed PR work sessions retain their own
+selected `<task name> task agent` or `<feature name> feature agent`, with the task agent first.
+Feature agents and card shortcuts cover native feature work and linked PRs.
+Compact cards show three PRs, then an overflow link.
+The task agent receives worker and GitHub milestone updates and coordinates individual
+feature agents. Confirmed PR work sessions retain their own
 builder thread and checkout across design, implementation and follow-up validation.
 They run sequentially within the issue budget, with a fresh reviewer for each candidate;
 publication, merge and deployment keep their existing authorization gates.

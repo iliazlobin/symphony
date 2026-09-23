@@ -772,14 +772,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <p>{@dispatch_guidance}</p>
                 <button type="button" class="button button-small" phx-click="open-settings" phx-value-tab="execution">Execution settings</button>
               </div>
-              <div class="task-reference-links"><.link class="button button-small" patch={session_path(@url_filters, @selected.id, nil)}>Issue chat →</.link><a :for={link <- task_links(@selected, if(pull_requests(@selected) == [], do: ["issue", "repo", "pr", "checks", "candidate"], else: ["issue", "repo", "candidate"]))} class="button button-small" href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
+              <div class="task-reference-links"><.link class="button button-small agent-chat-link" patch={session_path(@url_filters, @selected.id, nil)}><ChatPanel.agent_label name={@selected.title} role="task" /><span aria-hidden="true">→</span></.link><a :for={link <- task_links(@selected, if(pull_requests(@selected) == [], do: ["issue", "repo", "pr", "checks", "candidate"], else: ["issue", "repo", "candidate"]))} class="button button-small" href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
               <p :if={blocker(@selected) && is_nil(@selected.hold)} class="attention-badge"><strong>Needs attention:</strong> {blocker(@selected)}</p>
               <p :if={Map.get(@selected, :completion_evidence)} class="muted">{Map.get(@selected, :completion_evidence)}</p>
               <section :if={pull_requests(@selected) != []} class="dialog-section"><h3>Pull requests <span class="section-count">{length(pull_requests(@selected))}</span></h3><.pull_request :for={pr <- pull_requests(@selected)} pr={pr} compact={false} chat_url={session_path(@url_filters, @selected.id, pr_session_id(@selected, pr))} /></section>
-              <section :if={ChatNavigation.work_sessions(@selected) != []} class="dialog-section" aria-label="PR work sessions">
-                <h3>PR work sessions</h3>
+              <section :if={ChatNavigation.work_sessions(@selected) != []} class="dialog-section" aria-label="Feature agents">
+                <h3>Feature agents</h3>
                 <article :for={work <- ChatNavigation.work_sessions(@selected)} class="issue-work-session" data-work-id={work.id}>
-                  <div class="widget-heading"><a :if={work.pr_url} href={work.pr_url} target="_blank" rel="noopener noreferrer">{work.title} ↗</a><span :if={!work.pr_url}>{work.title}</span><span class="widget-label">{work.phase}</span><.link class="button button-small" patch={session_path(@url_filters, @selected.id, "work:" <> work.id)}>Chat →</.link></div>
+                  <div class="widget-heading"><a :if={work.pr_url} href={work.pr_url} target="_blank" rel="noopener noreferrer">{work.title} ↗</a><span class="widget-label">{work.phase}</span><.link class="button button-small agent-chat-link" patch={session_path(@url_filters, @selected.id, "work:" <> work.id)}><ChatPanel.agent_label name={work.name} role="feature" /><span aria-hidden="true">→</span></.link></div>
                   <p class="issue-work-instruction">{work.instruction}</p>
                   <p :if={work.summary != ""}>{work.summary}</p>
                   <div class="issue-work-meta"><span :if={work.session_retained}>Session retained</span><span :if={work.review}>Review: {String.replace(work.review, "_", " ")}</span><code :if={work.head != ""}>{work.head}</code><time :if={work.updated_at} datetime={work.updated_at} title={updated_at(work.updated_at)}>{compact_updated_at(work.updated_at)}</time></div>
@@ -793,9 +793,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <% :rework -> %>
               <p>Describe the corrections or select GitHub feedback. The task returns to Work after confirmation.</p>
               <form id="task-rework-form" phx-submit="prepare-rework">
-                <label class="display-field">PR work<select name="rework[work_id]" aria-label="PR work to continue">
+                <label class="display-field">Feature agent<select name="rework[work_id]" aria-label="Feature agent to continue">
                   <option :for={work <- TaskRework.options(@selected)} value={work.id}>{work.label}</option>
-                  <option value="new">New PR work session</option>
+                  <option value="new">New feature agent</option>
                 </select></label>
                 <label class="rework-instruction">Corrections<textarea name="rework[instruction]" aria-label="Corrections" rows="4" maxlength="8000" placeholder="What needs to change?"></textarea></label>
                 <fieldset :if={feedback_items(@selected) != []} class="feedback-selection"><legend>Include feedback</legend>
@@ -811,7 +811,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <p>{command_description(@pending_command)}</p>
               <div :if={@pending_command.action in ["create_pr_work", "continue_pr_work"]} class="rework-preview">
                 <p>{@pending_command.command["instruction"]}</p>
-                <p>{length(@pending_command.command["feedback"])} selected comments · {if @pending_command.action == "create_pr_work", do: "New PR work session", else: "Continue existing PR work"}</p>
+                <p>{length(@pending_command.command["feedback"])} selected comments · {if @pending_command.action == "create_pr_work", do: "New feature agent", else: "Continue feature agent"}</p>
                 <ul><li :for={item <- @pending_command.command["feedback"]}><a href={safe_url(item["url"])} target="_blank" rel="noopener noreferrer">@{item["author"]}</a>: {item["body"]}</li></ul>
                 <div :if={@pending_command.command["feedback"] != []} class="feedback-mirror-preview" aria-label="GitHub status reply preview">
                   <p>One status reply on this GitHub issue will be updated as work progresses. It contains source links and statuses, not copied comment text:</p>
@@ -1145,7 +1145,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     ~H"""
     <div class={"pull-request-evidence #{if @compact, do: "compact", else: ""}"} data-pr-number={@number}>
-      <div class="pull-request-heading"><a :if={@url} href={@url} target="_blank" rel="noopener noreferrer" title={@title}>{@label}<span :if={!@compact && is_binary(@title)}> · {@title}</span></a><strong :if={!@url}>{@label}</strong><span class="pr-state" data-pr-state={String.downcase(@state)}>{@state}</span><.link :if={@chat_url} class="button button-small" patch={@chat_url} aria-label={"Open #{@label} chat"}>Chat →</.link></div>
+      <div class="pull-request-heading"><a :if={@url} href={@url} target="_blank" rel="noopener noreferrer" title={@title}>{@label}<span :if={!@compact && is_binary(@title)}> · {@title}</span></a><strong :if={!@url}>{@label}</strong><span class="pr-state" data-pr-state={String.downcase(@state)}>{@state}</span><.link :if={@chat_url} class="button button-small agent-chat-link" patch={@chat_url} aria-label={"Open #{@label} feature agent"}><ChatPanel.agent_label name={if is_binary(@title) && @title != "", do: @title, else: @label} role="feature" /><span aria-hidden="true">→</span></.link></div>
       <div class="pull-request-checks"><span>GitHub review: {@review}</span>
         <a :if={@checks_url} href={@checks_url} target="_blank" rel="noopener noreferrer" title={@ci_summary} aria-label={"#{@label} checks: #{@ci_status}"}>CI: {@ci_status} ↗</a>
         <span :if={!@checks_url} title={@ci_summary}>CI: {@ci_status}</span><span :if={@mergeability}>{@mergeability}</span>

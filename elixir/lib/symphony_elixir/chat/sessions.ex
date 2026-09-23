@@ -17,20 +17,31 @@ defmodule SymphonyElixir.Chat.Sessions do
     published =
       Enum.map(prs, fn pr ->
         work = Enum.find(works, &(&1.pr_number == pr.number and &1.pr_url == pr.url))
-        %{id: if(work, do: "work:" <> work.id, else: "pr:#{pr.number}"), title: "PR ##{pr.number} · #{pr.title}", label: "PR ##{pr.number}", status: pr.status, pr: pr, work: work}
+        name = if String.trim(pr.title) == "", do: "PR ##{pr.number}", else: pr.title
+
+        %{
+          id: if(work, do: "work:" <> work.id, else: "pr:#{pr.number}"),
+          title: "PR ##{pr.number} · #{pr.title}",
+          name: name,
+          discussion: is_nil(work),
+          label: "PR ##{pr.number}",
+          status: pr.status,
+          pr: pr,
+          work: work
+        }
       end)
 
     pending =
       works
       |> Enum.reject(fn work -> Enum.any?(published, &(&1.work && &1.work.id == work.id)) end)
-      |> Enum.map(&%{id: "work:" <> &1.id, title: &1.title, label: &1.title, status: &1.phase, pr: nil, work: &1})
+      |> Enum.map(&%{id: "work:" <> &1.id, title: &1.title, name: &1.name, discussion: false, label: &1.title, status: &1.phase, pr: nil, work: &1})
 
     # A discussion opened before the publication receipt must keep its history and
     # remain read-only when a native worker is subsequently associated with the PR.
     discussions =
       published
       |> Enum.filter(&(&1.work && "pr:#{&1.pr.number}" in retained))
-      |> Enum.map(&%{&1 | id: "pr:#{&1.pr.number}", title: "PR ##{&1.pr.number} · Discussion", work: nil})
+      |> Enum.map(&%{&1 | id: "pr:#{&1.pr.number}", title: "PR ##{&1.pr.number} · Discussion", discussion: true, work: nil})
 
     pending ++ published ++ discussions
   end
