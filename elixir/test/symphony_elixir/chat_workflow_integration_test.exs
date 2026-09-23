@@ -532,11 +532,14 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     user = Enum.find(chat["messages"], &(&1["role"] == "user"))
     assert user["view_context"] == expected
     send(view.pid, {:view_context, nil})
-    assert has_element?(view, "#session-context-content", "No matching board context")
+    refute has_element?(view, ".chat-session-tabs")
+    refute has_element?(view, "#session-context-content")
+    assert has_element?(view, "#session-chat-content:not([hidden])")
     view |> element("#chat-composer") |> render_submit(%{"message" => "Use this view"})
     assert_receive {:view_seen, nil, %{"context_status" => "unavailable", "snapshot" => nil, "current_tasks" => []}}
     chat = wait_chat(ctx, &(&1["status"] == "idle" and length(&1["messages"]) == 4))
-    assert chat["messages"] |> Enum.filter(&(&1["role"] == "user")) |> List.last() |> Map.fetch!("view_context") == nil
+    user_messages = Enum.filter(chat["messages"], &(&1["role"] == "user"))
+    assert Enum.map(user_messages, & &1["view_context"]) == [expected, nil]
     assert Agent.get(ctx.requests, & &1) == []
   end
 
@@ -558,7 +561,8 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     assert {:ok, queued} = Store.get(@project, task_chat["id"], ctx.auth, ctx.server)
     assert queued["queued_count"] == 1
     refute_received {:model_started, _, _, "Follow up on this task"}
-    view |> element("#main-chat-button") |> render_click()
+    refute has_element?(view, "#main-chat-button")
+    view |> element("#issue-option-main") |> render_click()
     assert {:ok, main_chat} = Store.ensure_conversation(@project, nil, ctx.auth, ctx.server)
     assert has_element?(view, "#chat-app[data-chat-id='#{main_chat["id"]}']")
     refute has_element?(view, "#chat-queue")

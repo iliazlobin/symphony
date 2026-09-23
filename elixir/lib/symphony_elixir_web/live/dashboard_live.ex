@@ -4,7 +4,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   alias SymphonyElixir.Chat.ViewContext
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, ChatPanel, Endpoint, Markdown, SettingsPanel, TaskIntakePanel}
-  alias SymphonyElixirWeb.{BoardCache, ObservabilityPubSub, Presenter, TaskBoard, TaskExecution}
+  alias SymphonyElixirWeb.{BoardCache, ChatNavigation, ObservabilityPubSub, Presenter, TaskBoard, TaskExecution}
 
   @lanes [{"backlog", "Backlog"}, {"ready", "Ready"}, {"running", "Running"}, {"review", "Review"}, {"done", "Done"}]
   @refresh_ms 30_000
@@ -601,7 +601,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   aria-label={"Open #{task.identifier} in the issue tracker"}>{task.identifier}</a><span :if={!safe_url(task.url)}>{task.identifier}</span>
                   <span class="priority" data-priority={priority(task.priority)}>{priority(task.priority)}</span></div>
                 <div class="card-title-row"><span class={"lane-dot lane-dot-#{stage}"} aria-hidden="true"></span>
-                  <.link id={"open-#{card_id(task)}"} class="card-title" patch={board_path(Map.put(@url_filters, "task", task.id))}>{task.title}</.link>
+                  <span class="card-title-text"><.link id={"open-#{card_id(task)}"} class="card-title" patch={board_path(Map.put(@url_filters, "task", task.id))}>{task.title}</.link></span>
                 </div>
                 <div class="card-project">{task.project_label}</div>
                 <.card_chat_status activity={Map.get(@chat_activity, task.id)} />
@@ -683,6 +683,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <p :if={blocker(@selected) && is_nil(@selected.hold)} class="attention-badge"><strong>Needs attention:</strong> {blocker(@selected)}</p>
               <p :if={Map.get(@selected, :completion_evidence)} class="muted">{Map.get(@selected, :completion_evidence)}</p>
               <section :if={pull_requests(@selected) != []} class="dialog-section"><h3>Pull requests <span class="section-count">{length(pull_requests(@selected))}</span></h3><.pull_request :for={pr <- pull_requests(@selected)} pr={pr} compact={false} /></section>
+              <section :if={ChatNavigation.work_sessions(@selected) != []} class="dialog-section" aria-label="PR work sessions">
+                <h3>PR work sessions</h3>
+                <article :for={work <- ChatNavigation.work_sessions(@selected)} class="issue-work-session" data-work-id={work.id}>
+                  <div class="widget-heading"><a :if={work.pr_url} href={work.pr_url} target="_blank" rel="noopener noreferrer">{work.title} ↗</a><span :if={!work.pr_url}>{work.title}</span><span class="widget-label">{work.phase}</span></div>
+                  <p class="issue-work-instruction">{work.instruction}</p>
+                  <p :if={work.summary != ""}>{work.summary}</p>
+                  <div class="issue-work-meta"><span :if={work.session_retained}>Session retained</span><span :if={work.review}>Review: {String.replace(work.review, "_", " ")}</span><code :if={work.head != ""}>{work.head}</code><time :if={work.updated_at} datetime={work.updated_at} title={updated_at(work.updated_at)}>{compact_updated_at(work.updated_at)}</time></div>
+                </article>
+              </section>
               <section class="dialog-section"><h3>Scope &amp; acceptance</h3><div class="markdown-content">{Markdown.render(@selected.description)}</div></section>
               <section :if={current_activity(@selected, @payload) || session_id(@selected)} class="dialog-section"><h3>Codex update</h3><p>{current_activity(@selected, @payload)}</p>
                 <button :if={session_id(@selected)} class="button button-small" data-copy={session_id(@selected)}>Copy ID</button>

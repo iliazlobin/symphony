@@ -105,7 +105,7 @@ has **Execution**, **AI & chat**, and **Connections** tabs:
   the saved override. Raising the configured ceiling or changing budgets remains a
   reviewed configuration change.
 - **AI & chat:** explains automatic project context and reports read-only model presets.
-  The conversation's Context tab shows the current view and retained snapshots.
+  The full-page chat's Context tab shows the current view and retained snapshots.
 - **Connections:** refresh tracker/controller/chat-storage health, inspect recorded
   usage, or sign in/out with the configured browser provider. Health does not verify
   model sign-in, tracker write permissions or worker readiness. No probe starts a model or worker.
@@ -247,14 +247,14 @@ into running workers, automatic repairs and web publication remain separate work
 select a project beside **Projects** in the top header and sign in through the configured
 browser provider. Chat stays open beside the board. Each card has one durable conversation;
 selecting a card switches to it, and closing its details keeps that chat selected.
-**Main chat** opens the project's orchestration conversation for reports, task creation,
+**Main chat** in the issue picker opens the project's orchestration conversation for reports, task creation,
 updates and cancellation. Write proposals still require confirmation of the exact action.
 The headline picker groups issues by activity category, with Done last, and sorts each
 group newest first. Search a category, issue number, title or recent activity. The second
-line links the GitHub issue and its board card. **PRs** lists all linked PRs and their
-review/CI state; choose a retained work session to inspect it in **Outputs**.
-Switching cards preserves each conversation's draft and selected tab. **Chat**, **Context**,
-**Outputs** and **Sources** organize its messages and evidence. Prior conversations remain
+line starts with **PRs**, then the GitHub issue, its board card and inline status. Search
+the PR menu by number, title or status; choose a retained work session to inspect it on the card.
+Switching cards preserves each conversation's draft. Board chat shows messages and
+actions directly, while task details and PR work stay on the card. Prior conversations remain
 available through the full-page `/chat` history with search, pins and ordering.
 
 Responses stream as they arrive. Send follow-ups while a response is running to queue
@@ -267,12 +267,12 @@ Failure or service restart also pauses the queue; **Resume queue** checks curren
 before continuing. Closing the browser leaves accepted turns running.
 
 Codex handles native compaction while the app retains visible messages and receipts.
-**Sources** shows retrieved references; **Outputs** shows up to 100 distinct issue/PR
+In the full-page chat, **Sources** shows retrieved references; **Outputs** shows up to 100 distinct issue/PR
 artifacts and action results, with earlier tool results retained in history. Task and
 main conversations keep the same identity across reconnects and restarts. The current
 service supplies one configured project; additional controllers are not aggregated yet.
 
-**View context.** The **Context** tab shows what automatically accompanies the next
+**View context.** The full-page chat's **Context** tab shows what automatically accompanies the next
 message: project, filters, displayed task count and selected card. Earlier snapshots
 remain attached to their messages. Current
 context refreshes as you filter, scroll, switch lanes or open a card.

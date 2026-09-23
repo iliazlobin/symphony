@@ -332,14 +332,15 @@ The observability UI now runs on a minimal Phoenix stack:
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
 The chat panel stays open. Select a task card to open its dedicated conversation;
-closing task details keeps that conversation selected. **Main chat** returns to the
+closing task details keeps that conversation selected. **Main chat** in the issue picker returns to the
 project conversation for reports and task creation, updates or cancellation.
 The headline picker searches issue numbers, titles, categories and recent activity.
 Issues appear in Running, Ready for review, Needs attention, Ready, Backlog and Done
-groups, newest activity first within each group. The second line links the issue and
-its card; **PRs** lists fetched associated PRs with independent review and CI status,
+groups, newest activity first within each group. The second line starts with **PRs**,
+followed by links to the issue and its card and the current status. The PR menu searches
+fetched associated PRs by number, title, status, review or CI,
 and indicates when GitHub evidence is incomplete or unavailable.
-Retained PR work sessions open in **Outputs**, keeping the same issue chat selected.
+Retained PR work sessions open on the issue card, keeping the same issue chat selected.
 Use **New task** to enter a title, outcome, scope, acceptance checks and dependencies.
 **Preview task** saves the exact proposed GitHub issue; **Create task** confirms it.
 Created tasks enter the backlog without execution routing labels. Recent submissions
@@ -351,9 +352,10 @@ selected task links. Each message automatically attaches a validated project-bou
 snapshot of bounded task IDs and filters, not raw browser contents. Each task has
 one retained conversation, and each project has one main conversation. These bindings
 survive reconnects and restarts; prior free-standing chats remain available at `/chat`.
-Drafts and selected tabs stay separate when switching cards. The full-page chat list
-retains search, pins and ordering for saved conversations.
-Inside the conversation, **Chat**, **Context**,
+Drafts stay separate when switching cards. The board chat shows messages and actions
+directly, without a tab bar; task details and PR work live on the issue card.
+The full-page chat list retains search, pins and ordering for saved conversations.
+At `/chat`, **Chat**, **Context**,
 **Outputs** and **Sources** organize the same durable conversation. Context separates
 the next message's view from snapshots retained with earlier messages. Outputs collect
 the latest 100 distinct issue/PR summaries and action results; original tool results stay
@@ -641,8 +643,9 @@ on the right, controls sorting, card
 detail, light/dark appearance and visible columns. Hidden columns remain available
 in the restore rail; selecting a status reveals its column. Display preferences are
 saved only in this browser and do not change scheduling or issue state.
-Click a card's background to select its task chat without opening a dialog. The title
-is a link that opens scrollable task details; issue, PR and CI links open directly in GitHub.
+Click a card's background to select its task chat without opening a dialog. Only the title
+text links to scrollable task details; space beside wrapped title lines selects the chat.
+Issue, PR and CI links open directly in GitHub.
 Additional PRs expand inside the card without opening task details.
 Details retain their scroll position during refresh and return to the top when you open another issue. Focus a card and
 press Enter or Space to select it. Selection survives reload and browser navigation;
