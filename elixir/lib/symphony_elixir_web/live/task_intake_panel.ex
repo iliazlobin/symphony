@@ -220,7 +220,7 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
     "#{label} exceeds the #{limit}-byte limit. Shorten it explicitly or edit the issue in GitHub; the text has not been truncated."
   end
 
-  defp error_message(:required_fields), do: "Add a title, description and verification before creating the task."
+  defp error_message(:required_fields), do: "Add a title before creating the task."
   defp error_message(:project_required), do: "Select one project on the board before creating or changing tasks."
   defp error_message(reason), do: TaskIntake.error_message(reason)
   defp proposal(%{"proposals" => [proposal | _]}), do: proposal
@@ -271,8 +271,8 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
         <form id="task-intake-form" phx-target={@myself} phx-change="draft" phx-submit="create" class="intake-form intake-create-form">
           <label class="intake-title"><span>Title</span><input name="task[title]" value={@draft["title"]} maxlength="200" required placeholder="What needs to be done?" /></label>
           <div class="intake-fields">
-            <label class="intake-description"><span>Description</span><textarea name="task[description]" rows="4" maxlength="4000" required placeholder="Describe the change and any useful context">{@draft["description"]}</textarea></label>
-            <label class="intake-verification"><span>Test (verification)</span><textarea name="task[verification]" rows="3" maxlength="4000" required placeholder="How will we know it works?">{@draft["verification"]}</textarea></label>
+            <label class="intake-description"><span>Description</span><textarea name="task[description]" rows="4" maxlength="4000" placeholder="Describe the change and any useful context">{@draft["description"]}</textarea></label>
+            <label class="intake-verification"><span>Test (verification)</span><textarea name="task[verification]" rows="3" maxlength="4000" placeholder="How will we know it works?">{@draft["verification"]}</textarea></label>
           </div>
           <div class="dialog-actions"><button type="submit" class="button button-primary" phx-disable-with="Creating…">Create task</button></div>
         </form>

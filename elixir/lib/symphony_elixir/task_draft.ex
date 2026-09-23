@@ -7,6 +7,8 @@ defmodule SymphonyElixir.TaskDraft do
 
   @spec action_args(map()) :: {:ok, map()} | {:error, term()}
   def action_args(fields) when is_map(fields) do
+    fields = Map.merge(%{"description" => "", "verification" => ""}, fields)
+
     with :ok <- validate_fields(fields),
          :ok <- validate_lengths(fields),
          {:ok, body} <- issue_body(fields) do
@@ -33,14 +35,18 @@ defmodule SymphonyElixir.TaskDraft do
   defp validate_fields(fields) do
     cond do
       Enum.sort(Map.keys(fields)) != Enum.sort(@fields) -> {:error, :invalid_task_fields}
-      Enum.all?(@fields, &(is_binary(fields[&1]) and String.valid?(fields[&1]) and String.trim(fields[&1]) != "")) -> :ok
+      Enum.all?(@fields, &(is_binary(fields[&1]) and String.valid?(fields[&1]))) and String.trim(fields["title"]) != "" -> :ok
       true -> {:error, :required_fields}
     end
   end
 
   defp issue_body(fields) do
-    body = "## Description\n\n#{fields["description"]}\n\n## Verification\n\n#{fields["verification"]}"
-    body = if String.match?(body, ~r/^\s*depends on\b/im), do: body, else: body <> "\n\nDepends on: none"
+    body =
+      [{"Description", fields["description"]}, {"Verification", fields["verification"]}]
+      |> Enum.reject(fn {_heading, text} -> String.trim(text) == "" end)
+      |> Enum.map_join("\n\n", fn {heading, text} -> "## #{heading}\n\n#{text}" end)
+
+    body = if String.match?(body, ~r/^\s*depends on\b/im), do: body, else: Enum.join(Enum.reject([body, "Depends on: none"], &(&1 == "")), "\n\n")
 
     case Admission.validate_declaration(body) do
       {:ok, _} -> {:ok, body}

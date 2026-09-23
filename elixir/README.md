@@ -344,7 +344,8 @@ Long names truncate while the role stays visible; hover reveals the full label. 
 matches names, PR numbers, status, review or CI. Incomplete GitHub evidence stays labeled.
 Named agent links in task details focus the corresponding conversation.
 The selected session is retained in the board URL across reloads.
-Use **New task** to enter **Title**, **Description** and **Test (verification)**.
+Use **New task** to enter a required **Title** and optional **Description** and **Test (verification)**.
+Description and verification can be left empty.
 **Create task** submits once without a separate preview. The project agent accepts the
 same fields and still presents its exact proposal for human confirmation.
 Created tasks enter the backlog without execution routing labels. Recent submissions

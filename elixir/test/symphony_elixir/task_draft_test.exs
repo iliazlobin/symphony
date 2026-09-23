@@ -37,8 +37,12 @@ defmodule SymphonyElixir.TaskDraftTest do
     assert {:error, :invalid_task_fields} = TaskDraft.action_args(%{})
     assert {:error, :invalid_task_fields} = TaskDraft.action_args(Map.put(@draft, "priority", 1))
 
-    for field <- ~w(title description verification), value <- [nil, "", " \n ", <<255>>] do
+    for field <- ~w(title description verification), value <- [nil, 1, <<255>>] do
       assert {:error, :required_fields} = TaskDraft.action_args(Map.put(@draft, field, value))
+    end
+
+    for title <- ["", " \n "] do
+      assert {:error, :required_fields} = TaskDraft.action_args(Map.put(@draft, "title", title))
     end
 
     for {field, limit} <- [{"title", 200}, {"description", 4_000}, {"verification", 4_000}] do
@@ -48,5 +52,18 @@ defmodule SymphonyElixir.TaskDraftTest do
     end
 
     assert {:error, {:field_too_long, "title", 200}} = TaskDraft.validate_lengths(%{})
+  end
+
+  test "optional details may be omitted or blank without adding empty issue sections" do
+    for details <- [%{}, %{"description" => ""}, %{"verification" => ""}, %{"description" => " \n ", "verification" => "\t"}] do
+      assert {:ok, %{"title" => "Title only", "body" => "Depends on: none"}} =
+               TaskDraft.action_args(Map.put(details, "title", "Title only"))
+    end
+
+    assert {:ok, %{"body" => "## Description\n\nContext\n\nDepends on: none"}} =
+             TaskDraft.action_args(%{"title" => "Task", "description" => "Context"})
+
+    assert {:ok, %{"body" => "## Verification\n\nCheck it\n\nDepends on: none"}} =
+             TaskDraft.action_args(%{"title" => "Task", "verification" => "Check it"})
   end
 end

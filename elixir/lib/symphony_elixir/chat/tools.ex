@@ -119,7 +119,7 @@ defmodule SymphonyElixir.Chat.Tools do
         ),
         spec(
           "symphony_propose_action",
-          "Prepare an exact action preview for operator approval. Never claim a proposal was executed. create_task makes an unqueued backlog issue. Supply title, description and verification; do not combine these fields with body. The legacy body form remains available for existing callers. queue_task can queue an open, unqueued idle backlog task with no hold. edit_task and unqueue_task require a cancelled, idle task; queueing a cancelled task also retains its hold, so Retry remains separate. Queue changes affect only configured routing labels, never bypass admission or launch gates. Feedback adds a GitHub comment without steering a running worker. set_concurrency persists an admission limit within the configured ceiling; limit:null restores the default. Running work and consumed budgets are unchanged. create_pr_work prepares a separate coding session for an issue; continue_pr_work resumes one exact work_id with the requested instruction. Use task details to select a session. The host binds its branch, approved base and candidate head; never supply those fields. Both require explicit operator confirmation to queue native execution, subject to remaining budget, routing labels, controller mode and launch gates. They clear only a previous owner_review hold; other holds remain. Review and publication policy are unchanged.",
+          "Prepare an exact action preview for operator approval. Never claim a proposal was executed. create_task makes an unqueued backlog issue. Supply a title; description and verification are optional and may be empty. Do not combine these fields with body. The legacy body form remains available for existing callers. queue_task can queue an open, unqueued idle backlog task with no hold. edit_task and unqueue_task require a cancelled, idle task; queueing a cancelled task also retains its hold, so Retry remains separate. Queue changes affect only configured routing labels, never bypass admission or launch gates. Feedback adds a GitHub comment without steering a running worker. set_concurrency persists an admission limit within the configured ceiling; limit:null restores the default. Running work and consumed budgets are unchanged. create_pr_work prepares a separate coding session for an issue; continue_pr_work resumes one exact work_id with the requested instruction. Use task details to select a session. The host binds its branch, approved base and candidate head; never supply those fields. Both require explicit operator confirmation to queue native execution, subject to remaining budget, routing labels, controller mode and launch gates. They clear only a previous owner_review hold; other holds remain. Review and publication policy are unchanged.",
           %{
             "action" => enum(@controls ++ @writes ++ @pr_work_actions),
             "limit" => %{"type" => ["integer", "null"], "minimum" => 1},
@@ -437,7 +437,7 @@ defmodule SymphonyElixir.Chat.Tools do
   defp string_keys(map), do: Map.new(map, fn {key, value} -> {Atom.to_string(key), value} end)
 
   defp prepare_action_args(%{"action" => "create_task"} = args) do
-    if Map.has_key?(args, "description") or Map.has_key?(args, "verification") do
+    if not Map.has_key?(args, "body") or Map.has_key?(args, "description") or Map.has_key?(args, "verification") do
       case TaskDraft.action_args(Map.delete(args, "action")) do
         {:ok, normalized} -> {:ok, normalized}
         {:error, _reason} -> {:error, :invalid_arguments}

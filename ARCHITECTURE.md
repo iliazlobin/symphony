@@ -318,8 +318,8 @@ selects the owning task; before publication, the first retained discussion owns 
 Other issue associations become graph references, not extra supervisors. Ownership
 reconciliation waits for active turns and pending reports; conflicting native owners
 are rejected. Historical conversation links continue to resolve after reconciliation.
-The project agent coordinates the project. Task creation accepts a title, description
-and verification through a shared normalizer. The form's **Create task** click authorizes
+The project agent coordinates the project. Task creation requires a title and accepts optional description
+and verification through a shared normalizer. Empty optional fields are omitted from the issue body. The form's **Create task** click authorizes
 submission through the durable action store without a second preview; model-created
 proposals retain their explicit confirmation step. Older body-based proposals remain readable.
 Creating or continuing PR work uses the same durable preview, browser confirmation and

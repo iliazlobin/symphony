@@ -1284,6 +1284,25 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#task-action-preview", "Action completed")
   end
 
+  test "only the title is required and blank optional details create a backlog task", ctx do
+    view = authorized_board_view()
+    render_click(view, "new-task")
+    assert has_element?(view, "#task-intake-form input[name='task[title]'][required]")
+    refute has_element?(view, "#task-intake-form textarea[required]")
+
+    view |> form("#task-intake-form", task: %{"title" => " ", "description" => "", "verification" => ""}) |> render_submit()
+    assert has_element?(view, "#task-intake-panel [role=alert]", "Add a title")
+    refute_receive {:intake_prepared, _, _}
+    refute_receive {:intake_decided, _, _}
+
+    view |> form("#task-intake-form", task: %{"title" => "Investigate slow board loading", "description" => "", "verification" => ""}) |> render_submit()
+    assert_receive {:intake_prepared, id, %{"action" => "create_task", "title" => "Investigate slow board loading", "body" => "Depends on: none"}}
+    assert_receive {:intake_decided, ^id, "confirm"}
+    assert has_element?(view, "#task-action-preview", "Action completed")
+    assert GenServer.call(ctx.runtime, :control_snapshot)["mode"] == "paused"
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+  end
+
   test "fresh backlog drag opens a queue preview and only confirmation submits it", ctx do
     view = authorized_board_view()
     render_click(view, "move-task", %{"id" => "github:example/fixture:1", "stage" => "ready"})
