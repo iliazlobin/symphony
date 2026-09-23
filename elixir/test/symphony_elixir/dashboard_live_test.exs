@@ -823,8 +823,12 @@ defmodule SymphonyElixir.DashboardLiveTest do
 
     board =
       ctx.board
-      |> update_task("2", &%{&1 | created_at: "2026-09-22T21:27:05Z", priority: 2, github_status: "available", pull_requests: prs, ledger: %{"pr_work" => works}})
-      |> update_task("3", &%{&1 | created_at: nil, priority: nil, github_status: "unavailable", pull_requests: [%{number: 99, title: "Another issue's PR", state: "merged"}]})
+      |> update_task("2", fn task ->
+        %{task | created_at: "2026-09-22T21:27:05Z", priority: 2, github_status: "available", pull_requests: prs, ledger: %{"pr_work" => works}}
+      end)
+      |> update_task("3", fn task ->
+        %{task | created_at: nil, priority: nil, github_status: "unavailable", pull_requests: [%{number: 99, title: "Another issue's PR", state: "merged"}]}
+      end)
 
     :ok = GenServer.call(ctx.runtime, {:board, board})
     view = authorized_board_view()

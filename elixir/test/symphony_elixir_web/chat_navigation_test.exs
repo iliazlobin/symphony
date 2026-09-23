@@ -142,7 +142,8 @@ defmodule SymphonyElixirWeb.ChatNavigationTest do
       assert row.github_status == "available"
     end
 
-    [%{issues: [missing]}] = ChatNavigation.issues([task("2", "backlog", created_at: "unknown", github_status: "unavailable")], %{}, @project)
+    incomplete = task("2", "backlog", created_at: "unknown", github_status: "unavailable")
+    [%{issues: [missing]}] = ChatNavigation.issues([incomplete], %{}, @project)
     assert missing.created_at == nil
     assert missing.priority == nil
     assert missing.github_status == "unavailable"
