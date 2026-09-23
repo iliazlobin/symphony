@@ -69,6 +69,10 @@ defmodule SymphonyElixirWeb.ChatNavigationTest do
     issue = task("11", "running", issue_id: "11", ledger: %{"pr_work" => %{id => work}})
     assert [session] = ChatNavigation.work_sessions(issue)
     assert session.phase == "Validating"
+    assert session.name == "Validate new checks"
+    long_name = String.duplicate("Feature name ", 20) |> String.trim()
+    renamed = put_in(issue, [:ledger, "pr_work", id, "instruction"], long_name <> "\nDetails")
+    assert [%{name: ^long_name}] = ChatNavigation.work_sessions(renamed)
     assert session.session_retained
     refute Map.has_key?(session, :home)
     assert [%{issues: [row]}] = ChatNavigation.issues([issue], %{}, @project, "checks")

@@ -336,11 +336,14 @@ closing task details keeps that conversation selected. **Project name · Project
 project conversation for reports and task creation, updates or cancellation.
 The headline picker searches issue numbers, titles, categories and recent activity.
 Issues appear in Work, Ready for review, Needs attention, Backlog and Done
-groups, newest activity first within each group. The second line starts with **PRs**,
-followed by links to the issue and its card and the current status. The PR menu searches
-fetched associated PRs by number, title, status, review or CI,
-and indicates when GitHub evidence is incomplete or unavailable.
-Retained PR work sessions open on the issue card, keeping the same issue chat selected.
+groups, newest activity first within each group. The full-width PR selector shows the
+selected agent and status when closed. `<task name> task agent`, its first item, manages
+the entire task. `<feature name> feature agent` entries handle individual features and PRs.
+Feature names use the PR title or the first line of the work instruction before publication.
+Long names truncate while the role stays visible; hover reveals the full label. Search
+matches names, PR numbers, status, review or CI. Incomplete GitHub evidence stays labeled.
+Named agent links in task details focus the corresponding conversation.
+The selected session is retained in the board URL across reloads.
 Use **New task** to enter **Title**, **Description** and **Test (verification)**.
 **Create task** submits once without a separate preview. The project agent accepts the
 same fields and still presents its exact proposal for human confirmation.
@@ -351,24 +354,33 @@ the durable action store and works without a model turn or subscription login.
 The board and full-page chat share `ChatPanel`. The dock retains board filters and
 selected task links. Each message automatically attaches a validated project-bound
 snapshot of bounded task IDs and filters, not raw browser contents. Each task has
-one retained conversation, and each project has one main conversation. These bindings
-survive reconnects and restarts; prior free-standing chats remain available at `/chat`.
-Drafts stay separate when switching cards. The board chat shows messages and actions
-directly, without a tab bar; task details and PR work live on the issue card.
+one task agent conversation plus separate feature agent conversations, and each project has its own agent
+conversation. These bindings survive reconnects and restarts; prior free-standing chats
+remain available at `/chat`. Drafts and response queues stay separate when switching sessions.
+The board chat shows messages and actions directly, without a tab bar; the issue card
+shows task details and links to each PR conversation.
 The full-page chat list retains search, pins and ordering for saved conversations.
 At `/chat`, **Chat**, **Context**,
 **Outputs** and **Sources** organize the same durable conversation. Context separates
 the next message's view from snapshots retained with earlier messages. Outputs collect
 the latest 100 distinct issue/PR summaries and action results; original tool results stay
 in message history. Sources retain retrieved references.
-Ask the issue chat to create PR work with a bounded instruction, or continue an existing
+Ask the task agent to create feature work with a bounded instruction, or continue an existing
 work session to address feedback or checks, then confirm its preview. Each PR work keeps
 its builder thread and checkout across attempts; every candidate gets a fresh reviewer.
 One PR work runs per issue at a time, sharing the issue's cumulative budget. A review
 handoff requires explicit continuation; **Retry** does not replay a completed candidate.
-Previously linked PRs are shown but are not automatically adopted as work sessions.
+The task agent can inspect feature agent state with `symphony_pr_session` and propose
+`continue_pr_work` with an instruction for that agent. A feature agent restricts controls to
+its own retained worker; all actions still require confirmation and fresh ownership checks.
+Previously linked PRs support discussion without automatically adopting a coding worker.
+If a worker publication arrives later, the earlier discussion remains separately accessible.
 Existing routing labels, launch permissions, publication and merge gates still apply.
-GitHub artifact statuses are recorded observations; thread activity updates live.
+Worker progress, review handoffs and GitHub state changes are checked every 15 seconds
+and recorded as **PR update** messages in the task agent and matching feature agent conversations.
+Reports survive restart, retain the latest 80 updates per conversation and do not start
+model turns or workers. Missing or stale checks never imply completion; issue acceptance
+remains separate from PR merge.
 You can send follow-ups while a response is running. Up to 20 messages wait in the
 conversation queue above the composer; **Send next** changes the next waiting message
 and **Remove** cancels one queued message. Messages run one at a time per conversation
@@ -439,7 +451,7 @@ available to continue and uncertain writes available for read-only reconciliatio
 The file store holds at most 500 conversation and task-submission records, with an
 8 MiB limit per record. Previously archived records remain retained; the current
 chat list exposes pinning and ordering, with no Archive or Rename buttons.
-Task and main conversations keep their identity beyond 400 messages. Storage remains
+Task, PR and project conversations keep their identity beyond 400 messages. Storage remains
 bounded per record; a full history rejects additional messages without deleting it.
 Legacy free-standing chats retain their 400-message limit.
 
@@ -652,11 +664,11 @@ Metadata filters do not change queue eligibility, ownership or execution permiss
 Click a card's background to select its task chat without opening a dialog. Only the title
 text links to scrollable task details; space beside wrapped title lines selects the chat.
 Issue, PR and CI links open directly in GitHub.
-Additional PRs expand inside the card without opening task details.
+Cards show at most three PRs; **… +N** opens task details with the complete list.
 Details retain their scroll position during refresh and return to the top when you open another issue. Focus a card and
 press Enter or Space to select it. Selection survives reload and browser navigation;
 dragging still moves or reorders cards. Card details and Settings open as native dialogs
-with Close and Escape. Settings has
+with Escape dismissal. Task details also close on an outside click; Settings retains its Close button. Settings has
 three sections: **Execution** for native controls, concurrency and read-only budgets;
 **AI & chat** for context behavior and read-only model presets;
 and **Connections** for tracker/controller/chat storage status and operator login.
@@ -728,7 +740,7 @@ elapsed time, plus attempts in the current correction cycle against the reported
 unavailable status and missing metrics remain explicit. Task dialogs show Cancel or
 Retry only when applicable; settled candidate review does not offer Retry.
 
-Cards preview two associated PRs; the task popup lists every PR with its own state,
+Cards preview three associated PRs; the task popup lists every PR with its own state,
 GitHub review, CI summary, short commit and file counts. Each PR's CI link opens its
 checks on GitHub. Partial, stale and unavailable check data remain explicit.
 Agent review appears once for the reviewed candidate, with its reviewer summary and

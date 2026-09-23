@@ -554,8 +554,8 @@ defmodule SymphonyElixir.ChatLiveTest do
     message = %{"id" => "pr-preview", "role" => "assistant", "text" => "", "widgets" => widgets}
     FixtureStore.put(Map.put(chat, "messages", [message]))
     {view, _} = chat_view(ctx, "/chat?project=alpha&chat=a1")
-    assert has_element?(view, ".chat-widget-proposal", "Create a PR work session for issue #7")
-    assert has_element?(view, ".chat-widget-proposal", "Continue PR work aaaaaaaa for issue #7")
+    assert has_element?(view, ".chat-widget-proposal", "Create a feature agent for issue #7")
+    assert has_element?(view, ".chat-widget-proposal", "Continue feature agent aaaaaaaa for issue #7")
     assert has_element?(view, ".chat-widget-proposal", "Build the scoped implementation")
     assert has_element?(view, ".chat-widget-proposal", "Fix the failing test")
     assert has_element?(view, ".chat-widget-proposal", "Uses the issue's remaining budget")

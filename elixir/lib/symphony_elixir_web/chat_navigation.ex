@@ -40,6 +40,20 @@ defmodule SymphonyElixirWeb.ChatNavigation do
     end)
   end
 
+  @spec chat_activity([map()], String.t()) :: map()
+  def chat_activity(chats, project) do
+    chats
+    |> Enum.filter(&(is_binary(&1["task_id"]) and &1["project_id"] == project))
+    |> Enum.group_by(& &1["task_id"])
+    |> Map.new(fn {task, entries} ->
+      latest = Enum.max_by(entries, &(&1["updated_at"] || ""))
+      running = Enum.any?(entries, &(&1["status"] == "running"))
+      activity = latest |> Map.put("queued_count", Enum.reduce(entries, 0, &((&1["queued_count"] || 0) + &2)))
+      activity = if running, do: Map.merge(activity, %{"status" => "running", "display_status" => "running"}), else: activity
+      {task, activity}
+    end)
+  end
+
   @spec pull_requests(map()) :: [map()]
   def pull_requests(task) do
     task
@@ -67,6 +81,7 @@ defmodule SymphonyElixirWeb.ChatNavigation do
         %{
           id: id,
           title: if(is_integer(publication["pr_number"]), do: "PR ##{publication["pr_number"]}", else: "PR session #{String.slice(id, 0, 8)}"),
+          name: work_name(work, id, task),
           pr_number: publication["pr_number"],
           pr_url: safe_url(publication["pr_url"]),
           phase: work_phase(work["phase"]),
@@ -83,6 +98,17 @@ defmodule SymphonyElixirWeb.ChatNavigation do
       |> Enum.take(20)
     else
       []
+    end
+  end
+
+  defp work_name(work, id, task) do
+    publication = work["publication"] || %{}
+    pr = Enum.find(pull_requests(task), &(&1.number == publication["pr_number"] and &1.url == publication["pr_url"]))
+    name = if pr && String.trim(pr.title) != "", do: pr.title, else: work["instruction"]
+
+    case name |> text() |> String.trim() |> String.split(~r/\R/u, parts: 2) |> hd() do
+      "" -> "Feature #{String.slice(id, 0, 8)}"
+      name -> name
     end
   end
 

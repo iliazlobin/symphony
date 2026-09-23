@@ -105,10 +105,76 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     specs = Tools.specs()
 
     assert Enum.map(specs, & &1["name"]) ==
-             ~w(symphony_view_context symphony_project_status symphony_search_tasks symphony_task_details symphony_read_project_document symphony_propose_action)
+             ~w(symphony_view_context symphony_project_status symphony_search_tasks symphony_pr_session symphony_task_details symphony_read_project_document symphony_propose_action)
 
     assert Enum.all?(specs, &(&1["inputSchema"]["additionalProperties"] == false))
     refute Jason.encode!(specs) =~ "github_api"
+  end
+
+  test "PR chat resolves its immutable worker and sends only exact-session commands", ctx do
+    id = String.duplicate("a", 32)
+
+    put_pr_work(ctx, id, %{
+      "phase" => "owner_review",
+      "instruction" => "Implement feature",
+      "head_sha" => String.duplicate("b", 40),
+      "handoff" => %{"summary" => "Validation complete", "review" => %{"verdict" => "approve"}}
+    })
+
+    owner = start_supervised!({CommandOwner, self()})
+    context = Map.merge(ctx.context, %{task_id: "github:example/repo:1", session_id: "work:" <> id, orchestrator: owner})
+    assert {:ok, %{"work_id" => ^id, "work" => %{"result" => "Validation complete"}}} = Tools.call("symphony_pr_session", %{}, context)
+    assert {:error, :pr_session_scope_mismatch} = Tools.call("symphony_pr_session", %{"task_id" => "2"}, context)
+    proposal = propose(context, %{"action" => "continue_pr_work", "task_id" => "1", "work_id" => id, "body" => "Fix the failing check and report your validation"})
+    assert {:ok, _} = Tools.confirm(proposal, context)
+    assert_receive {:native_command, command, _, true}
+    assert command["work_id"] == id
+    assert command["instruction"] == "Fix the failing check and report your validation"
+    assert command["expected_head_sha"] == String.duplicate("b", 40)
+
+    for args <- [
+          %{"action" => "continue_pr_work", "task_id" => "1", "work_id" => String.duplicate("c", 32), "body" => "Wrong worker"},
+          %{"action" => "cancel", "task_id" => "2"},
+          %{"action" => "edit_task", "task_id" => "1", "title" => "Change issue"},
+          %{"action" => "pause"},
+          %{"action" => "create_pr_work", "task_id" => "1", "body" => "Another PR"}
+        ] do
+      assert {:error, :pr_session_scope_mismatch} = Tools.call("symphony_propose_action", args, context)
+    end
+
+    refute_receive {:native_command, _, _, _}
+  end
+
+  test "PR chat rechecks selected work before confirming cancel or retry", ctx do
+    id = String.duplicate("a", 32)
+    put_pr_work(ctx, id, %{"phase" => "paused"})
+    owner = start_supervised!({CommandOwner, self()})
+    context = Map.merge(ctx.context, %{task_id: "github:example/repo:1", session_id: "work:" <> id, orchestrator: owner})
+
+    for action <- ["cancel", "retry"] do
+      board = Application.fetch_env!(:symphony_elixir, :chat_test_board)
+      Application.put_env(:symphony_elixir, :chat_test_board, put_in(board, [:tasks, Access.at(0), :ledger, "selected_work_id"], id))
+      proposal = propose(context, %{"action" => action, "task_id" => "1"})
+      Application.put_env(:symphony_elixir, :chat_test_board, put_in(board, [:tasks, Access.at(0), :ledger, "selected_work_id"], String.duplicate("c", 32)))
+      assert {:error, :pr_session_scope_mismatch} = Tools.confirm(proposal, context)
+      assert {:error, :pr_session_scope_mismatch} = Tools.call("symphony_propose_action", %{"action" => action, "task_id" => "1"}, context)
+    end
+
+    refute_receive {:native_command, _, _, _}
+  end
+
+  test "attributed external PR chats allow discussion without adopting a coding agent", ctx do
+    pr = %{number: 7, title: "External PR", url: "https://github.com/example/repo/pull/7", state: "open"}
+    board = put_in(ctx.board, [:tasks, Access.at(0), :pull_requests], [pr])
+    Application.put_env(:symphony_elixir, :chat_test_board, board)
+    context = Map.merge(ctx.context, %{task_id: "github:example/repo:1", session_id: "pr:7"})
+    assert {:ok, %{"work_id" => nil, "pr_number" => 7}} = Tools.call("symphony_pr_session", %{}, context)
+    assert {:error, :pr_session_read_only} = Tools.call("symphony_propose_action", %{"action" => "cancel", "task_id" => "1"}, context)
+    assert {:error, :pr_session_unavailable} = Tools.resolve_session(context.task_id, "pr:99", context)
+    missing_session = %{context | session_id: "pr:99"}
+    assert {:error, :pr_session_unavailable} = Tools.call("symphony_propose_action", %{"action" => "cancel", "task_id" => "1"}, missing_session)
+    Application.put_env(:symphony_elixir, :chat_test_board, %{board | source_error: "Unavailable"})
+    assert {:error, :board_unavailable} = Tools.resolve_session(context.task_id, "pr:7", context)
   end
 
   test "GitHub priority labels produce a single consistent board priority" do

@@ -300,6 +300,63 @@ defmodule SymphonyElixir.Chat.PersistenceTest do
     Persistence.close(owner)
   end
 
+  test "PR bindings and report receipts validate on write and reload without replacing valid history", c do
+    session = "work:" <> String.duplicate("c", 32)
+    task = c.chat["project_id"] <> ":11"
+    id = Persistence.session_conversation_id(c.chat["project_id"], task, session, "scope")
+    report = message() |> Map.merge(%{"role" => "assistant", "status" => "completed", "origin" => "pr_update", "session_id" => session})
+
+    record =
+      c.chat
+      |> Map.merge(%{
+        "id" => id,
+        "task_id" => task,
+        "session_id" => session,
+        "conversation_role" => "pr",
+        "messages" => [report],
+        "pr_report_receipts" => %{(session <> "/worker") => String.duplicate("a", 64)},
+        "pr_observed_at" => "2026-09-23T10:00:00Z"
+      })
+
+    {:ok, owner, %{}} = Persistence.open(c.root)
+    assert :ok = Persistence.put(owner, record)
+    original = File.read!(record_path(c.root, record))
+
+    invalid = [
+      Map.put(record, "session_id", "pr:../1"),
+      Map.put(record, "session_id", "pr:7"),
+      Map.put(record, "task_id", "github:other/repo:11"),
+      Map.put(record, "conversation_role", "task"),
+      Map.put(record, "conversation_role", "legacy"),
+      Map.put(record, "pr_report_receipts", []),
+      Map.put(record, "pr_report_receipts", %{"worker" => "invalid"}),
+      Map.put(record, "pr_report_receipts", %{String.duplicate("a", 65) => String.duplicate("b", 64)}),
+      Map.put(record, "pr_report_receipts", Map.new(1..101, &{to_string(&1), String.duplicate("b", 64)})),
+      Map.put(record, "pr_observed_at", 99),
+      Map.put(record, "pr_observed_at", "bad-date"),
+      Map.put(record, "messages", [Map.put(report, "role", "user")]),
+      Map.put(record, "messages", [Map.put(report, "session_id", nil)]),
+      Map.put(record, "messages", [Map.put(report, "text", String.duplicate("x", 8_001))])
+    ]
+
+    for bad <- invalid do
+      assert {:error, :chat_storage_unavailable} = Persistence.put(owner, bad)
+      assert File.read!(record_path(c.root, record)) == original
+    end
+
+    Persistence.close(owner)
+
+    for bad <- invalid do
+      File.write!(record_path(c.root, record), Jason.encode!(bad))
+      assert_unavailable_after_release(c.root)
+    end
+
+    File.write!(record_path(c.root, record), original)
+    {owner, loaded} = open_when_released(c.root)
+    assert loaded[id] == record
+    Persistence.close(owner)
+  end
+
   test "record size and conversation count limits reject unbounded persisted state", c do
     {:ok, owner, %{}} = Persistence.open(c.root)
     oversized = Map.put(c.chat, "oversized", String.duplicate("x", 8_000_001))

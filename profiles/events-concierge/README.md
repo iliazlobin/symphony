@@ -94,9 +94,9 @@ The always-visible filters narrow status, priority, milestone, labels and assign
 sorting apply within each lane. Manual drag ordering is saved in this browser and
 does not change scheduler priority. GitHub issues without a priority remain unspecified.
 
-Click a card to select its chat; click only its title text or **Settings** to open a popup above the board. **Close**, **Escape**,
-or clicking outside the popup returns to the same filters and position. Settings
-has **Execution**, **AI & chat**, and **Connections** tabs:
+Click a card to select its chat; click its title to open details. Click outside the
+card details or press **Escape** to close them, retaining selection, filters and position.
+**Settings** opens a separate popup with **Execution**, **AI & chat**, and **Connections** tabs:
 
 - **Execution:** pause/drain/resume, maximum concurrent tasks, and read-only per-task
   budgets. Sign in, change the limit, then confirm. The range is 1 through the
@@ -266,7 +266,7 @@ updates and cancellation. Write proposals still require confirmation of the exac
 The headline picker groups issues by activity category, with Done last, and sorts each
 group newest first. Rows show creation date, priority, PR count and latest update;
 exact timestamps are available on hover. Search a category, issue number, title or
-recent activity. The selected issue's GitHub and card shortcuts stay in that picker.
+recent activity. Each issue appears once; there is no duplicate footer.
 The full-width **Pull requests** selector lists only GitHub-linked or Symphony-published
 PRs for the issue. Incidental mentions are excluded. Search by number, title or status;
 a published PR's retained work session opens its details on the card.

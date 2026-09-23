@@ -43,6 +43,7 @@ defmodule SymphonyElixir.Application do
       SymphonyElixir.Chat.Store,
       SymphonyElixirWeb.BrowserSessions,
       SymphonyElixirWeb.BoardCache,
+      SymphonyElixir.Chat.PRUpdates,
       SymphonyElixir.HttpServer,
       SymphonyElixir.StatusDashboard
     ]
