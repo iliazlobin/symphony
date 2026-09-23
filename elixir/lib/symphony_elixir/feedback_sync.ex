@@ -293,11 +293,11 @@ defmodule SymphonyElixir.FeedbackSync do
   end
 
   defp guard(state, captured, id, body, key) do
-    with true <- Journal.owned?(state.journal),
-         {:ok, current} <- context(state),
+    with {:ok, current} <- context(state),
          true <- current.tag == captured.tag,
          ledger when is_map(ledger) <- current.snapshot["issues"][id],
-         true <- render(selected(ledger, current, id), key) == body do
+         true <- render(selected(ledger, current, id), key) == body,
+         true <- Journal.owned?(state.journal) do
       :ok
     else
       _ -> {:error, :feedback_scope_or_progress_changed}

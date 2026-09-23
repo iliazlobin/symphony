@@ -182,8 +182,10 @@ Comment counts show working, addressed, blocked and remaining feedback. Bounded 
 reads share the board cache; partial or unavailable data is identified. Each selected
 comment needs an evidence-backed disposition in the candidate handoff. A single GitHub
 issue reply tracks the selected PR session’s current batch with 👀 working, ✅ addressed and ❗ blocked,
-plus queued status and source links. Its durable local delivery journal prevents blind
-reposting after uncertain writes. It does not resolve review threads or accept the task.
+plus queued status and source links. The private delivery journal at
+`<control.state_path>.feedback/deliveries.json` prevents blind reposting after uncertain
+writes; preserve it with the ledger during backup and recovery. The reply does not
+resolve review threads or accept the task.
 Several comments can be handled in one PR session; the working count is not a worker count.
 
 There is no Move dropdown, manual Refresh button or hidden-column rail. The board
@@ -501,7 +503,7 @@ changed base merely because their checks passed.
 - For each existing private configuration, drain, wait for workers and chat turns to
   finish, then pause and stop its installed agents using the current release. Use
   the explicit `--config` path; verify the agents are unloaded before replacing them.
-- Preserve the previous release and private configuration, workflow, ledger, receipts
+- Preserve the previous release and private configuration, workflow, ledger, feedback journal, receipts
   and chat state for recovery. Point `profile_bin` and the reviewed launch-agent
   program paths and working directory at the new release. Keep the same origins,
   credentials, gates and state directories; leave uninstalled publishers disabled.

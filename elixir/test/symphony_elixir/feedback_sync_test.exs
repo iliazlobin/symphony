@@ -232,6 +232,25 @@ defmodule SymphonyElixir.FeedbackSyncTest do
     assert {:error, _} = Journal.put(journal, String.duplicate("a", 64), pending)
   end
 
+  test "journal lock loss during native context read leaves pending intent without posting", c do
+    update_work(c, &Map.put(&1, "feedback", []))
+    FeedbackSync.sync(c.pid)
+    lock = :sys.get_state(c.pid).journal.lock
+    path = c.root <> "/control.json.feedback/deliveries.json"
+
+    context = fn ->
+      current = Agent.get(c.source, & &1)
+      if File.exists?(path), do: Port.close(lock)
+      {:ok, current}
+    end
+
+    :sys.replace_state(c.pid, &%{&1 | context: context})
+    update_work(c, &Map.put(&1, "feedback", [c.item]))
+    FeedbackSync.sync(c.pid)
+    assert writes(c) == []
+    assert [%{"state" => "pending"}] = records(c)
+  end
+
   test "native lifetime change after journaling leaves a recoverable intent without posting", c do
     context = fn ->
       current = Agent.get(c.source, & &1)
