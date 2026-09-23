@@ -864,6 +864,21 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   @tag :threads_fixture
+  test "card dismissal preserves restoration focus in the all-projects view", ctx do
+    other = %{id: "github:other/repo", label: "Other", url: nil}
+    :ok = GenServer.call(ctx.runtime, {:board, %{ctx.board | projects: ctx.board.projects ++ [other]}})
+    view = authorized_board_view()
+    open_task(view, "2")
+    render_click(view, "close-dialog")
+    refute has_element?(view, "#board-dialog")
+    refute_push_event(view, "focus-chat-session", %{})
+    open_task(view, "2")
+    view |> element("#board-dialog .task-reference-links a", "Issue chat") |> render_click()
+    assert_push_event(view, "focus-chat-session", %{})
+    refute has_element?(view, "#board-dialog")
+  end
+
+  @tag :threads_fixture
   test "issue picker shows compact metadata and the PR selector follows only the selected issue", ctx do
     prs = for number <- [7, 8], do: %{number: number, title: "Task change #{number}", url: "https://github.com/example/fixture/pull/#{number}", state: "open"}
     unpublished_id = String.duplicate("b", 32)

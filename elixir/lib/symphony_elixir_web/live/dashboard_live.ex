@@ -67,7 +67,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     chat_session = if Sessions.valid_id?(params["chat_session"]), do: params["chat_session"]
     previous_selection = {socket.assigns.chat_project, socket.assigns.chat_task_id, socket.assigns.chat_session_id}
     selection_changed = {project, chat_task, chat_session} != previous_selection
-    focus_chat = focus_session_navigation?(socket, params, selection_changed)
+    focus_chat = focus_session_navigation?(socket, params)
     socket = if selection_changed || filters != socket.assigns.url_filters, do: clear_view_context(socket), else: socket
 
     socket =
@@ -1306,9 +1306,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
     socket |> clear_intake_subscription() |> assign(:dialog, nil) |> assign(:linked_task, nil) |> clear_view_context()
   end
 
-  defp focus_session_navigation?(socket, params, changed) do
+  defp focus_session_navigation?(socket, params) do
     is_binary(params["chat_task"]) and is_nil(params["task"]) and
-      (changed or is_binary(socket.assigns.linked_task))
+      is_binary(socket.assigns.linked_task)
   end
 
   defp focus_chat_session(socket, task_id, session) do
