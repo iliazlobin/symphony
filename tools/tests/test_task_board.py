@@ -12,8 +12,8 @@ class TaskBoardHookTests(unittest.TestCase):
 const assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
 const source = fs.readFileSync(process.argv[1], "utf8");
 const plain = value => JSON.parse(JSON.stringify(value));
-function mount(savedPrefs = {}, urlFilters = {}) {
-  const sent = [], listeners = new Map(), elements = new Map(), timers = new Map();
+function mount(savedPrefs = {}, urlFilters = {}, projects = [{id:"github:example/repo",label:"Example"}], projectLinks = []) {
+  const navigations = [], sent = [], listeners = new Map(), elements = new Map(), timers = new Map();
   const saved = new Map([["symphony.board.v1:fixture", JSON.stringify(savedPrefs)]]);
   let timerId = 0;
   const classes = () => {const values = new Set(); return {add: (...names) => names.forEach(name => values.add(name)), remove: (...names) => names.forEach(name => values.delete(name)), contains: name => values.has(name)};};
@@ -34,7 +34,7 @@ function mount(savedPrefs = {}, urlFilters = {}) {
     lane.container.children.push(card); return card;
   }
   const backlog=add("backlog","backlog"), queued=add("queued","ready",["bug, ui"],["alice","bob"],{id:"7",title:"Launch"}), running=add("running","running",["backend"],["bob"]), reviewed=add("reviewed","review"), done=add("done","done");
-  const el = {dataset:{scope:"fixture",projects:JSON.stringify([{id:"github:example/repo",label:"Example"}]),urlFilters:JSON.stringify(urlFilters)},style:{},addEventListener:(name,handler)=>listeners.set(name,handler),
+  const el = {dataset:{scope:"fixture",projects:JSON.stringify(projects),projectLinks:JSON.stringify(projectLinks),urlFilters:JSON.stringify(urlFilters)},style:{},addEventListener:(name,handler)=>listeners.set(name,handler),
     querySelectorAll(selector) {if(["[data-task-id]",".task-card[data-task-id]"].includes(selector))return allCards();if(selector==="[data-stage]")return [...lanes.values()];if(selector===".drop-target,.drop-before,.drop-after")return [...lanes.values(),...allCards()];return [];},
     querySelector(selector) {
       if(selector.startsWith('[data-stage="')) {const lane=lanes.get(selector.match(/="([^"]+)"/)[1]);if(selector.includes("[data-lane-count]"))return lane.count;if(selector.includes(".task-card"))return lane.querySelector(".task-card:not([hidden])");return lane;}
@@ -43,12 +43,43 @@ function mount(savedPrefs = {}, urlFilters = {}) {
       return elements.get(selector);
     }};
   elements.set("[data-mobile-lane]",{value:"",options:[...lanes.keys()].map(value=>({value}))});
-  const sandbox = {TextEncoder, AbortController, URLSearchParams, window:{matchMedia:()=>({matches:false,addEventListener(){}}),addEventListener(){},getSelection:()=>null,location:{search:""},innerWidth:1400,innerHeight:900},document:{addEventListener(){}},localStorage:{getItem:key=>saved.get(key),setItem:(key,value)=>saved.set(key,value)},setTimeout:(fn)=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id)};
+  const sandbox = {TextEncoder, AbortController, URLSearchParams, window:{matchMedia:()=>({matches:false,addEventListener(){}}),addEventListener(){},getSelection:()=>null,location:{search:"",assign:url=>navigations.push(url)},innerWidth:1400,innerHeight:900},document:{addEventListener(){}},localStorage:{getItem:key=>saved.get(key),setItem:(key,value)=>saved.set(key,value)},setTimeout:(fn)=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id)};
   vm.runInNewContext(source,sandbox);
   const hook={...sandbox.window.SymphonyHooks.TaskBoard,el,pushEvent:(event,payload)=>sent.push({event,payload})};
   hook.mounted();
-  return {hook,el,sent,saved,listeners,lanes,queued,running,backlog,done,elements,visible:()=>allCards().filter(card=>!card.hidden).map(card=>card.dataset.taskId),flush:()=>{const jobs=[...timers.values()];timers.clear();jobs.forEach(fn=>fn());}};
+  return {hook,el,navigations,sent,saved,listeners,lanes,queued,running,backlog,done,elements,visible:()=>allCards().filter(card=>!card.hidden).map(card=>card.dataset.taskId),flush:()=>{const jobs=[...timers.values()];timers.clear();jobs.forEach(fn=>fn());}};
 }
+// A single selector combines local scope and trusted remote boards without mixing their state.
+const projects = [{id:"github:example/repo",label:"example/repo"},{id:"github:example/other",label:"Other"}];
+const projectLinks = [{id:"github:example/repo",label:"Example project",url:"http://localhost:8778/"},{id:"github:example/remote",label:"Remote project",url:"http://localhost:8779/"}];
+const picker = mount({}, {project:"github:example/repo",status:"work",label:'["label:backend"]'}, projects, projectLinks);
+assert.equal(picker.elements.get("#filter-project").placeholder,"Example project");
+assert.equal(picker.elements.get("#filter-project").title,"Example project");
+assert.deepEqual(plain(picker.hook.options("project")),[["github:example/repo","Example project"],["github:example/other","Other"]]);
+picker.hook.openFilter("project");
+const rendered = picker.elements.get("#options-project").innerHTML;
+assert(rendered.includes('href="http://localhost:8779/"'));
+assert(!rendered.includes('href="http://localhost:8778/"')); // Selecting the current controller filters locally.
+assert(rendered.includes("All projects"));assert(rendered.includes("example/remote"));
+picker.hook.toggle("project", "github:example/other");
+assert.equal(picker.hook.popup,null);assert.equal(picker.elements.get("#filter-project").placeholder,"Other");
+assert.deepEqual(plain(picker.hook.prefs.project),["github:example/other"]);
+assert.deepEqual(plain(picker.hook.prefs.status),["work"]);assert.deepEqual(plain(picker.hook.prefs.label),["label:backend"]);
+picker.hook.openFilter("project");picker.hook.toggle("project", "");
+assert.equal(picker.elements.get("#filter-project").placeholder,"All projects");
+assert.deepEqual(plain(picker.hook.prefs.project),[]);assert.deepEqual(picker.visible(),["running"]);
+picker.flush();
+const beforeRemote = JSON.stringify(picker.hook.prefs), eventsBeforeRemote = picker.sent.length;
+picker.hook.toggle("project", "github:example/remote");
+assert.deepEqual(picker.navigations,["http://localhost:8779/"]); // No filter query, task binding or credential is transferred.
+assert.equal(JSON.stringify(picker.hook.prefs),beforeRemote);assert.equal(picker.sent.length,eventsBeforeRemote);
+assert.deepEqual(plain(picker.hook.filterValues("project", ["github:example/remote"])),[]);
+picker.elements.get("#filter-project").value = "example/remote";
+assert.deepEqual(plain(picker.hook.drawOptions("project")),[["github:example/remote","Remote project","http://localhost:8779/"]]);
+const single = mount({}, {}, [projects[0]], projectLinks);
+assert.equal(single.elements.get("#filter-project").placeholder,"Example project");
+const multi = mount({project:projects.map(project=>project.id)}, {}, projects, projectLinks);
+assert.equal(multi.elements.get("#filter-project").placeholder,"2 projects");
 // Existing browser preferences retain useful order and metadata, but cannot hide Done.
 const b = mount({lane:"running",hiddenLanes:["done","running"],order:{ready:["queued","shared"],running:["running","shared"],done:["done"]},label:["label:bug, ui"]});
 assert.equal(b.hook.prefs.lane,"work");

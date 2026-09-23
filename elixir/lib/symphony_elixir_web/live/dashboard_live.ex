@@ -597,6 +597,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def render(assigns) do
+    project_links = SymphonyElixir.ProjectDirectory.links()
+
     assigns =
       assign(assigns,
         authorized: BrowserAuth.authorized?(assigns.auth),
@@ -607,34 +609,24 @@ defmodule SymphonyElixirWeb.DashboardLive do
         controls_available: controls_available?(assigns),
         dispatch_guidance: dispatch_guidance(assigns.board, assigns.payload),
         settings_projects: Enum.map(assigns.board.projects, &Map.put(&1, :url, safe_url(&1.url))),
-        project_links: SymphonyElixir.ProjectDirectory.links()
+        project_links: project_links,
+        project_picker_label: project_picker_label(assigns.board, assigns.url_filters, project_links)
       )
 
     ~H"""
     <section id="task-board-app" class="dashboard-shell" phx-hook="TaskBoard" data-density="compact" data-theme="light"
       data-chat-open="true" data-chat-project={@chat_project} data-board-checked-at={@board.generated_at} data-context-revision={@context_revision}
-      data-scope={scope(@board)} data-projects={Jason.encode!(@board.projects)} data-url-filters={Jason.encode!(@url_filters)} data-selected-task={@chat_task_id}>
+      data-scope={scope(@board)} data-projects={Jason.encode!(@board.projects)} data-project-links={Jason.encode!(@project_links)} data-url-filters={Jason.encode!(@url_filters)} data-selected-task={@chat_task_id}>
       <div class="board-main">
       <header class="board-header">
         <div class="board-location">
           <a href="/" class="brand"><span class="brand-mark" aria-hidden="true">∿</span> Symphony</a>
           <span class="header-divider" aria-hidden="true">/</span>
-          <span :if={@project_links == []} class="board-heading">Projects</span>
-          <details :if={@project_links != []} id="project-directory" class="board-menu project-directory">
-            <summary>Projects <span aria-hidden="true">⌄</span></summary>
-            <nav class="project-directory-links" aria-label="Project boards">
-              <a :for={project <- @project_links} href={project["url"]}
-                aria-current={if Enum.any?(@board.projects, &(&1.id == project["id"])), do: "page"}>
-                <strong>{project["label"]}</strong><span>{String.replace_prefix(project["id"], "github:", "")}</span>
-              </a>
-            </nav>
-          </details>
-          <span class="header-divider" aria-hidden="true">/</span>
           <div id="board-project-picker" class="filter-combo project-combo" data-filter="project" phx-update="ignore">
-            <div class="combo-control"><input id="filter-project" role="combobox" aria-label="Project filter"
+            <div class="combo-control"><input id="filter-project" role="combobox" aria-label="Select project"
               autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="options-project"
-              placeholder="All projects" /><button type="button" data-filter-toggle="project" aria-label="Open project filter">⌄</button></div>
-            <div id="options-project" class="combo-options" role="listbox" aria-label="Project options" aria-multiselectable="true" hidden></div>
+              placeholder={@project_picker_label} title={@project_picker_label} /><button type="button" data-filter-toggle="project" aria-label="Open project selector">⌄</button></div>
+            <div id="options-project" class="combo-options" role="listbox" aria-label="Project options" hidden></div>
           </div>
         </div>
         <span class="header-spacer"></span>
@@ -1429,6 +1421,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
       <span :if={@queued > 0} class="card-chat-queued">{@queued} queued{if @paused, do: " · paused"}</span>
     </div>
     """
+  end
+
+  defp project_picker_label(board, filters, links) do
+    case Enum.find(board.projects, &(&1.id == selected_project(board, filters))) do
+      nil -> "All projects"
+      project -> Enum.find_value(links, project.label, &if(&1["id"] == project.id, do: &1["label"]))
+    end
   end
 
   defp selected_project(board, filters) do

@@ -72,12 +72,20 @@
         this.metadataOptions = options;
       };
       this.options = key => {
-        if (key === "project") return parse(this.el.dataset.projects, []).map(p => [p.id, p.label]);
+        if (key === "project") {
+          const directory = parse(this.el.dataset.projectLinks, []);
+          return parse(this.el.dataset.projects, []).map(p => [p.id, directory.find(link => link.id === p.id)?.label || p.label]);
+        }
         if (key === "status") return [...lanes, ["ready", "Queued"], ["running", "Running"], ["attention", "Needs input"]];
         if (key === "priority") return [["P1", "P1 · High"], ["P2", "P2 · Normal"], ["P3", "P3 · Low"], ["P4", "P4 · Lowest"], ["—", "Unspecified"]];
         const options = new Map(this.metadataOptions?.[key] || []);
         for (const value of this.prefs[key]) if (value !== "__none__" && !options.has(value)) options.set(value, this.metadataLabel(key, value));
         return [...options].sort((a, b) => a[1].localeCompare(b[1])).concat([["__none__", emptyMetadata[key]]]);
+      };
+      this.projectChoices = () => {
+        const local = this.options("project");
+        const remote = parse(this.el.dataset.projectLinks, []).filter(link => !local.some(([id]) => id === link.id));
+        return [["", "All projects"], ...local, ...remote.map(link => [link.id, link.label, link.url])];
       };
       this.metadataWithinLimits = values => values.length <= 20 && values.every(value => byteLength(value) <= 240) && byteLength(JSON.stringify(values)) <= 2000;
       this.filterValues = (key, values) => {
@@ -165,17 +173,32 @@
       };
       this.drawOptions = key => {
         const input = this.el.querySelector("#filter-" + key), list = this.el.querySelector("#options-" + key);
-        const options = this.options(key).filter(([, label]) => label.toLowerCase().includes(input.value.toLowerCase()));
+        const choices = key === "project" ? this.projectChoices() : this.options(key);
+        const options = choices.filter(([id, label]) => (key === "project" ? `${label} ${id}` : label).toLowerCase().includes(input.value.toLowerCase()));
         this.activeOption = Math.min(Math.max(0, this.activeOption), Math.max(0, options.length - 1));
         input.setAttribute("aria-expanded", String(this.popup === key));
         list.hidden = this.popup !== key;
-        list.innerHTML = options.length ? options.map(([value, label], i) => `<button type="button" role="option" class="combo-option" id="option-${key}-${i}" data-key="${key}" data-value="${escapeText(value)}" data-active="${i === this.activeOption}" aria-selected="${this.prefs[key].includes(value)}"><span>${escapeText(label)}</span><span aria-hidden="true">${this.prefs[key].includes(value) ? "✓" : ""}</span></button>`).join("") : '<p class="option-empty">No matches</p>';
+        list.innerHTML = options.length ? options.map(([value, label, href], i) => {
+          const selected = this.prefs[key].includes(value) || (key === "project" && !this.prefs.project.length && (this.options(key).length === 1 ? value === this.options(key)[0][0] : value === ""));
+          const tag = href ? "a" : "button", action = href ? `href="${escapeText(href)}"` : `type="button" data-key="${key}" data-value="${escapeText(value)}"`;
+          const subtitle = key === "project" && value ? `<small>${escapeText(value.replace(/^github:/, ""))}</small>` : "";
+          return `<${tag} ${action} role="option" class="combo-option" id="option-${key}-${i}" data-active="${i === this.activeOption}" aria-selected="${selected}" title="${escapeText(label)}"><span>${escapeText(label)}${subtitle}</span><span aria-hidden="true">${selected ? "✓" : href ? "↗" : ""}</span></${tag}>`;
+        }).join("") : '<p class="option-empty">No matches</p>';
         if (this.popup === key && options.length) input.setAttribute("aria-activedescendant", `option-${key}-${this.activeOption}`);
         else input.removeAttribute("aria-activedescendant");
         return options;
       };
       this.openFilter = key => { this.closeMenus(); if (this.popup !== key) this.closeFilter(); this.popup = key; this.activeOption = 0; this.drawOptions(key); };
       this.toggle = (key, value) => {
+        if (key === "project") {
+          const choice = this.projectChoices().find(([id]) => id === value);
+          if (!choice) return;
+          if (choice[2]) { window.location.assign(choice[2]); return; }
+          this.prefs.project = value ? [value] : [];
+          this.el.querySelector("#filter-project").focus({preventScroll: true});
+          this.closeFilter(); this.apply(); this.save();
+          return;
+        }
         const values = this.prefs[key].includes(value) ? this.prefs[key].filter(v => v !== value) : [...this.prefs[key], value];
         if (metadataFilters.includes(key) && !this.metadataWithinLimits(values)) {
           this.announce("Filter selection is too large to save. Choose fewer or shorter values (up to 20 per filter).");
@@ -271,8 +294,12 @@
         for (const option of mobile.options) option.textContent = `${lanes.find(([s]) => s === option.value)[1]} (${this.el.querySelector(`[data-stage="${option.value}"] [data-lane-count]`).textContent})`;
         this.el.querySelector("[data-filter-chips]").innerHTML = boardFilters.filter(key => key !== "project").flatMap(key => this.prefs[key].map(value => { const label = this.options(key).find(([id]) => id === value)?.[1] || value; return `<button type="button" class="filter-chip" data-remove-key="${key}" data-remove-value="${escapeText(value)}" aria-label="Remove ${key} filter ${escapeText(label)}">${escapeText(label)} <span aria-hidden="true">×</span></button>`; })).join("");
         for (const key of boardFilters) {
-          const selectedProject = key === "project" && this.prefs.project.length === 1 ? this.options(key).find(([id]) => id === this.prefs.project[0])?.[1] : null;
-          this.el.querySelector("#filter-" + key).placeholder = selectedProject || `${filterNames[key]}: ${this.prefs[key].length ? this.prefs[key].length + " selected" : "All"}`;
+          const projects = key === "project" ? this.options(key) : [];
+          const selectedProject = this.prefs.project.length === 1 ? projects.find(([id]) => id === this.prefs.project[0])?.[1] : !this.prefs.project.length && projects.length === 1 ? projects[0][1] : null;
+          const label = key === "project" ? selectedProject || (this.prefs.project.length ? `${this.prefs.project.length} projects` : "All projects") : `${filterNames[key]}: ${this.prefs[key].length ? this.prefs[key].length + " selected" : "All"}`;
+          const input = this.el.querySelector("#filter-" + key);
+          input.placeholder = label;
+          input.title = label;
         }
         this.scheduleContext();
       };

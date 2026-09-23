@@ -98,11 +98,16 @@ input, select {
 .header-divider { color: var(--line); font-size: 18px; }
 .board-heading { font-size: 13px; font-weight: 500; }
 .board-location { display: flex; align-items: center; gap: 12px; min-width: 0; max-width: 100%; }
-.board-location > .brand, .board-location > .board-heading, .board-location > .header-divider { flex-shrink: 0; }
+.board-location > .brand, .board-location > .header-divider { flex-shrink: 0; }
 .board-location .project-combo { flex: 0 1 250px; width: 250px; }
 .board-location .combo-control { border-color: transparent; }
 .board-location .combo-control:hover, .board-location .combo-control:focus-within { background: var(--soft); }
 .board-location .combo-control input { text-overflow: ellipsis; }
+.board-location .combo-control input::placeholder { color: var(--fg); opacity: 1; }
+.project-combo .combo-option small { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
+.project-combo .combo-option { color: inherit; text-decoration: none; }
+.project-combo .combo-option:hover { background: var(--soft); }
+.project-combo .combo-options { left: auto; right: 0; }
 .dashboard-shell .board-header .button { font-size: 12px; padding: 5px 9px; border-radius: 5px; }
 .header-subtitle { padding-left: 14px; border-left: 1px solid var(--line); color: var(--muted); }
 .header-spacer { flex: 1; }
@@ -622,13 +627,6 @@ summary { cursor: pointer; color: var(--accent); }
 .intake-history .intake-history-item { padding: 10px 4px; font-size: 13px; }
 .intake-history .muted, .intake-result .evidence-badge { font-size: 12px; }
 
-.project-directory { position: relative; }
-.project-directory > summary { display: flex; align-items: center; gap: .5rem; padding: .45rem .6rem; border-radius: .5rem; cursor: pointer; list-style: none; white-space: nowrap; }
-.project-directory > summary:hover, .project-directory[open] > summary { background: var(--soft); }
-.project-directory-links { position: absolute; top: calc(100% + .5rem); left: 0; z-index: 40; width: 18rem; max-width: calc(100vw - 2rem); padding: .4rem; border: 1px solid var(--line); border-radius: .75rem; background: var(--panel); box-shadow: 0 12px 32px #20202d18; }
-.project-directory-links a { display: flex; flex-direction: column; gap: .2rem; padding: .7rem .8rem; border-radius: .45rem; color: inherit; text-decoration: none; }
-.project-directory-links a:hover, .project-directory-links a[aria-current="page"] { background: var(--soft); }
-.project-directory-links span { color: var(--muted); font-size: .8rem; }
 
 /* A task keeps its own conversation and pending messages beside the board. */
 .chat-bound-title strong { overflow-wrap: anywhere; }
