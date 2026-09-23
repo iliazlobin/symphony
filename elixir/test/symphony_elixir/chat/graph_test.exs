@@ -139,6 +139,77 @@ defmodule SymphonyElixir.Chat.GraphTest do
     end
   end
 
+  test "shared PR references point to one feature without giving other tasks supervision or reports" do
+    [project, owner, feature] = hierarchy()
+    linked = chat("task", project["project_id"], "scope", project["project_id"] <> ":2")
+    rotated = chat("task", project["project_id"], "rotated", project["project_id"] <> ":3")
+    foreign = chat("task", "github:other/repo", "scope", "github:other/repo:4")
+    missing = project["project_id"] <> ":5"
+    feature = Map.put(feature, "agent_task_refs", [owner["task_id"], linked["task_id"], linked["task_id"], rotated["task_id"], foreign["task_id"], missing, nil])
+    records = [project, owner, feature, linked, rotated, foreign]
+    graph = Graph.export(records)
+    references = Enum.filter(graph["edges"], &(&1["type"] == "references"))
+
+    assert [%{"source" => source, "target" => target}] = references
+    assert source == Graph.node_id(linked["id"])
+    assert target == Graph.node_id(feature["id"])
+    assert node(graph, feature)["parent_id"] == Graph.node_id(owner["id"])
+    assert Graph.relationship(records, owner["id"], feature["id"]) == {:ok, :supervises}
+    assert Graph.relationship(records, feature["id"], owner["id"]) == {:ok, :reports_to}
+    assert Graph.relationship(records, linked["id"], feature["id"]) == {:error, :not_related}
+    assert Graph.relationship(records, feature["id"], linked["id"]) == {:error, :not_related}
+    assert Graph.export(Enum.reverse(records)) == graph
+    assert Jason.decode!(Jason.encode!(graph)) == graph
+
+    # Invalid metadata and ambiguous task identities cannot create reference edges.
+    for invalid <- [nil, %{}, linked["task_id"]] do
+      invalid_records = [project, owner, linked, Map.put(feature, "agent_task_refs", invalid)]
+      refute Enum.any?(Graph.export(invalid_records)["edges"], &(&1["type"] == "references"))
+    end
+
+    ambiguous = Map.put(linked, "id", String.duplicate("e", 32))
+    refute Enum.any?(Graph.export([ambiguous | records])["edges"], &(&1["type"] == "references"))
+  end
+
+  test "cross-task aliases require the same verified PR and scope before contributing pending deliveries" do
+    [project, owner, feature] = hierarchy()
+    feature = Map.merge(feature, %{"pr_number" => 7, "agent_outbox" => [%{"status" => "pending"}]})
+    linked_task = project["project_id"] <> ":2"
+
+    verified =
+      chat("pr", project["project_id"], "scope", linked_task, "pr:7")
+      |> Map.merge(%{"alias_of" => feature["id"], "pr_number" => 7, "agent_outbox" => [%{"status" => "pending"}, %{"status" => "delivered"}]})
+
+    legacy = chat("pr", project["project_id"], "scope", owner["task_id"], "pr:7") |> Map.put("alias_of", feature["id"])
+    records = [project, owner, feature, verified, legacy]
+    result = node(Graph.export(records), feature)
+    assert result["aliases"] == Enum.sort([verified["id"], legacy["id"]])
+    assert result["pending_deliveries"] == 2
+
+    for invalid <- [nil, 0, "7", 8] do
+      rejected = Map.put(verified, "pr_number", invalid)
+      result = node(Graph.export([project, owner, feature, rejected, legacy]), feature)
+      assert result["aliases"] == [legacy["id"]]
+      assert result["pending_deliveries"] == 1
+    end
+
+    # A PR-shaped session ID does not prove that the canonical conversation was verified.
+    unverified_feature = Map.delete(feature, "pr_number")
+    result = node(Graph.export([unverified_feature, verified, legacy]), unverified_feature)
+    assert result["aliases"] == [legacy["id"]]
+    assert result["pending_deliveries"] == 1
+
+    for {other_project, scope} <- [{project["project_id"], "rotated"}, {"github:other/repo", "scope"}] do
+      foreign =
+        chat("pr", other_project, scope, other_project <> ":2", "pr:7")
+        |> Map.merge(%{"alias_of" => feature["id"], "pr_number" => 7, "agent_outbox" => [%{"status" => "pending"}]})
+
+      result = node(Graph.export([feature, foreign]), feature)
+      assert result["aliases"] == []
+      assert result["pending_deliveries"] == 1
+    end
+  end
+
   test "ignores non-agent records and invalid task or session bindings" do
     [project, task, feature] = hierarchy()
 

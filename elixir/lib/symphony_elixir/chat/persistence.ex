@@ -167,8 +167,16 @@ defmodule SymphonyElixir.Chat.Persistence do
       valid_agent_session?(chat) and
       (is_nil(chat["agent_name"]) or bounded_string?(chat["agent_name"], 16_000)) and goal_valid?(chat["agent_goal"]) and
       valid_chains?(Map.get(chat, "agent_chains", %{})) and
-      is_list(Map.get(chat, "agent_outbox", [])) and Enum.all?(Map.get(chat, "agent_outbox", []), &outbox_valid?(&1, chat))
+      valid_task_refs?(Map.get(chat, "agent_task_refs", []), chat["project_id"]) and
+      valid_outbox?(Map.get(chat, "agent_outbox", []), chat)
   end
+
+  defp valid_outbox?(outbox, chat), do: is_list(outbox) and Enum.all?(outbox, &outbox_valid?(&1, chat))
+
+  defp valid_task_refs?(refs, project) when is_list(refs),
+    do: length(refs) <= 500 and Enum.uniq(refs) == refs and Enum.all?(refs, &(is_binary(&1) and valid_task_scope?(project, &1)))
+
+  defp valid_task_refs?(_, _), do: false
 
   defp valid_agent_session?(%{"agent_session_id" => id} = chat),
     do: is_nil(id) or (chat["conversation_role"] == "pr" and Sessions.valid_id?(id))

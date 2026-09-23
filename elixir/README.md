@@ -377,6 +377,9 @@ Previously linked PRs support discussion without automatically adopting a coding
 A verified publication binds the earlier discussion to the same feature agent. Historical
 duplicates reconcile when idle; old links resolve to the canonical conversation without
 losing messages, receipts or queued work.
+PRs linked to several issues share one feature agent: verified native work selects its
+owning task, and other issues reference it. Before publication, the first retained
+discussion owns the conversation. Active turns and pending reports delay reconciliation.
 Existing routing labels, launch permissions, publication and merge gates still apply.
 Worker progress, review handoffs and GitHub state changes are checked every 15 seconds
 and recorded as **PR update** messages in the task agent and matching feature agent conversations.

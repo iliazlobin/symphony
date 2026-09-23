@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.Chat.CoordinationTest do
   use ExUnit.Case, async: false
 
-  alias SymphonyElixir.Chat.{Coordination, Persistence, Sessions, Store}
+  alias SymphonyElixir.Chat.{Coordination, Graph, Persistence, Sessions, Store}
 
   defmodule ControlledRuntime do
     @spec run(map(), function(), function()) :: term()
@@ -78,10 +78,9 @@ defmodule SymphonyElixir.Chat.CoordinationTest do
       runtime: ControlledRuntime,
       tools: NoExternalTools,
       session_reader: fn task_id, session, context ->
-        if task_id == project <> ":11" do
-          Sessions.resolve(Agent.get(source, & &1), session, context.tracker_fingerprint)
-        else
-          {:error, :pr_session_unavailable}
+        case source_task(Agent.get(source, & &1), task_id) do
+          nil -> {:error, :pr_session_unavailable}
+          task -> Sessions.resolve(task, session, context.tracker_fingerprint)
         end
       end
     ]
@@ -770,6 +769,373 @@ defmodule SymphonyElixir.Chat.CoordinationTest do
     assert Enum.find(updated["proposals"], &(&1["id"] == native_proposal["id"])) == native_proposal
     assert length(updated["proposals"]) == 2
     refute_receive {:coordination_runtime, _, _}, 30
+  end
+
+  test "one shared PR retains its first discussion owner and other issue links grant no supervision", c do
+    linked = linked_task(12)
+    set_sources(c, [task(), linked])
+    {:ok, second} = Store.ensure_conversation(c.project, linked.id, c.auth, c.server)
+    result = Store.ensure_pr_conversation(c.project, linked.id, "pr:7", c.auth, c.server)
+    assert {:ok, shared} = result
+    assert shared["id"] == c.feature["id"]
+    assert shared["task_id"] == c.issue["task_id"]
+    assert shared["parent_id"] == c.issue["id"]
+    assert shared["agent_task_refs"] == [task().id, linked.id]
+
+    assert {:ok, graph} = Store.agent_graph(c.project, c.auth, c.server)
+    assert [feature] = Enum.filter(graph["nodes"], &(&1["role"] == "feature"))
+    assert feature["conversation_id"] == c.feature["id"]
+    assert reference_edge?(graph, second, shared)
+    refute supervision_edge?(graph, second, shared)
+    assert supervision_edge?(graph, c.issue, shared)
+
+    {second_agent, _} = launch(c, second, "Inspect the shared feature association")
+    assert tool(second_agent, "symphony_delegate", delegate(shared, "Cannot change the owning task", "reference-route"))["error"]
+    assert read(c, c.feature)["queue"] == []
+  end
+
+  test "verified native ownership moves a shared PR to its owning issue without losing retained work", c do
+    linked = linked_task(12)
+    set_sources(c, [task(), linked])
+    {:ok, owner} = Store.ensure_conversation(c.project, linked.id, c.auth, c.server)
+    assert {:ok, _} = Store.ensure_pr_conversation(c.project, linked.id, "pr:7", c.auth, c.server)
+    :sys.replace_state(c.server, &%{&1 | tools: ProposalOnlyTools})
+    {discussion, _} = launch(c, c.feature, "Discuss the shared PR before native ownership is known")
+    goal_args = %{"text" => "Complete the retained feature review", "status" => "active"}
+    goal = tool(discussion, "symphony_set_goal", goal_args)["goal"]
+    proposal = tool(discussion, "symphony_propose_action", %{"body" => "Keep the earlier review question"})["proposal"]
+    queued_text = "Continue reviewing the same shared PR"
+    assert {:ok, _} = Store.send_message(c.project, c.feature["id"], queued_text, "shared-followup", c.auth, c.server)
+    assert {:ok, _} = Store.stop(c.project, c.feature["id"], c.auth, c.server)
+    wait_chat(c, c.feature, &(&1["status"] == "interrupted"))
+    [queued] = disk(c, c.feature)["queue"]
+
+    native = linked_native_task(12, String.duplicate("b", 32))
+    set_sources(c, [task(), native])
+    result = Store.ensure_pr_conversation(c.project, native.id, work_session(), c.auth, c.server)
+    assert {:ok, canonical} = result
+    expected = Persistence.session_conversation_id(c.project, native.id, work_session(), "scope")
+    assert canonical["id"] == expected
+    assert canonical["task_id"] == native.id
+    assert canonical["parent_id"] == owner["id"]
+    assert canonical["agent_task_refs"] == [task().id, native.id]
+    assert canonical["agent_session_id"] == work_session()
+    assert canonical["queue"] == [queued]
+    assert canonical["queue_paused"]
+    assert canonical["proposals"] == [proposal]
+    assert canonical["agent_goal"] == goal
+    assert Enum.any?(canonical["messages"], &(&1["text"] == "Discuss the shared PR before native ownership is known"))
+    assert disk(c, c.feature)["alias_of"] == expected
+    assert disk(c, c.feature)["queue"] == []
+    assert read(c, c.feature)["id"] == expected
+
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    c = %{c | server: server}
+    assert read(c, c.feature)["id"] == expected
+    result = Store.ensure_pr_conversation(c.project, task().id, "pr:7", c.auth, c.server)
+    assert {:ok, reopened} = result
+    assert reopened["id"] == expected
+    assert reopened["agent_session_id"] == work_session()
+    assert reopened["proposals"] == [proposal]
+    assert reopened["queue"] == [queued]
+    assert reopened["agent_goal"] == goal
+    assert {:ok, graph} = Store.agent_graph(c.project, c.auth, c.server)
+    assert Enum.count(graph["nodes"], &(&1["role"] == "feature")) == 1
+    assert supervision_edge?(graph, owner, canonical)
+    assert reference_edge?(graph, c.issue, canonical)
+    refute supervision_edge?(graph, c.issue, canonical)
+    refute_receive {:coordination_runtime, _, _}, 30
+  end
+
+  test "two different verified native owners of the same PR conflict without replacing its agent", c do
+    first = native_task(true)
+    second = linked_native_task(12, String.duplicate("c", 32))
+    set_sources(c, [first, second])
+    assert {:ok, retained} = Store.ensure_pr_conversation(c.project, first.id, work_session(), c.auth, c.server)
+    second_session = "work:" <> String.duplicate("c", 32)
+    result = Store.ensure_pr_conversation(c.project, second.id, second_session, c.auth, c.server)
+    assert {:error, :chat_binding_conflict} = result
+    assert read(c, retained)["task_id"] == first.id
+    assert read(c, retained)["agent_session_id"] == work_session()
+    assert {:ok, graph} = Store.agent_graph(c.project, c.auth, c.server)
+    assert [feature] = Enum.filter(graph["nodes"], &(&1["role"] == "feature"))
+    assert feature["conversation_id"] == retained["id"]
+    assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
+  end
+
+  test "failed native owner creation leaves the original shared PR history and queue unfenced", c do
+    launch(c, c.feature, "Retain this discussion while discovering the native owner")
+    followup = "Retain the queued review as well"
+    result = Store.send_message(c.project, c.feature["id"], followup, "owner-save-followup", c.auth, c.server)
+    assert {:ok, _} = result
+    assert {:ok, _} = Store.stop(c.project, c.feature["id"], c.auth, c.server)
+    wait_chat(c, c.feature, &(&1["status"] == "interrupted"))
+    original = File.read!(record_path(c, c.feature))
+
+    native = linked_native_task(12, String.duplicate("b", 32))
+    set_sources(c, [task(), native])
+    owner = %{"id" => Persistence.session_conversation_id(c.project, native.id, work_session(), "scope")}
+    File.mkdir!(record_path(c, owner))
+    result = Store.ensure_pr_conversation(c.project, native.id, work_session(), c.auth, c.server)
+    assert {:error, :chat_storage_unavailable} = result
+    assert File.read!(record_path(c, c.feature)) == original
+    assert disk(c, c.feature)["alias_of"] == nil
+    assert read(c, c.feature)["id"] == c.feature["id"]
+    refute Map.has_key?(:sys.get_state(c.server).chats, owner["id"])
+    assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: false}}
+
+    stop_supervised!(Store)
+    File.rmdir!(record_path(c, owner))
+    server = start_supervised!({Store, c.opts})
+    c = %{c | server: server}
+    result = Store.ensure_pr_conversation(c.project, native.id, work_session(), c.auth, c.server)
+    assert {:ok, migrated} = result
+    assert migrated["id"] == owner["id"]
+    assert migrated["messages"] == Jason.decode!(original)["messages"]
+    assert migrated["queue"] == Jason.decode!(original)["queue"]
+    assert migrated["queue_paused"]
+    assert read(c, c.feature)["id"] == owner["id"]
+    refute_receive {:coordination_runtime, _, _}, 30
+  end
+
+  test "cross-issue ownership waits for both an active turn and pending parent delivery", c do
+    native = linked_native_task(12, String.duplicate("b", 32))
+    set_sources(c, [task(), native])
+    launch(c, c.issue, "Hold the original parent")
+    fill_queue(c, c.issue)
+    {discussion, _} = launch(c, c.feature, "Report to the original parent before moving")
+    result = Store.ensure_pr_conversation(c.project, native.id, work_session(), c.auth, c.server)
+    assert {:error, :chat_busy} = result
+    assert disk(c, c.feature)["alias_of"] == nil
+    send(discussion, {:finish, "Pending report for the original owning task"})
+    wait_chat(c, c.feature, &(length(&1["agent_outbox"] || []) == 1))
+    assert [%{"status" => "pending"}] = disk(c, c.feature)["agent_outbox"]
+
+    result = Store.ensure_pr_conversation(c.project, native.id, work_session(), c.auth, c.server)
+    assert {:error, :chat_busy} = result
+    assert disk(c, c.feature)["alias_of"] == nil
+    assert read(c, c.feature)["parent_id"] == c.issue["id"]
+    assert {:ok, graph} = Store.agent_graph(c.project, c.auth, c.server)
+    assert Enum.count(graph["nodes"], &(&1["role"] == "feature")) == 1
+  end
+
+  test "a later native owner flattens both older PR aliases and retains their links after restart", c do
+    linked = linked_task(12)
+    set_sources(c, [task(), linked])
+    {:ok, second_issue} = Store.ensure_conversation(c.project, linked.id, c.auth, c.server)
+    original = disk(c, c.feature)
+    second_id = Persistence.session_conversation_id(c.project, linked.id, "pr:7", "scope")
+
+    # Model the two retained discussion records that predate one-agent-per-PR.
+    legacy =
+      Map.merge(original, %{
+        "id" => second_id,
+        "task_id" => linked.id,
+        "parent_id" => second_issue["id"],
+        "agent_task_refs" => [linked.id]
+      })
+
+    assert :ok = Persistence.put(%{path: c.root}, legacy)
+    :sys.replace_state(c.server, &put_in(&1, [:chats, second_id], legacy))
+
+    result = Store.ensure_pr_conversation(c.project, linked.id, "pr:7", c.auth, c.server)
+    assert {:ok, intermediate} = result
+    raw_records = [disk(c, c.feature), disk(c, %{"id" => second_id})]
+    assert [earlier_alias] = Enum.filter(raw_records, &is_binary(&1["alias_of"]))
+    assert earlier_alias["alias_of"] == intermediate["id"]
+
+    native = linked_native_task(13, String.duplicate("b", 32))
+    set_sources(c, [task(), linked, native])
+    result = Store.ensure_pr_conversation(c.project, native.id, work_session(), c.auth, c.server)
+    assert {:ok, canonical} = result
+    assert canonical["task_id"] == native.id
+    assert disk(c, earlier_alias)["alias_of"] == canonical["id"]
+    assert disk(c, intermediate)["alias_of"] == canonical["id"]
+    assert canonical["agent_task_refs"] == [task().id, linked.id, native.id]
+
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    c = %{c | server: server}
+
+    for {issue_id, raw_id} <- [{task().id, c.feature["id"]}, {linked.id, second_id}] do
+      assert read(c, %{"id" => raw_id})["id"] == canonical["id"]
+      result = Store.ensure_pr_conversation(c.project, issue_id, "pr:7", c.auth, c.server)
+      assert {:ok, reopened} = result
+      assert reopened["id"] == canonical["id"]
+      assert reopened["agent_session_id"] == work_session()
+    end
+
+    assert {:ok, graph} = Store.agent_graph(c.project, c.auth, c.server)
+    assert [feature] = Enum.filter(graph["nodes"], &(&1["role"] == "feature"))
+    assert Enum.sort(feature["aliases"]) == Enum.sort([c.feature["id"], second_id])
+    assert reference_edge?(graph, c.issue, canonical)
+    assert reference_edge?(graph, second_issue, canonical)
+  end
+
+  for invalid_target <- ["missing", "different PR"] do
+    test "an occupied PR slot with a #{invalid_target} alias target cannot be overwritten", c do
+      target =
+        case unquote(invalid_target) do
+          "missing" ->
+            String.duplicate("f", 32)
+
+          "different PR" ->
+            source = task()
+            another = %{hd(source.pull_requests) | number: 8, url: "https://github.com/test/one/pull/8"}
+            Agent.update(c.source, fn _ -> %{source | pull_requests: source.pull_requests ++ [another]} end)
+            result = Store.ensure_pr_conversation(c.project, source.id, "pr:8", c.auth, c.server)
+            assert {:ok, unrelated} = result
+            unrelated["id"]
+        end
+
+      :sys.replace_state(c.server, &put_in(&1, [:chats, c.feature["id"], "alias_of"], target))
+      occupied = :sys.get_state(c.server).chats[c.feature["id"]]
+      original = File.read!(record_path(c, c.feature))
+      result = Store.ensure_pr_conversation(c.project, task().id, "pr:7", c.auth, c.server)
+      assert {:error, :chat_binding_conflict} = result
+      assert :sys.get_state(c.server).chats[c.feature["id"]] == occupied
+      assert File.read!(record_path(c, c.feature)) == original
+      assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
+      refute_receive {:coordination_runtime, _, _}, 30
+    end
+  end
+
+  test "a newer canonical goal survives reconciliation with an older discussion goal", c do
+    native = create_native(c)
+    {discussion, _} = launch(c, c.feature, "Set the earlier review goal")
+    old_goal = tool(discussion, "symphony_set_goal", %{"text" => "Review the initial design", "status" => "active"})["goal"]
+    send(discussion, {:finish, ""})
+    wait_chat(c, c.feature, &(&1["status"] == "idle"))
+    {worker, _} = launch(c, native, "Set the current implementation goal")
+    new_goal = tool(worker, "symphony_set_goal", %{"text" => "Validate the revised implementation", "status" => "active"})["goal"]
+    send(worker, {:finish, ""})
+    wait_chat(c, native, &(&1["status"] == "idle"))
+    assert old_goal["updated_at"] < new_goal["updated_at"]
+
+    Agent.update(c.source, fn _ -> native_task(true) end)
+    result = Store.ensure_pr_conversation(c.project, c.issue["task_id"], work_session(), c.auth, c.server)
+    assert {:ok, canonical} = result
+    assert canonical["agent_goal"] == new_goal
+    assert disk(c, native)["agent_goal"] == new_goal
+    assert disk(c, c.feature)["agent_goal"] == old_goal
+  end
+
+  test "failure to save a flattened alias stops recovery and the retained chain recovers on restart", c do
+    intermediate = retained_feature(c, 12)
+    canonical = retained_feature(c, 13)
+    stop_supervised!(Store)
+    original = disk(c, c.feature)
+    chain_fields = %{"alias_of" => intermediate["id"], "updated_at" => "2026-09-23T00:00:00Z", "fault_padding" => ""}
+    chained = Map.merge(original, chain_fields)
+    padding = String.duplicate("x", 8_000_000 - byte_size(Jason.encode!(chained)))
+    chained = Map.put(chained, "fault_padding", padding)
+    intermediate = Map.put(intermediate, "alias_of", canonical["id"])
+    assert :ok = Persistence.put(%{path: c.root}, chained)
+    assert :ok = Persistence.put(%{path: c.root}, intermediate)
+    original_bytes = File.read!(record_path(c, c.feature))
+    assert byte_size(original_bytes) == 8_000_000
+
+    # Loading succeeds. Flattening adds timestamp precision and exceeds the record limit.
+    server = start_supervised!({Store, c.opts})
+    c = %{c | server: server}
+    assert :sys.get_state(server).persistence != nil
+    assert Map.has_key?(:sys.get_state(server).chats, c.feature["id"])
+    assert Store.health(c.auth, server) == {:ok, %{enabled: true, healthy: false}}
+    assert File.read!(record_path(c, c.feature)) == original_bytes
+    assert disk(c, intermediate)["alias_of"] == canonical["id"]
+    assert disk(c, canonical)["alias_of"] == nil
+    result = Store.send_message(c.project, canonical["id"], "Must wait for storage recovery", "faulted-alias", c.auth, server)
+    assert {:error, :chat_storage_unavailable} = result
+    refute_receive {:coordination_runtime, _, _}, 30
+
+    stop_supervised!(Store)
+    assert :ok = Persistence.put(%{path: c.root}, Map.delete(chained, "fault_padding"))
+    server = start_supervised!({Store, c.opts})
+    c = %{c | server: server}
+    assert Store.health(c.auth, server) == {:ok, %{enabled: true, healthy: true}}
+    assert disk(c, c.feature)["alias_of"] == canonical["id"]
+    assert read(c, c.feature)["id"] == canonical["id"]
+    assert read(c, intermediate)["id"] == canonical["id"]
+    assert disk(c, c.feature)["messages"] == original["messages"]
+    refute_receive {:coordination_runtime, _, _}, 30
+  end
+
+  for invalid_binding <- ["cycle", "different PR"] do
+    test "startup rejects a retained alias #{invalid_binding} without rewriting either record", c do
+      source = disk(c, c.feature)
+
+      target =
+        case unquote(invalid_binding) do
+          "cycle" ->
+            c |> retained_feature(12) |> Map.put("alias_of", source["id"])
+
+          "different PR" ->
+            Map.merge(source, %{
+              "id" => Persistence.session_conversation_id(c.project, task().id, "pr:8", "scope"),
+              "session_id" => "pr:8",
+              "agent_session_id" => "pr:8",
+              "pr_number" => 8
+            })
+        end
+
+      stop_supervised!(Store)
+      source = Map.put(source, "alias_of", target["id"])
+      assert :ok = Persistence.put(%{path: c.root}, source)
+      assert :ok = Persistence.put(%{path: c.root}, target)
+      source_bytes = File.read!(record_path(c, source))
+      target_bytes = File.read!(record_path(c, target))
+      server = start_supervised!({Store, c.opts})
+      assert :sys.get_state(server).persistence != nil
+      assert Store.health(c.auth, server) == {:ok, %{enabled: true, healthy: false}}
+      assert File.read!(record_path(c, source)) == source_bytes
+      assert File.read!(record_path(c, target)) == target_bytes
+      assert Store.get(c.project, source["id"], c.auth, server) == {:error, :chat_binding_conflict}
+      refute_receive {:coordination_runtime, _, _}, 30
+    end
+  end
+
+  defp retained_feature(c, task_number) do
+    task = linked_task(task_number)
+    {:ok, parent} = Store.ensure_conversation(c.project, task.id, c.auth, c.server)
+
+    chat =
+      Map.merge(disk(c, c.feature), %{
+        "id" => Persistence.session_conversation_id(c.project, task.id, "pr:7", "scope"),
+        "task_id" => task.id,
+        "parent_id" => parent["id"],
+        "agent_task_refs" => [task.id]
+      })
+
+    assert :ok = Persistence.put(%{path: c.root}, chat)
+    :sys.replace_state(c.server, &put_in(&1, [:chats, chat["id"]], chat))
+    chat
+  end
+
+  defp source_task(%{tasks: tasks}, id), do: Map.get(tasks, id)
+  defp source_task(%{id: id} = task, id), do: task
+  defp source_task(_, _), do: nil
+
+  defp set_sources(c, tasks), do: Agent.update(c.source, fn _ -> %{tasks: Map.new(tasks, &{&1.id, &1})} end)
+
+  defp linked_task(number) do
+    %{task() | id: "github:test/one:#{number}", issue_id: to_string(number), title: "Linked issue #{number}"}
+  end
+
+  defp linked_native_task(number, work_id) do
+    source = linked_task(number)
+    work = native_task(true).ledger["pr_work"][String.duplicate("b", 32)]
+    work = Map.merge(work, %{"id" => work_id, "issue_id" => source.issue_id})
+    %{source | ledger: %{"pr_work" => %{work_id => work}}}
+  end
+
+  defp reference_edge?(graph, source, target), do: graph_edge?(graph, "references", source, target)
+  defp supervision_edge?(graph, source, target), do: graph_edge?(graph, "supervises", source, target)
+
+  defp graph_edge?(graph, type, source, target) do
+    Enum.any?(graph["edges"], fn edge ->
+      edge["type"] == type and edge["source"] == Graph.node_id(source["id"]) and edge["target"] == Graph.node_id(target["id"])
+    end)
   end
 
   defp faulting_tool(c, pid, name, args) do

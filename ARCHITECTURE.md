@@ -313,6 +313,11 @@ reconciled only when no turn or action is running, with a durable intent that fe
 losing queues before copying their messages and receipts. Recovery completes this
 idempotently before dispatch; old links resolve to the canonical conversation.
 An external PR without a native work identity remains discussion-only.
+If a PR links several issues, they share one feature agent. Its verified native work
+selects the owning task; before publication, the first retained discussion owns it.
+Other issue associations become graph references, not extra supervisors. Ownership
+reconciliation waits for active turns and pending reports; conflicting native owners
+are rejected. Historical conversation links continue to resolve after reconciliation.
 The project agent coordinates the project. Task creation accepts a title, description
 and verification through a shared normalizer. The form's **Create task** click authorizes
 submission through the durable action store without a second preview; model-created
@@ -338,7 +343,7 @@ The latest 80 host reports are retained per conversation without removing user m
 Read failures leave prior observations intact; tracker and credential changes fence reads.
 
 [`Chat.Graph`](elixir/lib/symphony_elixir/chat/graph.ex) exports versioned agent nodes
-and typed `supervises` / `reports_to` edges through the authorized store and
+and typed `supervises` / `reports_to` / `references` edges through the authorized store and
 `symphony_agent_graph` tool. Stable conversation IDs connect project, issue and PR/work
 identities, goals, activity and queue counts; historical aliases do not become extra agents.
 This graph is the input for future visualization, which is not implemented yet.

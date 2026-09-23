@@ -5,7 +5,9 @@ defmodule SymphonyElixir.Chat.Graph do
   Conversation records own identity; this projection never creates threads, adopts
   workers or grants execution authority. The `supervises` edges form a three-level
   hierarchy. Their reverse `reports_to` edges describe the allowed reporting route,
-  not another ownership relationship. Missing parents remain missing.
+  not another ownership relationship. Shared PRs have `references` edges from
+  other tasks; those edges grant no supervision or reporting route. Missing
+  parents remain missing.
   """
 
   alias SymphonyElixir.Chat.{Persistence, Sessions}
@@ -35,6 +37,7 @@ defmodule SymphonyElixir.Chat.Graph do
         {_id, nil} -> []
         {id, parent} -> [edge("supervises", parent, id), edge("reports_to", id, parent)]
       end)
+      |> Kernel.++(Enum.flat_map(agents, fn {_id, chat} -> references(chat, agents) end))
       |> Enum.sort_by(& &1["id"])
 
     %{"version" => 1, "nodes" => nodes, "edges" => edges}
@@ -97,10 +100,35 @@ defmodule SymphonyElixir.Chat.Graph do
 
   defp aliases(chat, records) do
     records
-    |> Enum.filter(&(&1["alias_of"] == chat["id"] and same_scope?(&1, chat) and &1["conversation_role"] == chat["conversation_role"] and &1["task_id"] == chat["task_id"]))
+    |> Enum.filter(&(&1["alias_of"] == chat["id"] and same_scope?(&1, chat) and &1["conversation_role"] == chat["conversation_role"] and same_alias_task?(&1, chat)))
     |> Enum.map(& &1["id"])
     |> Enum.sort()
   end
+
+  defp same_alias_task?(left, right) do
+    shared = left["conversation_role"] == "pr" and is_integer(left["pr_number"]) and left["pr_number"] > 0 and left["pr_number"] == right["pr_number"]
+    (left["task_id"] == right["task_id"] or shared) and compatible_pr_numbers?(left, right)
+  end
+
+  defp compatible_pr_numbers?(left, right) do
+    case {pr_number(left), pr_number(right)} do
+      {a, b} when is_integer(a) and is_integer(b) -> a > 0 and a == b
+      _ -> true
+    end
+  end
+
+  defp references(%{"conversation_role" => "pr", "agent_task_refs" => refs} = chat, agents) when is_list(refs) do
+    agents
+    |> Map.values()
+    |> Enum.filter(&(&1["conversation_role"] == "task" and same_scope?(&1, chat) and &1["task_id"] != chat["task_id"] and &1["task_id"] in refs))
+    |> Enum.group_by(& &1["task_id"])
+    |> Enum.flat_map(fn
+      {_task_id, [task]} -> [edge("references", task["id"], chat["id"])]
+      _ -> []
+    end)
+  end
+
+  defp references(_chat, _agents), do: []
 
   defp node(chat, parent, aliases, records) do
     role = @roles[chat["conversation_role"]]

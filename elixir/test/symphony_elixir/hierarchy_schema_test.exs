@@ -151,6 +151,42 @@ defmodule SymphonyElixir.Chat.HierarchySchemaTest do
     assert_rejected_records(c.root, record, invalid)
   end
 
+  test "shared PR task references roundtrip without changing the canonical conversation binding", c do
+    record = Map.put(hierarchy_chat(), "agent_task_refs", Enum.map(1..500, &(@project <> ":#{&1}")))
+    assert {:ok, owner, %{}} = Persistence.open(c.root)
+    assert :ok = Persistence.put(owner, record)
+    Persistence.close(owner)
+    {owner, records} = open_when_released(c.root)
+    assert records == %{record["id"] => record}
+
+    for changed <- [Map.put(record, "agent_task_refs", []), Map.delete(record, "agent_task_refs")] do
+      assert :ok = Persistence.put(owner, changed)
+      assert Jason.decode!(File.read!(record_path(c.root, record))) == changed
+    end
+
+    Persistence.close(owner)
+  end
+
+  test "shared PR task references reject duplicate foreign malformed and excessive task IDs", c do
+    record = Map.put(hierarchy_chat(), "agent_task_refs", [@project <> ":12"])
+
+    invalid_refs = [
+      nil,
+      %{},
+      @task,
+      [@task, @task],
+      [nil],
+      [42],
+      [""],
+      ["github:other/project:12"],
+      [@project],
+      [@project <> ":../12"],
+      Enum.map(1..501, &(@project <> ":#{&1}"))
+    ]
+
+    assert_rejected_records(c.root, record, Enum.map(invalid_refs, &Map.put(record, "agent_task_refs", &1)))
+  end
+
   test "effective feature session metadata is rejected on project and task conversations", c do
     records =
       for {role, task} <- [{"main", nil}, {"task", @task}] do
@@ -223,6 +259,9 @@ defmodule SymphonyElixir.Chat.HierarchySchemaTest do
     assert {:ok, owner, %{}} = Persistence.open(c.root)
     assert :ok = Persistence.put(owner, record)
     original = File.read!(record_path(c.root, record))
+
+    assert {:error, :chat_storage_unavailable} = Persistence.put(owner, Map.put(record, "agent_task_refs", [<<255>>]))
+    assert File.read!(record_path(c.root, record)) == original
 
     for path <- [
           ["agent_name"],

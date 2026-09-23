@@ -560,7 +560,7 @@ defmodule SymphonyElixir.Chat.Store do
     with nil <- state.fault,
          {:ok, selection} <- Sessions.resolve(task, option.id, auth.tracker_fingerprint),
          {:reply, {:ok, feature}, next} <- ensure_pr_chat(state, project, task.id, option.id, selection, auth) do
-      metadata = %{"agent_name" => option.name, "work_id" => selection["work_id"], "pr_number" => selection["pr_number"]}
+      metadata = %{"agent_name" => option.name, "pr_number" => selection["pr_number"]}
       {_, next} = put_metadata(next, Map.merge(next.chats[feature["id"]], metadata))
       if next.fault, do: {:halt, next}, else: {:cont, next}
     else
@@ -938,16 +938,99 @@ defmodule SymphonyElixir.Chat.Store do
   end
 
   defp ensure_pr_chat(state, project, task_id, session_id, selection, auth) do
+    case ensure_bound_chat(state, project, task_id, auth) do
+      {:reply, {:ok, _}, next} -> ensure_pr_binding(next, project, task_id, session_id, selection, auth)
+      error -> error
+    end
+  end
+
+  defp ensure_pr_binding(state, project, task_id, session_id, selection, auth) do
     scope = %{"project_id" => project, "task_id" => task_id, "session_id" => session_id, "tracker_fingerprint" => auth.tracker_fingerprint}
     matches = matching_pr_chats(state, scope, selection)
-    unmatched = matches == [] and Map.has_key?(state.chats, pr_conversation_id(scope, session_id))
-    corrupt = unmatched or Enum.any?(matches, &(not valid_retained_pr?(&1, scope)))
+    effective = selection["agent_session_id"] || session_id
+
+    selection = Map.put(selection, "agent_task_refs", [task_id])
 
     cond do
-      corrupt -> {:reply, {:error, :chat_binding_conflict}, state}
-      matches == [] -> create_pr_chat(state, scope, selection, auth)
-      true -> reconcile_pr_chats(state, hd(matches), matches, session_id, selection)
+      not valid_pr_binding?(state, scope, effective, matches) ->
+        {:reply, {:error, :chat_binding_conflict}, state}
+
+      conflicting_pr_owners?(matches, task_id, effective) ->
+        {:reply, {:error, :chat_binding_conflict}, state}
+
+      needs_pr_owner?(matches, task_id, effective) ->
+        adopt_pr_owner(state, scope, selection, matches, auth)
+
+      matches == [] ->
+        create_pr_chat(state, scope, selection, auth)
+
+      true ->
+        reconcile_pr_chats(state, hd(matches), matches, session_id, selection)
     end
+  end
+
+  defp valid_pr_binding?(state, scope, effective, matches) do
+    valid_pr_slot?(state, scope, scope["session_id"]) and valid_pr_slot?(state, scope, effective) and
+      Enum.all?(matches, &valid_retained_pr?(&1, scope)) and verified_pr_slots?(state, scope, effective, matches)
+  end
+
+  defp verified_pr_slots?(state, scope, effective, matches) do
+    ids = Enum.map(matches, & &1["id"])
+
+    Enum.all?([scope["session_id"], effective], fn session ->
+      case state.chats[pr_conversation_id(scope, session)] do
+        nil -> true
+        chat -> verified_slot_target?(state, chat, ids)
+      end
+    end)
+  end
+
+  defp verified_slot_target?(state, chat, ids) do
+    case canonical_alias(state, chat, []) do
+      {:ok, canonical} -> canonical["id"] in ids
+      _ -> false
+    end
+  end
+
+  defp needs_pr_owner?(matches, task, session) do
+    String.starts_with?(session, "work:") and Enum.any?(matches, &(&1["task_id"] != task)) and
+      not Enum.any?(matches, &(native_pr?(&1) and &1["task_id"] == task))
+  end
+
+  defp valid_pr_slot?(state, scope, session) do
+    case state.chats[pr_conversation_id(scope, session)] do
+      nil -> true
+      chat -> chat["conversation_role"] == "pr" and Map.take(chat, Map.keys(scope)) == Map.put(scope, "session_id", session)
+    end
+  end
+
+  defp adopt_pr_owner(state, scope, selection, matches, auth) do
+    preview = Map.put(hd(matches), "task_id", scope["task_id"])
+
+    case reconciliation_error(state, preview, matches) do
+      nil ->
+        session = selection["agent_session_id"]
+
+        case create_pr_chat(state, Map.put(scope, "session_id", session), selection, auth) do
+          {:reply, {:ok, chat}, next} ->
+            reconcile_pr_chats(next, next.chats[chat["id"]], [next.chats[chat["id"]] | matches], session, selection)
+
+          error ->
+            error
+        end
+
+      reason ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp native_pr?(chat), do: String.starts_with?(chat["agent_session_id"] || chat["session_id"], "work:")
+  defp pending_deliveries?(state, chat), do: agent_delivery_counts(chat, state) |> Map.values() |> Enum.sum() |> Kernel.>(0)
+
+  defp conflicting_pr_owners?(matches, task, session) do
+    requested = if String.starts_with?(session, "work:"), do: [{task, session}], else: []
+    retained = matches |> Enum.filter(&native_pr?/1) |> Enum.map(&{&1["task_id"], &1["agent_session_id"] || &1["session_id"]})
+    length(Enum.uniq(requested ++ retained)) > 1
   end
 
   defp matching_pr_chats(state, scope, selection) do
@@ -962,16 +1045,17 @@ defmodule SymphonyElixir.Chat.Store do
     do: Persistence.session_conversation_id(scope["project_id"], scope["task_id"], session, scope["tracker_fingerprint"])
 
   defp same_pr?(chat, scope, ids, number) do
-    keys = ~w(project_id task_id tracker_fingerprint)
+    keys = ~w(project_id tracker_fingerprint)
 
     chat["conversation_role"] == "pr" and is_nil(chat["alias_of"]) and Map.take(chat, keys) == Map.take(scope, keys) and
-      (chat["id"] in ids or (not is_nil(number) and (chat["pr_number"] == number or chat["session_id"] == "pr:#{number}")))
+      ((chat["task_id"] == scope["task_id"] and chat["id"] in ids) or
+         (not is_nil(number) and (chat["pr_number"] == number or chat["session_id"] == "pr:#{number}")))
   end
 
-  defp pr_rank(chat), do: {if(String.starts_with?(chat["session_id"], "work:"), do: 0, else: 1), chat["id"]}
+  defp pr_rank(chat), do: {if(native_pr?(chat), do: 0, else: 1), if(String.starts_with?(chat["session_id"], "work:"), do: 0, else: 1), chat["id"]}
 
   defp valid_retained_pr?(chat, scope) do
-    chat["id"] == Persistence.session_conversation_id(scope["project_id"], scope["task_id"], chat["session_id"], scope["tracker_fingerprint"])
+    chat["id"] == Persistence.session_conversation_id(scope["project_id"], chat["task_id"], chat["session_id"], scope["tracker_fingerprint"])
   end
 
   defp create_pr_chat(state, scope, selection, auth) do
@@ -979,28 +1063,24 @@ defmodule SymphonyElixir.Chat.Store do
     task = scope["task_id"]
     session = scope["session_id"]
 
-    case ensure_bound_chat(state, project, task, auth) do
-      {:reply, {:ok, _}, next} when map_size(next.chats) < 500 ->
-        chat =
-          new_chat(next, project, selection["title"], auth)
-          |> Map.merge(scope)
-          |> Map.merge(%{
-            "id" => Persistence.session_conversation_id(project, task, session, auth.tracker_fingerprint),
-            "conversation_role" => "pr",
-            "parent_id" => canonical_id(project, task, auth.tracker_fingerprint),
-            "agent_session_id" => selection["agent_session_id"] || session,
-            "work_id" => selection["work_id"],
-            "agent_name" => selection["agent_name"] || selection["title"],
-            "pr_number" => selection["pr_number"]
-          })
+    if map_size(state.chats) < 500 do
+      chat =
+        new_chat(state, project, selection["title"], auth)
+        |> Map.merge(scope)
+        |> Map.merge(%{
+          "id" => Persistence.session_conversation_id(project, task, session, auth.tracker_fingerprint),
+          "conversation_role" => "pr",
+          "parent_id" => canonical_id(project, task, auth.tracker_fingerprint),
+          "agent_session_id" => selection["agent_session_id"] || session,
+          "work_id" => selection["work_id"],
+          "agent_name" => selection["agent_name"] || selection["title"],
+          "agent_task_refs" => [task],
+          "pr_number" => selection["pr_number"]
+        })
 
-        reply_put(next, chat)
-
-      {:reply, {:ok, _}, next} ->
-        {:reply, {:error, :chat_history_full}, next}
-
-      error ->
-        error
+      reply_put(state, chat)
+    else
+      {:reply, {:error, :chat_history_full}, state}
     end
   end
 
@@ -1011,18 +1091,27 @@ defmodule SymphonyElixir.Chat.Store do
     others = Enum.reject(matches, &(&1["id"] == chat["id"]))
     combined = Enum.reduce(others, chat, &merge_pr_history/2)
 
+    case reconciliation_error(state, chat, matches) do
+      nil -> save_pr_reconciliation(state, combined, others, session, selection)
+      reason -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp reconciliation_error(state, chat, matches) do
+    combined = Enum.reduce(matches, chat, &merge_pr_history/2)
+
     cond do
-      Enum.any?(matches, &busy?(state, &1["id"])) ->
-        {:reply, {:error, :chat_busy}, state}
+      Enum.any?(matches, &(busy?(state, &1["id"]) or (&1["task_id"] != chat["task_id"] and pending_deliveries?(state, &1)))) ->
+        :chat_busy
 
       length(queue(combined)) > 20 ->
-        {:reply, {:error, :chat_queue_full}, state}
+        :chat_queue_full
 
       not history_headroom?(combined) ->
-        {:reply, {:error, :chat_history_full}, state}
+        :chat_history_full
 
       true ->
-        save_pr_reconciliation(state, combined, others, session, selection)
+        nil
     end
   end
 
@@ -1038,7 +1127,7 @@ defmodule SymphonyElixir.Chat.Store do
   end
 
   defp stage_pr_alias(old, state, canonical) do
-    alias_chat = old |> Map.put("alias_of", canonical) |> Map.put("alias_pending", true)
+    alias_chat = old |> Map.put("alias_of", canonical) |> Map.put("alias_pending", true) |> Map.put("pr_number", retained_pr_number(old))
 
     case put(state, alias_chat) do
       {:ok, next} -> {:cont, next}
@@ -1047,16 +1136,18 @@ defmodule SymphonyElixir.Chat.Store do
   end
 
   defp recover_alias_bindings(state) do
-    Enum.reduce_while(state.chats, state, fn {id, _}, acc ->
-      recover_alias(acc.chats[id], acc)
-    end)
+    state =
+      Enum.reduce_while(state.chats, state, fn {id, _}, acc ->
+        recover_alias(acc.chats[id], acc)
+      end)
+
+    if is_nil(state.fault), do: Enum.reduce_while(state.chats, state, &flatten_alias/2), else: state
   end
 
   defp recover_alias(%{"alias_pending" => true} = old, state) when is_nil(state.fault) do
     canonical = state.chats[old["alias_of"]]
-    keys = ~w(project_id task_id tracker_fingerprint conversation_role)
 
-    if canonical && is_nil(canonical["alias_of"]) && Map.take(old, keys) == Map.take(canonical, keys) do
+    if canonical && is_nil(canonical["alias_of"]) && valid_pr_alias?(old, canonical) do
       combined = merge_pr_history(old, canonical) |> Map.put("codex_thread_id", nil)
       cleared = old |> Map.put("alias_pending", false) |> Map.put("queue", []) |> Map.put("queue_paused", true)
 
@@ -1072,16 +1163,42 @@ defmodule SymphonyElixir.Chat.Store do
 
   defp recover_alias(_old, state), do: {:cont, state}
 
+  defp flatten_alias({_id, %{"alias_of" => target} = chat}, state) when is_binary(target) do
+    case canonical_alias(state, chat, []) do
+      {:ok, %{"id" => ^target}} ->
+        {:cont, state}
+
+      {:ok, canonical} ->
+        case put(state, Map.put(chat, "alias_of", canonical["id"])) do
+          {:ok, next} -> {:cont, next}
+          {:error, next} -> {:halt, next}
+        end
+
+      _ ->
+        {:halt, fault(state)}
+    end
+  end
+
+  defp flatten_alias(_, state), do: {:cont, state}
+
   defp merge_pr_history(old, chat) do
     chat
     |> Map.put("messages", Enum.uniq_by(old["messages"] ++ chat["messages"], & &1["id"]) |> Enum.sort_by(& &1["created_at"]))
     |> Map.put("queue", Enum.uniq_by(queue(old) ++ queue(chat), & &1["id"]) |> Enum.sort_by(& &1["created_at"]))
     |> Map.put("queue_paused", old["queue_paused"] == true or chat["queue_paused"] == true)
     |> Map.put("agent_delivery_paused", old["agent_delivery_paused"] == true or chat["agent_delivery_paused"] == true)
+    |> Map.put("agent_goal", latest_pr_goal(old, chat))
+    |> Map.put("agent_task_refs", pr_task_refs(chat, old))
     |> Map.put("client_ids", Enum.uniq(old["client_ids"] ++ chat["client_ids"]))
     |> Map.put("message_receipts", Map.merge(old["message_receipts"] || %{}, chat["message_receipts"] || %{}))
     |> Map.put("proposals", Enum.uniq_by(old["proposals"] ++ chat["proposals"], & &1["id"]))
     |> Map.put("context", Enum.uniq(old["context"] ++ chat["context"]))
+  end
+
+  defp latest_pr_goal(old, chat) do
+    [old["agent_goal"], chat["agent_goal"]]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max_by(&(parsed_time(&1["updated_at"]) || 0), fn -> nil end)
   end
 
   defp reply_pr_metadata(state, chat, session_id, selection) do
@@ -1091,8 +1208,10 @@ defmodule SymphonyElixir.Chat.Store do
 
     metadata = %{
       "agent_session_id" => active,
+      "work_id" => native_work_id(active),
       "agent_name" => selection["agent_name"] || chat["agent_name"] || selection["title"],
       "pr_number" => selection["pr_number"] || chat["pr_number"],
+      "agent_task_refs" => pr_task_refs(chat, selection),
       "parent_id" => canonical_id(chat["project_id"], chat["task_id"], chat["tracker_fingerprint"])
     }
 
@@ -1102,6 +1221,16 @@ defmodule SymphonyElixir.Chat.Store do
       {:ok, next} -> {:reply, {:ok, public(updated, next)}, next}
       {:error, next} -> {:reply, {:error, :chat_storage_unavailable}, next}
     end
+  end
+
+  defp native_work_id("work:" <> id), do: id
+  defp native_work_id(_), do: nil
+
+  defp pr_task_refs(left, right) do
+    ([left["task_id"], right["task_id"]] ++ (left["agent_task_refs"] || []) ++ (right["agent_task_refs"] || []))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   defp valid_pr_scope?(project, task_id, session_id) do
@@ -1218,8 +1347,8 @@ defmodule SymphonyElixir.Chat.Store do
   end
 
   defp resolve_chat_alias(state, %{"alias_of" => id} = chat, auth) when is_binary(id) do
-    with {:ok, canonical} <- authorized_record(state, chat["project_id"], id, auth, nil),
-         true <- is_nil(canonical["alias_of"]) and canonical["task_id"] == chat["task_id"] do
+    with {:ok, canonical} <- canonical_alias(state, chat, []),
+         {:ok, canonical} <- authorized_record(state, chat["project_id"], canonical["id"], auth, nil) do
       {:ok, canonical}
     else
       _ -> {:error, :chat_binding_conflict}
@@ -1227,6 +1356,37 @@ defmodule SymphonyElixir.Chat.Store do
   end
 
   defp resolve_chat_alias(_state, chat, _auth), do: {:ok, chat}
+
+  @spec canonical_alias(map(), map(), [String.t()]) :: {:ok, map()} | {:error, :chat_binding_conflict}
+  defp canonical_alias(state, %{"alias_of" => id} = chat, seen) when is_binary(id) do
+    target = state.chats[id]
+
+    if (chat["id"] not in seen and target) && valid_pr_alias?(chat, target), do: canonical_alias(state, target, [chat["id"] | seen]), else: {:error, :chat_binding_conflict}
+  end
+
+  defp canonical_alias(_state, chat, _seen), do: {:ok, chat}
+
+  defp valid_pr_alias?(left, right) do
+    keys = ~w(project_id tracker_fingerprint)
+
+    left["conversation_role"] == "pr" and right["conversation_role"] == "pr" and
+      Map.take(left, keys) == Map.take(right, keys) and same_pr_owner?(left, right)
+  end
+
+  defp same_pr_owner?(left, right) do
+    shared = is_integer(left["pr_number"]) and left["pr_number"] > 0 and left["pr_number"] == right["pr_number"]
+    (left["task_id"] == right["task_id"] or shared) and compatible_pr_numbers?(left, right)
+  end
+
+  defp compatible_pr_numbers?(left, right) do
+    case {retained_pr_number(left), retained_pr_number(right)} do
+      {a, b} when is_integer(a) and is_integer(b) -> a > 0 and a == b
+      _ -> true
+    end
+  end
+
+  defp retained_pr_number(%{"session_id" => "pr:" <> number}), do: String.to_integer(number)
+  defp retained_pr_number(chat), do: chat["pr_number"]
 
   defp authorized_record(state, project, id, auth, kind) do
     with :ok <- authorized(state, project, auth),
@@ -1265,10 +1425,7 @@ defmodule SymphonyElixir.Chat.Store do
     aliases =
       state.chats
       |> Map.values()
-      |> Enum.filter(
-        &(&1["alias_of"] == chat["id"] and
-            &1["project_id"] == chat["project_id"] and &1["tracker_fingerprint"] == chat["tracker_fingerprint"])
-      )
+      |> Enum.filter(&(&1["alias_of"] == chat["id"] and valid_pr_alias?(&1, chat)))
 
     [chat | aliases]
     |> Enum.flat_map(&(&1["agent_outbox"] || []))
