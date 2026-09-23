@@ -750,7 +750,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
               <a :if={safe_url(@issue.url)} href={safe_url(@issue.url)} target="_blank" rel="noopener noreferrer" class="issue-github-link">{@issue.identifier} ↗</a>
               <span :if={!safe_url(@issue.url)}>{@issue.identifier}</span>
               <button id="issue-card-link" class="button button-quiet" phx-click="issue-card" phx-target={@myself}>View card</button>
-              <span class="issue-chat-state" data-stage={@issue.stage}>{String.capitalize(@issue.stage)}</span>
+              <span class="issue-chat-state" data-stage={@issue.lane}>{String.capitalize(@issue.lane)}</span>
             </div>
           </div>
         </details>

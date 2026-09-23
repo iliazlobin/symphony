@@ -69,6 +69,17 @@ defmodule SymphonyElixir.IssueAcceptanceTest do
     assert {:error, :task_already_accepted} = Orchestrator.control_command(control("retry", 1), c.pid)
     assert {:error, :task_already_accepted} = Orchestrator.control_command(control("cancel", 1), c.pid)
     refute ControlLedger.eligible?(:sys.get_state(c.pid).control, "7")
+
+    create =
+      Map.merge(control("create_pr_work", 1), %{
+        "work_id" => String.duplicate("d", 32),
+        "instruction" => "Attempt more work",
+        "base_sha" => @base
+      })
+
+    assert {:error, :task_already_accepted} = ControlLedger.command(:sys.get_state(c.pid).control, create)
+    assert Orchestrator.control_snapshot(c.pid)["revision"] == 1
+
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
     assert {:ok, %{"replayed" => true}} = Orchestrator.control_command(command, c.pid)
     assert {:error, :command_id_conflict} = Orchestrator.control_command(%{command | "expected_candidate_sha" => nil}, c.pid)

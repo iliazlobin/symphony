@@ -1915,7 +1915,7 @@ defmodule SymphonyElixir.Orchestrator do
            {:ok, verified_context} <- acceptance_context(state, command, context),
            true <- context == pr_work_context() or {:error, :tracker_changed},
            true <- authorize.() == true or {:error, :unauthorized},
-           true <- state.control.settings == Config.control_settings() or {:error, :control_configuration_changed_restart_required},
+           :ok <- unchanged_control_settings(state),
            do: ControlLedger.command(state.control, command, state.max_concurrent_agents, verified_context)
 
     case result do
@@ -1933,6 +1933,12 @@ defmodule SymphonyElixir.Orchestrator do
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
+  end
+
+  defp unchanged_control_settings(state) do
+    if state.control.settings == Config.control_settings(),
+      do: :ok,
+      else: {:error, :control_configuration_changed_restart_required}
   end
 
   defp pr_work_context do
