@@ -417,6 +417,8 @@
       this.closeSelector = this.el.dataset.closeSelector || "#close-dialog";
       this.focusDialog = () => (this.el.querySelector(this.closeSelector) || this.el.querySelector("[data-dialog-focus]"))?.focus({preventScroll: true});
       document.addEventListener("click", event => {
+        // LiveView links replace the card themselves; a second patch can overwrite their URL.
+        if (event.target.closest("a[data-phx-link]")) return;
         if (this.nonmodal && this.el.open && !this.el.contains(event.target)) this.closeDialog();
       }, {capture: true, signal: this.abort.signal});
       document.addEventListener("keydown", event => {
