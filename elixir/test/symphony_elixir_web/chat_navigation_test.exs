@@ -7,8 +7,8 @@ defmodule SymphonyElixirWeb.ChatNavigationTest do
 
   test "category suggestions remain available for empty groups in workflow order" do
     categories = ChatNavigation.categories()
-    assert Enum.map(categories, & &1.id) == ~w(running review attention ready backlog done)
-    assert Enum.map(categories, & &1.label) == ["Running", "Ready for review", "Needs attention", "Ready", "Backlog", "Done"]
+    assert Enum.map(categories, & &1.id) == ~w(work review attention backlog done)
+    assert Enum.map(categories, & &1.label) == ["Work", "Ready for review", "Needs attention", "Backlog", "Done"]
     assert ChatNavigation.issues([], %{}, @project, "review") == []
     assert %{id: "review", label: "Ready for review"} in categories
   end
@@ -90,10 +90,24 @@ defmodule SymphonyElixirWeb.ChatNavigationTest do
 
     activities = Map.new(["done", "chat"], &{id(&1), activity(&1, status: "running")})
     groups = ChatNavigation.issues(tasks, activities, @project)
-    assert Enum.map(groups, & &1.id) == ~w(running review attention ready backlog done)
-    assert Enum.map(hd(groups).issues, & &1.id) == [id("chat"), id("worker")]
+    assert Enum.map(groups, & &1.id) == ~w(work review attention backlog done)
+    assert Enum.map(hd(groups).issues, & &1.id) == [id("chat"), id("ready"), id("worker")]
     assert Enum.find(groups, &(&1.id == "review")).label == "Ready for review"
     assert List.last(groups).issues |> hd() |> Map.fetch!(:id) == id("done")
+  end
+
+  test "Work combines queued and running tasks without changing execution stages" do
+    tasks = [task("queued", "ready"), task("active", "running")]
+    assert [%{id: "work", issues: issues}] = ChatNavigation.issues(tasks, %{}, @project, "work")
+    assert Enum.all?(issues, &(&1.lane == "work"))
+    assert Enum.map(issues, & &1.stage) == ["running", "ready"]
+
+    for query <- ["queued", "running", "ready"] do
+      assert [%{id: "work"}] = ChatNavigation.issues(tasks, %{}, @project, query)
+    end
+
+    assert [%{id: "review", issues: [%{lane: "review", stage: "ready"}]}] =
+             ChatNavigation.issues([task("review", "ready", lane: "review")], %{}, @project)
   end
 
   test "uses latest valid source activity with deterministic ties and missing timestamps last" do

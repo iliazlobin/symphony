@@ -37,6 +37,18 @@ defmodule SymphonyElixir.Chat.ViewContextTest do
     assert ViewContext.task_ids(repeated) == [@id]
   end
 
+  test "accepts Work filters while retaining historical stage and hidden-column snapshots" do
+    base = %{"version" => 1, "project_id" => @project, "hidden_columns" => []}
+    assert {:ok, current} = ViewContext.validate(Map.put(base, "filters", %{"status" => ["work"]}), @project)
+    assert current["filters"]["status"] == ["work"]
+    assert current["hidden_columns"] == []
+
+    historical = Map.merge(base, %{"hidden_columns" => ["running", "done"], "filters" => %{"status" => ["ready", "running"]}})
+    assert {:ok, retained} = ViewContext.validate(historical, @project)
+    assert retained["hidden_columns"] == ["running", "done"]
+    assert retained["filters"]["status"] == ["ready", "running"]
+  end
+
   test "rejects foreign, malformed, duplicate, oversized and authority-bearing fields" do
     base = %{"version" => 1, "project_id" => @project}
 

@@ -6,7 +6,7 @@ defmodule SymphonyElixir.ControlLedger do
   execution budgets and handoff evidence. An advisory OS lock prevents two local
   services from sharing the ledger. Failed persistence always blocks admission.
   """
-  alias SymphonyElixir.{PathSafety, PRWork}
+  alias SymphonyElixir.{IssueAcceptance, PathSafety, PRWork}
   defstruct [:path, :lock, :settings, :data]
 
   @lock_script """
@@ -60,14 +60,17 @@ defmodule SymphonyElixir.ControlLedger do
   end
 
   @spec snapshot(t()) :: map()
-  def snapshot(ledger), do: ledger.data |> Map.drop(["commands"]) |> Map.put("enabled", true)
+  def snapshot(ledger) do
+    issues = Map.new(ledger.data["issues"], fn {id, item} -> {id, item |> Map.put_new("attempt_base", 0) |> Map.put("cycle_attempts", cycle_attempts(item))} end)
+    ledger.data |> Map.drop(["commands"]) |> Map.put("issues", issues) |> Map.put("enabled", true)
+  end
 
   @spec eligible?(t(), String.t()) :: boolean()
   def eligible?(ledger, issue_id) do
     issue = issue(ledger, issue_id)
 
-    ledger.data["mode"] == "running" and is_nil(issue["hold"]) and is_nil(issue["active"]) and PRWork.dispatchable?(issue) and
-      issue["attempts"] < ledger.settings.max_attempts and
+    ledger.data["mode"] == "running" and not IssueAcceptance.accepted?(issue) and is_nil(issue["hold"]) and is_nil(issue["active"]) and PRWork.dispatchable?(issue) and
+      cycle_attempts(issue) < ledger.settings.max_attempts and
       issue["runtime_ms"] < ledger.settings.max_total_runtime_ms and
       issue["tokens"] < ledger.settings.max_total_tokens
   end
@@ -158,7 +161,8 @@ defmodule SymphonyElixir.ControlLedger do
 
   @spec hold(t(), String.t(), String.t()) :: {:ok, t()} | {:error, term()}
   def hold(ledger, issue_id, reason) do
-    next = put_issue(ledger, issue_id, PRWork.hold(issue(ledger, issue_id), reason))
+    current = issue(ledger, issue_id)
+    next = if IssueAcceptance.accepted?(current), do: ledger, else: put_issue(ledger, issue_id, PRWork.hold(current, reason))
     with :ok <- persist(next), do: {:ok, next}
   end
 
@@ -203,7 +207,7 @@ defmodule SymphonyElixir.ControlLedger do
   end
 
   @spec command_fingerprint(map()) :: String.t()
-  def command_fingerprint(params), do: params |> Map.take(["action", "issue_id", "expected_revision", "limit"] ++ PRWork.command_fields(params["action"])) |> Jason.encode!()
+  def command_fingerprint(params), do: params |> Map.take(["action", "issue_id", "expected_revision", "limit"] ++ command_fields(params["action"])) |> Jason.encode!()
 
   @spec effective_concurrency(t() | nil, pos_integer()) :: pos_integer()
   def effective_concurrency(nil, ceiling), do: ceiling
@@ -219,15 +223,22 @@ defmodule SymphonyElixir.ControlLedger do
     current = issue(ledger, id)
 
     cond do
-      budget_exhausted?(current, ledger.settings) ->
+      IssueAcceptance.accepted?(current) ->
+        {:error, :task_already_accepted}
+
+      total_budget_exhausted?(current, ledger.settings) ->
         {:error, :budget_exhausted}
 
       action == "create_pr_work" and Enum.any?(ledger.data["issues"], fn {other_id, other} -> other_id != id and Map.has_key?(other["pr_work"] || %{}, params["work_id"]) end) ->
         {:error, :pr_work_exists}
 
       true ->
-        with {:ok, next} <- PRWork.transition(current, params, context), do: {:ok, put_issue(ledger, id, next)}
+        with {:ok, next} <- PRWork.transition(current, params, context), do: {:ok, put_issue(ledger, id, Map.put(next, "attempt_base", current["attempts"]))}
     end
+  end
+
+  defp transition_settings(ledger, %{"action" => "accept_task", "issue_id" => id} = params, _ceiling, context) do
+    with {:ok, current} <- IssueAcceptance.accept(issue(ledger, id), params, context), do: {:ok, put_issue(ledger, id, current)}
   end
 
   defp transition_settings(ledger, params, _ceiling, _context), do: transition(ledger, params["action"], params["issue_id"])
@@ -238,13 +249,17 @@ defmodule SymphonyElixir.ControlLedger do
   end
 
   defp transition(ledger, "cancel", issue_id) do
-    {:ok, put_issue(ledger, issue_id, PRWork.hold(issue(ledger, issue_id), "cancelled"))}
+    current = issue(ledger, issue_id)
+    if IssueAcceptance.accepted?(current), do: {:error, :task_already_accepted}, else: {:ok, put_issue(ledger, issue_id, PRWork.hold(current, "cancelled"))}
   end
 
   defp transition(ledger, "retry", issue_id) do
     current = issue(ledger, issue_id)
 
     cond do
+      IssueAcceptance.accepted?(current) ->
+        {:error, :task_already_accepted}
+
       not is_nil(current["active"]) ->
         {:error, :issue_running}
 
@@ -257,13 +272,15 @@ defmodule SymphonyElixir.ControlLedger do
   end
 
   defp budget_exhausted?(issue, settings) do
-    issue["attempts"] >= settings.max_attempts or issue["runtime_ms"] >= settings.max_total_runtime_ms or
-      issue["tokens"] >= settings.max_total_tokens
+    cycle_attempts(issue) >= settings.max_attempts or total_budget_exhausted?(issue, settings)
   end
+
+  defp total_budget_exhausted?(issue, settings), do: issue["runtime_ms"] >= settings.max_total_runtime_ms or issue["tokens"] >= settings.max_total_tokens
+  defp cycle_attempts(issue), do: issue["attempts"] - (issue["attempt_base"] || 0)
 
   defp validate_command(%{"command_id" => id, "expected_revision" => revision, "action" => action} = params)
        when is_binary(id) and byte_size(id) in 1..128 and is_integer(revision) and revision >= 0 do
-    allowed_keys = ["command_id", "expected_revision", "action", "issue_id"] ++ if(action == "set_concurrency", do: ["limit"], else: PRWork.command_fields(action))
+    allowed_keys = ["command_id", "expected_revision", "action", "issue_id"] ++ if(action == "set_concurrency", do: ["limit"], else: command_fields(action))
     valid_limit = valid_setting?(action, params)
 
     if valid_limit and valid_action?(action, params["issue_id"]) and Enum.all?(Map.keys(params), &(&1 in allowed_keys)),
@@ -273,15 +290,17 @@ defmodule SymphonyElixir.ControlLedger do
 
   defp validate_command(_), do: {:error, :invalid_command}
   defp valid_setting?("set_concurrency", params), do: Map.has_key?(params, "limit") and valid_override?(params["limit"])
+  defp valid_setting?("accept_task", params), do: IssueAcceptance.valid_command?(params)
   defp valid_setting?(action, params) when action in ["create_pr_work", "continue_pr_work"], do: PRWork.valid_command?(params)
   defp valid_setting?(_action, _params), do: true
 
   defp valid_action?(action, nil) when action in ["pause", "drain", "resume", "set_concurrency"], do: true
 
-  defp valid_action?(action, id) when action in ["cancel", "retry", "create_pr_work", "continue_pr_work"] and is_binary(id),
+  defp valid_action?(action, id) when action in ["cancel", "retry", "accept_task", "create_pr_work", "continue_pr_work"] and is_binary(id),
     do: byte_size(id) in 1..128
 
   defp valid_action?(_, _), do: false
+  defp command_fields(action), do: PRWork.command_fields(action) ++ IssueAcceptance.command_fields(action)
 
   defp update_active(ledger, issue_id, run_id, fun) do
     current = issue(ledger, issue_id)
@@ -351,7 +370,7 @@ defmodule SymphonyElixir.ControlLedger do
   defp valid_data?(_), do: false
 
   defp valid_issues?(issues) do
-    Enum.all?(issues, fn {id, item} -> is_binary(id) and valid_issue?(item) and PRWork.valid_issue?(id, item) end)
+    Enum.all?(issues, fn {id, item} -> is_binary(id) and valid_issue?(item) and PRWork.valid_issue?(id, item) and IssueAcceptance.valid_record?(item["acceptance"]) end)
   end
 
   defp unique_pr_work_ids?(issues) do
@@ -367,8 +386,9 @@ defmodule SymphonyElixir.ControlLedger do
 
   defp valid_command_entry?(_), do: false
 
-  defp valid_issue?(%{"attempts" => a, "runtime_ms" => r, "tokens" => t, "hold" => h, "active" => active}) do
-    Enum.all?([a, r, t], &(is_integer(&1) and &1 >= 0)) and (is_nil(h) or is_binary(h)) and valid_active?(active)
+  defp valid_issue?(%{"attempts" => a, "runtime_ms" => r, "tokens" => t, "hold" => h, "active" => active} = issue) do
+    base = Map.get(issue, "attempt_base", 0)
+    Enum.all?([a, r, t, base], &(is_integer(&1) and &1 >= 0)) and base <= a and (is_nil(h) or is_binary(h)) and valid_active?(active)
   end
 
   defp valid_issue?(_), do: false

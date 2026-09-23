@@ -1,6 +1,7 @@
 (() => {
   "use strict";
-  const lanes = [["backlog", "Backlog"], ["ready", "Ready"], ["running", "Running"], ["review", "Review"], ["done", "Done"]];
+  const lanes = [["backlog", "Backlog"], ["work", "Work"], ["review", "Review"], ["done", "Done"]];
+  const laneForStatus = status => ["ready", "running"].includes(status) ? "work" : status;
   const metadataFilters = ["milestone", "label", "assignee"];
   const boardFilters = ["project", "status", "priority", ...metadataFilters];
   const filterNames = {project: "Project", status: "Status", priority: "Priority", milestone: "Milestone", label: "Tags", assignee: "Assignee"};
@@ -29,8 +30,7 @@
   };
   const TaskBoard = {
     mounted() {
-      this.prefs = {project: [], status: [], priority: [], milestone: [], label: [], assignee: [], query: "", sort: "manual", order: {}, lane: "ready", density: "compact", theme: "light", hiddenLanes: ["done"]};
-      this.revealedLanes = new Set();
+      this.prefs = {project: [], status: [], priority: [], milestone: [], label: [], assignee: [], query: "", sort: "manual", order: {}, lane: "work", density: "compact", theme: "light"};
       this.popup = null;
       this.activeOption = 0;
       this.drag = null;
@@ -73,7 +73,7 @@
       };
       this.options = key => {
         if (key === "project") return parse(this.el.dataset.projects, []).map(p => [p.id, p.label]);
-        if (key === "status") return [...lanes, ["attention", "Needs input"]];
+        if (key === "status") return [...lanes, ["ready", "Queued"], ["running", "Running"], ["attention", "Needs input"]];
         if (key === "priority") return [["P1", "P1 · High"], ["P2", "P2 · Normal"], ["P3", "P3 · Low"], ["P4", "P4 · Lowest"], ["—", "Unspecified"]];
         const options = new Map(this.metadataOptions?.[key] || []);
         for (const value of this.prefs[key]) if (value !== "__none__" && !options.has(value)) options.set(value, this.metadataLabel(key, value));
@@ -99,12 +99,12 @@
         for (const k of boardFilters) this.prefs[k] = this.filterValues(k, saved[k]);
         this.prefs.query = typeof saved.query === "string" ? saved.query : "";
         this.prefs.sort = ["manual", "priority", "updated", "oldest", "title"].includes(saved.sort) ? saved.sort : "manual";
-        this.prefs.lane = lanes.some(([id]) => id === saved.lane) ? saved.lane : "ready";
-        this.prefs.order = Object.fromEntries(lanes.map(([stage]) => [stage, Array.isArray(saved.order?.[stage]) ? saved.order[stage].filter(id => typeof id === "string") : []]));
+        const savedLane = laneForStatus(saved.lane);
+        this.prefs.lane = lanes.some(([id]) => id === savedLane) ? savedLane : "work";
+        const savedOrder = stage => Array.isArray(saved.order?.[stage]) ? saved.order[stage].filter(id => typeof id === "string") : [];
+        this.prefs.order = Object.fromEntries(lanes.map(([stage]) => [stage, [...new Set(stage === "work" ? [...savedOrder("work"), ...savedOrder("ready"), ...savedOrder("running")] : savedOrder(stage))]]));
         this.prefs.density = ["compact", "details"].includes(saved.density) ? saved.density : "compact";
         this.prefs.theme = ["light", "dark", "system"].includes(saved.theme) ? saved.theme : "light";
-        this.prefs.hiddenLanes = Array.isArray(saved.hiddenLanes) ? [...new Set(saved.hiddenLanes.filter(id => lanes.some(([stage]) => stage === id)))] : ["done"];
-        if (this.prefs.hiddenLanes.length === lanes.length) this.prefs.hiddenLanes = this.prefs.hiddenLanes.filter(id => id !== "ready");
         this.el.querySelector("[data-board-search]").value = this.prefs.query;
         this.el.querySelector("[data-board-sort]").value = this.prefs.sort;
       };
@@ -163,12 +163,6 @@
         if (selection) selection.value = this.prefs.theme;
         this.el.querySelector("[data-board-sort]").value = this.prefs.sort;
       };
-      this.setLaneVisible = (stage, visible) => {
-        if (!lanes.some(([id]) => id === stage)) return;
-        if (visible) this.prefs.hiddenLanes = this.prefs.hiddenLanes.filter(id => id !== stage);
-        else if (!this.revealedLanes.has(stage) && this.prefs.hiddenLanes.length < lanes.length - 1 && !this.prefs.hiddenLanes.includes(stage)) this.prefs.hiddenLanes.push(stage);
-        this.apply(); this.save();
-      };
       this.drawOptions = key => {
         const input = this.el.querySelector("#filter-" + key), list = this.el.querySelector("#options-" + key);
         const options = this.options(key).filter(([, label]) => label.toLowerCase().includes(input.value.toLowerCase()));
@@ -219,7 +213,7 @@
           filters: {...Object.fromEntries(boardFilters.map(key => [key, key === "milestone" ? this.prefs[key].filter(value => value === "__none__" || value.startsWith(`milestone:${project}:`)) : this.prefs[key]])), q: this.prefs.query, sort: this.prefs.sort},
           selected_task_id: this.el.dataset.selectedTask || null,
           visible_task_ids: visible.map(card => card.dataset.taskId), viewport_task_ids: viewport.map(card => card.dataset.taskId),
-          hidden_columns: lanes.filter(([stage]) => this.el.querySelector(`[data-stage="${stage}"]`).hidden).map(([stage]) => stage),
+          hidden_columns: [],
           board_checked_at: this.el.dataset.boardCheckedAt || null, truncated: cards.length > 50
         };
         const key = JSON.stringify([snapshot, this.el.dataset.contextRevision]);
@@ -239,7 +233,6 @@
         this.applyAppearance();
         const cards = [...this.el.querySelectorAll("[data-task-id]")];
         const linkedTask = this.el.dataset.selectedTask || new URLSearchParams(window.location.search).get("task");
-        this.revealedLanes = new Set(this.prefs.status.filter(stage => lanes.some(([id]) => id === stage)));
         let matched = 0;
         for (const card of cards) {
           const d = card.dataset, stage = card.closest("[data-stage]").dataset.stage;
@@ -247,18 +240,11 @@
           const metadata = {label: labels.map(label => "label:" + label), assignee: assignees.map(login => "assignee:" + login), milestone: milestone ? [`milestone:${d.project}:${milestone.id}`] : []};
           const metadataMatches = metadataFilters.every(key => !this.prefs[key].length || this.prefs[key].some(value => value === "__none__" ? !metadata[key].length : metadata[key].includes(value)));
           const searchable = [d.title, d.identifier, milestone?.title, ...labels, ...assignees.map(login => "@" + login)].join(" ").toLowerCase();
-          const matches = metadataMatches && (!this.prefs.project.length || this.prefs.project.includes(d.project)) && (!this.prefs.priority.length || this.prefs.priority.includes(d.priority)) && (!this.prefs.status.length || this.prefs.status.includes(stage) || (this.prefs.status.includes("attention") && d.attention === "true")) && (!this.prefs.query || searchable.includes(this.prefs.query.toLowerCase()));
+          const matches = metadataMatches && (!this.prefs.project.length || this.prefs.project.includes(d.project)) && (!this.prefs.priority.length || this.prefs.priority.includes(d.priority)) && (!this.prefs.status.length || this.prefs.status.includes(stage) || this.prefs.status.includes(d.status) || (this.prefs.status.includes("attention") && d.attention === "true")) && (!this.prefs.query || searchable.includes(this.prefs.query.toLowerCase()));
           card.hidden = !matches;
           if (matches) matched++;
-          if ((matches && this.prefs.status.includes("attention") && d.attention === "true") || d.taskId === linkedTask) this.revealedLanes.add(stage);
         }
-        const hidden = new Set(this.prefs.hiddenLanes.filter(stage => !this.revealedLanes.has(stage)));
-        const hiddenTasks = cards.filter(card => !card.hidden && hidden.has(card.closest("[data-stage]").dataset.stage)).length;
-        const visible = matched - hiddenTasks;
-        this.el.querySelector("[data-result-count]").textContent = `${visible} of ${cards.length} tasks${hiddenTasks ? ` · ${hiddenTasks} in hidden columns` : ""}`;
-        this.el.querySelector(".kanban-board")?.style.setProperty("--visible-lanes", String(lanes.length - hidden.size));
-        const rail = this.el.querySelector("[data-hidden-lanes]");
-        if (rail) rail.hidden = hidden.size === 0;
+        this.el.querySelector("[data-result-count]").textContent = `${matched} of ${cards.length} tasks`;
         for (const [stage] of lanes) {
           const lane = this.el.querySelector(`[data-stage="${stage}"]`), container = lane.querySelector("[data-lane-cards]");
           const items = [...container.children];
@@ -268,14 +254,6 @@
           items.sort((a,b) => this.prefs.sort === "priority" ? priorityRank(a.dataset.priority) - priorityRank(b.dataset.priority) : this.prefs.sort === "updated" ? date(b.dataset.updated) - date(a.dataset.updated) : this.prefs.sort === "oldest" ? (date(a.dataset.created) || Infinity) - (date(b.dataset.created) || Infinity) : this.prefs.sort === "title" ? a.dataset.title.localeCompare(b.dataset.title) : rank(a.dataset.taskId) - rank(b.dataset.taskId));
           items.forEach((item, index) => { if (container.children[index] !== item) container.insertBefore(item, container.children[index] || null); });
           const count = items.filter(item => !item.hidden).length;
-          lane.hidden = hidden.has(stage);
-          const checkbox = this.el.querySelector(`[data-visible-lane="${stage}"]`), hideButton = lane.querySelector(`[data-hide-lane="${stage}"]`);
-          const cannotHide = this.revealedLanes.has(stage) || (!this.prefs.hiddenLanes.includes(stage) && this.prefs.hiddenLanes.length === lanes.length - 1);
-          if (checkbox) { checkbox.checked = !lane.hidden; checkbox.disabled = !lane.hidden && cannotHide; }
-          if (hideButton) hideButton.disabled = cannotHide;
-          const showButton = this.el.querySelector(`[data-show-lane="${stage}"]`), hiddenCount = this.el.querySelector(`[data-hidden-count="${stage}"]`);
-          if (showButton) showButton.hidden = !lane.hidden;
-          if (hiddenCount) hiddenCount.textContent = count;
           lane.querySelector("[data-lane-count]").textContent = count;
           lane.querySelector("[data-lane-empty]").hidden = count !== 0;
           lane.querySelector("[data-lane-empty]").textContent = matched ? "No matching tasks" : "No tasks match";
@@ -285,12 +263,12 @@
         const contextChanged = this.mobileContext !== mobileContext;
         this.mobileContext = mobileContext;
         if (contextChanged && linkedStage) this.prefs.lane = linkedStage;
-        else if (contextChanged && this.prefs.status.length === 1 && lanes.some(([stage]) => stage === this.prefs.status[0])) this.prefs.lane = this.prefs.status[0];
+        else if (contextChanged && this.prefs.status.length === 1 && lanes.some(([stage]) => stage === laneForStatus(this.prefs.status[0]))) this.prefs.lane = laneForStatus(this.prefs.status[0]);
         const current = this.el.querySelector(`[data-stage="${this.prefs.lane}"]`);
-        if (!current || current.hidden || (contextChanged && !linkedStage && visible && !current.querySelector(".task-card:not([hidden])"))) this.prefs.lane = lanes.find(([stage]) => !hidden.has(stage) && this.el.querySelector(`[data-stage="${stage}"] .task-card:not([hidden])`))?.[0] || lanes.find(([stage]) => !hidden.has(stage))[0];
+        if (!current || (contextChanged && !linkedStage && matched && !current.querySelector(".task-card:not([hidden])"))) this.prefs.lane = lanes.find(([stage]) => this.el.querySelector(`[data-stage="${stage}"] .task-card:not([hidden])`))?.[0] || "work";
         this.el.querySelectorAll("[data-stage]").forEach(el => el.dataset.mobileActive = String(el.dataset.stage === this.prefs.lane));
         const mobile = this.el.querySelector("[data-mobile-lane]"); mobile.value = this.prefs.lane;
-        for (const option of mobile.options) option.textContent = `${lanes.find(([s]) => s === option.value)[1]} (${this.el.querySelector(`[data-stage="${option.value}"] [data-lane-count]`).textContent})${hidden.has(option.value) ? " · hidden" : ""}`;
+        for (const option of mobile.options) option.textContent = `${lanes.find(([s]) => s === option.value)[1]} (${this.el.querySelector(`[data-stage="${option.value}"] [data-lane-count]`).textContent})`;
         this.el.querySelector("[data-filter-chips]").innerHTML = boardFilters.filter(key => key !== "project").flatMap(key => this.prefs[key].map(value => { const label = this.options(key).find(([id]) => id === value)?.[1] || value; return `<button type="button" class="filter-chip" data-remove-key="${key}" data-remove-value="${escapeText(value)}" aria-label="Remove ${key} filter ${escapeText(label)}">${escapeText(label)} <span aria-hidden="true">×</span></button>`; })).join("");
         for (const key of boardFilters) {
           const selectedProject = key === "project" && this.prefs.project.length === 1 ? this.options(key).find(([id]) => id === this.prefs.project[0])?.[1] : null;
@@ -335,18 +313,7 @@
         const menu = event.target.closest("details.board-menu");
         if (menu && event.target.closest("summary")) { this.closeFilter(); this.closeMenus(menu); }
         const button = event.target.closest("button"); if (!button) return;
-        if (button.dataset.hideLane) {
-          const stage = button.dataset.hideLane;
-          this.closeMenus(); this.setLaneVisible(stage, false);
-          this.el.querySelector(`[data-show-lane="${stage}"]:not([hidden])`)?.focus({preventScroll: true});
-        }
-        else if (button.dataset.showLane) {
-          const stage = button.dataset.showLane;
-          this.prefs.lane = stage; this.setLaneVisible(stage, true);
-          const lane = this.el.querySelector(`[data-stage="${stage}"]`);
-          (lane?.querySelector("details.board-menu > summary") || lane?.querySelector(".card-title") || this.el.querySelector("[data-mobile-lane]"))?.focus({preventScroll: true});
-        }
-        else if (button.dataset.filterToggle) { const key = button.dataset.filterToggle; if (this.popup === key) this.closeFilter(); else { this.openFilter(key); this.el.querySelector("#filter-" + key).focus(); } }
+        if (button.dataset.filterToggle) { const key = button.dataset.filterToggle; if (this.popup === key) this.closeFilter(); else { this.openFilter(key); this.el.querySelector("#filter-" + key).focus(); } }
         else if (button.dataset.key) this.toggle(button.dataset.key, button.dataset.value);
         else if (button.dataset.removeKey) { this.prefs[button.dataset.removeKey] = this.prefs[button.dataset.removeKey].filter(v => v !== button.dataset.removeValue); this.apply(); this.save(); }
         else if (button.hasAttribute("data-clear-filters")) { for (const key of boardFilters) this.prefs[key] = []; this.prefs.query = ""; this.el.querySelector("[data-board-search]").value = ""; this.closeFilter(); this.apply(); this.save(); }
@@ -356,8 +323,7 @@
         if (event.target.hasAttribute("data-board-sort")) { this.prefs.sort = event.target.value; this.apply(); this.save(); }
         else if (event.target.hasAttribute("data-board-density") && ["compact", "details"].includes(event.target.value)) { this.prefs.density = event.target.value; this.apply(); this.save(); }
         else if (event.target.hasAttribute("data-board-theme") && ["light", "dark", "system"].includes(event.target.value)) { this.prefs.theme = event.target.value; this.apply(); this.save(); }
-        else if (event.target.dataset.visibleLane) this.setLaneVisible(event.target.dataset.visibleLane, event.target.checked);
-        else if (event.target.hasAttribute("data-mobile-lane")) { this.prefs.lane = event.target.value; this.setLaneVisible(event.target.value, true); }
+        else if (event.target.hasAttribute("data-mobile-lane") && lanes.some(([stage]) => stage === event.target.value)) { this.prefs.lane = event.target.value; this.apply(); this.save(); }
       });
       on("dragstart", event => { const card = event.target.closest("[data-task-id]"); if (!card || card.getAttribute("draggable") !== "true" || event.target.closest("select,a,button,summary")) { event.preventDefault(); return; } this.drag = card; card.classList.add("dragging"); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", card.dataset.taskId); });
       const clearDrop = () => this.el.querySelectorAll(".drop-target,.drop-before,.drop-after").forEach(el => el.classList.remove("drop-target", "drop-before", "drop-after"));
@@ -387,13 +353,12 @@
       window.addEventListener("resize", this.scheduleContext, {passive: true, signal: this.abort.signal});
       this.apply();
     },
-    beforeUpdate() { this.openMenuKeys = [...this.el.querySelectorAll("details.board-menu[open]")].map(menu => menu.closest("[data-stage]")?.dataset.stage || "display"); },
+    beforeUpdate() { this.openMenuKeys = [...this.el.querySelectorAll("details.board-menu[open]")].map(menu => menu.id || menu.className); },
     updated() {
       this.apply();
       if (this.popup) this.drawOptions(this.popup);
       for (const menu of this.el.querySelectorAll("details.board-menu")) {
-        const lane = menu.closest("[data-stage]");
-        if (!lane?.hidden && this.openMenuKeys?.includes(lane?.dataset.stage || "display")) menu.open = true;
+        if (this.openMenuKeys?.includes(menu.id || menu.className)) menu.open = true;
       }
     },
     destroyed() { this.abort.abort(); clearTimeout(this.urlTimer); clearTimeout(this.contextTimer); }

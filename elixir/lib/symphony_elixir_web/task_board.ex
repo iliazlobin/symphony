@@ -6,13 +6,13 @@ defmodule SymphonyElixirWeb.TaskBoard do
   `runtime_error` means the caller must retain its previous complete task list.
   Reads never admit, retry, close or otherwise mutate a tracker issue.
 
-  Stages are presentation only: Ready means tracker routing requirements pass,
-  not that a worker is running; Done means the tracker is terminal, not that a
-  candidate was merged or deployed. Each task retains that distinction in
+  Work includes queued and running tasks. With native controls, Done requires
+  explicit human acceptance; tracker closure remains Review until accepted.
+  Uncontrolled trackers retain their terminal-state behavior. Each task retains the distinction in
   `completion_evidence`, `tracker_state`, `hold` and `attention`.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, Tracker}
+  alias SymphonyElixir.{Config, IssueAcceptance, Orchestrator, Tracker}
   alias SymphonyElixir.GitHub.{Admission, Board, Client}
   alias SymphonyElixir.Tracker.Issue
   alias SymphonyElixirWeb.Presenter
@@ -42,6 +42,7 @@ defmodule SymphonyElixirWeb.TaskBoard do
   @doc "Projects already-read data without performing IO or changing workflow state."
   @spec project([Issue.t()], map(), map(), map()) :: map()
   def project(issues, runtime, control, settings) do
+    settings = projection_settings(settings, control)
     project = project_identity(settings.tracker)
     issues = visible_issues(issues, settings.tracker.kind)
     admitted = admission_index(issues, settings)
@@ -80,6 +81,12 @@ defmodule SymphonyElixirWeb.TaskBoard do
       control: control,
       runtime: runtime
     }
+  end
+
+  defp projection_settings(settings, control) do
+    settings
+    |> Map.put(:control, Map.put(settings.control, :enabled, settings.control.enabled or control["enabled"] == true))
+    |> Map.put(:tracker_fingerprint, control["tracker_fingerprint"] || tracker_fingerprint(settings.tracker))
   end
 
   defp load_settings(orchestrator, timeout, settings) do
@@ -226,9 +233,10 @@ defmodule SymphonyElixirWeb.TaskBoard do
     hold = ledger["hold"]
     handoff = ledger["handoff"]
     terminal = terminal?(issue, settings.tracker)
-    routable = active?(issue, settings.tracker) and Issue.routable?(admitted, settings.tracker.required_labels)
-    issue_attention = attention(runtime, hold, admitted, issue, settings.tracker, terminal)
-    attention = reservation_attention(runtime, ledger) || issue_attention
+    controlled = settings.control.enabled
+    accepted = accepted?(ledger, settings)
+    stage = project_stage(issue, admitted, runtime, ledger, terminal, accepted, settings)
+    attention = project_attention(issue, admitted, runtime, ledger, terminal, accepted, settings)
     url = issue_url(issue, runtime, project, settings.tracker.kind)
 
     %{
@@ -242,7 +250,8 @@ defmodule SymphonyElixirWeb.TaskBoard do
       links: links(url, project.url),
       pull_requests: [],
       github_status: if(settings.tracker.kind == "github", do: "not_loaded", else: "not_applicable"),
-      stage: stage(runtime, hold, handoff, terminal, routable),
+      stage: stage,
+      lane: if(stage in ["ready", "running"], do: "work", else: stage),
       attention: attention,
       blocker_reason: blocker_reason(runtime, hold, attention),
       execution_status: execution_status(runtime, hold, ledger),
@@ -258,10 +267,49 @@ defmodule SymphonyElixirWeb.TaskBoard do
       hold: hold,
       ledger: ledger,
       tracker_state: issue.state,
-      completion_evidence: if(terminal, do: "Tracker marked this issue #{issue.state}; merge and deployment are not verified.", else: nil),
+      tracker_terminal: terminal,
+      acceptance: if(accepted, do: ledger["acceptance"]),
+      completion_evidence: completion_evidence(accepted, controlled, terminal, issue.state),
       source_missing: false
     }
   end
+
+  defp accepted?(ledger, settings) do
+    settings.control.enabled and IssueAcceptance.accepted?(ledger) and
+      get_in(ledger, ["acceptance", "tracker_fingerprint"]) == settings.tracker_fingerprint
+  end
+
+  defp tracker_fingerprint(tracker), do: :crypto.hash(:sha256, :erlang.term_to_binary(tracker)) |> Base.url_encode64(padding: false)
+
+  defp project_stage(issue, admitted, runtime, ledger, terminal, accepted, settings) do
+    routed = if settings.control.enabled, do: issue, else: admitted
+    queued = active?(issue, settings.tracker) and Issue.routable?(routed, settings.tracker.required_labels)
+
+    if settings.control.enabled,
+      do: controlled_stage(runtime, ledger["hold"], ledger["handoff"], terminal, queued, accepted),
+      else: stage(runtime, ledger["hold"], ledger["handoff"], terminal, queued)
+  end
+
+  defp project_attention(_issue, _admitted, _runtime, _ledger, _terminal, true, _settings), do: nil
+
+  defp project_attention(issue, admitted, runtime, ledger, terminal, false, settings) do
+    issue_attention =
+      if settings.control.enabled and terminal,
+        do: "Awaiting your acceptance",
+        else: attention(runtime, ledger["hold"], admitted, issue, settings.tracker, terminal)
+
+    reservation_attention(runtime, ledger) || issue_attention
+  end
+
+  defp completion_evidence(true, _controlled, _terminal, _state), do: "Accepted by you. Merge and deployment status remain separate."
+  defp completion_evidence(false, true, true, _state), do: "GitHub issue is closed; your acceptance is still required."
+  defp completion_evidence(false, false, true, state), do: "Tracker marked this issue #{state}; merge and deployment are not verified."
+  defp completion_evidence(_, _, _, _), do: nil
+
+  defp controlled_stage(%{status: "running"}, _hold, _handoff, _terminal, _queued, _accepted), do: "running"
+  defp controlled_stage(_runtime, _hold, _handoff, _terminal, _queued, true), do: "done"
+  defp controlled_stage(_runtime, _hold, _handoff, true, _queued, false), do: "review"
+  defp controlled_stage(_runtime, hold, handoff, _terminal, queued, false), do: stage(nil, hold, handoff, false, queued)
 
   defp blocker_reason(%{error: error}, _hold, _attention) when is_binary(error) and error != "", do: String.slice(error, 0, 2_000)
   defp blocker_reason(_runtime, hold, attention) when is_binary(hold), do: attention || humanize_hold(hold)

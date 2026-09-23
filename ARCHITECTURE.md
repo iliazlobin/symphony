@@ -79,7 +79,7 @@ commands to the native API and owns no scheduling state.
   scheduling authority. It polls, reconciles eligibility, reserves attempts,
   starts supervised workers and handles completion, deadlines and retries.
 - [`ControlLedger`](elixir/lib/symphony_elixir/control_ledger.ex) retains operating
-  mode, the concurrency override, issue holds, attempts, runtime/token totals and candidate handoffs.
+  mode, concurrency, issue holds, per-cycle attempts, lifetime usage, candidate handoffs and human acceptance.
   The orchestrator owns writes; an OS advisory lock rejects a second owner.
 - [`AgentRunner`](elixir/lib/symphony_elixir/agent_runner.ex) selects controlled or
   upstream execution. [`CandidatePipeline`](elixir/lib/symphony_elixir/candidate_pipeline.ex)
@@ -93,7 +93,7 @@ commands to the native API and owns no scheduling state.
 - [`Workspace`](elixir/lib/symphony_elixir/workspace.ex) creates and validates
   execution directories. Controlled mode retains workspaces for recovery.
 - [`TaskBoard`](elixir/lib/symphony_elixir_web/task_board.ex) combines tracker issues,
-  runtime and durable holds for the LiveView Kanban board. Sorting and manual order
+  runtime, durable holds and explicit human acceptance for the four-column LiveView board. Sorting and manual order
   are browser preferences. Card and Settings dialogs preserve the board underneath.
   A supervised in-memory cache retains one complete board for up to 90 seconds.
   Reloads render that snapshot immediately, including its checked time, while a
@@ -154,7 +154,9 @@ commands to the native API and owns no scheduling state.
 
 ## Execution and ownership
 
-GitHub owns task intent and issue/PR state. The control ledger owns execution
+GitHub owns task intent and issue/PR state. Human acceptance in the native ledger owns
+Done on controlled boards; closure or PR merge alone leaves an unaccepted issue in Review.
+The control ledger owns execution
 controls, not a second backlog. Notion owns explanations and plans; reports should
 link current GitHub records and runtime observations rather than copy task status.
 
@@ -176,6 +178,13 @@ thread, candidate and publication receipt. The builder's thread is checkpointed
 before its first turn. A separately checkpointed working head permits recovery after
 reviewer failure without replacing the approved candidate or published-head checks.
 Resuming a thread charges only new token usage; each candidate gets a fresh reviewer.
+Human-confirmed correction cycles reset only their bounded attempt allowance, retaining
+lifetime attempts, token usage and runtime. Exact comment revisions can be bound to a
+work session. Builder dispositions must cover that set, and the fresh reviewer verifies
+them before addressed status is projected. GitHub comment reads share the bounded board
+cache; they are never dispatch authority. A separate host status mirror maintains one
+idempotent issue reply from ledger evidence, with a private delivery journal for ambiguous
+writes. It neither schedules work nor resolves review threads.
 Missing retained state, dirty or advanced checkouts, changed baselines and unexpected
 remote PR heads block continuation. Existing issue-level runs remain supported;
 unrelated or historical PRs are not automatically adopted as retained sessions.
@@ -267,7 +276,8 @@ the coding-task lifecycle. Pins and ordering in the standalone history remain pr
 project presentation preferences, not execution order.
 [`Chat.ViewContext`](elixir/lib/symphony_elixir/chat/view_context.ex) validates a
 bounded snapshot for each user message: project, filters, selected task ID,
-up to 50 displayed task IDs, their viewport subset, hidden columns and timestamps.
+up to 50 displayed task IDs, their viewport subset and timestamps. New snapshots have no hidden columns; older
+stored snapshots remain readable.
 The browser sends IDs and display metadata, never arbitrary page text, screenshots
 or form contents. The parent restricts IDs to its current board; the store validates
 the immutable project boundary again before persistence and model execution.
@@ -284,7 +294,7 @@ linked PR’s independent state, review, head revision and CI; a merged PR does 
 imply issue completion.
 
 The issue chat coordinates all PR work on that issue. Its headline picker groups
-Running, Ready for review, Needs attention, Ready, Backlog and Done, then sorts each
+Work, Ready for review, Needs attention, Backlog and Done, then sorts each
 group by the newest issue, worker, chat, PR or check activity. Search matches categories,
 identifiers, titles and latest activity. Issue rows include creation date, priority,
 PR count and latest update; the picker contains the selected issue's GitHub/card links.

@@ -1,7 +1,7 @@
 # Symphony Elixir
 
-The controlled GitHub board supports queueing from **Backlog → Ready** by drag-and-drop
-or the task's **Move to Ready** button. Both open a durable preview requiring **Queue task**
+The controlled GitHub board supports queueing from **Backlog → Work** by drag-and-drop
+or the task's **Move to Work** button. Both open a durable preview requiring **Queue task**
 confirmation. See the [profile workflow](../profiles/events-concierge/README.md#operate)
 for task creation, holds, review and completion. Queueing does not resume a paused controller.
 
@@ -335,7 +335,7 @@ The chat panel stays open. Select a task card to open its dedicated conversation
 closing task details keeps that conversation selected. **Main chat** in the issue picker returns to the
 project conversation for reports and task creation, updates or cancellation.
 The headline picker searches issue numbers, titles, categories and recent activity.
-Issues appear in Running, Ready for review, Needs attention, Ready, Backlog and Done
+Issues appear in Work, Ready for review, Needs attention, Backlog and Done
 groups, newest activity first within each group. The second line starts with **PRs**,
 followed by links to the issue and its card and the current status. The PR menu searches
 fetched associated PRs by number, title, status, review or CI,
@@ -639,15 +639,13 @@ status, priority, milestone, tag and assignee filters, per-lane sorting, and bro
 The compact board follows the Linear board shown in OpenAI's Symphony demo while
 retaining this fork's GitHub workflow. Project selection stays in the top bar;
 The task filters stay visible on the left of the toolbar. **Display**,
-on the right, controls sorting, card
-detail, light/dark appearance and visible columns. Hidden columns remain available
-in the restore rail; selecting a status reveals its column. Display preferences are
-saved only in this browser and do not change scheduling or issue state.
+on the right, controls sorting, card detail and light/dark appearance. All four columns
+stay visible; use filters to narrow the tasks. Display preferences are saved only in this
+browser and do not change scheduling or issue state.
 Milestones, tags and assignees come from GitHub issue metadata; tags include ordinary
 categories and `work:*` labels. Select multiple values to match any of them within a
 filter; different filters combine to narrow the result. Use **No milestone**, **No tags**
-or **Unassigned** to find missing metadata. Options reflect all loaded tasks, including
-hidden columns. Filters survive reload and are retained in board links and chat view
+or **Unassigned** to find missing metadata. Options reflect all loaded tasks. Filters survive reload and are retained in board links and chat view
 context; a saved selection with no matching tasks stays selected until cleared.
 Metadata filters do not change queue eligibility, ownership or execution permissions.
 Click a card's background to select its task chat without opening a dialog. Only the title
@@ -684,11 +682,48 @@ Task
 descriptions render Markdown headings, lists, code, tables and safe external links;
 embedded HTML and interactive attributes are omitted, and images show their alt text.
 Relative links remain text; open the source issue for repository-relative navigation.
-Tracker issues, current runtime and durable holds own the displayed stages; stale sources
-are marked. A terminal issue does not verify a merge or deployment.
+Controlled boards use **Backlog → Work → Review → Done**:
 
-Cards and task popups retain an inline execution summary with cumulative tokens,
-attempts and elapsed time against the reported limits. It stays visible in compact view after workers exit;
+- **Backlog → Work:** drag a task and confirm queueing. The agent starts it when
+  routing, dependencies, priority, concurrency, launch gates and budgets allow.
+  Work includes queued, running and held execution; status explains the difference.
+- **Work → Review:** the agent automatically hands off its committed candidate and
+  independent review evidence after worker cleanup.
+- **Review → Done:** drag to Done or choose **Accept · Done**. Confirming records your
+  acceptance in the durable control ledger. Merging a PR or closing its GitHub issue
+  alone does not accept it; closed issues without acceptance remain in Review.
+  Acceptance does not merge, deploy, or change the GitHub issue's state.
+- **Review → Work:** select **Return to Work**, enter corrections and/or select GitHub
+  comments, choose a retained PR session or new PR work, then confirm. A merged PR
+  needs new work. Reopen a closed GitHub issue before returning it to Work. New work
+  still uses the operator-approved baseline; it does not silently repin it to main.
+- **Work → Backlog:** cancel execution and wait for worker cleanup. Tokens and time
+  already consumed remain charged. Explicit new correction cycles receive a fresh
+  bounded attempt allowance; automatic retries do not reset it.
+
+The board refreshes automatically every 30 seconds. There is no manual Refresh button
+or hidden-column rail. Existing Ready/Running status links still narrow Work to queued
+or running tasks. Old column order preferences migrate into Work.
+
+GitHub issue comments, PR conversation comments, submitted reviews and review-thread
+replies enrich the existing cached board read. Cards show comment counts, working,
+remaining, addressed and blocked items. Reads are bounded: partial/unavailable sources
+are explicit, never treated as zero verified feedback. New or edited comments do not
+start agents automatically. Selecting feedback pins its exact text revision to the
+confirmed work. A candidate must report a disposition for every selected revision;
+addressed counts require independent approval of that candidate's evidence. Edited
+comments become pending again. One PR session runs per issue; comment counts describe
+its batch, not a separate worker for every comment.
+
+For the selected PR session’s feedback batch, the host maintains one GitHub issue reply with source links and
+👀 working, ✅ addressed or ❗ blocked status. It coalesces updates, caches delivery state
+privately beside the control ledger, and reconciles uncertain outcomes instead of
+blindly posting duplicates. This reply never resolves a human review thread or grants
+acceptance. Incoming comments remain untrusted source content and cannot broaden scope
+or execution permissions. Uncontrolled/upstream boards retain tracker stage semantics.
+
+Cards and task popups retain an inline execution summary with cumulative tokens and
+elapsed time, plus attempts in the current correction cycle against the reported limits. It stays visible in compact view after workers exit;
 unavailable status and missing metrics remain explicit. Task dialogs show Cancel or
 Retry only when applicable; settled candidate review does not offer Retry.
 

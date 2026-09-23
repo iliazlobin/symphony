@@ -34,6 +34,10 @@ defmodule SymphonyElixir.GitHub.BoardTest do
       assert body["query"] =~ "CROSS_REFERENCED_EVENT"
       assert body["query"] =~ "createdAt updatedAt"
       assert body["query"] =~ "contexts(first: 20)"
+      assert body["query"] =~ "comments(last: 20)"
+      assert body["query"] =~ "reviewThreads(last: 10)"
+      assert body["query"] =~ "comments(last: 3)"
+      assert body["query"] =~ "author { __typename login }"
       assert body["query"] =~ "... on CheckRun"
       assert body["query"] =~ "... on StatusContext"
       assert body["query"] =~ "workflowRun { workflow { name } url runNumber event }"
@@ -60,6 +64,30 @@ defmodule SymphonyElixir.GitHub.BoardTest do
     assert Enum.count(card.links, &(&1.kind == "pull_request")) == 2
     assert Enum.count(card.links, &(&1.kind == "checks" and String.ends_with?(&1.url, "/checks"))) == 2
     refute Enum.any?(card.links, &(&1.kind == "commit"))
+  end
+
+  test "feedback shares the scoped board read and becomes unavailable with failed or stale evidence" do
+    comment = %{
+      "id" => "IC_example",
+      "url" => "https://github.com/example/repo/issues/1#issuecomment-12",
+      "body" => "Clarify the test exclusions.",
+      "updatedAt" => "2026-09-15T00:00:00Z",
+      "author" => %{"__typename" => "User", "login" => "reviewer"}
+    }
+
+    comments = %{"nodes" => [comment], "totalCount" => 1, "pageInfo" => %{"hasPreviousPage" => false}}
+    data = Map.put(evidence(), "comments", comments)
+    respond(payload(data))
+    result = Board.enrich(board(), settings())
+    assert [%{feedback: %{status: "available", items: [item], counts: %{"pending" => 1}}}] = result.tasks
+    assert item["id"] == "IC_example"
+    assert item["status"] == "pending"
+    assert item["body"] == comment["body"]
+
+    respond({:error, :unavailable})
+    assert [%{feedback: %{status: "unavailable", items: []}}] = Board.enrich(result, settings()).tasks
+    respond(payload(Map.put(data, "updatedAt", "2026-09-16T00:00:00Z")))
+    assert [%{feedback: %{status: "unavailable", items: []}}] = Board.enrich(result, settings()).tasks
   end
 
   test "current-head checks carry individual job durations and workflow identity with PR metadata" do

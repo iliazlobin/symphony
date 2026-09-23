@@ -2,7 +2,8 @@ defmodule SymphonyElixir.Chat.ViewContext do
   @moduledoc "Validates a per-message board snapshot. Browser hints never grant authority or establish current task state."
 
   @keys ~w(version project_id filters selected_task_id visible_task_ids viewport_task_ids hidden_columns captured_at board_checked_at truncated)
-  @columns ~w(backlog ready running review done)
+  # Retained version-1 messages may refer to the former Ready/Running columns.
+  @columns ~w(backlog work ready running review done)
   @statuses @columns ++ ["attention"]
   @priorities ["P1", "P2", "P3", "P4", "—"]
 

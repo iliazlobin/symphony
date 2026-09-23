@@ -327,6 +327,42 @@ defmodule SymphonyElixir.PRWorkTest do
     assert {:error, :pr_evidence_unavailable} = PRWork.verify_remote(work, tracker())
   end
 
+  test "feedback history capacity rejects a new comment before work is queued but permits another revision", c do
+    {ledger, _run} = reviewed(c.ledger)
+
+    item = %{
+      "id" => "IC_201",
+      "revision" => String.duplicate("c", 64),
+      "body" => "Correct the remaining check",
+      "author" => "reviewer",
+      "url" => "https://github.com/owner/repo/issues/7#issuecomment-201",
+      "source" => "issue",
+      "pr_number" => nil
+    }
+
+    history =
+      Map.new(1..200, fn n ->
+        id = "IC_#{n}"
+
+        {id,
+         %{"id" => id, "revision" => String.duplicate("d", 64), "status" => "addressed", "details" => "Verified in the candidate", "candidate_sha" => @head, "recorded_at" => "2026-09-22T10:00:00Z"}}
+      end)
+
+    ledger = put_in(ledger.data["issues"]["7"]["pr_work"][@work]["feedback_history"], history)
+    before_issue = ledger.data["issues"]["7"]
+    command = Map.put(continue(1, @head), "feedback", [item])
+    assert {:error, :feedback_history_full} = ControlLedger.command(ledger, command, 5, @context)
+    assert ledger.data["issues"]["7"] == before_issue
+    assert {:error, :not_admitted} = ControlLedger.reserve(ledger, "7")
+
+    changed_revision = Map.put(item, "id", "IC_1")
+    assert {:ok, next, _, false} = ControlLedger.command(ledger, %{command | "feedback" => [changed_revision]}, 5, @context)
+    assert ControlLedger.selected_work(next, "7")["feedback"] == [changed_revision]
+    assert map_size(ControlLedger.selected_work(next, "7")["feedback_history"]) == 200
+    assert next.data["issues"]["7"]["attempts"] == before_issue["attempts"]
+    assert next.data["issues"]["7"]["tokens"] == before_issue["tokens"]
+  end
+
   defp create(work \\ @work, revision \\ 0), do: Map.merge(cmd("create_pr_work", revision), %{"work_id" => work, "instruction" => "Implement the scoped PR", "base_sha" => @base})
   defp continue(revision, head), do: Map.merge(cmd("continue_pr_work", revision), %{"work_id" => @work, "instruction" => "Address the review findings", "expected_head_sha" => head})
   defp cmd(action, revision), do: %{"action" => action, "issue_id" => "7", "expected_revision" => revision, "command_id" => "#{action}-#{revision}"}
