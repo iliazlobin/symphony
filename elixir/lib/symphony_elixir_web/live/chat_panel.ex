@@ -3,6 +3,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
   use Phoenix.LiveComponent
 
   alias SymphonyElixir.Chat.Artifacts
+  alias SymphonyElixir.TaskWorkType
   alias SymphonyElixirWeb.{BrowserAuth, Endpoint}
 
   @impl true
@@ -501,7 +502,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
       %URI{scheme: nil, host: nil, path: "/", query: query, fragment: nil} when is_binary(query) ->
         params = URI.decode_query(query)
 
-        safe_url(url) == url and params["project"] == project and Enum.all?(Map.keys(params), &(&1 in ~w(project status priority q sort task))) and
+        safe_url(url) == url and params["project"] == project and Enum.all?(Map.keys(params), &(&1 in ~w(project status priority work_type q sort task))) and
           (is_nil(params["task"]) or String.starts_with?(params["task"], project <> ":"))
 
       _ ->
@@ -720,6 +721,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
     [
       list(filters["status"]) |> Enum.map_join(", ", &text/1),
       list(filters["priority"]) |> Enum.map_join(", ", &text/1),
+      list(filters["work_type"]) |> Enum.map_join(", ", &TaskWorkType.label/1),
       if(text(filters["q"]) != "", do: "Search: #{text(filters["q"])}", else: ""),
       if(text(filters["sort"]) != "", do: "Sort: #{text(filters["sort"])}", else: "")
     ]
@@ -786,13 +788,13 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
   defp task_reference(assigns) do
     # Prefer the canonical task ID, not a model-provided arbitrary board query.
-    filters = assigns.filters |> Map.take(["status", "priority", "q", "sort"]) |> Map.reject(fn {_key, value} -> not is_binary(value) end)
+    filters = assigns.filters |> Map.take(["status", "priority", "work_type", "q", "sort"]) |> Map.reject(fn {_key, value} -> not is_binary(value) end)
     params = Map.merge(filters, %{"project" => assigns.project && assigns.project["id"], "task" => assigns.task["id"]})
     url = if is_binary(assigns.task["id"]), do: reference_url("/?" <> URI.encode_query(params), assigns.project), else: reference_url(assigns.task["url"], assigns.project)
     assigns = assign(assigns, :url, url)
 
     ~H"""
-    <div class="widget-task"><div><span class="widget-task-id">{text(@task["identifier"])}</span><a :if={@url} href={@url} phx-target={@myself} phx-click={if @embedded && board_link?(@url, @project && @project["id"]), do: "board-link"} phx-value-url={@url}>{text(@task["title"] || "Open task")}</a><strong :if={!@url}>{text(@task["title"])}</strong><span :if={@task["attention"]} class="widget-task-attention">{text(@task["attention"])}</span></div><span class="widget-label">{text(@task["stage"] || @task["state"])}</span></div>
+    <div class="widget-task"><div><span class="widget-task-id">{text(@task["identifier"])}</span><a :if={@url} href={@url} phx-target={@myself} phx-click={if @embedded && board_link?(@url, @project && @project["id"]), do: "board-link"} phx-value-url={@url}>{text(@task["title"] || "Open task")}</a><strong :if={!@url}>{text(@task["title"])}</strong><span class="work-type-badge" data-work-type={@task["work_type"] || "unclassified"}>{TaskWorkType.label(@task["work_type"] || "unclassified")}</span><span :if={@task["attention"]} class="widget-task-attention">{text(@task["attention"])}</span></div><span class="widget-label">{text(@task["stage"] || @task["state"])}</span></div>
     """
   end
 end

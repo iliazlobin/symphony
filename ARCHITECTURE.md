@@ -146,6 +146,48 @@ commands to the native API and owns no scheduling state.
   authentication, policy installation and combined host capacity need verification
   before activation; no shared scheduler coordinates capacity across controllers.
 
+## Task work types
+
+Each task has one **work type**, stored as a GitHub issue label. Project identifies
+the owning repository; work type describes the assignment. Status, priority and
+`symphony:ready` remain separate.
+
+| Work type | Label | Examples |
+| --- | --- | --- |
+| Application development | `work:application` | Features, bugs, tests and app code |
+| Infrastructure | `work:infrastructure` | Terraform, networking, cluster capacity and IAM proposals |
+| Deployment | `work:deployment` | Release preparation, rollout plans and release verification |
+| Operations | `work:operations` | Diagnosis, monitoring, recovery plans and cost review |
+
+```mermaid
+flowchart LR
+  Issue["GitHub issue<br>one work label"] --> Model["Derived work_type"]
+  Model --> UI["Board badge + filter"]
+  Model --> Chat["Chat search + exact action preview"]
+  Model --> Prompt["Worker prompt context"]
+```
+
+[`TaskWorkType`](elixir/lib/symphony_elixir/task_work_type.ex) owns the vocabulary
+and label conversion. The board and chat derive `work_type` from tracker labels;
+there is no second category database. Missing labels display **Unclassified**.
+Multiple or unknown `work:` labels display **Needs classification**; existing tasks
+are never guessed or relabeled automatically.
+
+New-task forms and chat proposals accept the type. Confirmed edits replace only
+the `work:` label family and preserve priority, queue and unrelated labels. Existing
+task edits retain the cancelled/idle and stale-proposal checks. Label definitions
+must exist in the repository; setup and examples are in the
+[operator guide](profiles/events-concierge/README.md#work-types).
+
+**Execution boundary:** classification grants no credentials, approval or routing.
+All four types use the existing isolated coding pipeline. Infrastructure work can
+prepare code and plans; deployment/operations work can prepare runbooks and checks.
+Cloud applies, releases and privileged operations still use separately authorized
+operator/release workflows. Dedicated operational executors are not implemented.
+Use the repository that owns the change: shared platform work belongs in
+`gcp-foundation`, application work in its app repository. Categorizing a task does
+not onboard another repository or change a controller's project scope.
+
 ## Execution and ownership
 
 GitHub owns task intent and issue/PR state. The control ledger owns execution

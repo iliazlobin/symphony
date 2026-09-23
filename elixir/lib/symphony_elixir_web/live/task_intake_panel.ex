@@ -3,9 +3,10 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
   use Phoenix.LiveComponent
 
   alias SymphonyElixir.GitHub.Admission
+  alias SymphonyElixir.TaskWorkType
   alias SymphonyElixirWeb.{BrowserAuth, Endpoint, Markdown, TaskIntake}
 
-  @fields ~w(title outcome scope acceptance dependencies)
+  @fields ~w(title outcome scope acceptance dependencies work_type)
 
   @impl true
   def mount(socket) do
@@ -120,10 +121,11 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
 
   defp action_args(%{assigns: %{draft: draft}}) do
     with :ok <- required(draft, ~w(title outcome scope acceptance dependencies)),
+         :ok <- validate_work_type(draft["work_type"]),
          {:ok, _} <- Admission.validate_declaration("Depends on: " <> draft["dependencies"]),
          false <- Enum.any?(~w(outcome scope acceptance), &String.match?(draft[&1], ~r/^\s*depends on\b/im)) do
       body = "## Outcome\n\n#{draft["outcome"]}\n\n## Scope\n\n#{draft["scope"]}\n\n## Acceptance checks\n\n#{draft["acceptance"]}\n\nDepends on: #{draft["dependencies"]}"
-      {:ok, %{"action" => "create_task", "title" => draft["title"], "body" => body}}
+      {:ok, %{"action" => "create_task", "title" => draft["title"], "body" => body, "work_type" => draft["work_type"]}}
     else
       true -> {:error, :duplicate_dependencies}
       {:error, reason} when is_binary(reason) -> {:error, {:invalid_dependency_declaration, reason}}
@@ -135,7 +137,12 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
     if Enum.all?(fields, &(is_binary(draft[&1]) and String.trim(draft[&1]) != "")), do: :ok, else: {:error, :required_fields}
   end
 
-  defp fields(params), do: Map.new(@fields, fn key -> {key, if(is_binary(params[key]), do: params[key], else: "")} end)
+  defp fields(params) do
+    params = Map.put_new(params, "work_type", "unclassified")
+    Map.new(@fields, fn key -> {key, if(is_binary(params[key]), do: params[key], else: "")} end)
+  end
+
+  defp validate_work_type(value), do: if(value in TaskWorkType.values(), do: :ok, else: {:error, :invalid_work_type})
 
   defp field_lengths(draft) do
     Enum.reduce_while(@fields, :ok, fn field, :ok ->
@@ -160,7 +167,7 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
     end
   end
 
-  defp initial_draft, do: %{"title" => "", "outcome" => "", "scope" => "", "acceptance" => "", "dependencies" => "none"}
+  defp initial_draft, do: %{"title" => "", "outcome" => "", "scope" => "", "acceptance" => "", "dependencies" => "none", "work_type" => "unclassified"}
 
   defp open_intake(%{assigns: %{task: nil}} = socket), do: refresh_history(socket)
 
@@ -236,6 +243,7 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
   end
 
   defp error_message(:required_fields), do: "Complete the required fields before previewing the task."
+  defp error_message(:invalid_work_type), do: "Choose one of the available work types."
   defp error_message(:duplicate_dependencies), do: "Use the Dependencies field for dependency declarations. Remove any Depends on lines from the other sections."
   defp error_message(:project_required), do: "Select one project on the board before creating or changing tasks."
   defp error_message(reason), do: TaskIntake.error_message(reason)
@@ -287,6 +295,9 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
         <p>Create a GitHub issue in Backlog. Saving does not start a worker.</p>
         <form id="task-intake-form" phx-target={@myself} phx-change="draft" phx-submit="prepare" class="intake-form">
           <label><span>Title</span><input name="task[title]" value={@draft["title"]} maxlength="200" required /></label>
+          <label><span>Work type</span><select name="task[work_type]" aria-label="Task work type">
+            <option :for={{label, value} <- TaskWorkType.options()} value={value} selected={@draft["work_type"] == value}>{label}</option>
+          </select><small>Classifies the task; execution and approval rules still apply.</small></label>
           <div class="intake-fields">
             <label><span>Outcome</span><textarea name="task[outcome]" rows="2" maxlength="4000" required placeholder="What should be true when this is done?">{@draft["outcome"]}</textarea></label>
             <label><span>Scope</span><textarea name="task[scope]" rows="3" maxlength="4000" required placeholder="What to change and what to leave alone">{@draft["scope"]}</textarea></label>
@@ -299,6 +310,7 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
       <section :if={@record} id="task-action-preview" class="dialog-section" aria-label="Action preview">
         <div class="widget-heading"><h3>{if @proposal["action"] == "queue_task", do: "Queue task", else: "Create backlog task"}</h3><span class="evidence-badge">{@proposal["status"]}</span></div>
         <h4 :if={@args["title"]}>{@args["title"]}</h4>
+        <p :if={@proposal["action"] == "create_task"}>Work type: <strong>{TaskWorkType.label(@args["work_type"] || "unclassified")}</strong></p>
         <p :if={@proposal["action"] == "queue_task"}>Task: {@args["task_id"]}</p>
         <h4 :if={@proposal["task_title"]}>{@proposal["task_title"]}</h4>
         <div :if={@proposal["task_description"]} class="markdown-content intake-preview-body">{Markdown.render(@proposal["task_description"])}</div>

@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Chat.GitHub do
 
   alias SymphonyElixir.Chat.Tools
   alias SymphonyElixir.GitHub.Client
-  alias SymphonyElixir.Orchestrator
+  alias SymphonyElixir.{Orchestrator, TaskWorkType}
 
   @doc "Reads one already-validated filename from a pinned default-branch revision, within a five-second budget."
   @spec read_document(String.t(), map(), map()) :: {:ok, map()} | {:error, term()}
@@ -51,14 +51,7 @@ defmodule SymphonyElixir.Chat.GitHub do
   @spec confirm(map(), map(), map()) :: {:ok, map()} | {:error, term()}
   def confirm(%{"action" => "create_task"} = proposal, tracker, context) do
     with {:ok, existing} <- find_marker(proposal, tracker, context) do
-      case existing do
-        nil ->
-          body = %{"title" => proposal["args"]["title"], "body" => marked_body(proposal), "labels" => []}
-          write("POST", issues_path(tracker), body, proposal, tracker, context)
-
-        found ->
-          receipt(found, proposal, "Task already created.")
-      end
+      deliver_creation(existing, proposal, tracker, context)
     end
   end
 
@@ -73,7 +66,8 @@ defmodule SymphonyElixir.Chat.GitHub do
       with {:ok, _settings} <- Tools.scope(context),
            {:ok, issue} <- fetch_issue(proposal, tracker, context),
            :ok <- current_revision(issue, proposal),
-           :ok <- queue_precondition(issue, proposal, tracker) do
+           :ok <- queue_precondition(issue, proposal, tracker),
+           :ok <- work_type_label_available(proposal, tracker, context) do
         body = edit_body(proposal, issue, tracker)
         write("PATCH", issue_path(proposal, tracker), body, proposal, tracker, context)
       end
@@ -139,6 +133,16 @@ defmodule SymphonyElixir.Chat.GitHub do
   defp method_atom("GET"), do: :get
   defp method_atom("POST"), do: :post
   defp method_atom("PATCH"), do: :patch
+
+  defp deliver_creation(nil, proposal, tracker, context) do
+    with :ok <- work_type_label_available(proposal, tracker, context) do
+      labels = TaskWorkType.update_labels([], proposal["args"]["work_type"] || "unclassified")
+      body = %{"title" => proposal["args"]["title"], "body" => marked_body(proposal), "labels" => labels}
+      write("POST", issues_path(tracker), body, proposal, tracker, context)
+    end
+  end
+
+  defp deliver_creation(found, proposal, _tracker, _context), do: receipt(found, proposal, "Task already created.")
 
   defp deliver_feedback(nil, proposal, tracker, context) do
     with {:ok, issue} <- fetch_issue(proposal, tracker, context), :ok <- current_revision(issue, proposal) do
@@ -268,17 +272,52 @@ defmodule SymphonyElixir.Chat.GitHub do
   end
 
   defp update_labels(body, issue, proposal, tracker) do
-    if proposal["args"]["priority"] do
+    args = proposal["args"]
+
+    if Map.has_key?(args, "priority") or Map.has_key?(args, "work_type") do
       labels = issue_labels(issue)
 
-      reserved = Enum.map(tracker.required_labels, &String.downcase/1)
-      preserved = Enum.reject(labels, &(String.match?(&1, ~r/^priority:p[1-4]$/i) and String.downcase(&1) not in reserved))
+      labels =
+        if args["priority"] do
+          reserved = Enum.map(tracker.required_labels, &String.downcase/1)
+          preserved = Enum.reject(labels, &(String.match?(&1, ~r/^priority:p[1-4]$/i) and String.downcase(&1) not in reserved))
+          preserved ++ ["priority:p#{args["priority"]}"]
+        else
+          labels
+        end
+
+      labels = if Map.has_key?(args, "work_type"), do: TaskWorkType.update_labels(labels, args["work_type"]), else: labels
       # Required admission labels and unrelated labels are retained exactly.
-      Map.put(body, "labels", preserved ++ ["priority:p#{proposal["args"]["priority"]}"])
+      Map.put(body, "labels", labels)
     else
       body
     end
   end
+
+  defp work_type_label_available(%{"args" => %{"work_type" => value}}, tracker, context) when value != "unclassified" do
+    label = "work:" <> value
+    path = "/repos/#{tracker.provider["repo"]}/labels/" <> URI.encode(label, &URI.char_unreserved?/1)
+
+    case request("GET", path, %{}, nil, tracker, context) do
+      {:ok, %{"name" => name} = found} when is_binary(name) ->
+        cond do
+          String.downcase(name) != label -> {:error, :invalid_github_response}
+          not is_nil(found["archived_at"]) or found["archived"] == true -> {:error, :work_type_label_missing}
+          true -> :ok
+        end
+
+      {:error, {:github_rejected, 404}} ->
+        {:error, :work_type_label_missing}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      _ ->
+        {:error, :invalid_github_response}
+    end
+  end
+
+  defp work_type_label_available(_proposal, _tracker, _context), do: :ok
 
   defp issue_labels(issue) do
     Enum.flat_map(issue["labels"] || [], fn
@@ -292,13 +331,22 @@ defmodule SymphonyElixir.Chat.GitHub do
     repo = String.replace_prefix(proposal["project_id"], "github:", "")
     id = if proposal["action"] == "create_task", do: result["number"], else: issue_id(proposal, proposal["project_id"])
 
-    if (is_integer(id) and id > 0) or (is_binary(id) and String.match?(id, ~r/^[1-9][0-9]*$/)) do
+    valid_id = (is_integer(id) and id > 0) or (is_binary(id) and String.match?(id, ~r/^[1-9][0-9]*$/))
+
+    if valid_id and selected_work_type_present?(result, proposal) do
       url = Tools.board_url(proposal["project_id"], %{"task" => "github:#{repo}:#{id}"})
       {:ok, %{"widgets" => [%{"type" => "receipt", "summary" => summary, "url" => url, "task_id" => "github:#{repo}:#{id}", "proposal_id" => proposal["id"]}]}}
     else
       {:error, :write_outcome_unknown}
     end
   end
+
+  defp selected_work_type_present?(result, %{"args" => %{"work_type" => value}}) do
+    # GitHub can accept an issue write while silently dropping labels for insufficient permissions.
+    is_list(result["labels"]) and TaskWorkType.from_labels(result["labels"]) == value
+  end
+
+  defp selected_work_type_present?(_result, _proposal), do: true
 
   defp marked?(row, proposal), do: is_binary(row["body"]) and String.contains?(row["body"], marker(proposal))
   defp marked_body(proposal), do: proposal["args"]["body"] <> "\n\n" <> marker(proposal)

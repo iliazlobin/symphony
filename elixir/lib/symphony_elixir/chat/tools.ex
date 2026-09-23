@@ -2,14 +2,14 @@ defmodule SymphonyElixir.Chat.Tools do
   @moduledoc "Project-bound management tools. Model calls can prepare writes; only an operator confirms them."
 
   alias SymphonyElixir.Chat.{GitHub, ViewContext}
-  alias SymphonyElixir.{Config, Orchestrator}
+  alias SymphonyElixir.{Config, Orchestrator, TaskWorkType}
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, TaskBoard}
 
   @controls ~w(pause drain resume cancel retry set_concurrency)
   @writes ~w(create_task edit_task feedback queue_task unqueue_task)
   @stages ~w(backlog ready running review done attention)
   @sorts ~w(updated priority title oldest)
-  @task_keys ~w(id issue_id identifier title project project_label stage attention priority updated_at created_at tracker_state completion_evidence source_missing hold github_status)a
+  @task_keys ~w(id issue_id identifier title project project_label stage attention priority work_type updated_at created_at tracker_state completion_evidence source_missing hold github_status)a
   @pr_keys ~w(number title url state draft created_at updated_at review head_ref base_ref author additions deletions changed_files mergeable head_sha relation checks check_total check_details_status)a
   @check_keys ~w(kind name status conclusion url started_at completed_at duration_ms workflow_name run_url run_number run_event)a
   @proposal_keys ~w(id action args project_id tracker_fingerprint expected_revision expected_updated_at created_at queue_labels queue_unheld task_title task_description)
@@ -40,6 +40,8 @@ defmodule SymphonyElixir.Chat.Tools do
     queue_labels_unconfigured: "No routing labels are configured; this chat cannot safely queue or unqueue tasks.",
     backlog_creation_requires_queue_labels: "Configure required routing labels before creating unqueued backlog tasks through chat.",
     priority_label_reserved: "A priority label is also an execution routing label and cannot be changed by this action.",
+    work_type_label_reserved: "A work-type label is also an execution routing label. Separate work classification from routing before changing it.",
+    work_type_label_missing: "The selected work-type label is missing or archived in this GitHub repository. Configure the documented work labels, then prepare a fresh proposal.",
     github_tracker_required: "This action requires a GitHub-backed project.",
     unsupported_tracker_scope: "This repository configuration is not supported by this tool.",
     github_unavailable: "GitHub could not be read. Try again when repository access is available.",
@@ -80,6 +82,7 @@ defmodule SymphonyElixir.Chat.Tools do
         "q" => string(200),
         "status" => enum(@stages),
         "priority" => enum(~w(P1 P2 P3 P4)),
+        "work_type" => enum(TaskWorkType.values() ++ ["invalid"]),
         "sort" => enum(@sorts),
         "limit" => %{"type" => "integer", "minimum" => 1, "maximum" => 50}
       }),
@@ -100,7 +103,8 @@ defmodule SymphonyElixir.Chat.Tools do
           "title" => string(240),
           "body" => string(16_000),
           "state" => enum(~w(open closed)),
-          "priority" => %{"type" => "integer", "minimum" => 1, "maximum" => 4}
+          "priority" => %{"type" => "integer", "minimum" => 1, "maximum" => 4},
+          "work_type" => enum(TaskWorkType.values())
         },
         ["action"]
       )
@@ -209,7 +213,7 @@ defmodule SymphonyElixir.Chat.Tools do
 
   @spec board_url(String.t(), map()) :: String.t()
   def board_url(project, filters \\ %{}) do
-    allowed = Map.take(filters, ~w(status priority q sort task))
+    allowed = Map.take(filters, ~w(status priority work_type q sort task))
     "/?" <> URI.encode_query(Map.put(allowed, "project", project))
   end
 
@@ -294,7 +298,7 @@ defmodule SymphonyElixir.Chat.Tools do
 
   defp dispatch("symphony_search_tasks", args, context, _settings, board) do
     with :ok <- complete_board(board) do
-      filters = Map.take(args, ~w(q status priority sort))
+      filters = Map.take(args, ~w(q status priority work_type sort))
       tasks = board.tasks |> Enum.filter(&matches?(&1, args)) |> sort_tasks(args["sort"] || "updated")
 
       widget = %{
@@ -378,7 +382,9 @@ defmodule SymphonyElixir.Chat.Tools do
   defp matches?(task, args) do
     query = String.downcase(args["q"] || "")
     text = Enum.join([task[:title], task[:identifier]], " ") |> String.downcase()
-    stage_matches?(task, args["status"]) and priority_matches?(task, args["priority"]) and String.contains?(text, query)
+
+    stage_matches?(task, args["status"]) and priority_matches?(task, args["priority"]) and
+      work_type_matches?(task, args["work_type"]) and String.contains?(text, query)
   end
 
   defp stage_matches?(_task, nil), do: true
@@ -386,6 +392,9 @@ defmodule SymphonyElixir.Chat.Tools do
   defp stage_matches?(task, stage), do: task.stage == stage
   defp priority_matches?(_task, nil), do: true
   defp priority_matches?(task, priority), do: "P#{task[:priority]}" == priority
+
+  defp work_type_matches?(_task, nil), do: true
+  defp work_type_matches?(task, work_type), do: task[:work_type] == work_type
 
   defp sort_tasks(tasks, "title"), do: Enum.sort_by(tasks, &String.downcase(&1.title))
   defp sort_tasks(tasks, "priority"), do: Enum.sort_by(tasks, &{&1[:priority] || 99, &1.id})
@@ -413,12 +422,12 @@ defmodule SymphonyElixir.Chat.Tools do
   end
 
   defp action_fields("set_concurrency"), do: {~w(action limit), []}
-  defp action_fields("create_task"), do: {~w(action title body), ~w(title body)}
-  defp action_fields("edit_task"), do: {~w(action task_id title body state priority), ~w(task_id)}
+  defp action_fields("create_task"), do: {~w(action title body work_type), ~w(title body)}
+  defp action_fields("edit_task"), do: {~w(action task_id title body state priority work_type), ~w(task_id)}
   defp action_fields("feedback"), do: {~w(action task_id body), ~w(task_id body)}
   defp action_fields(action) when action in ~w(cancel retry queue_task unqueue_task), do: {~w(action task_id), ~w(task_id)}
   defp action_fields(_action), do: {~w(action), []}
-  defp valid_edit_fields?(%{"action" => "edit_task"} = args), do: Enum.any?(~w(title body state priority), &Map.has_key?(args, &1))
+  defp valid_edit_fields?(%{"action" => "edit_task"} = args), do: Enum.any?(~w(title body state priority work_type), &Map.has_key?(args, &1))
   defp valid_edit_fields?(_args), do: true
   defp valid_title?(%{"title" => title}), do: present?(title)
   defp valid_title?(_args), do: true
@@ -435,9 +444,10 @@ defmodule SymphonyElixir.Chat.Tools do
     end
   end
 
-  defp proposal_evidence(%{"action" => "create_task"}, _context, settings, _board) do
+  defp proposal_evidence(%{"action" => "create_task"} = args, _context, settings, _board) do
     with :ok <- github_tracker(settings.tracker),
-         true <- settings.tracker.required_labels != [] or {:error, :backlog_creation_requires_queue_labels} do
+         true <- settings.tracker.required_labels != [] or {:error, :backlog_creation_requires_queue_labels},
+         :ok <- labels_available(args, settings.tracker) do
       {:ok, %{}}
     end
   end
@@ -495,16 +505,18 @@ defmodule SymphonyElixir.Chat.Tools do
       tracker.required_labels != [] and not Enum.all?(tracker.required_labels, &(String.downcase(&1) in labels))
   end
 
-  defp labels_available(%{"action" => action}, tracker) when action in ~w(queue_task unqueue_task) do
-    if tracker.required_labels == [], do: {:error, :queue_labels_unconfigured}, else: :ok
-  end
+  defp labels_available(args, tracker) do
+    reserved = Enum.map(tracker.required_labels, &(String.trim(&1) |> String.downcase()))
 
-  defp labels_available(%{"priority" => _priority}, tracker) do
-    reserved = Enum.any?(tracker.required_labels, &String.match?(&1, ~r/^priority:p[1-4]$/i))
-    if reserved, do: {:error, :priority_label_reserved}, else: :ok
-  end
+    queue_action = args["action"] in ~w(queue_task unqueue_task)
 
-  defp labels_available(_args, _tracker), do: :ok
+    cond do
+      queue_action and reserved == [] -> {:error, :queue_labels_unconfigured}
+      (Map.has_key?(args, "work_type") or queue_action) and Enum.any?(reserved, &String.starts_with?(&1, "work:")) -> {:error, :work_type_label_reserved}
+      Map.has_key?(args, "priority") and Enum.any?(reserved, &String.match?(&1, ~r/^priority:p[1-4]$/)) -> {:error, :priority_label_reserved}
+      true -> :ok
+    end
+  end
 
   defp github_tracker(%{kind: "github", provider: %{"repo" => repo}}) do
     if is_binary(repo) and String.match?(repo, ~r/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/), do: :ok, else: {:error, :unsupported_tracker_scope}

@@ -16,6 +16,7 @@ isolation, cancellation and pilot checks pass. Upstream demonstration workflows 
 do not define this profile's authorization policy.
 
 - [Architecture and code map](ARCHITECTURE.md)
+- [Task work types: application, infrastructure, deployment and operations](ARCHITECTURE.md#task-work-types)
 - [Events Concierge profile](profiles/events-concierge/profile.py)
 - [Symphony self-management project](profiles/symphony/README.md)
 - [Local operator CLI and MCP client](tools/symphony_control.py)

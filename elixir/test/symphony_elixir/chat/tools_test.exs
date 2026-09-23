@@ -855,6 +855,191 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     assert {:error, :priority_label_reserved} = Tools.call("symphony_propose_action", args, context)
   end
 
+  test "work types derive from tracker labels and survive search, details and view refresh", ctx do
+    issues = [issue("1", labels: ["ready", "work:infrastructure"]), issue("2"), issue("3", labels: ["ready", "work:application", "work:deployment"])]
+    board = TaskBoard.project(issues, %{}, ctx.board.control, Config.settings!())
+    Application.put_env(:symphony_elixir, :chat_test_board, board)
+    assert Enum.map(board.tasks, & &1.work_type) == ["infrastructure", "unclassified", "invalid"]
+    assert Enum.all?(board.tasks, &(&1.stage == "ready"))
+
+    for {type, id} <- [{"infrastructure", "1"}, {"unclassified", "2"}, {"invalid", "3"}] do
+      assert {:ok, %{"widgets" => [widget]}} = Tools.call("symphony_search_tasks", %{"work_type" => type}, ctx.context)
+      assert [%{"issue_id" => ^id, "work_type" => ^type}] = widget["tasks"]
+      assert URI.decode_query(URI.parse(widget["url"]).query)["work_type"] == type
+      assert {:ok, %{"widgets" => [%{"task" => %{"work_type" => ^type}}]}} = Tools.call("symphony_task_details", %{"task_id" => id}, ctx.context)
+    end
+
+    snapshot = %{"version" => 1, "project_id" => ctx.context.project_id, "visible_task_ids" => ["github:example/repo:1"], "filters" => %{"work_type" => ["infrastructure"]}}
+    assert {:ok, refreshed} = Tools.call("symphony_view_context", %{}, Map.put(ctx.context, :view_context, snapshot))
+    assert [%{"work_type" => "infrastructure"}] = refreshed["current_tasks"]
+  end
+
+  test "classified creation requires an existing label and never applies routing labels", ctx do
+    proposal = propose(ctx.context, %{"action" => "create_task", "title" => "Deploy", "body" => "Depends on: none", "work_type" => "deployment"})
+
+    script([
+      fn "GET", "/repos/example/repo/issues", _, nil, _ -> {:ok, %{status: 200, body: []}} end,
+      fn "GET", "/repos/example/repo/labels/work%3Adeployment", %{}, nil, _ -> {:ok, %{status: 200, body: %{"name" => "work:deployment"}}} end,
+      fn "POST", "/repos/example/repo/issues", %{}, body, _ ->
+        assert body["labels"] == ["work:deployment"]
+        {:ok, %{status: 201, body: Map.put(body, "number", 3)}}
+      end
+    ])
+
+    assert {:ok, %{"widgets" => [%{"summary" => summary}]}} = Tools.confirm(proposal, ctx.context)
+    assert summary =~ "not queued"
+    assert_finished()
+  end
+
+  test "missing or archived classification labels reject creation and edit before any write", ctx do
+    Application.put_env(:symphony_elixir, :chat_test_board, put_in(ctx.board, [:tasks, Access.at(0), :hold], "cancelled"))
+
+    for args <- [
+          %{"action" => "create_task", "title" => "Task", "body" => "Depends on: none", "work_type" => "operations"},
+          %{"action" => "edit_task", "task_id" => "1", "work_type" => "operations"}
+        ] do
+      proposal = propose(ctx.context, args)
+      first = if args["action"] == "create_task", do: [], else: raw_issue()
+
+      for response <- [%{status: 404, body: %{}}, %{status: 200, body: %{"name" => "work:operations", "archived_at" => "2026-09-22T10:00:00Z"}}] do
+        script([
+          fn "GET", _, _, nil, _ -> {:ok, %{status: 200, body: first}} end,
+          fn "GET", "/repos/example/repo/labels/work%3Aoperations", %{}, nil, _ -> {:ok, response} end
+        ])
+
+        assert {:error, :work_type_label_missing} = Tools.confirm(proposal, ctx.context)
+        assert_finished()
+      end
+    end
+  end
+
+  test "successful creation with dropped labels stays unknown even when its marker is found", ctx do
+    proposal = propose(ctx.context, %{"action" => "create_task", "title" => "Task", "body" => "Depends on: none", "work_type" => "application"})
+    completed = %{"number" => 3, "body" => marker(proposal), "labels" => []}
+
+    script([
+      fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: []}} end,
+      fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: %{"name" => "work:application"}}} end,
+      fn "POST", _, _, _, _ -> {:ok, %{status: 201, body: completed}} end,
+      fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: [completed]}} end,
+      fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: [completed]}} end,
+      fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: [Map.put(completed, "labels", ["work:application"])]}} end
+    ])
+
+    assert {:error, :write_outcome_unknown} = Tools.confirm(proposal, ctx.context)
+    assert {:error, :write_outcome_unknown} = Tools.confirm(proposal, ctx.context)
+    assert {:error, :write_outcome_unknown} = Tools.reconcile(proposal, ctx.context)
+    assert {:ok, _} = Tools.reconcile(proposal, ctx.context)
+    assert_finished()
+  end
+
+  test "untrusted or unavailable label definitions stop create and edit without writing", ctx do
+    Application.put_env(:symphony_elixir, :chat_test_board, put_in(ctx.board, [:tasks, Access.at(0), :hold], "cancelled"))
+
+    actions = [
+      %{"action" => "create_task", "title" => "Task", "body" => "Depends on: none", "work_type" => "operations"},
+      %{"action" => "edit_task", "task_id" => "1", "work_type" => "operations"}
+    ]
+
+    responses = [
+      {{:ok, %{status: 200, body: %{"name" => "work:deployment"}}}, :invalid_github_response},
+      {{:ok, %{status: 200, body: %{"name" => nil}}}, :invalid_github_response},
+      {{:ok, %{status: 200, body: []}}, :invalid_github_response},
+      {{:ok, %{status: 403, body: %{}}}, {:github_rejected, 403}},
+      {{:error, :timeout}, :github_unavailable}
+    ]
+
+    for args <- actions, {response, reason} <- responses do
+      proposal = propose(ctx.context, args)
+      first = if args["action"] == "create_task", do: [], else: raw_issue()
+
+      script([
+        fn "GET", _, _, nil, _ -> {:ok, %{status: 200, body: first}} end,
+        fn "GET", "/repos/example/repo/labels/work%3Aoperations", %{}, nil, _ -> response end
+      ])
+
+      assert {:error, ^reason} = Tools.confirm(proposal, ctx.context)
+      assert_finished()
+    end
+  end
+
+  test "combined priority and classification edits preserve unrelated labels, routing and cancellation hold", ctx do
+    board = put_in(ctx.board, [:tasks, Access.at(0), :hold], "cancelled")
+    Application.put_env(:symphony_elixir, :chat_test_board, board)
+    proposal = propose(ctx.context, %{"action" => "edit_task", "task_id" => "1", "priority" => 2, "work_type" => "operations"})
+    before = Map.put(raw_issue(), "labels", ["ready", "priority:p1", "Publish-approved", "work:application", "work:future"])
+
+    script([
+      fn "GET", "/repos/example/repo/issues/1", _, _, _ -> {:ok, %{status: 200, body: before}} end,
+      fn "GET", "/repos/example/repo/labels/work%3Aoperations", _, _, _ -> {:ok, %{status: 200, body: %{"name" => "work:operations"}}} end,
+      fn "PATCH", "/repos/example/repo/issues/1", _, body, _ ->
+        assert body["labels"] == ["ready", "Publish-approved", "priority:p2", "work:operations"]
+        {:ok, %{status: 200, body: Map.put(body, "number", 1)}}
+      end
+    ])
+
+    assert {:ok, _} = Tools.confirm(proposal, ctx.context)
+    assert_receive {:guarded_edit, _, 3, "1"}
+    assert get_in(Application.fetch_env!(:symphony_elixir, :chat_test_board), [:tasks, Access.at(0), :hold]) == "cancelled"
+    assert_finished()
+  end
+
+  test "clearing classification needs no label lookup and rejects a silently ignored label update", ctx do
+    Application.put_env(:symphony_elixir, :chat_test_board, put_in(ctx.board, [:tasks, Access.at(0), :hold], "cancelled"))
+    proposal = propose(ctx.context, %{"action" => "edit_task", "task_id" => "1", "work_type" => "unclassified"})
+    before = Map.put(raw_issue(), "labels", ["ready", "priority:p1", "work:infrastructure"])
+    ignored = Map.put(before, "body", marker(proposal))
+
+    script([
+      fn "GET", "/repos/example/repo/issues/1", _, _, _ -> {:ok, %{status: 200, body: before}} end,
+      fn "PATCH", "/repos/example/repo/issues/1", _, body, _ ->
+        assert body["labels"] == ["ready", "priority:p1"]
+        {:ok, %{status: 200, body: ignored}}
+      end,
+      fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: ignored}} end,
+      fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: Map.put(ignored, "labels", ["ready", "priority:p1"])}} end
+    ])
+
+    assert {:error, :write_outcome_unknown} = Tools.confirm(proposal, ctx.context)
+    assert {:error, :write_outcome_unknown} = Tools.reconcile(proposal, ctx.context)
+    assert {:ok, _} = Tools.reconcile(proposal, ctx.context)
+    assert_finished()
+  end
+
+  test "all work-type writes reject routing-label overlap including unknown work labels", ctx do
+    Application.put_env(:symphony_elixir, :chat_test_board, put_in(ctx.board, [:tasks, Access.at(0), :hold], "cancelled"))
+
+    for routing <- ["WORK:Application", "work:future"], selected <- ~w(application unclassified) do
+      configure(put_in(ctx.config, [:tracker, :required_labels], [routing]))
+      fingerprint = Orchestrator.tracker_fingerprint()
+      context = %{ctx.context | tracker_fingerprint: fingerprint, auth: %{ctx.context.auth | tracker_fingerprint: fingerprint}}
+
+      for args <- [
+            %{"action" => "create_task", "title" => "Task", "body" => "Depends on: none", "work_type" => selected},
+            %{"action" => "edit_task", "task_id" => "1", "priority" => 2, "work_type" => selected},
+            %{"action" => "queue_task", "task_id" => "1"},
+            %{"action" => "unqueue_task", "task_id" => "1"}
+          ] do
+        assert {:error, :work_type_label_reserved} = Tools.call("symphony_propose_action", args, context)
+      end
+    end
+  end
+
+  test "classification still requires cancellation and rechecks the issue revision before label lookup or write", ctx do
+    args = %{"action" => "edit_task", "task_id" => "1", "work_type" => "infrastructure"}
+    assert {:error, :cancel_task_before_edit} = Tools.call("symphony_propose_action", args, ctx.context)
+    Application.put_env(:symphony_elixir, :chat_test_board, put_in(ctx.board, [:tasks, Access.at(0), :hold], "cancelled"))
+    proposal = propose(ctx.context, args)
+
+    script([fn "GET", "/repos/example/repo/issues/1", _, _, _ -> {:ok, %{status: 200, body: Map.put(raw_issue(), "updated_at", "2026-09-16T10:00:00Z")}} end])
+    assert {:error, :task_changed} = Tools.confirm(proposal, ctx.context)
+    assert_finished()
+
+    for value <- ["invalid", "future", "work:application", nil] do
+      assert {:error, :invalid_arguments} = Tools.call("symphony_propose_action", Map.put(args, "work_type", value), ctx.context)
+    end
+  end
+
   test "project documents use a pinned default-branch revision without relying on a healthy board", ctx do
     revision = String.duplicate("a", 40)
     Application.put_env(:symphony_elixir, :chat_test_board, fn -> raise "No board read should be needed" end)

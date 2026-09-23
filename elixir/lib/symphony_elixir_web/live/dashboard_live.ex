@@ -3,6 +3,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
   alias SymphonyElixir.Chat.ViewContext
+  alias SymphonyElixir.TaskWorkType
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, ChatPanel, Endpoint, Markdown, SettingsPanel, TaskIntakePanel}
   alias SymphonyElixirWeb.{ObservabilityPubSub, Presenter, TaskBoard}
 
@@ -481,7 +482,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     ~H"""
     <section id="task-board-app" class="dashboard-shell" phx-hook="TaskBoard" data-density="compact" data-theme="light"
       data-chat-open={to_string(@chat_open)} data-chat-project={@chat_project} data-board-checked-at={@board.generated_at} data-context-revision={@context_revision}
-      data-scope={scope(@board)} data-projects={Jason.encode!(@board.projects)} data-url-filters={Jason.encode!(@url_filters)} data-selected-task={@dialog == :task && @selected && @selected.id}>
+      data-scope={scope(@board)} data-projects={Jason.encode!(@board.projects)} data-work-types={Jason.encode!(work_type_options())} data-url-filters={Jason.encode!(@url_filters)} data-selected-task={@dialog == :task && @selected && @selected.id}>
       <div class="board-main">
       <header class="board-header">
         <div class="board-location">
@@ -531,11 +532,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </details>
         </div>
         <div id="board-filter-panel" class="filter-row" data-filter-panel hidden>
-          <div :for={key <- ["status", "priority"]} class="filter-combo" data-filter={key}>
-            <div class="combo-control"><input id={"filter-#{key}"} role="combobox" aria-label={"#{String.capitalize(key)} filter"}
+          <div :for={key <- ["status", "priority", "work_type"]} class="filter-combo" data-filter={key}>
+            <div class="combo-control"><input id={"filter-#{key}"} role="combobox" aria-label={"#{filter_label(key)} filter"}
               autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls={"options-#{key}"}
-              placeholder={"#{String.capitalize(key)}: All"} /><button type="button" data-filter-toggle={key} aria-label={"Open #{key} filter"}>⌄</button></div>
-            <div id={"options-#{key}"} class="combo-options" role="listbox" aria-label={"#{String.capitalize(key)} options"} aria-multiselectable="true" hidden></div>
+              placeholder={"#{filter_label(key)}: All"} /><button type="button" data-filter-toggle={key} aria-label={"Open #{filter_label(key)} filter"}>⌄</button></div>
+            <div id={"options-#{key}"} class="combo-options" role="listbox" aria-label={"#{filter_label(key)} options"} aria-multiselectable="true" hidden></div>
           </div>
           <button type="button" class="button button-quiet" data-clear-filters>Clear filters</button>
         </div>
@@ -564,13 +565,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
             <div class="lane-cards" data-lane-cards>
               <article :for={task <- Enum.filter(@board.tasks, &(&1.stage == stage))} id={card_id(task)} class="task-card" draggable={to_string(!@read_only)}
-                data-task-id={task.id} data-project={task.project} data-priority={priority(task.priority)} data-attention={to_string(not is_nil(task.attention))}
+                data-task-id={task.id} data-project={task.project} data-priority={priority(task.priority)} data-work-type={work_type(task)} data-attention={to_string(not is_nil(task.attention))}
                 data-title={task.title} data-identifier={task.identifier} data-created={task.created_at || ""} data-updated={task.updated_at || ""}>
                 <div class="card-top"><a :if={safe_url(task.url)} href={safe_url(task.url)} target="_blank" rel="noopener noreferrer"
                   aria-label={"Open #{task.identifier} in the issue tracker"}>{task.identifier}</a><span :if={!safe_url(task.url)}>{task.identifier}</span>
                   <span class="priority" data-priority={priority(task.priority)}>{priority(task.priority)}</span></div>
                 <button id={"open-#{card_id(task)}"} class="card-title" phx-click="open-task" phx-value-id={task.id}><span class={"lane-dot lane-dot-#{stage}"} aria-hidden="true"></span><span>{task.title}</span></button>
                 <div class="card-project">{task.project_label}</div>
+                <span class="work-type-badge" data-work-type={work_type(task)}>{TaskWorkType.label(work_type(task))}</span>
                 <div class="card-evidence"><span class="evidence-badge">Issue: {display(Map.get(task, :tracker_state))}</span><span>{task_execution(task)}</span></div>
                 <span :if={blocker(task)} class="attention-badge">{blocker(task)}</span>
                 <div :if={pull_requests(task) != []} class="card-pr-summary"><span :for={pr <- Enum.take(pull_requests(task), 2)}>
@@ -627,6 +629,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 runtime_duration={runtime_duration(@payload)} rate_limits={pretty(@payload[:rate_limits])} />
             <% :task -> %>
               <p class="muted">{@selected.project_label} · {@selected.identifier} · {lane_label(@selected.stage)}</p>
+              <p>Work type: <span class="work-type-badge" data-work-type={work_type(@selected)}>{TaskWorkType.label(work_type(@selected))}</span></p>
               <button :if={!@chat_open} class="button button-small" phx-click="open-chat">Discuss this task</button>
               <div class="task-evidence"><span class="evidence-badge">Issue: {display(Map.get(@selected, :tracker_state))}</span><span>{task_execution(@selected)}</span></div>
               <div class="task-reference-links"><a :for={link <- task_links(@selected)} class="button button-small" href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
@@ -948,7 +951,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp url_filters(params),
-    do: params |> Map.take(["project", "status", "priority", "q", "sort"]) |> Map.reject(fn {_key, value} -> not is_binary(value) or byte_size(value) > 2_000 or value == "" end)
+    do: params |> Map.take(["project", "status", "priority", "work_type", "q", "sort"]) |> Map.reject(fn {_key, value} -> not is_binary(value) or byte_size(value) > 2_000 or value == "" end)
+
+  defp work_type(task), do: Map.get(task, :work_type, "unclassified")
+  defp work_type_options, do: Enum.map(TaskWorkType.options() ++ [{TaskWorkType.label("invalid"), "invalid"}], fn {label, value} -> [value, label] end)
+  defp filter_label("work_type"), do: "Work type"
+  defp filter_label(key), do: String.capitalize(key)
 
   defp board_path(filters), do: if(filters == %{}, do: "/", else: "/?" <> URI.encode_query(filters))
 
@@ -1024,7 +1032,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     params = URI.decode_query(uri.query || "")
 
     if uri.path == "/" && is_nil(uri.host) && is_nil(uri.scheme) && is_nil(uri.fragment) && params["project"] == project do
-      {:ok, Map.take(params, ["project", "status", "priority", "q", "sort", "task"])}
+      {:ok, Map.take(params, ["project", "status", "priority", "work_type", "q", "sort", "task"])}
     else
       :error
     end

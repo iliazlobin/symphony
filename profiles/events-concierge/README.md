@@ -247,14 +247,14 @@ preview; **Confirm** applies it and **Cancel** discards it. A receipt records th
 action, not proof of worker completion. **Check outcome** reconciles uncertain
 writes without repeating them; do not create a replacement request meanwhile.
 
-Chat can create a backlog issue, edit title/description/state/priority, add feedback,
+Chat can create a backlog issue, edit title/description/state/priority/work type, add feedback,
 queue/unqueue intake labels and request native pause/drain/resume/cancel/retry.
 Fresh open, unqueued Backlog tasks with no hold or active execution can be queued
 directly after confirmation. Editing, unqueueing, and queueing an already cancelled
 task preserve the existing cancelled, idle requirement. Queueing a cancelled task
 retains its hold; retry is a separate action. Queueing adds only the configured intake
 labels and retains dependency, budget, capacity and host launch gates. Creating a task requires explicit intake
-labels in the tracker configuration so a new unlabeled issue cannot launch itself.
+labels in the tracker configuration so a new backlog issue cannot launch itself.
 Feedback is saved to the GitHub issue; it is not injected into an active coding turn.
 Deployment, merge, arbitrary code execution and worker input delivery are not chat
 actions. External GitHub edits can still race the final issue patch; refresh and
@@ -387,6 +387,34 @@ independently launched VS Code/CLI sessions are not adopted by Symphony.
 GKE hosting, remote/mobile access, a control UI and a Slack command/reporting integration
 are not implemented by this profile. GitHub remains the task record; this Mac is the
 current execution host.
+
+## Work types
+
+Use **New task → Work type** to classify a task, then preview and confirm it.
+Use **Filter → Work type** to view application development, infrastructure,
+deployment or operations work. Existing tasks remain Unclassified until selected;
+Needs classification means their `work:` labels conflict or are unsupported.
+
+In chat, ask “Show infrastructure tasks” or “Change GH-12 to Operations.” Existing
+task edits require cancelled, idle execution and an exact confirmed preview. Choosing
+Unclassified clears the work labels. Queueing and deployment approval remain separate.
+See the [data model and execution boundary](../../ARCHITECTURE.md#task-work-types).
+
+Create the four label definitions once in each onboarded GitHub repository, using
+an account with label-management access. This does not label or queue any issues:
+
+```sh
+repo=iliazlobin/events-concierge  # or the onboarded Symphony repository
+for kind in application infrastructure deployment operations; do
+  gh label create "work:$kind" --repo "$repo" --color 57606a \
+    --description "Symphony work type: $kind"
+done
+```
+
+Existing definitions can be left unchanged. A missing definition or a GitHub token
+unable to persist labels produces an explicit action error; resolve access/setup
+before trying a fresh proposal. Reconcile an uncertain outcome first. General GitHub
+labels remain available for other tags, but only `work:` defines this field.
 
 ## Task and publication contract
 

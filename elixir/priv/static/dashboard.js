@@ -1,12 +1,14 @@
 (() => {
   "use strict";
   const lanes = [["backlog", "Backlog"], ["ready", "Ready"], ["running", "Running"], ["review", "Review"], ["done", "Done"]];
+  const filterKeys = ["project", "status", "priority", "work_type"];
+  const filterLabel = key => key === "work_type" ? "Work type" : key[0].toUpperCase() + key.slice(1);
   const parse = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };
   const escapeText = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[c]));
   const storage = { get(key) { try { return localStorage.getItem(key); } catch { return null; } }, set(key, value) { try { localStorage.setItem(key, value); } catch { /* Preferences are optional. */ } } };
   const TaskBoard = {
     mounted() {
-      this.prefs = {project: [], status: [], priority: [], query: "", sort: "manual", order: {}, lane: "ready", density: "compact", theme: "light", hiddenLanes: ["done"]};
+      this.prefs = {project: [], status: [], priority: [], work_type: [], query: "", sort: "manual", order: {}, lane: "ready", density: "compact", theme: "light", hiddenLanes: ["done"]};
       this.filtersOpen = false;
       this.revealedLanes = new Set();
       this.popup = null;
@@ -16,7 +18,7 @@
       this.abort = new AbortController();
       this.darkMode = window.matchMedia("(prefers-color-scheme: dark)");
       const on = (name, handler) => this.el.addEventListener(name, handler, {signal: this.abort.signal});
-      this.options = key => key === "project" ? parse(this.el.dataset.projects, []).map(p => [p.id, p.label]) : key === "status" ? [...lanes, ["attention", "Needs input"]] : [["P1", "P1 · High"], ["P2", "P2 · Normal"], ["P3", "P3 · Low"], ["P4", "P4 · Lowest"], ["—", "Unspecified"]];
+      this.options = key => key === "project" ? parse(this.el.dataset.projects, []).map(p => [p.id, p.label]) : key === "status" ? [...lanes, ["attention", "Needs input"]] : key === "work_type" ? parse(this.el.dataset.workTypes, []) : [["P1", "P1 · High"], ["P2", "P2 · Normal"], ["P3", "P3 · Low"], ["P4", "P4 · Lowest"], ["—", "Unspecified"]];
       this.filterValues = (key, values) => Array.isArray(values) ? [...new Set(values.filter(value => this.options(key).some(([id]) => id === value)))] : [];
       this.load = () => {
         const scope = this.el.dataset.scope;
@@ -25,7 +27,7 @@
         this.key = "symphony.board.v1:" + scope;
         const parsed = parse(storage.get(this.key), {});
         const saved = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-        for (const k of ["project", "status", "priority"]) this.prefs[k] = this.filterValues(k, saved[k]);
+        for (const k of filterKeys) this.prefs[k] = this.filterValues(k, saved[k]);
         this.prefs.query = typeof saved.query === "string" ? saved.query : "";
         this.prefs.sort = ["manual", "priority", "updated", "oldest", "title"].includes(saved.sort) ? saved.sort : "manual";
         this.prefs.lane = lanes.some(([id]) => id === saved.lane) ? saved.lane : "ready";
@@ -34,7 +36,7 @@
         this.prefs.theme = ["light", "dark", "system"].includes(saved.theme) ? saved.theme : "light";
         this.prefs.hiddenLanes = Array.isArray(saved.hiddenLanes) ? [...new Set(saved.hiddenLanes.filter(id => lanes.some(([stage]) => stage === id)))] : ["done"];
         if (this.prefs.hiddenLanes.length === lanes.length) this.prefs.hiddenLanes = this.prefs.hiddenLanes.filter(id => id !== "ready");
-        this.filtersOpen = this.prefs.status.length > 0 || this.prefs.priority.length > 0;
+        this.filtersOpen = this.prefs.status.length > 0 || this.prefs.priority.length > 0 || this.prefs.work_type.length > 0;
         this.el.querySelector("[data-board-search]").value = this.prefs.query;
         this.el.querySelector("[data-board-sort]").value = this.prefs.sort;
       };
@@ -47,8 +49,8 @@
         const parsed = parse(encoded, {});
         const filters = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
         if (initial && !Object.keys(filters).length) return;
-        for (const key of ["project", "status", "priority"]) this.prefs[key] = this.filterValues(key, typeof filters[key] === "string" ? filters[key].split(",") : []);
-        if (this.prefs.status.length || this.prefs.priority.length) this.filtersOpen = true;
+        for (const key of filterKeys) this.prefs[key] = this.filterValues(key, typeof filters[key] === "string" ? filters[key].split(",") : []);
+        if (this.prefs.status.length || this.prefs.priority.length || this.prefs.work_type.length) this.filtersOpen = true;
         this.prefs.query = typeof filters.q === "string" ? filters.q : "";
         this.prefs.sort = ["manual", "priority", "updated", "oldest", "title"].includes(filters.sort) ? filters.sort : "manual";
         this.el.querySelector("[data-board-search]").value = this.prefs.query;
@@ -58,7 +60,7 @@
         if (this.key) storage.set(this.key, JSON.stringify(this.prefs));
         clearTimeout(this.urlTimer);
         this.urlTimer = setTimeout(() => {
-          const filters = {project: this.prefs.project.join(","), status: this.prefs.status.join(","), priority: this.prefs.priority.join(","), q: this.prefs.query, sort: this.prefs.sort};
+          const filters = {project: this.prefs.project.join(","), status: this.prefs.status.join(","), priority: this.prefs.priority.join(","), work_type: this.prefs.work_type.join(","), q: this.prefs.query, sort: this.prefs.sort};
           for (const key of Object.keys(filters)) if (!filters[key] || (key === "sort" && filters[key] === "manual")) delete filters[key];
           const parsed = parse(this.el.dataset.urlFilters || "{}", {});
           const current = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
@@ -152,7 +154,7 @@
         const visible = [...new Set([...viewport, ...cards])].slice(0, 50);
         const snapshot = {
           version: 1, project_id: project,
-          filters: {project: this.prefs.project, status: this.prefs.status, priority: this.prefs.priority, q: this.prefs.query, sort: this.prefs.sort},
+          filters: {project: this.prefs.project, status: this.prefs.status, priority: this.prefs.priority, work_type: this.prefs.work_type, q: this.prefs.query, sort: this.prefs.sort},
           selected_task_id: this.el.dataset.selectedTask || null,
           visible_task_ids: visible.map(card => card.dataset.taskId), viewport_task_ids: viewport.map(card => card.dataset.taskId),
           hidden_columns: lanes.filter(([stage]) => this.el.querySelector(`[data-stage="${stage}"]`).hidden).map(([stage]) => stage),
@@ -178,7 +180,7 @@
         let matched = 0;
         for (const card of cards) {
           const d = card.dataset, stage = card.closest("[data-stage]").dataset.stage;
-          const matches = (!this.prefs.project.length || this.prefs.project.includes(d.project)) && (!this.prefs.priority.length || this.prefs.priority.includes(d.priority)) && (!this.prefs.status.length || this.prefs.status.includes(stage) || (this.prefs.status.includes("attention") && d.attention === "true")) && (!this.prefs.query || [d.title, d.identifier].join(" ").toLowerCase().includes(this.prefs.query.toLowerCase()));
+          const matches = (!this.prefs.project.length || this.prefs.project.includes(d.project)) && (!this.prefs.priority.length || this.prefs.priority.includes(d.priority)) && (!this.prefs.work_type.length || this.prefs.work_type.includes(d.workType || "unclassified")) && (!this.prefs.status.length || this.prefs.status.includes(stage) || (this.prefs.status.includes("attention") && d.attention === "true")) && (!this.prefs.query || [d.title, d.identifier].join(" ").toLowerCase().includes(this.prefs.query.toLowerCase()));
           card.hidden = !matches;
           if (matches) matched++;
           if ((matches && this.prefs.status.includes("attention") && d.attention === "true") || d.taskId === linkedTask) this.revealedLanes.add(stage);
@@ -212,7 +214,7 @@
           lane.querySelector("[data-lane-empty]").textContent = matched ? "No matching tasks" : "No tasks match";
         }
         const linkedStage = cards.find(card => card.dataset.taskId === linkedTask)?.closest("[data-stage]").dataset.stage;
-        const mobileContext = JSON.stringify([this.prefs.project, this.prefs.status, this.prefs.priority, this.prefs.query, linkedTask, linkedStage]);
+        const mobileContext = JSON.stringify([this.prefs.project, this.prefs.status, this.prefs.priority, this.prefs.work_type, this.prefs.query, linkedTask, linkedStage]);
         const contextChanged = this.mobileContext !== mobileContext;
         this.mobileContext = mobileContext;
         if (contextChanged && linkedStage) this.prefs.lane = linkedStage;
@@ -222,10 +224,10 @@
         this.el.querySelectorAll("[data-stage]").forEach(el => el.dataset.mobileActive = String(el.dataset.stage === this.prefs.lane));
         const mobile = this.el.querySelector("[data-mobile-lane]"); mobile.value = this.prefs.lane;
         for (const option of mobile.options) option.textContent = `${lanes.find(([s]) => s === option.value)[1]} (${this.el.querySelector(`[data-stage="${option.value}"] [data-lane-count]`).textContent})${hidden.has(option.value) ? " · hidden" : ""}`;
-        this.el.querySelector("[data-filter-chips]").innerHTML = ["status", "priority"].flatMap(key => this.prefs[key].map(value => { const label = this.options(key).find(([id]) => id === value)?.[1] || value; return `<button type="button" class="filter-chip" data-remove-key="${key}" data-remove-value="${escapeText(value)}" aria-label="Remove ${key} filter ${escapeText(label)}">${escapeText(label)} <span aria-hidden="true">×</span></button>`; })).join("");
-        for (const key of ["project", "status", "priority"]) {
+        this.el.querySelector("[data-filter-chips]").innerHTML = ["status", "priority", "work_type"].flatMap(key => this.prefs[key].map(value => { const label = this.options(key).find(([id]) => id === value)?.[1] || value; return `<button type="button" class="filter-chip" data-remove-key="${key}" data-remove-value="${escapeText(value)}" aria-label="Remove ${filterLabel(key)} filter ${escapeText(label)}">${escapeText(label)} <span aria-hidden="true">×</span></button>`; })).join("");
+        for (const key of filterKeys) {
           const selectedProject = key === "project" && this.prefs.project.length === 1 ? this.options(key).find(([id]) => id === this.prefs.project[0])?.[1] : null;
-          this.el.querySelector("#filter-" + key).placeholder = selectedProject || `${key[0].toUpperCase() + key.slice(1)}: ${this.prefs[key].length ? this.prefs[key].length + " selected" : "All"}`;
+          this.el.querySelector("#filter-" + key).placeholder = selectedProject || `${filterLabel(key)}: ${this.prefs[key].length ? this.prefs[key].length + " selected" : "All"}`;
         }
         this.scheduleContext();
       };
@@ -265,7 +267,7 @@
         else if (button.dataset.filterToggle) { const key = button.dataset.filterToggle; if (this.popup === key) this.closeFilter(); else { this.openFilter(key); this.el.querySelector("#filter-" + key).focus(); } }
         else if (button.dataset.key) this.toggle(button.dataset.key, button.dataset.value);
         else if (button.dataset.removeKey) { this.prefs[button.dataset.removeKey] = this.prefs[button.dataset.removeKey].filter(v => v !== button.dataset.removeValue); this.apply(); this.save(); }
-        else if (button.hasAttribute("data-clear-filters")) { this.prefs.project = []; this.prefs.status = []; this.prefs.priority = []; this.prefs.query = ""; this.el.querySelector("[data-board-search]").value = ""; this.closeFilter(); this.apply(); this.save(); }
+        else if (button.hasAttribute("data-clear-filters")) { this.prefs.project = []; this.prefs.status = []; this.prefs.priority = []; this.prefs.work_type = []; this.prefs.query = ""; this.el.querySelector("[data-board-search]").value = ""; this.closeFilter(); this.apply(); this.save(); }
         else if (button.dataset.copy) navigator.clipboard?.writeText(button.dataset.copy).then(() => { button.textContent = "Copied"; }).catch(() => { button.textContent = "Copy unavailable"; });
       });
       on("change", event => {

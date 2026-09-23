@@ -257,7 +257,15 @@ defmodule SymphonyElixirWeb.TaskIntakeTest do
   end
 
   test "bounded form actions validate dependency syntax and reject privileged or malformed fields", c do
-    for args <- [nil, %{}, %{"action" => "resume"}, Map.put(c.args, "priority", 1), %{"action" => "create_task", "body" => nil}] do
+    for args <- [
+          nil,
+          %{},
+          %{"action" => "resume"},
+          Map.put(c.args, "priority", 1),
+          Map.put(c.args, "work_type", "invalid"),
+          Map.put(c.args, "work_type", nil),
+          %{"action" => "create_task", "body" => nil}
+        ] do
       assert {:error, :invalid_submission} = TaskIntake.prepare(c.project, c.id, args, c.auth)
     end
 
@@ -270,6 +278,18 @@ defmodule SymphonyElixirWeb.TaskIntakeTest do
     for action <- ~w(edit_task feedback queue_task unqueue_task resume) do
       assert {:error, :invalid_submission} = TaskIntake.prepare(c.project, new_id(), %{c.args | "action" => action}, c.auth)
     end
+  end
+
+  test "work classification is durable in the exact creation preview and replay cannot change it", c do
+    args = Map.put(c.args, "work_type", "infrastructure")
+    assert {:ok, record} = TaskIntake.prepare(c.project, c.id, args, c.auth)
+    assert hd(record["proposals"])["args"]["work_type"] == "infrastructure"
+    restart(c)
+    assert {:ok, ^record} = TaskIntake.get(c.project, c.id, c.auth)
+    assert {:ok, ^record} = TaskIntake.prepare(c.project, c.id, args, c.auth)
+    assert {:error, :submission_id_conflict} = TaskIntake.prepare(c.project, c.id, Map.put(args, "work_type", "deployment"), c.auth)
+    assert {:ok, clear} = TaskIntake.prepare(c.project, new_id(), Map.put(c.args, "work_type", "unclassified"), c.auth)
+    assert hd(clear["proposals"])["args"]["work_type"] == "unclassified"
   end
 
   test "storage and read-only guards prevent proposals or confirmed writes", c do
