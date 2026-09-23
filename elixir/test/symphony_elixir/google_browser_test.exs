@@ -85,6 +85,113 @@ defmodule SymphonyElixir.GoogleBrowserTest do
     assert Plug.Conn.get_resp_header(rejected, "referrer-policy") == ["no-referrer"]
   end
 
+  test "project continuation reuses a valid destination session without starting OAuth" do
+    {conn, marker} = signed_in()
+    result = get(browser_recycle(conn), "/login?continue=1")
+    assert redirected_to(result) == "/"
+    assert Plug.Conn.get_session(result, BrowserAuth.session_key()) == marker
+    assert Plug.Conn.get_session(result, "google_flow") == nil
+    assert Plug.Conn.get_resp_header(result, "cache-control") == ["no-store"]
+    assert BrowserAuth.authorized?(BrowserAuth.conn_context(result))
+  end
+
+  test "project continuation submits destination CSRF and validates its own OAuth identity" do
+    login = get(local_conn(), "/login?continue=1")
+    html = html_response(login, 200)
+    assert html =~ "Opening your project"
+    assert html =~ ~s(data-continue="true")
+    script = html |> Floki.parse_document!() |> Floki.attribute("script", "src") |> hd()
+    assert get(local_conn(), script).resp_body =~ "form.requestSubmit()"
+
+    assert_raise Plug.CSRFProtection.InvalidCSRFTokenError, fn ->
+      post(local_conn(), "/auth/google", %{"continue" => "1"})
+    end
+
+    started = post(browser_recycle(login), "/auth/google", %{"_csrf_token" => csrf(login), "continue" => "1", "return_to" => "/"})
+    query = URI.decode_query(URI.parse(redirected_to(started)).query)
+    assert query["prompt"] == "none"
+    assert query["login_hint"] == "owner@gmail.com"
+    assert query["redirect_uri"] == "http://localhost/auth/google/callback"
+    assert Plug.Conn.get_session(started, "google_continue") == nil
+    provider(query)
+    callback = "/auth/google/callback?" <> URI.encode_query(%{"state" => query["state"], "code" => "fixture"})
+    completed = get(browser_recycle(started), callback)
+    assert redirected_to(completed) == "/"
+    assert BrowserAuth.authorized?(BrowserAuth.conn_context(completed))
+    assert get(browser_recycle(completed), "/").status == 200
+    assert redirected_to(get(browser_recycle(completed), "/login?continue=1")) == "/"
+  end
+
+  test "Google interaction falls back once without automatically retrying" do
+    login = get(local_conn(), "/login?continue=1")
+    started = post(browser_recycle(login), "/auth/google", %{"_csrf_token" => csrf(login), "continue" => "1"})
+    query = URI.decode_query(URI.parse(redirected_to(started)).query)
+    callback = "/auth/google/callback?" <> URI.encode_query(%{"state" => query["state"], "error" => "login_required"})
+    failed = get(browser_recycle(started), callback)
+    assert redirected_to(failed) == "/login"
+    assert Plug.Conn.get_session(failed, "google_continue") == nil
+    fallback = get(browser_recycle(failed), "/login?continue=1")
+    html = html_response(fallback, 200)
+    assert html =~ "Choose your Google account"
+    refute html =~ "data-continue"
+    assert Floki.find(Floki.parse_document!(html), "script") == []
+    retry = post(browser_recycle(fallback), "/auth/google", %{"_csrf_token" => csrf(fallback)})
+    assert URI.decode_query(URI.parse(redirected_to(retry)).query)["prompt"] == "select_account"
+  end
+
+  test "continuation intent is issued by this project and is cleared on a normal login page" do
+    for path <- ["/login", "/login?continue=unexpected"] do
+      login = get(local_conn(), path)
+      refute login.resp_body =~ "data-continue"
+      started = post(browser_recycle(login), "/auth/google", %{"_csrf_token" => csrf(login), "continue" => "1"})
+      assert redirected_to(started) == "/login"
+    end
+
+    continuation = get(local_conn(), "/login?continue=1")
+    normal = get(browser_recycle(continuation), "/login")
+    assert Plug.Conn.get_session(normal, "google_continue") == false
+    refute normal.resp_body =~ "data-continue"
+    foreign = get(%{local_conn() | host: "evil.example"}, "/login?continue=1")
+    refute foreign.resp_body =~ "data-continue"
+  end
+
+  test "a delayed continuation form cannot replace an existing session" do
+    {conn, marker} = signed_in()
+    token = csrf(conn)
+    conn = conn |> browser_recycle() |> Plug.Test.init_test_session(%{"google_continue" => true})
+    result = post(conn, "/auth/google", %{"_csrf_token" => token, "continue" => "1"})
+    assert redirected_to(result) == "/"
+    assert Plug.Conn.get_session(result, BrowserAuth.session_key()) == marker
+    assert Plug.Conn.get_session(result, "google_continue") == nil
+    assert BrowserAuth.authorized?(BrowserAuth.conn_context(result))
+  end
+
+  test "explicit sign-out suppresses automatic continuation until manual sign-in" do
+    {conn, _marker} = signed_in()
+    logged_out = post(browser_recycle(conn), "/operator/session/logout", %{"_csrf_token" => csrf(conn)})
+    assert Plug.Conn.get_session(logged_out, "google_signed_out") == true
+    login = get(browser_recycle(logged_out), "/login?continue=1")
+    refute login.resp_body =~ "data-continue"
+    assert Plug.Conn.get_session(login, "google_continue") == false
+    stale = post(browser_recycle(login), "/auth/google", %{"_csrf_token" => csrf(login), "continue" => "1"})
+    assert redirected_to(stale) == "/login"
+    assert Plug.Conn.get_session(stale, "google_signed_out") == true
+    assert Plug.Conn.get_session(stale, "google_flow") == nil
+    started = post(browser_recycle(login), "/auth/google", %{"_csrf_token" => csrf(login)})
+    assert URI.decode_query(URI.parse(redirected_to(started)).query)["prompt"] == "select_account"
+    assert Plug.Conn.get_session(started, "google_signed_out") == nil
+  end
+
+  test "expired destination grants can renew with Google but local-token projects stay local", ctx do
+    {conn, marker} = signed_in()
+    :ok = BrowserSessions.revoke(marker["id"])
+    login = get(browser_recycle(conn), "/login?continue=1")
+    assert login.resp_body =~ ~s(data-continue="true")
+    refute BrowserAuth.authorized?(BrowserAuth.conn_context(login))
+    update_auth(ctx, %{"provider" => "local_token"})
+    assert redirected_to(get(local_conn(), "/login?continue=1")) == "/"
+  end
+
   test "loopback login aliases navigate to the configured origin before rendering a form", ctx do
     update_auth(ctx, Map.put(ctx.config.browser_auth, "public_origin", "http://localhost:8778"))
 
@@ -104,6 +211,9 @@ defmodule SymphonyElixir.GoogleBrowserTest do
     canonical = get(%{local_conn() | port: 8778}, "/login")
     assert html_response(canonical, 200) =~ "Sign in with Google"
     assert Plug.Conn.get_resp_header(canonical, "location") == []
+
+    alias_switch = get(%{local_conn() | host: "127.0.0.1", port: 8778}, "/login?continue=1&return_to=https://evil.example")
+    assert redirected_to(alias_switch) == "http://localhost:8778/login?continue=1"
   end
 
   test "login alias navigation ignores spoofed peers and requires the same local endpoint" do

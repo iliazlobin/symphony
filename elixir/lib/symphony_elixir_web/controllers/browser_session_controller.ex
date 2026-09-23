@@ -7,47 +7,82 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
   alias SymphonyElixirWeb.{BrowserAuth, BrowserLoginHTML, BrowserOrigin, BrowserSessions, Endpoint, GoogleOIDC}
 
   @spec login(Conn.t(), map()) :: Conn.t()
-  def login(conn, _params) do
+  def login(conn, params) do
     case BrowserOrigin.loopback_login_url(conn) do
-      nil -> login_page(conn)
-      url -> conn |> no_store() |> redirect(external: url)
+      nil -> login_page(conn, params)
+      url -> conn |> no_store() |> redirect(external: url <> if(params["continue"] == "1", do: "?continue=1", else: ""))
     end
   end
 
-  defp login_page(conn) do
+  defp login_page(conn, params) do
+    if params["continue"] == "1" and BrowserAuth.authorized?(BrowserAuth.conn_context(conn)) do
+      conn |> no_store() |> redirect(to: "/")
+    else
+      sign_in_page(conn, params)
+    end
+  end
+
+  defp sign_in_page(conn, params) do
     if BrowserAuth.google_enabled?() do
-      assigns = %{csrf_token: Plug.CSRFProtection.get_csrf_token(), error: Phoenix.Flash.get(conn.assigns.flash, :error)}
+      error = Phoenix.Flash.get(conn.assigns.flash, :error)
+
+      continue =
+        params["continue"] == "1" and BrowserAuth.callback_request?(conn) and
+          get_session(conn, "google_signed_out") != true and is_nil(error)
+
+      assigns = %{csrf_token: Plug.CSRFProtection.get_csrf_token(), error: error, continue: continue}
 
       # Form POSTs inherit this policy: no-referrer would replace their Origin with null.
       conn
+      |> put_session("google_continue", continue)
       |> no_store()
       |> put_resp_header("referrer-policy", "same-origin")
       |> html(BrowserLoginHTML.render(assigns) |> Safe.to_iodata() |> IO.iodata_to_binary())
     else
-      redirect(conn, to: "/?panel=settings")
+      redirect(conn, to: if(params["continue"] == "1", do: "/", else: "/?panel=settings"))
     end
   end
 
   @spec google(Conn.t(), map()) :: Conn.t()
   def google(conn, params) do
     if BrowserAuth.browser_request?(conn) and BrowserAuth.google_enabled?() do
-      conn = disconnect_sessions(conn)
-      BrowserSessions.revoke(get_session(conn, "google_flow"))
-
-      case GoogleOIDC.start(return_to(params)) do
-        {:ok, id, url} ->
-          conn
-          |> configure_session(renew: true)
-          |> delete_session(BrowserAuth.session_key())
-          |> put_session("google_flow", id)
-          |> no_store()
-          |> redirect(external: url)
-
-        _ ->
-          login_failed(conn)
-      end
+      google_intent(conn, params)
     else
       rejected_origin(conn)
+    end
+  end
+
+  defp google_intent(conn, params) do
+    continuation = params["continue"] == "1"
+    permitted = get_session(conn, "google_continue") == true and get_session(conn, "google_signed_out") != true
+    conn = delete_session(conn, "google_continue")
+
+    cond do
+      continuation and BrowserAuth.authorized?(BrowserAuth.conn_context(conn)) ->
+        conn |> no_store() |> redirect(to: "/")
+
+      continuation and not permitted ->
+        conn |> no_store() |> redirect(to: "/login")
+
+      true ->
+        start_google(conn, params, if(continuation, do: :continuation, else: :interactive))
+    end
+  end
+
+  defp start_google(conn, params, mode) do
+    conn = conn |> disconnect_sessions() |> delete_session("google_signed_out")
+
+    case GoogleOIDC.start(return_to(params), mode) do
+      {:ok, id, url} ->
+        conn
+        |> configure_session(renew: true)
+        |> delete_session(BrowserAuth.session_key())
+        |> put_session("google_flow", id)
+        |> no_store()
+        |> redirect(external: url)
+
+      _ ->
+        login_failed(conn)
     end
   end
 
@@ -93,18 +128,22 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
         |> put_session("live_socket_id", "operator:" <> marker["id"])
         |> redirect(to: destination)
 
+      {:error, :interaction_required} ->
+        login_failed(conn, "Choose your Google account to continue to this project.")
+
       _ ->
         login_failed(conn)
     end
   end
 
-  defp login_failed(conn) do
+  defp login_failed(conn, message \\ "Google sign-in failed or this account is not allowed. Please try again.") do
     conn
     |> disconnect_sessions()
     |> delete_session(BrowserAuth.session_key())
     |> delete_session("live_socket_id")
     |> delete_session("google_flow")
-    |> put_flash(:error, "Google sign-in failed or this account is not allowed. Please try again.")
+    |> delete_session("google_continue")
+    |> put_flash(:error, message)
     |> no_store()
     |> redirect(to: "/login")
   end
@@ -156,6 +195,8 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
       |> delete_session(BrowserAuth.session_key())
       |> delete_session("live_socket_id")
       |> delete_session("google_flow")
+      |> delete_session("google_continue")
+      |> put_session("google_signed_out", true)
       |> no_store()
       |> put_flash(:info, "Signed out.")
       |> redirect(to: if(BrowserAuth.google_enabled?(), do: "/login", else: "/?panel=settings"))

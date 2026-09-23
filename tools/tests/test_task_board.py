@@ -58,7 +58,7 @@ assert.equal(picker.elements.get("#filter-project").title,"Example project");
 assert.deepEqual(plain(picker.hook.options("project")),[["github:example/repo","Example project"],["github:example/other","Other"]]);
 picker.hook.openFilter("project");
 const rendered = picker.elements.get("#options-project").innerHTML;
-assert(rendered.includes('href="http://localhost:8779/"'));
+assert(rendered.includes('href="http://localhost:8779/login?continue=1"'));
 assert(!rendered.includes('href="http://localhost:8778/"')); // Selecting the current controller filters locally.
 assert(rendered.includes("All projects"));assert(rendered.includes("example/remote"));
 picker.hook.toggle("project", "github:example/other");
@@ -71,11 +71,11 @@ assert.deepEqual(plain(picker.hook.prefs.project),[]);assert.deepEqual(picker.vi
 picker.flush();
 const beforeRemote = JSON.stringify(picker.hook.prefs), eventsBeforeRemote = picker.sent.length;
 picker.hook.toggle("project", "github:example/remote");
-assert.deepEqual(picker.navigations,["http://localhost:8779/"]); // No filter query, task binding or credential is transferred.
+assert.deepEqual(picker.navigations,["http://localhost:8779/login?continue=1"]); // Only a login hint; no task binding, identity or credential is transferred.
 assert.equal(JSON.stringify(picker.hook.prefs),beforeRemote);assert.equal(picker.sent.length,eventsBeforeRemote);
 assert.deepEqual(plain(picker.hook.filterValues("project", ["github:example/remote"])),[]);
 picker.elements.get("#filter-project").value = "example/remote";
-assert.deepEqual(plain(picker.hook.drawOptions("project")),[["github:example/remote","Remote project","http://localhost:8779/"]]);
+assert.deepEqual(plain(picker.hook.drawOptions("project")),[["github:example/remote","Remote project","http://localhost:8779/login?continue=1"]]);
 const single = mount({}, {}, [projects[0]], projectLinks);
 assert.equal(single.elements.get("#filter-project").placeholder,"Example project");
 const multi = mount({project:projects.map(project=>project.id)}, {}, projects, projectLinks);

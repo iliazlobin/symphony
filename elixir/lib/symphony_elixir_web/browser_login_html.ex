@@ -6,7 +6,7 @@ defmodule SymphonyElixirWeb.BrowserLoginHTML do
 
   @spec render(map()) :: Phoenix.LiveView.Rendered.t()
   def render(assigns) do
-    assigns = Map.put_new(assigns, :login_url, nil)
+    assigns = assigns |> Map.put_new(:login_url, nil) |> Map.put_new(:continue, false)
 
     ~H"""
     <!DOCTYPE html>
@@ -17,18 +17,20 @@ defmodule SymphonyElixirWeb.BrowserLoginHTML do
         <title>Sign in · Symphony</title>
         <link rel="icon" type="image/png" sizes="128x128" href={StaticAssets.favicon_url()} />
         <link rel="stylesheet" href={StaticAssets.dashboard_css_url()} />
+        <script :if={@continue} defer src={StaticAssets.browser_login_js_url()}></script>
       </head>
       <body>
         <main class="chat-shell">
           <section class="chat-empty chat-login" aria-labelledby="sign-in-title">
             <span class="chat-orbit" aria-hidden="true">∿</span>
-            <h1 id="sign-in-title">Sign in to Symphony</h1>
-            <p>Use your authorized Google account to view projects and manage work.</p>
+            <h1 id="sign-in-title">{if @continue, do: "Opening your project…", else: "Sign in to Symphony"}</h1>
+            <p>{if @continue, do: "Continuing with your Google session.", else: "Use your authorized Google account to view projects and manage work."}</p>
             <p :if={@error} class="board-warning" role="alert">{@error}</p>
             <a :if={@login_url} href={@login_url} class="button button-primary">Continue to Symphony</a>
-            <form :if={is_nil(@login_url)} action="/auth/google" method="post" class="chat-login-form">
+            <form :if={is_nil(@login_url)} action="/auth/google" method="post" class="chat-login-form" data-continue={@continue && "true"}>
               <input type="hidden" name="_csrf_token" value={@csrf_token} />
               <input type="hidden" name="return_to" value="/" />
+              <input :if={@continue} type="hidden" name="continue" value="1" />
               <button class="button button-primary">Sign in with Google</button>
             </form>
           </section>
