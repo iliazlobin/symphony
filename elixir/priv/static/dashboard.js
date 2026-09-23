@@ -443,6 +443,7 @@
   const ChatWorkspace = {
     mounted() {
       this.abort = new AbortController();
+      this.handleEvent("focus-chat-session", () => requestAnimationFrame(() => this.el.querySelector("#chat-message-input")?.focus({preventScroll: true})));
       this.chatId = this.el.dataset.chatId;
       this.atBottom = true;
       this.running = this.el.dataset.running === "true";

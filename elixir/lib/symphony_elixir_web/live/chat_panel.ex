@@ -2,7 +2,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
   @moduledoc "Project-bound management conversations, streamed from the conversation owner."
   use Phoenix.LiveComponent
 
-  alias SymphonyElixir.Chat.Artifacts
+  alias SymphonyElixir.Chat.{Artifacts, Sessions}
   alias SymphonyElixir.ProjectDirectory
   alias SymphonyElixirWeb.{BrowserAuth, ChatNavigation, Endpoint}
 
@@ -17,6 +17,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
        project_id: nil,
        chat_id: nil,
        task_id: nil,
+       session_id: nil,
        task_title: nil,
        issue_tasks: [],
        issue_activity: %{},
@@ -55,7 +56,10 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
   def update(assigns, socket) do
     previous = location(socket.assigns)
-    socket = assign(socket, Map.take(assigns, [:id, :auth, :csrf_token, :embedded, :project_id, :chat_id, :task_id, :task_title, :issue_tasks, :issue_activity, :view_context, :read_only]))
+
+    socket =
+      assign(socket, Map.take(assigns, [:id, :auth, :csrf_token, :embedded, :project_id, :chat_id, :task_id, :session_id, :task_title, :issue_tasks, :issue_activity, :view_context, :read_only]))
+
     location = location(socket.assigns)
     unavailable = availability(socket)
     socket = assign(socket, :unavailable, unavailable)
@@ -95,7 +99,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
     not assigns.initialized or previous != location or is_nil(assigns.project) or (assigns.embedded and is_nil(assigns.chat))
   end
 
-  defp location(assigns), do: {assigns.project_id, if(assigns.embedded, do: assigns.task_id, else: assigns.chat_id)}
+  defp location(assigns), do: {assigns.project_id, if(assigns.embedded, do: {assigns.task_id, assigns.session_id}, else: assigns.chat_id)}
 
   @impl true
   def handle_event(event, _params, %{assigns: %{embedded: true}} = socket)
@@ -108,14 +112,16 @@ defmodule SymphonyElixirWeb.ChatPanel do
     {:noreply, assign(socket, :issue_query, "")}
   end
 
-  def handle_event("inspect-pr-work", %{"id" => id}, socket) do
+  def handle_event("select-pr-session", %{"id" => id}, socket) do
     issue = Enum.find(socket.assigns.issue_tasks, &(&1.id == socket.assigns.task_id and &1.project == project_id(socket)))
+    selected = if id == "", do: nil, else: id
 
-    if socket.assigns.embedded and BrowserAuth.authorized?(socket.assigns.auth) and Enum.any?(ChatNavigation.work_sessions(issue), &(&1.id == id)) do
-      send(self(), {:chat_panel, :issue_card, socket.assigns.task_id})
-      {:noreply, socket}
+    if socket.assigns.embedded and BrowserAuth.authorized?(socket.assigns.auth) and
+         (is_nil(selected) or Enum.any?(Sessions.options(issue, [selected]), &(&1.id == selected))) do
+      send(self(), {:chat_panel, :session, socket.assigns.task_id, selected})
+      {:noreply, assign(socket, :pr_query, "")}
     else
-      {:noreply, socket}
+      {:noreply, assign(socket, :notice, "That PR session is not available for this issue.")}
     end
   end
 
@@ -320,10 +326,15 @@ defmodule SymphonyElixirWeb.ChatPanel do
     end
   end
 
+  defp ensure_bound_conversation(%{assigns: %{session_id: session}} = socket) when is_binary(session),
+    do: call(socket, :ensure_pr_conversation, [project_id(socket), socket.assigns.task_id, session])
+
+  defp ensure_bound_conversation(socket), do: call(socket, :ensure_conversation, [project_id(socket), socket.assigns.task_id])
+
   defp ensure_chat(%{assigns: %{chat: %{"id" => _id}}} = socket), do: {:ok, socket}
 
   defp ensure_chat(%{assigns: %{embedded: true}} = socket) do
-    case call(socket, :ensure_conversation, [project_id(socket), socket.assigns.task_id]) do
+    case ensure_bound_conversation(socket) do
       {:ok, chat} -> {:ok, put_chat(socket, chat)}
       error -> error
     end
@@ -387,7 +398,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
   end
 
   defp load_canonical(socket) do
-    case call(socket, :ensure_conversation, [project_id(socket), socket.assigns.task_id]) do
+    case ensure_bound_conversation(socket) do
       {:ok, chat} ->
         socket
         |> clear_changed_draft(chat["id"])
@@ -699,14 +710,17 @@ defmodule SymphonyElixirWeb.ChatPanel do
     project = assigns.project && assigns.project["id"]
     issue = Enum.find(assigns.issue_tasks, &(&1.id == assigns.task_id and &1.project == project))
     prs = if issue, do: ChatNavigation.pull_requests(issue), else: []
-    works = ChatNavigation.work_sessions(issue)
+    retained = assigns.chats |> Enum.filter(&(&1["task_id"] == assigns.task_id)) |> Enum.map(& &1["session_id"])
+    sessions = Sessions.options(issue, [assigns.session_id | retained])
+    selected_session = Enum.find(sessions, &(&1.id == assigns.session_id))
 
     assigns =
       assign(assigns,
         issue: issue,
         project_agent_title: project_agent_title(assigns.project),
         issue_groups: ChatNavigation.issues(assigns.issue_tasks, assigns.issue_activity, project, assigns.issue_query),
-        issue_prs: matching_prs(prs, works, assigns.pr_query),
+        issue_sessions: matching_sessions(sessions, assigns.pr_query),
+        selected_session: selected_session,
         pr_evidence: pr_evidence(issue && issue[:github_status], length(prs)),
         authorized: BrowserAuth.authorized?(assigns.auth),
         google_auth: BrowserAuth.google_enabled?(),
@@ -771,7 +785,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
         <div :if={@embedded && @issue} class="issue-chat-identity">
           <details id="issue-pr-menu" class="issue-pr-menu" phx-hook="IssuePRMenu">
             <summary aria-label="Pull requests for this issue">
-              <span>Pull requests</span>
+              <span class="issue-pr-selected">{if @selected_session, do: @selected_session.title, else: "Main thread"}</span><span :if={@selected_session} class="pr-state">{@selected_session.status}</span>
               <span class="issue-pr-count">{@pr_evidence.label}</span>
               <span :if={@chat && thread_status(@chat) not in ["idle", "new"]} class="issue-chat-activity" data-status={thread_status(@chat)}>{thread_status_label(@chat)}</span>
               <svg class="issue-pr-chevron" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
@@ -781,14 +795,22 @@ defmodule SymphonyElixirWeb.ChatPanel do
                 <input id="issue-pr-search" type="search" name="query" value={@pr_query} placeholder="Search pull requests or status…" aria-label="Search pull requests" autocomplete="off" phx-debounce="150" />
               </form>
               <div class="issue-pr-results">
+              <button id="pr-session-main" type="button" class="issue-pr-select issue-pr-main" aria-pressed={to_string(is_nil(@session_id))}
+                phx-click="select-pr-session" phx-value-id="" phx-target={@myself}><strong>Main thread</strong><span>Coordinate this issue and all its PRs</span></button>
               <p :if={@pr_evidence.message} class="issue-options-empty" role="status">{@pr_evidence.message}</p>
-              <div :for={pr <- @issue_prs} class="issue-pr-option" data-pr-number={pr.number}>
-                <div><a :if={pr.url} href={pr.url} target="_blank" rel="noopener noreferrer">PR #{pr.number} · {pr.title}</a><span :if={!pr.url}>PR #{pr.number} · {pr.title}</span><span class="pr-state" data-pr-state={pr.state}>{pr.status}</span></div>
-                <div class="issue-pr-meta"><span>Review: {String.capitalize(String.replace(pr.review, "_", " "))}</span><a :if={pr.checks_url} href={pr.checks_url} target="_blank" rel="noopener noreferrer">CI: {String.capitalize(pr.ci)} ↗</a><span :if={!pr.checks_url}>CI: {String.capitalize(pr.ci)}</span>
-                  <button :for={work <- pr.works} type="button" class="issue-pr-work-link" phx-click="inspect-pr-work" phx-target={@myself} phx-value-id={work.id} title="View PR work details">{work.phase} →</button>
+              <div :for={session <- @issue_sessions} class="issue-pr-option" data-pr-number={session.pr && session.pr.number} data-session-id={session.id}>
+                <button type="button" class="issue-pr-select" aria-pressed={to_string(@session_id == session.id)}
+                  phx-click="select-pr-session" phx-value-id={session.id} phx-target={@myself}>
+                  <span>{session.title}</span><span class="pr-state" data-pr-state={session.pr && session.pr.state}>{session.status}</span>
+                </button>
+                <div :if={session.pr} class="issue-pr-meta">
+                  <a :if={session.pr.url} href={session.pr.url} target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+                  <span>Review: {String.capitalize(String.replace(session.pr.review, "_", " "))}</span>
+                  <a :if={session.pr.checks_url} href={session.pr.checks_url} target="_blank" rel="noopener noreferrer">CI: {String.capitalize(session.pr.ci)} ↗</a>
+                  <span :if={session.work}>{session.work.phase}</span>
                 </div>
               </div>
-              <p :if={@pr_query != "" && @issue_prs == []} class="issue-options-empty">No matching pull requests.</p>
+              <p :if={@pr_query != "" && @issue_sessions == []} class="issue-options-empty">No matching pull requests.</p>
               </div>
             </div>
           </details>
@@ -862,7 +884,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
             <div id="chat-messages" class="chat-messages" aria-live="off">
               <article :for={message <- messages(@chat)} id={"message-#{message["id"]}"} class={"chat-message chat-message-#{if message["role"] == "user", do: "user", else: "assistant"}"}>
-                <div class="message-meta"><strong>{if message["role"] == "user", do: "You", else: "Symphony"}</strong><.message_timestamp value={message["created_at"]} label={if message["role"] == "user", do: "Sent", else: "Response started"} class="message-time" /><span :if={message["status"] == "streaming"} class="streaming-mark">Responding</span><span :if={message["role"] == "assistant" && message["status"] in ["interrupted", "error"]} class="message-outcome">{if message["status"] == "interrupted", do: "Stopped", else: "Failed"}</span></div>
+                <div class="message-meta"><strong>{if(message["role"] == "user", do: "You", else: if(message["origin"] == "pr_update", do: "PR update", else: "Symphony"))}</strong><.message_timestamp value={message["created_at"]} label={if message["origin"] == "pr_update", do: "Observed", else: if(message["role"] == "user", do: "Sent", else: "Response started")} class="message-time" /><span :if={message["status"] == "streaming"} class="streaming-mark">Responding</span><span :if={message["role"] == "assistant" && message["status"] in ["interrupted", "error"]} class="message-outcome">{if message["status"] == "interrupted", do: "Stopped", else: "Failed"}</span></div>
                 <div :if={String.trim(text(message["text"])) != ""} class="message-text">{text(message["text"])}</div>
                 <span :if={empty_response?(message)} class="chat-empty-response">No text response.</span>
                 <span :if={message["status"] in ["streaming", "pending"] && String.trim(text(message["text"])) == ""} class="chat-thinking" role="status">Working<span aria-hidden="true"> ···</span></span>
@@ -1029,12 +1051,10 @@ defmodule SymphonyElixirWeb.ChatPanel do
     """
   end
 
-  defp matching_prs(prs, works, query) do
-    prs
-    |> Enum.filter(&matches_search?(["PR ##{&1.number}", &1.title, &1.state, &1.status, &1.review, &1.ci], query))
-    |> Enum.map(fn pr ->
-      sessions = Enum.filter(works, &(is_integer(pr.number) and is_binary(pr.url) and &1.pr_number == pr.number and &1.pr_url == pr.url))
-      Map.put(pr, :works, sessions)
+  defp matching_sessions(sessions, query) do
+    Enum.filter(sessions, fn session ->
+      pr = session.pr || %{}
+      matches_search?([session.title, session.status, pr[:review], pr[:ci]], query)
     end)
   end
 

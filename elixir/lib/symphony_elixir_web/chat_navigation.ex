@@ -40,6 +40,20 @@ defmodule SymphonyElixirWeb.ChatNavigation do
     end)
   end
 
+  @spec chat_activity([map()], String.t()) :: map()
+  def chat_activity(chats, project) do
+    chats
+    |> Enum.filter(&(is_binary(&1["task_id"]) and &1["project_id"] == project))
+    |> Enum.group_by(& &1["task_id"])
+    |> Map.new(fn {task, entries} ->
+      latest = Enum.max_by(entries, &(&1["updated_at"] || ""))
+      running = Enum.any?(entries, &(&1["status"] == "running"))
+      activity = latest |> Map.put("queued_count", Enum.reduce(entries, 0, &((&1["queued_count"] || 0) + &2)))
+      activity = if running, do: Map.merge(activity, %{"status" => "running", "display_status" => "running"}), else: activity
+      {task, activity}
+    end)
+  end
+
   @spec pull_requests(map()) :: [map()]
   def pull_requests(task) do
     task

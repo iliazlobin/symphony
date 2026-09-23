@@ -258,8 +258,8 @@ is a separate extension. Historical messages are records; tools refresh current 
 and attach source timestamps, task links and board filters.
 
 The board keeps the shared conversation component open beside task details. Each
-project/tracker identity has one main conversation and one canonical conversation per
-task. Selecting a card switches conversations; closing its details keeps its chat
+project/tracker identity has one project agent conversation, one main conversation per
+issue and separate PR conversations. Selecting a card switches conversations; closing its details keeps its chat
 selected. The conversation labeled **Project name · Project agent** handles project-level orchestration through the same typed tools
 and explicit action decisions. Binding is durable and immutable; existing free-standing
 conversations are preserved in the standalone `/chat` history rather than inferred from
@@ -301,8 +301,11 @@ PR count and latest update. Each issue appears once in the picker. Board card ti
 open details; clicking outside or pressing Escape closes them without clearing selection.
 The PR selector includes explicit GitHub links and exact Symphony publisher markers
 for that issue, excluding incidental cross-references. This attribution is display
-evidence, not execution authority. Incomplete evidence remains labeled; work-session
-shortcuts appear inside their matching published PR and open its card details.
+evidence, not execution authority. The collapsed selector shows the current session;
+its first item is the issue's Main thread. Card details link directly to issue and PR chats.
+Compact cards show three PRs and an overflow link to the complete list.
+Native work IDs remain stable before and after publication. An earlier PR discussion
+keeps its own identity and read-only worker scope when a publication receipt arrives.
 The project agent coordinates the project. Task creation accepts a title, description
 and verification through a shared normalizer. The form's **Create task** click authorizes
 submission through the durable action store without a second preview; model-created
@@ -311,6 +314,19 @@ Creating or continuing PR work uses the same durable preview, browser confirmati
 native receipt recovery as other controls. Issue chats cannot act on another issue's
 PR work. Continuation is explicit; failed CI does not automatically authorize repairs,
 and publication, merge and deployment retain their separate gates.
+
+[`Chat.Sessions`](elixir/lib/symphony_elixir/chat/sessions.ex) binds native work to its
+issue and tracker identity. `symphony_pr_session` reads the retained agent's state;
+confirmed `continue_pr_work` sends its next instruction through the existing native
+scheduler. PR chat controls are checked against the persisted binding at preview and
+confirmation, including cancellation and retry. Selection reads run outside the chat owner.
+[`Chat.PRUpdates`](elixir/lib/symphony_elixir/chat/pr_updates.ex) checks tracked issues
+every 15 seconds, reusing scoped board evidence no older than 10 seconds. Worker reports
+include run and candidate identity; GitHub reports require a known head. Missing or stale
+checks never imply readiness. Each recipient saves reports and deduplication receipts
+atomically, before any active streaming response; delivery does not enqueue model turns.
+The latest 80 host reports are retained per conversation without removing user messages.
+Read failures leave prior observations intact; tracker and credential changes fence reads.
 
 There are three distinct records: the app's visible messages and receipts, Codex's
 native thread history with automatic compaction, and committed project documents

@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.Chat.Tools do
   @moduledoc "Project-bound management tools. Model calls can prepare writes; only an operator confirms them."
 
-  alias SymphonyElixir.Chat.{GitHub, ViewContext}
+  alias SymphonyElixir.Chat.{GitHub, Sessions, ViewContext}
   alias SymphonyElixir.{Config, Orchestrator, TaskDraft}
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, TaskBoard}
 
@@ -16,6 +16,9 @@ defmodule SymphonyElixir.Chat.Tools do
   @proposal_keys ~w(id action args project_id tracker_fingerprint expected_revision expected_updated_at created_at queue_labels queue_unheld task_title task_description pr_work)
   @documents ~w(ARCHITECTURE.md WORKFLOW.md PROJECT.md README.md AGENTS.md)
   @errors %{
+    pr_session_unavailable: "This PR session is no longer available for this issue. Refresh the issue and select a session.",
+    pr_session_scope_mismatch: "Use the issue main thread to coordinate another PR. This chat can control only its own PR session.",
+    pr_session_read_only: "This PR has no retained coding agent. Use the issue main thread to create new PR work.",
     task_scope_mismatch: "Use this task's conversation or the project agent to prepare work for that issue.",
     pr_work_exists: "This PR work session already exists. Refresh the task before continuing.",
     pr_work_pending: "A PR work session is already queued or running for this issue. Wait for it to stop before launching more work.",
@@ -97,6 +100,11 @@ defmodule SymphonyElixir.Chat.Tools do
         "sort" => enum(@sorts),
         "limit" => %{"type" => "integer", "minimum" => 1, "maximum" => 50}
       }),
+      spec(
+        "symphony_pr_session",
+        "Read an issue's PR session, its retained coding agent and latest results. In a PR chat omit both fields to use its immutable binding. In the issue main thread provide task_id and session_id from task details. A missing work_id means discussion-only PR context.",
+        %{"task_id" => string(240), "session_id" => string(48)}
+      ),
       spec("symphony_task_details", "Read one task in this chat's project, including its description and current execution evidence.", %{"task_id" => string(240)}, ["task_id"]),
       spec(
         "symphony_read_project_document",
@@ -122,6 +130,16 @@ defmodule SymphonyElixir.Chat.Tools do
         ["action"]
       )
     ]
+  end
+
+  @spec resolve_session(String.t(), String.t(), map()) :: {:ok, map()} | {:error, term()}
+  def resolve_session(task_id, session_id, context) do
+    with {:ok, _} <- scope(context),
+         {:ok, board} <- read_board(context),
+         :ok <- complete_board(board),
+         {:ok, task} <- find_task(task_id, context, board) do
+      Sessions.resolve(task, session_id, context.tracker_fingerprint)
+    end
   end
 
   @spec call(String.t(), term(), map()) :: {:ok, map()} | {:error, term()}
@@ -202,7 +220,8 @@ defmodule SymphonyElixir.Chat.Tools do
   def confirm(proposal, context) do
     with {:ok, settings} <- scope(context),
          :ok <- validate_proposal(proposal, context),
-         {:ok, board} <- read_board(context) do
+         {:ok, board} <- read_board(context),
+         :ok <- session_action_scope(Map.put(proposal["args"], "action", proposal["action"]), context, board) do
       execute(proposal, context, settings, board)
     end
   rescue
@@ -337,6 +356,7 @@ defmodule SymphonyElixir.Chat.Tools do
         |> Map.put("description", truncate(task[:description], 32_000))
         |> Map.put("labels", task[:labels] || [])
         |> Map.put("pr_work", pr_work_details(task))
+        |> Map.put("pr_sessions", Enum.map(Sessions.options(task), &%{"session_id" => &1.id, "title" => &1.title, "status" => &1.status}))
         |> Map.put("pull_requests", Enum.map(task[:pull_requests] || [], &pull_request_details/1))
         |> Map.put("links", Enum.map(task[:links] || [], &string_keys(Map.take(&1, [:label, :url, :kind]))))
         |> Map.put("checked_at", board[:generated_at])
@@ -346,10 +366,25 @@ defmodule SymphonyElixir.Chat.Tools do
     end
   end
 
+  defp dispatch("symphony_pr_session", args, context, _settings, board) do
+    task_id = args["task_id"] || context[:task_id]
+    session_id = args["session_id"] || context[:session_id]
+
+    with :ok <- complete_board(board),
+         {:ok, task} <- find_task(task_id, context, board),
+         true <- is_nil(context[:session_id]) or (context[:session_id] == session_id and context[:task_id] == task.id) or {:error, :pr_session_scope_mismatch},
+         {:ok, session} <- Sessions.resolve(task, session_id, context.tracker_fingerprint) do
+      work = Enum.find(pr_work_details(task), &(&1["id"] == session["work_id"]))
+      prs = Enum.filter(task[:pull_requests] || [], &(&1[:number] == session["pr_number"]))
+      {:ok, Map.merge(session, %{"work" => work, "pull_requests" => Enum.map(prs, &pull_request_details/1), "checked_at" => board[:generated_at]})}
+    end
+  end
+
   defp dispatch("symphony_propose_action", args, context, settings, board) do
     with :ok <- complete_board(board),
          {:ok, args} <- prepare_action_args(args),
          :ok <- action_args(args),
+         :ok <- session_action_scope(args, context, board),
          {:ok, evidence} <- proposal_evidence(args, context, settings, board) do
       action_args = normalized_action_args(args, context, board)
 
@@ -365,6 +400,28 @@ defmodule SymphonyElixir.Chat.Tools do
       {:ok, %{"proposal" => proposal, "widgets" => [%{"type" => "proposal", "action" => args["action"], "title" => action_title(args["action"]), "details" => proposal}]}}
     end
   end
+
+  defp session_action_scope(args, %{session_id: session_id} = context, board) when is_binary(session_id) do
+    with {:ok, task} <- find_task(context[:task_id], context, board),
+         {:ok, selection} <- Sessions.resolve(task, session_id, context.tracker_fingerprint),
+         work_id when is_binary(work_id) <- selection["work_id"],
+         true <- args["task_id"] in [task.id, task.issue_id] do
+      allowed =
+        case args["action"] do
+          "continue_pr_work" -> args["work_id"] == work_id
+          action when action in ["cancel", "retry"] -> get_in(task, [:ledger, "selected_work_id"]) == work_id
+          _ -> false
+        end
+
+      if allowed, do: :ok, else: {:error, :pr_session_scope_mismatch}
+    else
+      nil -> {:error, :pr_session_read_only}
+      false -> {:error, :pr_session_scope_mismatch}
+      error -> error
+    end
+  end
+
+  defp session_action_scope(_args, _context, _board), do: :ok
 
   defp pull_request_details(pr) do
     pr |> Map.take(@pr_keys) |> string_keys() |> Map.put("check_runs", Enum.map(pr[:check_runs] || [], &string_keys(Map.take(&1, @check_keys))))
@@ -699,6 +756,10 @@ defmodule SymphonyElixir.Chat.Tools do
         "id" => id,
         "phase" => if(work["phase"] in ~w(queued building reviewing owner_review paused), do: work["phase"], else: "unknown"),
         "summary" => truncate(work["instruction"], 500),
+        "result" => truncate(get_in(work, ["handoff", "summary"]), 4_000),
+        "review" => get_in(work, ["handoff", "review", "verdict"]),
+        "session_id" => "work:" <> id,
+        "updated_at" => work["updated_at"],
         "branch" => "codex/gh-#{task.issue_id}-#{id}",
         "head_sha" => if(sha?(work["head_sha"]), do: work["head_sha"]),
         "published_head_sha" => if(sha?(work["published_head_sha"]), do: work["published_head_sha"]),

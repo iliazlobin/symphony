@@ -700,3 +700,12 @@ summary { cursor: pointer; color: var(--accent); }
 .chat-queued-message time { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .chat-queue-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 .chat-queue-actions .button { padding: 3px 6px; font-size: 11px; }
+
+.issue-pr-selected { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.issue-pr-select { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; width: 100%; padding: 8px; border: 0; border-radius: 8px; background: transparent; color: var(--fg); text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
+.issue-pr-select > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.issue-pr-select:hover, .issue-pr-select[aria-pressed="true"] { background: var(--soft); }
+.issue-pr-select[aria-pressed="true"] > :first-child { color: var(--accent); }
+.issue-pr-main { flex-direction: column; gap: 4px; margin-bottom: 6px; }
+.issue-pr-main > span { color: var(--muted); font-size: 11px; }
+.card-pr-overflow { display: inline-flex; align-items: center; padding: 2px 5px; font-size: 11px; text-decoration: none; }

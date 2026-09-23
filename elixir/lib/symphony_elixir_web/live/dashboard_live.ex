@@ -2,6 +2,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   @moduledoc "Live task board with browser preferences and authenticated native controls."
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.Chat.Sessions
   alias SymphonyElixir.Chat.ViewContext
   alias SymphonyElixir.Config
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, ChatPanel, Endpoint, Markdown, SettingsPanel, TaskIntakePanel}
@@ -39,6 +40,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:url_filters, %{})
       |> assign(:linked_task, nil)
       |> assign(:chat_task_id, nil)
+      |> assign(:chat_session_id, nil)
       |> assign(:chat_activity, %{})
       |> assign(:chat_project, nil)
       |> assign(:chat_project_subscription, nil)
@@ -62,7 +64,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
     filters = url_filters(params)
     project = selected_project(socket.assigns.board, filters)
     chat_task = params["task"] || params["chat_task"]
-    selection_changed = project != socket.assigns.chat_project || chat_task != socket.assigns.chat_task_id
+    chat_session = if Sessions.valid_id?(params["chat_session"]), do: params["chat_session"]
+    previous_selection = {socket.assigns.chat_project, socket.assigns.chat_task_id, socket.assigns.chat_session_id}
+    selection_changed = {project, chat_task, chat_session} != previous_selection
+    focus_chat = focus_session_navigation?(socket, params, selection_changed)
     socket = if selection_changed || filters != socket.assigns.url_filters, do: clear_view_context(socket), else: socket
 
     socket =
@@ -71,10 +76,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:url_filters, filters)
       |> assign(:linked_task, params["task"])
       |> assign(:chat_task_id, chat_task)
+      |> assign(:chat_session_id, chat_session)
       |> assign(:chat_project, project)
       |> assign(:chat_id, if(selection_changed, do: nil, else: socket.assigns.chat_id))
 
-    {:noreply, socket |> open_linked_task() |> sync_chat_selection() |> refresh_chat_activity()}
+    socket = socket |> open_linked_task() |> sync_chat_selection() |> refresh_chat_activity()
+    {:noreply, if(focus_chat, do: push_event(socket, "focus-chat-session", %{}), else: socket)}
   end
 
   @impl true
@@ -112,7 +119,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def handle_info({:chat_panel, :main}, socket), do: main_chat(socket)
 
   def handle_info({:chat_panel, :select_issue, id}, socket), do: handle_event("select-task", %{"id" => id}, socket)
-  def handle_info({:chat_panel, :issue_card, id}, socket), do: handle_event("open-task", %{"id" => id}, socket)
+  def handle_info({:chat_panel, :session, id, session}, socket), do: focus_chat_session(socket, id, session)
 
   def handle_info({:chat_panel, :navigate, %{project_id: project, chat_id: id}}, socket) do
     if project == socket.assigns.chat_project do
@@ -219,6 +226,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       task ->
         details? = action == "open-task"
         chat_id = if socket.assigns.chat_task_id == id, do: socket.assigns.chat_id
+        chat_session = if socket.assigns.chat_task_id == id, do: socket.assigns.chat_session_id
 
         socket =
           socket
@@ -228,6 +236,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           |> assign(:linked_task, if(details?, do: id))
           |> assign(:pending_command, nil)
           |> assign(:chat_task_id, id)
+          |> assign(:chat_session_id, chat_session)
           |> assign(:chat_id, chat_id)
 
         {:noreply, push_patch(socket, to: board_location(socket))}
@@ -277,9 +286,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
     socket = socket |> assign(:url_filters, filters) |> clear_view_context()
 
     socket =
-      if selected_project(socket.assigns.board, filters) != socket.assigns.chat_project,
-        do: socket |> assign(chat_id: nil, chat_task_id: nil, chat_activity: %{}) |> clear_card_context(),
-        else: socket
+      if selected_project(socket.assigns.board, filters) != socket.assigns.chat_project do
+        socket
+        |> assign(chat_id: nil, chat_task_id: nil, chat_session_id: nil, chat_activity: %{})
+        |> clear_card_context()
+      else
+        socket
+      end
 
     {:noreply, push_patch(socket, to: board_location(socket), replace: true)}
   end
@@ -689,30 +702,24 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   aria-label={"Open #{task.identifier} in the issue tracker"}>{task.identifier}</a><span :if={!safe_url(task.url)}>{task.identifier}</span>
                   <span class="priority" data-priority={priority(task.priority)}>{priority(task.priority)}</span></div>
                 <div class="card-title-row"><span class={"lane-dot lane-dot-#{stage}"} aria-hidden="true"></span>
-                  <span class="card-title-text"><.link id={"open-#{card_id(task)}"} class="card-title" patch={board_path(Map.put(@url_filters, "task", task.id))}>{task.title}</.link></span>
+                  <span class="card-title-text"><.link id={"open-#{card_id(task)}"} class="card-title" patch={task_detail_path(@url_filters, task.id, @chat_task_id, @chat_session_id)}>{task.title}</.link></span>
                 </div>
                 <div class="card-project">{task.project_label}</div>
                 <.card_chat_status activity={Map.get(@chat_activity, task.id)} />
                 <.feedback_summary task={task} />
                 <.execution_summary summary={execution_summary(task, @board, @payload)} compact={true} />
                 <span :if={blocker(task) && is_nil(task.hold)} class="attention-badge">{blocker(task)}</span>
-                <div :if={pull_requests(task) != []} class="card-pr-summary"><span :for={pr <- Enum.take(pull_requests(task), 2)}>
+                <div :if={pull_requests(task) != []} class="card-pr-summary"><span :for={pr <- Enum.take(pull_requests(task), 3)}>
                   <a :if={safe_url(field(pr, :url))} href={safe_url(field(pr, :url))} target="_blank" rel="noopener noreferrer">PR #{field(pr, :number)}</a>
                   <span class="pr-state" data-pr-state={String.downcase(pr_state(pr))}>{pr_state(pr)}</span>
                   <a :if={pr_checks_url(pr)} class="compact-ci" href={pr_checks_url(pr)} target="_blank" rel="noopener noreferrer"
                     title={ci_summary(pr)} aria-label={"PR ##{field(pr, :number)} checks: #{ci_status(pr)}"}>CI: {ci_status(pr)} ↗</a>
                   <span :if={!pr_checks_url(pr)} class="compact-ci" title={ci_summary(pr)}>CI: {ci_status(pr)}</span>
                   <span :if={field(pr, :check_details_status) in ["partial", "stale", "unavailable"]} class="compact-ci-note">Check details: {field(pr, :check_details_status)}</span>
-                </span><details :if={length(pull_requests(task)) > 2} class="card-more-links">
-                    <summary>More pull requests ({length(pull_requests(task)) - 2})</summary>
-                    <.pull_request :for={pr <- Enum.drop(pull_requests(task), 2)} pr={pr} compact={true} />
-                  </details></div>
+                </span><.link :if={length(pull_requests(task)) > 3} class="card-pr-overflow" patch={board_path(Map.put(@url_filters, "task", task.id))} aria-label={"View all #{length(pull_requests(task))} pull requests"}>… +{length(pull_requests(task)) - 3}</.link></div>
                 <div :if={pull_requests(task) != []} class="card-pull-requests">
-                  <.pull_request :for={pr <- Enum.take(pull_requests(task), 2)} pr={pr} compact={true} />
-                  <details :if={length(pull_requests(task)) > 2} class="card-more-links">
-                    <summary>More pull requests ({length(pull_requests(task)) - 2})</summary>
-                    <.pull_request :for={pr <- Enum.drop(pull_requests(task), 2)} pr={pr} compact={true} />
-                  </details>
+                  <.pull_request :for={pr <- Enum.take(pull_requests(task), 3)} pr={pr} compact={true} />
+                  <.link :if={length(pull_requests(task)) > 3} class="card-pr-overflow" patch={board_path(Map.put(@url_filters, "task", task.id))} aria-label={"View all #{length(pull_requests(task))} pull requests"}>… +{length(pull_requests(task)) - 3}</.link>
                 </div>
                 <div :if={task_links(task, ["repo", "candidate", "checks"]) != []} class="card-reference-links"><a :for={link <- task_links(task, ["repo", "candidate", "checks"])} href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
                 <p :if={current_activity(task, @payload)} class="card-activity">{current_activity(task, @payload)}</p>
@@ -765,14 +772,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <p>{@dispatch_guidance}</p>
                 <button type="button" class="button button-small" phx-click="open-settings" phx-value-tab="execution">Execution settings</button>
               </div>
-              <div class="task-reference-links"><a :for={link <- task_links(@selected, if(pull_requests(@selected) == [], do: ["issue", "repo", "pr", "checks", "candidate"], else: ["issue", "repo", "candidate"]))} class="button button-small" href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
+              <div class="task-reference-links"><.link class="button button-small" patch={session_path(@url_filters, @selected.id, nil)}>Issue chat →</.link><a :for={link <- task_links(@selected, if(pull_requests(@selected) == [], do: ["issue", "repo", "pr", "checks", "candidate"], else: ["issue", "repo", "candidate"]))} class="button button-small" href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
               <p :if={blocker(@selected) && is_nil(@selected.hold)} class="attention-badge"><strong>Needs attention:</strong> {blocker(@selected)}</p>
               <p :if={Map.get(@selected, :completion_evidence)} class="muted">{Map.get(@selected, :completion_evidence)}</p>
-              <section :if={pull_requests(@selected) != []} class="dialog-section"><h3>Pull requests <span class="section-count">{length(pull_requests(@selected))}</span></h3><.pull_request :for={pr <- pull_requests(@selected)} pr={pr} compact={false} /></section>
+              <section :if={pull_requests(@selected) != []} class="dialog-section"><h3>Pull requests <span class="section-count">{length(pull_requests(@selected))}</span></h3><.pull_request :for={pr <- pull_requests(@selected)} pr={pr} compact={false} chat_url={session_path(@url_filters, @selected.id, pr_session_id(@selected, pr))} /></section>
               <section :if={ChatNavigation.work_sessions(@selected) != []} class="dialog-section" aria-label="PR work sessions">
                 <h3>PR work sessions</h3>
                 <article :for={work <- ChatNavigation.work_sessions(@selected)} class="issue-work-session" data-work-id={work.id}>
-                  <div class="widget-heading"><a :if={work.pr_url} href={work.pr_url} target="_blank" rel="noopener noreferrer">{work.title} ↗</a><span :if={!work.pr_url}>{work.title}</span><span class="widget-label">{work.phase}</span></div>
+                  <div class="widget-heading"><a :if={work.pr_url} href={work.pr_url} target="_blank" rel="noopener noreferrer">{work.title} ↗</a><span :if={!work.pr_url}>{work.title}</span><span class="widget-label">{work.phase}</span><.link class="button button-small" patch={session_path(@url_filters, @selected.id, "work:" <> work.id)}>Chat →</.link></div>
                   <p class="issue-work-instruction">{work.instruction}</p>
                   <p :if={work.summary != ""}>{work.summary}</p>
                   <div class="issue-work-meta"><span :if={work.session_retained}>Session retained</span><span :if={work.review}>Review: {String.replace(work.review, "_", " ")}</span><code :if={work.head != ""}>{work.head}</code><time :if={work.updated_at} datetime={work.updated_at} title={updated_at(work.updated_at)}>{compact_updated_at(work.updated_at)}</time></div>
@@ -823,7 +830,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       </div>
       <aside id="management-chat-dock" class="management-chat-dock" aria-label="Project chat">
         <.live_component module={ChatPanel} id="management-chat" auth={@auth} csrf_token={@csrf_token}
-          embedded={true} project_id={@chat_project} chat_id={@chat_id} task_id={@chat_task_id}
+          embedded={true} project_id={@chat_project} chat_id={@chat_id} task_id={@chat_task_id} session_id={@chat_session_id}
           task_title={chat_task_title(@board, @chat_task_id)} issue_tasks={@board.tasks} issue_activity={@chat_activity}
           view_context={@view_context} read_only={@read_only} />
       </aside>
@@ -1120,6 +1127,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     assigns =
       assign(assigns,
         url: url,
+        chat_url: assigns[:chat_url],
         number: field(pr, :number),
         label: "PR ##{field(pr, :number)}",
         state: pr_state(pr),
@@ -1137,7 +1145,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     ~H"""
     <div class={"pull-request-evidence #{if @compact, do: "compact", else: ""}"} data-pr-number={@number}>
-      <div class="pull-request-heading"><a :if={@url} href={@url} target="_blank" rel="noopener noreferrer" title={@title}>{@label}<span :if={!@compact && is_binary(@title)}> · {@title}</span></a><strong :if={!@url}>{@label}</strong><span class="pr-state" data-pr-state={String.downcase(@state)}>{@state}</span></div>
+      <div class="pull-request-heading"><a :if={@url} href={@url} target="_blank" rel="noopener noreferrer" title={@title}>{@label}<span :if={!@compact && is_binary(@title)}> · {@title}</span></a><strong :if={!@url}>{@label}</strong><span class="pr-state" data-pr-state={String.downcase(@state)}>{@state}</span><.link :if={@chat_url} class="button button-small" patch={@chat_url} aria-label={"Open #{@label} chat"}>Chat →</.link></div>
       <div class="pull-request-checks"><span>GitHub review: {@review}</span>
         <a :if={@checks_url} href={@checks_url} target="_blank" rel="noopener noreferrer" title={@ci_summary} aria-label={"#{@label} checks: #{@ci_status}"}>CI: {@ci_status} ↗</a>
         <span :if={!@checks_url} title={@ci_summary}>CI: {@ci_status}</span><span :if={@mergeability}>{@mergeability}</span>
@@ -1298,16 +1306,58 @@ defmodule SymphonyElixirWeb.DashboardLive do
     socket |> clear_intake_subscription() |> assign(:dialog, nil) |> assign(:linked_task, nil) |> clear_view_context()
   end
 
+  defp focus_session_navigation?(socket, params, changed) do
+    is_binary(params["chat_task"]) and is_nil(params["task"]) and
+      (changed or is_binary(socket.assigns.linked_task))
+  end
+
+  defp focus_chat_session(socket, task_id, session) do
+    task = Enum.find(socket.assigns.board.tasks, &(&1.id == task_id and &1.project == socket.assigns.chat_project))
+
+    if (BrowserAuth.authorized?(socket.assigns.auth) and task) && (is_nil(session) or Enum.any?(Sessions.options(task, [session]), &(&1.id == session))) do
+      socket =
+        socket
+        |> clear_card_context()
+        |> assign(chat_task_id: task_id, chat_session_id: session, chat_id: nil, selected: nil)
+
+      {:noreply, socket |> push_patch(to: board_location(socket)) |> push_event("focus-chat-session", %{})}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  defp session_path(filters, task_id, session) do
+    params = Map.put(filters, "chat_task", task_id)
+    board_path(if(session, do: Map.put(params, "chat_session", session), else: params))
+  end
+
+  defp task_detail_path(filters, task_id, selected, session) do
+    params = Map.put(filters, "task", task_id)
+    board_path(if(task_id == selected and session, do: Map.put(params, "chat_session", session), else: params))
+  end
+
+  defp pr_session_id(task, pr) do
+    case Enum.find(Sessions.options(task), &(&1.pr && &1.pr.number == field(pr, :number))) do
+      nil -> nil
+      option -> option.id
+    end
+  end
+
   defp board_location(socket) do
     params = socket.assigns.url_filters
     params = if socket.assigns.chat_task_id, do: Map.put(params, "chat_task", socket.assigns.chat_task_id), else: params
+    params = if socket.assigns.chat_session_id, do: Map.put(params, "chat_session", socket.assigns.chat_session_id), else: params
     params = if socket.assigns.dialog == :task && socket.assigns.linked_task, do: Map.put(params, "task", socket.assigns.linked_task), else: params
     params = if socket.assigns.dialog == :settings, do: Map.put(params, "panel", "settings"), else: params
     board_path(params)
   end
 
   defp main_chat(socket) do
-    socket = socket |> clear_card_context() |> assign(chat_task_id: nil, chat_id: nil, selected: nil)
+    socket =
+      socket
+      |> clear_card_context()
+      |> assign(chat_task_id: nil, chat_session_id: nil, chat_id: nil, selected: nil)
+
     {:noreply, push_patch(socket, to: board_location(socket))}
   end
 
@@ -1318,10 +1368,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
     task = Enum.find(socket.assigns.board.tasks, &(&1.id == id and (is_nil(project) or &1.project == project)))
 
     cond do
-      task -> assign(socket, :chat_project, task.project)
-      id && socket.assigns.loading -> assign(socket, :chat_project, nil)
-      id -> socket |> assign(chat_task_id: nil, chat_id: nil) |> clear_view_context()
-      true -> socket
+      task ->
+        session = if Enum.any?(Sessions.options(task, [socket.assigns.chat_session_id]), &(&1.id == socket.assigns.chat_session_id)), do: socket.assigns.chat_session_id
+        assign(socket, chat_project: task.project, chat_session_id: session)
+
+      id && socket.assigns.loading ->
+        assign(socket, :chat_project, nil)
+
+      id ->
+        socket |> assign(chat_task_id: nil, chat_session_id: nil, chat_id: nil) |> clear_view_context()
+
+      true ->
+        socket
     end
   end
 
@@ -1340,7 +1398,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
       case store.list(project, socket.assigns.auth) do
         {:ok, chats} ->
-          activity = chats |> Enum.filter(&(is_binary(&1["task_id"]) and &1["project_id"] == project)) |> Map.new(&{&1["task_id"], &1})
+          activity = ChatNavigation.chat_activity(chats, project)
           assign(socket, :chat_activity, activity)
 
         _ ->

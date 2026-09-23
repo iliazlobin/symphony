@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.Chat.Persistence do
   @moduledoc "Private conversation records with an OS ownership lock and atomic, synced writes."
 
-  alias SymphonyElixir.Chat.ViewContext
+  alias SymphonyElixir.Chat.{Sessions, ViewContext}
   alias SymphonyElixir.PathSafety
 
   @preferences_file "presentation.json"
@@ -44,7 +44,7 @@ defmodule SymphonyElixir.Chat.Persistence do
 
   @spec put(map(), map()) :: :ok | {:error, atom()}
   def put(%{path: root}, %{"id" => id} = chat) do
-    with true <- valid_id?(id),
+    with true <- valid_id?(id) and valid_chat?(chat),
          {:ok, bytes} <- Jason.encode(chat),
          true <- byte_size(bytes) <= 8_000_000 do
       persist(Path.join(root, id <> ".json"), bytes)
@@ -114,6 +114,11 @@ defmodule SymphonyElixir.Chat.Persistence do
     :crypto.hash(:sha256, Jason.encode!(["conversation-v1", project, fingerprint, task_id])) |> Base.encode16(case: :lower) |> binary_part(0, 32)
   end
 
+  @spec session_conversation_id(String.t(), String.t(), String.t(), String.t()) :: String.t()
+  def session_conversation_id(project, task_id, session_id, fingerprint) do
+    :crypto.hash(:sha256, Jason.encode!(["pr-conversation-v1", project, fingerprint, task_id, session_id])) |> Base.encode16(case: :lower) |> binary_part(0, 32)
+  end
+
   @spec valid_task_scope?(String.t(), term()) :: boolean()
   def valid_task_scope?(_project, nil), do: true
 
@@ -151,18 +156,32 @@ defmodule SymphonyElixir.Chat.Persistence do
   end
 
   defp valid_chat?(chat) do
-    metadata_valid?(chat) and binding_valid?(chat) and queue_valid?(chat) and
+    metadata_valid?(chat) and binding_valid?(chat) and queue_valid?(chat) and report_receipts_valid?(chat) and
       collection?(chat["client_ids"], &is_binary/1) and collection?(chat["context"], &is_map/1) and
       collection?(chat["messages"], &message_valid?/1) and collection?(chat["proposals"], &proposal_valid?/1)
   end
 
+  defp binding_valid?(%{"conversation_role" => "pr"} = chat) do
+    is_nil(chat["kind"]) and is_binary(chat["task_id"]) and valid_task_scope?(chat["project_id"], chat["task_id"]) and
+      Sessions.valid_id?(chat["session_id"]) and
+      chat["id"] == session_conversation_id(chat["project_id"], chat["task_id"], chat["session_id"], chat["tracker_fingerprint"])
+  end
+
   defp binding_valid?(%{"conversation_role" => "main"} = chat), do: is_nil(chat["task_id"]) and canonical_binding?(chat)
   defp binding_valid?(%{"conversation_role" => "task"} = chat), do: is_binary(chat["task_id"]) and canonical_binding?(chat)
-  defp binding_valid?(chat), do: chat["conversation_role"] in [nil, "legacy"] and is_nil(chat["task_id"])
+  defp binding_valid?(chat), do: chat["conversation_role"] in [nil, "legacy"] and is_nil(chat["task_id"]) and is_nil(chat["session_id"])
 
   defp canonical_binding?(chat) do
-    is_nil(chat["kind"]) and valid_task_scope?(chat["project_id"], chat["task_id"]) and
+    is_nil(chat["session_id"]) and is_nil(chat["kind"]) and valid_task_scope?(chat["project_id"], chat["task_id"]) and
       chat["id"] == conversation_id(chat["project_id"], chat["task_id"], chat["tracker_fingerprint"])
+  end
+
+  defp report_receipts_valid?(chat) do
+    receipts = Map.get(chat, "pr_report_receipts", %{})
+
+    is_map(receipts) and map_size(receipts) <= 100 and
+      Enum.all?(receipts, fn {key, value} -> is_binary(key) and byte_size(key) <= 64 and is_binary(value) and String.match?(value, ~r/\A[a-f0-9]{64}\z/) end) and
+      (is_nil(chat["pr_observed_at"]) or (is_binary(chat["pr_observed_at"]) and match?({:ok, _, _}, DateTime.from_iso8601(chat["pr_observed_at"]))))
   end
 
   defp queue_valid?(chat) do
@@ -213,10 +232,15 @@ defmodule SymphonyElixir.Chat.Persistence do
 
   defp message_valid?(message) when is_map(message) do
     Enum.all?(~w(id text status), &is_binary(message[&1])) and
-      message["role"] in ["user", "assistant"] and collection?(message["widgets"], &is_map/1)
+      message["role"] in ["user", "assistant"] and collection?(message["widgets"], &is_map/1) and report_message_valid?(message)
   end
 
   defp message_valid?(_), do: false
+
+  defp report_message_valid?(%{"origin" => "pr_update"} = message),
+    do: message["role"] == "assistant" and message["status"] == "completed" and Sessions.valid_id?(message["session_id"]) and byte_size(message["text"]) <= 8_000
+
+  defp report_message_valid?(_), do: true
 
   defp proposal_valid?(proposal) when is_map(proposal) do
     valid_id?(proposal["id"]) and is_binary(proposal["action"]) and is_map(proposal["args"]) and
