@@ -3,7 +3,8 @@ defmodule SymphonyElixir.GoogleBrowserLiveTest do
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
-  alias SymphonyElixirWeb.{BrowserAccess, BrowserAuth, BrowserIdentity, BrowserOrigin, BrowserSessions, Endpoint}
+  alias SymphonyElixirWeb.{BoardCache, BrowserAccess, BrowserAuth, BrowserIdentity, BrowserOrigin, BrowserSessions}
+  alias SymphonyElixirWeb.{Endpoint, TaskBoard}
   @endpoint Endpoint
 
   defmodule FixtureChatStore do
@@ -52,6 +53,32 @@ defmodule SymphonyElixir.GoogleBrowserLiveTest do
     assert html =~ "Allowed project"
     assert has_element?(view, "#chat-composer")
     assert_received :private_projects_read
+  end
+
+  test "a warm board snapshot stays behind Google authentication on HTTP and websocket mounts" do
+    issue = %Issue{id: "cached-private", identifier: "MEM-1", title: "Private cached task", state: "open"}
+    board = TaskBoard.project([issue], %{}, %{}, Config.settings!())
+    configured = Application.get_env(:symphony_elixir, Endpoint)
+    updates = Keyword.merge(configured, board_loader: fn _, _ -> board end, snapshot_loader: fn -> flunk("warm mount must not read runtime") end)
+    Endpoint.config_change([{Endpoint, updates}], [])
+    :ok = BoardCache.put(BoardCache.scope(Orchestrator), board)
+
+    anonymous = get(local_conn(), "/")
+    assert redirected_to(anonymous) == "/login"
+    refute anonymous.resp_body =~ "Private cached task"
+    assert {:error, {:redirect, %{to: "/login"}}} = live(local_conn(), "/")
+
+    marker = session_marker()
+    authorized = get(authorized_conn(marker), "/")
+    assert html_response(authorized, 200) =~ "Private cached task"
+    assert Plug.Conn.get_resp_header(authorized, "cache-control") == ["no-store"]
+    {:ok, view, html} = live(authorized_conn(marker), "/")
+    assert html =~ "Private cached task"
+    assert render_async(view) =~ "Private cached task"
+    :ok = BrowserSessions.revoke(marker["id"])
+    send(view.pid, :browser_session_check)
+    assert_redirect(view, "/login")
+    assert {:error, {:redirect, %{to: "/login"}}} = live(authorized_conn(marker), "/")
   end
 
   test "initialized browser gate blocks anonymous reads and permits an authorized uncached response" do

@@ -48,10 +48,7 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
-    workspace_result =
-      if Config.control_settings().enabled and not is_nil(worker_host),
-        do: {:error, :controlled_workers_require_local_host},
-        else: Workspace.create_for_issue(issue, worker_host)
+    workspace_result = prepare_workspace(issue, worker_host, opts[:pr_work])
 
     case workspace_result do
       {:ok, workspace} ->
@@ -71,6 +68,15 @@ defmodule SymphonyElixir.AgentRunner do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp prepare_workspace(issue, worker_host, work) do
+    cond do
+      Config.control_settings().enabled and not is_nil(worker_host) -> {:error, :controlled_workers_require_local_host}
+      is_nil(work) -> Workspace.create_for_issue(issue, worker_host)
+      Config.control_settings().enabled -> Workspace.create_for_pr_work(issue, work)
+      true -> {:error, :pr_work_requires_controlled_execution}
     end
   end
 

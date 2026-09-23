@@ -121,6 +121,29 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @spec create_for_pr_work(map(), map()) :: {:ok, Path.t()} | {:error, term()}
+  def create_for_pr_work(issue, work) do
+    with {:ok, key} <- pr_work_key(issue, work), do: create_for_issue(key)
+  end
+
+  @spec pr_work_key(map(), map()) :: {:ok, String.t()} | {:error, term()}
+  def pr_work_key(%{id: issue_id}, %{"id" => id} = work) when is_binary(issue_id) and is_binary(id) do
+    key = "GH-#{issue_id}-#{id}"
+
+    valid =
+      String.match?(issue_id, ~r/^[1-9][0-9]{0,19}$/) and String.match?(id, ~r/^[a-f0-9]{32}$/) and
+        work["issue_id"] == issue_id and work["workspace_key"] == key and
+        work["branch"] == "codex/" <> String.downcase(key) and approved_work_base?(work["base_sha"])
+
+    if valid, do: {:ok, key}, else: {:error, :invalid_pr_work_scope}
+  end
+
+  def pr_work_key(_issue, _work), do: {:error, :invalid_pr_work_scope}
+
+  defp approved_work_base?(base) do
+    is_binary(base) and String.match?(base, ~r/^[a-f0-9]{40}$/) and base == Config.control_settings().base_sha
+  end
+
   defp ensure_workspace(workspace, nil) do
     cond do
       File.dir?(workspace) ->

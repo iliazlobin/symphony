@@ -52,18 +52,20 @@ installations use the baseline change procedure below rather than initialization
 
 ## Operate
 
-Use GitHub for task intent and PR review, a management chat for status and authorized
-controls, and the local web board for task inspection and bounded controls. The initial mode is paused. Worker
+Use GitHub for task intent and PR review, and the local web board or management chat
+for task creation, queueing, status and authorized controls. The initial mode is paused. Worker
 launch has a separate host gate; resume cannot bypass the activation prerequisites
 in [Verification and recovery](#verification-and-recovery).
 
-**Task concurrency.** In the private `WORKFLOW.md` identified by `workflow_path`,
+**Task concurrency.** Use **Settings → Execution** to change the effective limit
+within the existing workflow ceiling without restarting or interrupting active work.
+In the private `WORKFLOW.md` identified by `workflow_path`,
 `agent.max_concurrent_agents` accepts an integer from `1` (default) through `5`. Each issue
 runs its builder and then its reviewer, in independent task/review workspaces;
 the setting caps overlapping issue pipelines, not the number of tasks in the queue.
 Budgets remain per issue, while
 Codex account usage limits are shared. The host publisher still processes handoffs
-serially. Drain, wait for active work and cleanup to finish, then change the setting
+serially. To change the workflow ceiling, drain, wait for active work and cleanup to finish, then change the setting
 and restart the scheduler with its existing ledger. New installations remain paused
 with worker launch disabled; changing concurrency does not enable execution.
 
@@ -83,11 +85,12 @@ the shared-VM restart and verification of affected services afterward.
 candidate diff, independent review and check evidence in
 [Pull requests](https://github.com/iliazlobin/events-concierge/pulls). A draft PR is a
 review handoff; it does not mean the task is merged or deployed. Task creation and
-queue-label changes are available in GitHub and the optional web chat.
+queue-label changes are available in the web board, GitHub and the optional web chat.
 
-**Web board.** Open [Symphony](http://127.0.0.1:8777/). Real tracker issues,
+**Web board.** Open the configured browser origin; this Mac uses
+[Symphony](http://localhost:8778/) with Google sign-in. Real tracker issues,
 runtime activity and durable holds appear in Backlog, Ready, Running, Review and
-Done. Top autocomplete filters select project, status and priority; search and
+Done. Select the project beside **Projects**; **Filter** contains status and priority. Search and
 sorting apply within each lane. Manual drag ordering is saved in this browser and
 does not change scheduler priority. GitHub issues without a priority remain unspecified.
 
@@ -96,7 +99,7 @@ or clicking outside the popup returns to the same filters and position. Settings
 has **Execution**, **AI & chat**, and **Connections** tabs:
 
 - **Execution:** pause/drain/resume, maximum concurrent tasks, and read-only per-task
-  budgets. Unlock first, change the limit, then confirm. The range is 1 through the
+  budgets. Sign in, change the limit, then confirm. The range is 1 through the
   workflow ceiling. Successful changes preserve active work and consumed budgets;
   the limit controls new starts and survives restart. **Use workflow default** removes
   the saved override. Raising the configured ceiling or changing budgets remains a
@@ -108,7 +111,7 @@ has **Execution**, **AI & chat**, and **Connections** tabs:
   model sign-in, tracker write permissions or worker readiness. No probe starts a model or worker.
 
 Older controllers that do not report settings show unavailable values, not frontend
-configuration defaults. The port 8778 read-only preview never exposes execution edits;
+configuration defaults. A separate read-only preview never exposes execution edits;
 only browser preferences are editable there.
 
 Tracker/control failures retain last-known cards with an explicit warning. The board
@@ -117,17 +120,30 @@ Done means the tracker is terminal; it does not establish merge, acceptance or d
 
 Cards link the issue, repository and related pull requests. PR draft/merge state,
 GitHub review and checks for the current PR head remain separate from the worker's
-candidate review. The source strip shows refresh failures and controller mode;
+candidate review. Cards preview two PRs; the task dialog lists all associated PRs
+with independent status rows and direct CI links. **Agent review** summarizes the
+reviewed revision once, retaining the reviewer summary and findings without a raw handoff block.
+The source strip shows refresh failures and controller mode;
 “Live updates connected” describes the browser connection only.
+
+Each card and task dialog shows an inline execution summary: current state, cumulative
+tokens, attempts and elapsed time when recorded. The summary remains visible in compact
+view and after a worker exits. Exact counts are available on the metrics; missing or
+stale data is identified explicitly. A settled approved candidate says **Awaiting your
+review** and retains its PR links. **Cancel execution** appears for queued or active
+work; **Retry** appears for recoverable holds only when all reported limits permit it.
+Candidate review, closed issues and exhausted limits do not offer misleading execution
+buttons. Retrying still preserves consumed usage and requires confirmation.
 
 To try updated web code against live work without replacing the installed controller,
 run this from the Symphony checkout with its pinned Elixir runtime and Python dependencies:
 
 ```sh
-python3 tools/symphony_web.py --port 8778
+python3 tools/symphony_web.py --port 8878
 ```
 
-Open [the local live board](http://127.0.0.1:8778/) and leave that terminal running;
+Choose a free port different from the controller's. Open
+[the read-only preview](http://127.0.0.1:8878/) and leave that terminal running;
 Ctrl-C stops this view. It reads the existing operator profile, GitHub and the
 controller's status APIs. It never starts coding workers, opens the controller's
 ledger or enables browser commands. Chat is unavailable in this read-only view.
@@ -153,9 +169,10 @@ but the service's durable action store must be configured and healthy.
 
 Drag cards to arrange the board; there is no Move dropdown. Within a column, choose
 **Display → Sort by → Manual order** first. This saves the order in this browser and does
-not change scheduling priority. Dragging **Ready → Backlog** requests a confirmed
-cancellation; dragging a held **Backlog → Ready** offers a confirmed retry. These
-actions are also available by opening the task and choosing **Cancel** or **Retry**.
+not change scheduling priority. Dragging a queued **Ready → Backlog** requests a confirmed
+cancellation; dragging a held **Backlog → Ready** offers a confirmed retry when its
+remaining limits permit it. These actions are also available by opening the task and
+choosing **Cancel execution** or **Retry** when offered.
 Cancel can stop work claimed since the card was displayed. Retry clears a hold without
 resetting budgets, adding queue labels or supplying a missing answer.
 
@@ -166,6 +183,25 @@ the preview does not queue it. Pending actions and receipts can be reopened from
 which reads the existing result without repeating the write. Other cross-column drops
 cannot manually mark work Running, Review or Done. GitHub remains the task tracker;
 this action adds no separate queue and does not resume a paused controller.
+
+**Ready but idle.** Ready means the issue is queued; it does not mean a worker is
+running. Check **Settings → Execution**. If the controller is paused or draining,
+review the queued tasks and explicitly confirm **Resume** when you want new work
+to start. The board and Ready task details explain this wait while controller
+status is available. Opening Execution settings does not change operating mode.
+If already running, inspect dependencies, holds, remaining budget, concurrency and
+the host launch gate. The normal tracker poll is 30 seconds. An unavailable source
+means status is unknown; do not repeatedly retry or reset the task.
+
+The cumulative token budget uses Codex's reported input and output tokens, including
+cached input. A short task can therefore reach its budget while repeatedly reading
+repository context. A `token_budget` hold retains the candidate and consumed usage;
+retry does not reset either. Review the evidence and obtain approval before raising
+the configured per-task ceiling, then retry within the remaining attempt budget.
+
+Before resuming after `main` changes, follow [Change the baseline](#change-the-baseline).
+Both scheduler and publisher must use the reviewed current baseline. Otherwise a
+worker can create an old-base candidate that the publisher correctly refuses.
 
 **Browser sign-in.** With the [Google provider configured](../../elixir/README.md#browser-sign-in),
 open the exact configured origin and choose **Sign in with Google**. Only explicitly
@@ -208,32 +244,37 @@ controller or change task ownership. Additional project services, delivery of an
 into running workers, automatic repairs and web publication remain separate work.
 
 **Web chat.** After [dedicated runtime setup](../../elixir/README.md#web-board-and-chat),
-select a project beside **Projects** in the top header and open **Chat** in the right-side panel. A task
-popup also offers **Discuss this task**. Sign in through the configured browser provider.
-The list shows this project's retained chats and which are running, waiting for
-confirmation, idle, interrupted or in error. Pin chats to keep them at the top;
-drag their handles or use the move controls to arrange each group. Pins and order
-are saved with project chat state. Open a chat to read and continue it; **Back to chats**
-returns to the list. **New chat** starts a separate topic. These statuses describe
-chat activity; the board tracks coding tasks. **Chat**, **Context**, **Outputs** and
-**Sources** retain the selected conversation's messages and evidence. Returning to
-the list or switching tabs preserves its draft. Outputs include observed issue/PR
-status and action results.
-Project changes clear the current selection and draft. A chat stays with its original project. This service currently supplies one configured
-project; additional controllers are not aggregated yet.
+select a project beside **Projects** in the top header and sign in through the configured
+browser provider. Chat stays open beside the board. Each card has one durable conversation;
+selecting a card switches to it, and closing its details keeps that chat selected.
+**Main chat** opens the project's orchestration conversation for reports, task creation,
+updates and cancellation. Write proposals still require confirmation of the exact action.
+The headline picker groups issues by activity category, with Done last, and sorts each
+group newest first. Search a category, issue number, title or recent activity. The second
+line links the GitHub issue and its board card. **PRs** lists all linked PRs and their
+review/CI state; choose a retained work session to inspect it in **Outputs**.
+Switching cards preserves each conversation's draft and selected tab. **Chat**, **Context**,
+**Outputs** and **Sources** organize its messages and evidence. Prior conversations remain
+available through the full-page `/chat` history with search, pins and ordering.
 
-Responses stream as they arrive. **Stop** interrupts the chat response, not a coding
-task. Closing the tab leaves the response running; reopen its URL to reconnect.
-After a service restart, send another message to continue an interrupted conversation.
+Responses stream as they arrive. Send follow-ups while a response is running to queue
+up to 20 messages. The queue above the composer shows what will run next; **Send next**
+changes that order and **Remove** cancels a waiting message. Each conversation runs one
+message at a time, within the service-wide concurrency limit. Cards show **Chat processing**
+and the number queued, separately from the coding task's execution state.
+**Stop** interrupts the chat response, not a coding task, and pauses queued messages.
+Failure or service restart also pauses the queue; **Resume queue** checks current access
+before continuing. Closing the browser leaves accepted turns running.
+
 Codex handles native compaction while the app retains visible messages and receipts.
 **Sources** shows retrieved references; **Outputs** shows up to 100 distinct issue/PR
-artifacts and action results, with earlier tool results retained in history. References
-update the board filters or open a task popup while keeping
-the conversation open. `/chat` remains available as a full-page conversation view.
+artifacts and action results, with earlier tool results retained in history. Task and
+main conversations keep the same identity across reconnects and restarts. The current
+service supplies one configured project; additional controllers are not aggregated yet.
 
 **View context.** The **Context** tab shows what automatically accompanies the next
 message: project, filters, displayed task count and selected card. Earlier snapshots
-remain attached to their messages; start a new chat for a fresh conversation. Current
+remain attached to their messages. Current
 context refreshes as you filter, scroll, switch lanes or open a card.
 It includes up to 50 task IDs and marks truncated lists. It excludes arbitrary screen
 text, screenshots, password fields and other browser tabs. Tools recheck task details
@@ -256,15 +297,22 @@ retains its hold; retry is a separate action. Queueing adds only the configured 
 labels and retains dependency, budget, capacity and host launch gates. Creating a task requires explicit intake
 labels in the tracker configuration so a new unlabeled issue cannot launch itself.
 Feedback is saved to the GitHub issue; it is not injected into an active coding turn.
-Deployment, merge, arbitrary code execution and worker input delivery are not chat
-actions. External GitHub edits can still race the final issue patch; refresh and
+To work on a separate PR, ask the issue chat to create a PR work session with its scope
+and acceptance checks, then confirm the preview. To address review feedback or CI,
+ask it to continue that session and confirm the new instruction. The builder resumes
+its retained thread and checkout; each candidate receives a fresh independent review.
+Sessions share the issue budget and run one at a time. They do not bypass intake labels,
+holds, controller mode or launch gates. A completed candidate needs explicit continuation;
+Retry alone does not rebuild it. Existing PRs are not automatically adopted, and CI failures
+do not automatically start repairs. Deployment, merge and direct input into a running
+worker are not chat actions. External GitHub edits can still race the final issue patch; refresh and
 review the issue after changes.
 
 | Read tools | Confirmed workflow actions |
 | --- | --- |
-| Current view, project status, filtered task search, task details with all fetched PRs/CI, committed project documents | Create or edit a task, add issue feedback, queue/unqueue, pause/drain/resume, cancel/retry |
+| Current view, project status, task search, task details with PRs/CI and retained work, project documents | Create/edit task, feedback, queue/unqueue, pause/drain/resume, cancel/retry, create/continue PR work |
 
-The read-only preview on port 8778 shows the panel's availability state but does not
+The separate read-only preview shows the panel's availability state but does not
 start a chat runtime. A signed-in dedicated management account and an explicitly
 installed controller revision are required for live model responses.
 
@@ -360,7 +408,7 @@ watcher alongside the installed service. `symphony_control.py status` includes t
 publication receipts and confirmed PR links.
 
 **HTTP — programmatic interface.** The base URL is the local `api_url` in operator
-configuration, normally `http://127.0.0.1:8777`. Existing CLI/MCP clients handle the
+configuration; this Mac uses `http://127.0.0.1:8778`. Existing CLI/MCP clients handle the
 private token; custom clients must follow the
 [control API contract](../../SPEC.md#b2-native-control-api).
 
@@ -384,9 +432,10 @@ start threads/turns and receive events. This is not the operator HTTP API or the
 management MCP server, and operators do not need to call it directly. Existing
 independently launched VS Code/CLI sessions are not adopted by Symphony.
 
-GKE hosting, remote/mobile access, a control UI and a Slack command/reporting integration
-are not implemented by this profile. GitHub remains the task record; this Mac is the
-current execution host.
+The local control UI is part of this profile. GKE hosting and remote browser access
+have a separate [deployment contract](../../deploy/gke/README.md); a Slack command/reporting
+integration is not implemented. GitHub remains the task record; this Mac is the current
+execution host until an explicitly verified cloud ownership cutover.
 
 ## Task and publication contract
 
@@ -405,6 +454,17 @@ the same SHA in a separate checkout. The host retains the handoff and holds the 
 workers cannot publish, close tasks, change labels, merge or deploy. The host publication
 broker checks that evidence, publishes a scoped branch and creates a draft PR. Receipts
 retain its confirmed publication state and support retry after an uncertain write.
+PR work uses a distinct `codex/gh-<issue>-<work-id>` branch and publication receipt.
+For host publication/recovery, select it with `publish ISSUE --work-id WORK_ID` or
+`inspect ISSUE --work-id WORK_ID`; `reconcile --issue-id ISSUE --work-id WORK_ID`
+rechecks only that work. Use these subcommands with the existing host publication
+command and configuration. A lost acknowledgment is reconciled against its exact
+candidate and PR identity. Missing retained runtime state, changed remote heads or
+baselines, and dirty/advanced workspaces stop continuation; preserve them for recovery.
+If startup stops after the thread identity is saved but before Codex writes its first
+turn, that empty thread may have no resumable history. Retry does not invent a new
+identity or overwrite its state. Preserve the failed session, inspect its scope and
+checkout, and explicitly create replacement work after resolving the issue hold.
 
 Automatic merge additionally requires host enablement, `symphony:auto-merge`, an explicit
 low-risk path/size allowlist, a clean independent review, a protected chosen base branch,
@@ -417,6 +477,27 @@ moves, publication stops for stale candidates. Automatic rebase and baseline adv
 are not implemented; review and update the pin before another delivery, including after
 a merge to `main`. Overlapping candidates do not gain permission to publish against a
 changed base merely because their checks passed.
+
+## Update the local Symphony release
+
+- Integrate the intended changes into `main` before release. Merging a child PR into
+  a feature branch does not deliver that change to `main`.
+- Build and test a pinned `main` commit in a retained release checkout. Run every
+  local project controller and its installed publisher from that same commit.
+- For each existing private configuration, drain, wait for workers and chat turns to
+  finish, then pause and stop its installed agents using the current release. Use
+  the explicit `--config` path; verify the agents are unloaded before replacing them.
+- Preserve the previous release and private configuration, workflow, ledger, receipts
+  and chat state for recovery. Point `profile_bin` and the reviewed launch-agent
+  program paths and working directory at the new release. Keep the same origins,
+  credentials, gates and state directories; leave uninstalled publishers disabled.
+- A controller update does not change a task's source baseline. Preserve `base_sha`
+  and `integration_branch` unless separately performing the baseline procedure below.
+  Do not run profile initialization over an existing installation.
+- Run the project's `profile.py doctor`, start only its previously installed agents,
+  and verify the release commit, repository, retained tasks/chat and paused API state.
+  Restore a previously running controller only after validation and within the existing
+  launch authorization. Keep projects that were paused paused.
 
 ## Change the baseline
 

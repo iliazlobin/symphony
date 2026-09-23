@@ -313,7 +313,8 @@ codex:
 ## Web board and chat
 
 For a separate read-only view of a configured Mac controller, run
-`python3 tools/symphony_web.py --port 8778` from the repository root. It serves this
+`python3 tools/symphony_web.py --port 8878` from the repository root, using a free
+port different from the controller's configured port. It serves this
 checkout's UI with live GitHub issues, linked PR evidence and GET-only controller
 status. The launcher uses the existing host GitHub login and private operator
 profile; credentials stay in the host process. It starts no scheduler, ledger
@@ -323,14 +324,22 @@ describes access and limits.
 The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
-- Optional authenticated management chat in the board's right-side panel and at `/chat`;
+- Authenticated management chat in the board's persistent right-side panel and at `/chat`;
   streaming uses LiveView's existing connection
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
-Open **Chat** at the right of the board header to show the conversation panel.
+The chat panel stays open. Select a task card to open its dedicated conversation;
+closing task details keeps that conversation selected. **Main chat** returns to the
+project conversation for reports and task creation, updates or cancellation.
+The headline picker searches issue numbers, titles, categories and recent activity.
+Issues appear in Running, Ready for review, Needs attention, Ready, Backlog and Done
+groups, newest activity first within each group. The second line links the issue and
+its card; **PRs** lists fetched associated PRs with independent review and CI status,
+and indicates when GitHub evidence is incomplete or unavailable.
+Retained PR work sessions open in **Outputs**, keeping the same issue chat selected.
 Use **New task** to enter a title, outcome, scope, acceptance checks and dependencies.
 **Preview task** saves the exact proposed GitHub issue; **Create task** confirms it.
 Created tasks enter the backlog without execution routing labels. Recent submissions
@@ -339,19 +348,34 @@ use **Check outcome** to reconcile it before creating another request. This form
 the durable action store and works without a model turn or subscription login.
 The board and full-page chat share `ChatPanel`. The dock retains board filters and
 selected task links. Each message automatically attaches a validated project-bound
-snapshot of bounded task IDs and filters, not raw browser contents. The chat list
-shows the project's conversations with live activity status and search. Pin important
-chats and drag the handles to reorder within Pinned or Chats; move controls also work
-with a keyboard. Pins and ordering persist in private project chat storage.
-Open a chat to continue it, return with **Back to chats**, or start a new chat.
+snapshot of bounded task IDs and filters, not raw browser contents. Each task has
+one retained conversation, and each project has one main conversation. These bindings
+survive reconnects and restarts; prior free-standing chats remain available at `/chat`.
+Drafts and selected tabs stay separate when switching cards. The full-page chat list
+retains search, pins and ordering for saved conversations.
 Inside the conversation, **Chat**, **Context**,
 **Outputs** and **Sources** organize the same durable conversation. Context separates
 the next message's view from snapshots retained with earlier messages. Outputs collect
 the latest 100 distinct issue/PR summaries and action results; original tool results stay
 in message history. Sources retain retrieved references.
+Ask the issue chat to create PR work with a bounded instruction, or continue an existing
+work session to address feedback or checks, then confirm its preview. Each PR work keeps
+its builder thread and checkout across attempts; every candidate gets a fresh reviewer.
+One PR work runs per issue at a time, sharing the issue's cumulative budget. A review
+handoff requires explicit continuation; **Retry** does not replay a completed candidate.
+Previously linked PRs are shown but are not automatically adopted as work sessions.
+Existing routing labels, launch permissions, publication and merge gates still apply.
 GitHub artifact statuses are recorded observations; thread activity updates live.
-Returning to the list hides the composer without discarding its draft. Conversation
-messages scroll independently of the composer. The selected view and tab are remembered
+You can send follow-ups while a response is running. Up to 20 messages wait in the
+conversation queue above the composer; **Send next** changes the next waiting message
+and **Remove** cancels one queued message. Messages run one at a time per conversation
+and respect the service concurrency limit. Cards show chat processing and queued counts,
+separately from coding-worker activity. **Stop**, a failed turn or a service restart
+pauses the remaining queue; **Resume queue** continues it after checking current access.
+Messages show their original sent or response-start time in the browser's local time;
+hover a timestamp for its full date and time zone. Queued messages retain their queue
+time when sent. Older messages without a valid recorded timestamp omit it.
+Conversation messages scroll independently of the composer. The selected view and tab are remembered
 in this browser session. The current-view
 tool resolves fresh authorized task summaries; action previews and browser
 confirmations own all writes. See [management conversations](../ARCHITECTURE.md#management-conversations)
@@ -410,9 +434,11 @@ corrupt records or failed writes block operation without overwriting recovery da
 Browser reconnect does not stop a turn; service restart leaves interrupted turns
 available to continue and uncertain writes available for read-only reconciliation.
 The file store holds at most 500 conversation and task-submission records, with an
-8 MiB limit per record. Archive
-hides a chat from the active list; it does not delete its retained records.
-Once a conversation reaches 400 messages, start another chat for further turns.
+8 MiB limit per record. Previously archived records remain retained; the current
+chat list exposes pinning and ordering, with no Archive or Rename buttons.
+Task and main conversations keep their identity beyond 400 messages. Storage remains
+bounded per record; a full history rejects additional messages without deleting it.
+Legacy free-standing chats retain their 400-message limit.
 
 The current backend serves one configured project; the picker and immutable chat
 scope prepare the interface for additional controllers without mixing their data.
@@ -610,11 +636,18 @@ The optional HTTP service serves a LiveView Kanban board with searchable project
 status and priority filters, per-lane sorting, and browser-local manual order.
 The compact board follows the Linear board shown in OpenAI's Symphony demo while
 retaining this fork's GitHub workflow. Project selection stays in the top bar;
-**Filter** opens status and priority selectors. **Display** controls sorting, card
+Status and priority selectors stay visible on the left of the toolbar. **Display**,
+on the right, controls sorting, card
 detail, light/dark appearance and visible columns. Hidden columns remain available
 in the restore rail; selecting a status reveals its column. Display preferences are
 saved only in this browser and do not change scheduling or issue state.
-Card details and Settings open as native dialogs with Close and Escape. Settings has
+Click a card's background to select its task chat without opening a dialog. The title
+is a link that opens scrollable task details; issue, PR and CI links open directly in GitHub.
+Additional PRs expand inside the card without opening task details.
+Details retain their scroll position during refresh and return to the top when you open another issue. Focus a card and
+press Enter or Space to select it. Selection survives reload and browser navigation;
+dragging still moves or reorders cards. Card details and Settings open as native dialogs
+with Close and Escape. Settings has
 three sections: **Execution** for native controls, concurrency and read-only budgets;
 **AI & chat** for context behavior and read-only model presets;
 and **Connections** for tracker/controller/chat storage status and operator login.
@@ -624,6 +657,14 @@ control ledger with revision and replay checks. Limits must be 1 through the wor
 Successful changes affect new admissions, preserve active work and consumed budgets,
 and survive restart. Reloading a lower ceiling clamps a saved higher override.
 Changing control budgets still requires reviewed configuration and restart.
+
+Reloads reuse the server's last complete board for up to 90 seconds while GitHub and
+controller data refresh in the background. The footer retains its checked time.
+The cache holds one snapshot in memory (up to 8 MB), clears on restart, and cannot
+cross configuration, credential, data-source or controller changes. Failed refreshes
+do not replace it. A cold start still waits for source reads; private board content
+remains behind Google sign-in and is never cached in browser storage. Execution and
+tracker changes continue to validate current authority and revisions.
 
 The read-only preview never enables controller commands or chat execution. Missing
 controller settings remain “Not reported”; model presets and chat storage health do
@@ -636,11 +677,19 @@ Relative links remain text; open the source issue for repository-relative naviga
 Tracker issues, current runtime and durable holds own the displayed stages; stale sources
 are marked. A terminal issue does not verify a merge or deployment.
 
-Compact cards show blockers and a short PR/CI summary. Detailed cards and task popups
-include the PR branch, commit and changed-file counts. Expand checks on a detailed
-card or open its popup for individual job results, durations and
-workflow/log links. Partial or stale check data stays explicit. Job durations are
-independent; passing CI and conflict-free branches do not establish merge approval.
+Cards and task popups retain an inline execution summary with cumulative tokens,
+attempts and elapsed time against the reported limits. It stays visible in compact view after workers exit;
+unavailable status and missing metrics remain explicit. Task dialogs show Cancel or
+Retry only when applicable; settled candidate review does not offer Retry.
+
+Cards preview two associated PRs; the task popup lists every PR with its own state,
+GitHub review, CI summary, short commit and file counts. Each PR's CI link opens its
+checks on GitHub. Partial, stale and unavailable check data remain explicit.
+Agent review appears once for the reviewed candidate, with its reviewer summary and
+findings. The short commit links to GitHub only when the candidate, review and an
+associated PR head all match. Earlier builder notes stay in the durable handoff;
+they are not current PR status. Agent approval,
+GitHub review, passing CI and merging remain separate facts.
 
 Browser controls use the [configured sign-in provider](#browser-sign-in).
 Authentication does not bypass tracker identity, command revision, replay or

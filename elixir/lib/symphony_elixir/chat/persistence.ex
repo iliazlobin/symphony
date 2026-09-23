@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.Chat.Persistence do
   @moduledoc "Private conversation records with an OS ownership lock and atomic, synced writes."
 
+  alias SymphonyElixir.Chat.ViewContext
   alias SymphonyElixir.PathSafety
 
   @preferences_file "presentation.json"
@@ -108,6 +109,23 @@ defmodule SymphonyElixir.Chat.Persistence do
   @spec valid_id?(term()) :: boolean()
   def valid_id?(id), do: is_binary(id) and String.match?(id, ~r/^[a-f0-9]{32}$/)
 
+  @spec conversation_id(String.t(), String.t() | nil, String.t()) :: String.t()
+  def conversation_id(project, task_id, fingerprint) do
+    :crypto.hash(:sha256, Jason.encode!(["conversation-v1", project, fingerprint, task_id])) |> Base.encode16(case: :lower) |> binary_part(0, 32)
+  end
+
+  @spec valid_task_scope?(String.t(), term()) :: boolean()
+  def valid_task_scope?(_project, nil), do: true
+
+  def valid_task_scope?(project, task_id) when is_binary(project) and is_binary(task_id) do
+    prefix = project <> ":"
+    suffix = String.replace_prefix(task_id, prefix, "")
+    pattern = if String.starts_with?(project, "github:"), do: ~r/\A[1-9][0-9]*\z/, else: ~r/\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
+    String.valid?(task_id) and byte_size(task_id) <= 240 and String.starts_with?(task_id, prefix) and String.match?(suffix, pattern)
+  end
+
+  def valid_task_scope?(_, _), do: false
+
   defp load(root) do
     paths = Path.wildcard(Path.join(root, "*.json")) |> Enum.reject(&(Path.basename(&1) == @preferences_file))
 
@@ -133,9 +151,44 @@ defmodule SymphonyElixir.Chat.Persistence do
   end
 
   defp valid_chat?(chat) do
-    metadata_valid?(chat) and
+    metadata_valid?(chat) and binding_valid?(chat) and queue_valid?(chat) and
       collection?(chat["client_ids"], &is_binary/1) and collection?(chat["context"], &is_map/1) and
       collection?(chat["messages"], &message_valid?/1) and collection?(chat["proposals"], &proposal_valid?/1)
+  end
+
+  defp binding_valid?(%{"conversation_role" => "main"} = chat), do: is_nil(chat["task_id"]) and canonical_binding?(chat)
+  defp binding_valid?(%{"conversation_role" => "task"} = chat), do: is_binary(chat["task_id"]) and canonical_binding?(chat)
+  defp binding_valid?(chat), do: chat["conversation_role"] in [nil, "legacy"] and is_nil(chat["task_id"])
+
+  defp canonical_binding?(chat) do
+    is_nil(chat["kind"]) and valid_task_scope?(chat["project_id"], chat["task_id"]) and
+      chat["id"] == conversation_id(chat["project_id"], chat["task_id"], chat["tracker_fingerprint"])
+  end
+
+  defp queue_valid?(chat) do
+    queue = Map.get(chat, "queue", [])
+
+    is_boolean(Map.get(chat, "queue_paused", false)) and is_list(queue) and length(queue) <= 20 and
+      Enum.all?(queue, &queued_message_valid?(&1, chat["project_id"])) and receipts_valid?(Map.get(chat, "message_receipts", %{})) and
+      Enum.uniq_by(queue, & &1["id"]) == queue and Enum.uniq_by(queue, & &1["client_id"]) == queue
+  end
+
+  defp receipts_valid?(receipts) when is_map(receipts) do
+    Enum.all?(receipts, fn {key, value} -> is_binary(key) and is_binary(value) and String.match?(value, ~r/\A[a-f0-9]{64}\z/) end)
+  end
+
+  defp receipts_valid?(_), do: false
+
+  defp queued_message_valid?(%{"role" => "user", "status" => "queued"} = entry, project) do
+    message_valid?(entry) and valid_id?(entry["id"]) and queued_metadata_valid?(entry) and
+      match?({:ok, _}, ViewContext.validate(entry["view_context"], project))
+  end
+
+  defp queued_message_valid?(_, _), do: false
+
+  defp queued_metadata_valid?(entry) do
+    is_binary(entry["client_id"]) and byte_size(entry["client_id"]) in 1..128 and byte_size(entry["text"]) in 1..16_000 and
+      is_binary(entry["created_at"]) and match?({:ok, _, _}, DateTime.from_iso8601(entry["created_at"]))
   end
 
   defp metadata_valid?(chat) do

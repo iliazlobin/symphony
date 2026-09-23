@@ -33,6 +33,33 @@ defmodule SymphonyElixirWeb.BoardActions do
     end
   end
 
+  @doc "Submit one confirmed PR work command to the native owner, retaining its exact revision and replay ID."
+  @spec pr_work_command(map(), BrowserAuth.context(), GenServer.server()) :: {:ok, map()} | {:error, term()}
+  def pr_work_command(command, context, orchestrator \\ Orchestrator) do
+    fields =
+      case command["action"] do
+        "create_pr_work" -> ~w(action issue_id command_id expected_revision work_id instruction base_sha)
+        "continue_pr_work" -> ~w(action issue_id command_id expected_revision work_id instruction expected_head_sha)
+        _ -> []
+      end
+
+    cond do
+      not BrowserAuth.authorized?(context) ->
+        {:error, :unauthorized}
+
+      fields == [] or Enum.sort(Map.keys(command)) != Enum.sort(fields) ->
+        {:error, :invalid_command}
+
+      true ->
+        Orchestrator.control_command_guarded(
+          command,
+          context.tracker_fingerprint,
+          orchestrator,
+          fn -> BrowserAuth.authorized?(context) end
+        )
+    end
+  end
+
   defp forward_command(action, issue_id, expected_revision, command_id, context, orchestrator) do
     # The owner checks project scope and configuration without replacing the
     # displayed revision; revision and replay still belong to the native ledger.

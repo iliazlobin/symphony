@@ -29,6 +29,19 @@ defmodule SymphonyElixir.Chat.Store do
   @spec create(String.t(), String.t(), map(), GenServer.server()) :: {:ok, map()} | {:error, term()}
   def create(project, title, auth, server \\ __MODULE__), do: call(server, {:create, project, title, auth})
 
+  @doc "Returns the single durable conversation bound to a task, or the project's main conversation."
+  @spec ensure_conversation(String.t(), String.t() | nil, map(), GenServer.server()) :: {:ok, map()} | {:error, term()}
+  def ensure_conversation(project, task_id, auth, server \\ __MODULE__), do: call(server, {:ensure_conversation, project, task_id, auth})
+
+  @spec remove_queued(String.t(), String.t(), String.t(), map(), GenServer.server()) :: {:ok, map()} | {:error, term()}
+  def remove_queued(project, id, message_id, auth, server \\ __MODULE__), do: call(server, {:queue, :remove, project, id, message_id, auth})
+
+  @spec prioritize_queued(String.t(), String.t(), String.t(), map(), GenServer.server()) :: {:ok, map()} | {:error, term()}
+  def prioritize_queued(project, id, message_id, auth, server \\ __MODULE__), do: call(server, {:queue, :prioritize, project, id, message_id, auth})
+
+  @spec resume_queue(String.t(), String.t(), map(), GenServer.server()) :: {:ok, map()} | {:error, term()}
+  def resume_queue(project, id, auth, server \\ __MODULE__), do: call(server, {:resume_queue, project, id, auth})
+
   @spec get(String.t(), String.t(), map(), GenServer.server()) :: {:ok, map()} | {:error, term()}
   def get(project, id, auth, server \\ __MODULE__), do: call(server, {:get, project, id, auth})
 
@@ -86,6 +99,7 @@ defmodule SymphonyElixir.Chat.Store do
       preferences: preferences,
       preference_fault: preference_fault,
       jobs: %{},
+      queue_auth: %{},
       dirty: MapSet.new(),
       authorize: Keyword.get(opts, :authorize, &BrowserAuth.authorized?/1),
       project_reader: Keyword.get(opts, :projects, &configured_projects/0),
@@ -151,29 +165,46 @@ defmodule SymphonyElixir.Chat.Store do
 
   def handle_call({:create, project, title, auth}, _from, state) do
     with :ok <- authorized(state, project, auth), :ok <- writable(state), true <- valid_text?(title, 160) and map_size(state.chats) < 500 do
-      project_ref = Enum.find(state.project_reader.(), &(&1["id"] == project))
-
-      chat = %{
-        "id" => id(),
-        "project_id" => project,
-        "title" => String.trim(title),
-        "status" => "idle",
-        "archived" => false,
-        "messages" => [],
-        "proposals" => [],
-        "context" => [project_ref],
-        "error" => nil,
-        "activity" => nil,
-        "updated_at" => now(),
-        "tracker_fingerprint" => auth.tracker_fingerprint,
-        "runtime_identity" => runtime_identity(state.settings),
-        "codex_thread_id" => nil,
-        "client_ids" => []
-      }
-
-      reply_put(state, chat)
+      reply_put(state, new_chat(state, project, title, auth))
     else
       false -> {:reply, {:error, :invalid_chat}, state}
+      error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:ensure_conversation, project, task_id, auth}, _from, state) do
+    with :ok <- authorized(state, project, auth),
+         :ok <- writable(state),
+         true <- Persistence.valid_task_scope?(project, task_id) or {:error, :invalid_task_scope} do
+      ensure_bound_chat(state, project, task_id, auth)
+    else
+      error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:queue, action, project, id, message_id, auth}, _from, state) do
+    with {:ok, chat} <- authorized_chat(state, project, id, auth),
+         :ok <- writable(state),
+         %{} = entry <- Enum.find(queue(chat), &(&1["id"] == message_id)) do
+      rest = Enum.reject(queue(chat), &(&1["id"] == message_id))
+      entries = if action == :remove, do: rest, else: [entry | rest]
+      chat = Map.put(chat, "queue", entries)
+      next = if action == :remove, do: %{state | queue_auth: Map.delete(state.queue_auth, message_id)}, else: state
+      save_and_dispatch(next, chat)
+    else
+      nil -> {:reply, {:error, :queued_message_not_found}, state}
+      error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:resume_queue, project, id, auth}, _from, state) do
+    with {:ok, chat} <- authorized_chat(state, project, id, auth),
+         :ok <- writable(state),
+         true <- not chat["archived"] or {:error, :chat_busy},
+         true <- chat["runtime_identity"] == runtime_identity(state.settings) or {:error, :chat_runtime_changed} do
+      grants = Enum.reduce(queue(chat), state.queue_auth, &Map.put(&2, &1["id"], auth))
+      save_and_dispatch(%{state | queue_auth: grants}, Map.put(chat, "queue_paused", false))
+    else
       error -> {:reply, error, state}
     end
   end
@@ -193,7 +224,8 @@ defmodule SymphonyElixir.Chat.Store do
   end
 
   def handle_call({:archive, project, id, auth}, _from, state) do
-    with {:ok, chat} <- authorized_chat(state, project, id, auth), false <- busy?(state, id) do
+    with {:ok, chat} <- authorized_chat(state, project, id, auth),
+         false <- canonical?(chat) or busy?(state, id) or queue(chat) != [] do
       reply_put(state, Map.put(chat, "archived", true))
     else
       true -> {:reply, {:error, :chat_busy}, state}
@@ -206,13 +238,10 @@ defmodule SymphonyElixir.Chat.Store do
          :ok <- writable(state),
          true <- valid_text?(text, 16_000) and valid_text?(client_id, 128),
          {:ok, snapshot} <- ViewContext.validate(view_context, project) do
-      cond do
-        client_id in chat["client_ids"] -> replay_message(state, chat, text, client_id, snapshot)
-        chat["archived"] or busy?(state, id) -> {:reply, {:error, :chat_busy}, state}
-        map_size(state.jobs) >= state.settings.max_concurrent -> {:reply, {:error, :chat_capacity}, state}
-        length(chat["messages"]) >= 400 -> {:reply, {:error, :start_new_chat}, state}
-        chat["runtime_identity"] != runtime_identity(state.settings) -> {:reply, {:error, :chat_runtime_changed}, state}
-        true -> start_turn(state, chat, String.trim(text), client_id, snapshot, auth)
+      if client_id in chat["client_ids"] do
+        replay_message(state, chat, text, client_id, snapshot)
+      else
+        accept_message(state, chat, text, client_id, snapshot, auth)
       end
     else
       false -> {:reply, {:error, :invalid_message}, state}
@@ -394,21 +423,109 @@ defmodule SymphonyElixir.Chat.Store do
   defp configured_orchestrator, do: Application.get_env(:symphony_elixir, Endpoint, [])[:orchestrator] || Orchestrator
 
   defp stop_turn(state, chat) do
-    case state.jobs[chat["id"]] do
-      %{kind: :turn, pid: pid} ->
-        send(pid, :interrupt)
-        Process.send_after(self(), {:stop_deadline, chat["id"], pid}, 5_000)
-        reply_put(state, Map.put(chat, "activity", "Stopping response…"))
+    # Save the pause before interruption: completion racing with Stop cannot dispatch the next turn.
+    chat = Map.put(chat, "queue_paused", queue(chat) != [] or busy?(state, chat["id"]))
 
-      _ ->
-        {:reply, {:ok, public(chat)}, state}
+    case put(state, chat) do
+      {:ok, next} ->
+        case next.jobs[chat["id"]] do
+          %{kind: :turn, pid: pid} ->
+            send(pid, :interrupt)
+            Process.send_after(self(), {:stop_deadline, chat["id"], pid}, 5_000)
+            job = Map.put(next.jobs[chat["id"]], :stopping, true)
+            next = %{next | jobs: Map.put(next.jobs, chat["id"], job)}
+            reply_put(next, Map.put(chat, "activity", "Stopping response…"))
+
+          _ ->
+            {:reply, {:ok, public(chat)}, next}
+        end
+
+      {:error, next} ->
+        {:reply, {:error, :chat_storage_unavailable}, next}
     end
   end
 
   defp replay_message(state, chat, text, client_id, snapshot) do
-    matching = Enum.any?(chat["messages"], &(&1["client_id"] == client_id and &1["text"] == String.trim(text) and &1["view_context"] == snapshot))
+    fingerprint = message_fingerprint(String.trim(text), snapshot)
+    saved = get_in(chat, ["message_receipts", client_id])
+    matching = saved == fingerprint or Enum.any?(chat["messages"] ++ queue(chat), &(&1["client_id"] == client_id and &1["text"] == String.trim(text) and &1["view_context"] == snapshot))
     result = if matching, do: {:ok, public(chat)}, else: {:error, :message_id_conflict}
     {:reply, result, state}
+  end
+
+  defp message_fingerprint(text, snapshot), do: :crypto.hash(:sha256, :erlang.term_to_binary({text, snapshot})) |> Base.encode16(case: :lower)
+  defp canonical_id(project, task_id, fingerprint), do: Persistence.conversation_id(project, task_id, fingerprint)
+  defp canonical?(chat), do: chat["conversation_role"] in ["task", "main"]
+  defp queue(chat), do: Map.get(chat, "queue", [])
+
+  defp accept_message(state, chat, text, client_id, snapshot, auth) do
+    case message_admission(state, chat) do
+      :ok -> enqueue_turn(state, chat, String.trim(text), client_id, snapshot, auth)
+      error -> {:reply, error, state}
+    end
+  end
+
+  defp message_admission(state, chat) do
+    cond do
+      chat["archived"] -> {:error, :chat_busy}
+      not canonical?(chat) and length(chat["messages"]) >= 400 -> {:error, :start_new_chat}
+      not history_headroom?(chat) -> {:error, :chat_history_full}
+      length(queue(chat)) >= 20 -> {:error, :chat_queue_full}
+      chat["runtime_identity"] != runtime_identity(state.settings) -> {:error, :chat_runtime_changed}
+      true -> :ok
+    end
+  end
+
+  defp ensure_bound_chat(state, project, task_id, auth) do
+    canonical_id = canonical_id(project, task_id, auth.tracker_fingerprint)
+
+    case state.chats[canonical_id] do
+      nil ->
+        create_bound_chat(state, project, task_id, auth, canonical_id)
+
+      chat ->
+        scope = %{"task_id" => task_id, "tracker_fingerprint" => auth.tracker_fingerprint, "project_id" => project}
+        valid = canonical?(chat) and Map.take(chat, Map.keys(scope)) == scope
+        if valid, do: {:reply, {:ok, public(chat)}, state}, else: {:reply, {:error, :chat_binding_conflict}, state}
+    end
+  end
+
+  defp create_bound_chat(state, project, task_id, auth, canonical_id) do
+    if map_size(state.chats) < 500 do
+      role = if is_nil(task_id), do: "main", else: "task"
+      title = if is_nil(task_id), do: "Main chat", else: "Task " <> task_id
+      chat = new_chat(state, project, title, auth) |> Map.merge(%{"id" => canonical_id, "task_id" => task_id, "conversation_role" => role})
+      reply_put(state, chat)
+    else
+      {:reply, {:error, :chat_history_full}, state}
+    end
+  end
+
+  defp new_chat(state, project, title, auth) do
+    project_ref = Enum.find(state.project_reader.(), &(&1["id"] == project))
+
+    %{
+      "id" => id(),
+      "project_id" => project,
+      "title" => String.trim(title),
+      "status" => "idle",
+      "archived" => false,
+      "messages" => [],
+      "proposals" => [],
+      "context" => [project_ref],
+      "error" => nil,
+      "activity" => nil,
+      "updated_at" => now(),
+      "tracker_fingerprint" => auth.tracker_fingerprint,
+      "runtime_identity" => runtime_identity(state.settings),
+      "codex_thread_id" => nil,
+      "client_ids" => [],
+      "message_receipts" => %{},
+      "queue" => [],
+      "queue_paused" => false,
+      "conversation_role" => "legacy",
+      "task_id" => nil
+    }
   end
 
   defp authorized(state, project, auth) do
@@ -441,7 +558,18 @@ defmodule SymphonyElixir.Chat.Store do
   defp now, do: DateTime.utc_now() |> DateTime.to_iso8601()
   defp runtime_identity(settings), do: :crypto.hash(:sha256, :erlang.term_to_binary(Map.take(settings, [:codex_home, :executable]))) |> Base.encode16(case: :lower)
 
-  defp public(chat), do: Map.drop(chat, ["tracker_fingerprint", "runtime_identity", "codex_thread_id", "client_ids", "submission"])
+  defp public(chat) do
+    chat
+    |> Map.drop(["tracker_fingerprint", "runtime_identity", "codex_thread_id", "client_ids", "message_receipts", "submission"])
+    |> Map.merge(%{
+      "queue" => queue(chat),
+      "queued_count" => length(queue(chat)),
+      "queue_paused" => chat["queue_paused"] == true,
+      "task_id" => chat["task_id"],
+      "conversation_role" => chat["conversation_role"] || "legacy"
+    })
+  end
+
   defp notify(id), do: Phoenix.PubSub.broadcast(SymphonyElixir.PubSub, "chat:" <> id, {:chat_updated, id})
 
   defp initialize_preferences(nil), do: {%{"version" => 1, "scopes" => %{}}, nil}
@@ -543,7 +671,11 @@ defmodule SymphonyElixir.Chat.Store do
       "title" => summary_title(chat),
       "snippet" => summary_snippet(chat),
       "display_status" => display_status(chat),
-      "message_count" => length(chat["messages"])
+      "message_count" => length(chat["messages"]),
+      "task_id" => chat["task_id"],
+      "conversation_role" => chat["conversation_role"] || "legacy",
+      "queued_count" => length(queue(chat)),
+      "queue_paused" => chat["queue_paused"] == true
     })
   end
 
@@ -568,6 +700,8 @@ defmodule SymphonyElixir.Chat.Store do
     cond do
       "executing" in actions -> "action"
       chat["status"] == "running" -> "running"
+      queue(chat) != [] and chat["queue_paused"] == true -> "queue_paused"
+      queue(chat) != [] -> "queued"
       "unknown" in actions -> "needs_reconciliation"
       "pending" in actions -> "awaiting_confirmation"
       true -> settled_status(chat)
@@ -740,21 +874,87 @@ defmodule SymphonyElixir.Chat.Store do
     end
   end
 
-  defp start_turn(state, chat, text, client_id, snapshot, auth) do
-    chat = chat |> Map.put("status", "running") |> Map.put("error", nil) |> Map.put("activity", "Connecting to Astra…")
-    user_message = message("user", text) |> Map.put("client_id", client_id) |> Map.put("view_context", snapshot)
-    chat = chat |> Map.update!("client_ids", &(&1 ++ [client_id])) |> Map.update!("messages", &(&1 ++ [user_message, message("assistant", "", "streaming")]))
+  defp enqueue_turn(state, chat, text, client_id, snapshot, auth) do
+    entry = message("user", text, "queued") |> Map.put("client_id", client_id) |> Map.put("view_context", snapshot)
+    paused = chat["queue_paused"] == true and queue(chat) != []
+
+    chat =
+      chat
+      |> Map.update!("client_ids", &(&1 ++ [client_id]))
+      |> Map.update("message_receipts", %{client_id => message_fingerprint(text, snapshot)}, &Map.put(&1, client_id, message_fingerprint(text, snapshot)))
+      |> Map.put("queue", queue(chat) ++ [entry])
+      |> Map.put("queue_paused", paused)
+
+    save_and_dispatch(%{state | queue_auth: Map.put(state.queue_auth, entry["id"], auth)}, chat)
+  end
+
+  defp save_and_dispatch(state, chat) do
+    case put(state, chat) do
+      {:ok, next} ->
+        next = dispatch_queued(next)
+        if is_nil(next.fault), do: {:reply, {:ok, public(next.chats[chat["id"]])}, next}, else: {:reply, {:error, :chat_storage_unavailable}, next}
+
+      {:error, next} ->
+        {:reply, {:error, :chat_storage_unavailable}, next}
+    end
+  end
+
+  defp dispatch_queued(state) do
+    state.chats
+    |> Map.values()
+    |> Enum.filter(&(queue(&1) != [] and &1["queue_paused"] != true and not &1["archived"] and not busy?(state, &1["id"])))
+    |> Enum.sort_by(&{hd(queue(&1))["created_at"], &1["id"]})
+    |> Enum.reduce(state, &dispatch_one/2)
+  end
+
+  defp dispatch_one(chat, state) do
+    if is_nil(state.fault) and map_size(state.jobs) < state.settings.max_concurrent do
+      entry = hd(queue(chat))
+      auth = state.queue_auth[entry["id"]]
+
+      with true <- history_headroom?(chat) or {:error, :chat_history_full},
+           true <- is_map(auth),
+           {:ok, _} <- authorized_chat(state, chat["project_id"], chat["id"], auth),
+           true <- chat["runtime_identity"] == runtime_identity(state.settings) do
+        start_turn(state, chat, entry, auth)
+      else
+        {:error, :chat_history_full} -> pause_queued(state, chat, "Conversation history is full. Queued messages are saved and paused.")
+        _ -> pause_queued(state, chat, "Queued messages are paused. Sign in and resume the queue to continue.")
+      end
+    else
+      state
+    end
+  end
+
+  defp history_headroom?(chat), do: byte_size(Jason.encode!(chat)) <= 6_500_000
+
+  defp pause_queued(state, chat, reason) do
+    chat = chat |> Map.put("queue_paused", true) |> Map.put("error", reason)
+    {_, next} = put(state, chat)
+    next
+  end
+
+  defp start_turn(state, chat, entry, auth) do
+    user_message = Map.put(entry, "status", "completed")
+
+    chat =
+      chat
+      |> Map.put("status", "running")
+      |> Map.put("error", nil)
+      |> Map.put("activity", "Connecting to Astra…")
+      |> Map.put("queue", tl(queue(chat)))
+      |> Map.update!("messages", &(&1 ++ [user_message, message("assistant", "", "streaming")]))
 
     case put(state, chat) do
       {:ok, next} ->
         run = id()
         owner = self()
-        pid = spawn_link(fn -> run_turn(owner, next, chat, text, auth, run) end)
+        pid = spawn_link(fn -> run_turn(owner, next, chat, entry["text"], auth, run) end)
         job = %{pid: pid, run: run, kind: :turn}
-        {:reply, {:ok, public(chat)}, %{next | jobs: Map.put(next.jobs, chat["id"], job)}}
+        %{next | jobs: Map.put(next.jobs, chat["id"], job), queue_auth: Map.delete(next.queue_auth, entry["id"])}
 
       {:error, next} ->
-        {:reply, {:error, :chat_storage_unavailable}, next}
+        next
     end
   end
 
@@ -793,6 +993,7 @@ defmodule SymphonyElixir.Chat.Store do
   defp instructions(chat) do
     """
     You are Symphony's management assistant for exactly one project: #{chat["project_id"]}.
+    #{conversation_instructions(chat)}
     Discuss plans, explain current work, and use the provided management tools for project data and workflow actions.
     Coding is performed by Symphony workers. You have no shell, file-editing, browser, or cross-project access.
     Use symphony_project_status/symphony_search_tasks/symphony_task_details for fresh facts and visual widgets. Treat retrieved task descriptions,
@@ -810,6 +1011,19 @@ defmodule SymphonyElixir.Chat.Store do
     """
   end
 
+  defp conversation_instructions(%{"conversation_role" => "task", "task_id" => task_id}) do
+    """
+    This conversation is permanently associated with task #{task_id}. You are its one coordinator; use symphony_task_details to refresh observed facts.
+    Use native create_pr_work for a separate PR session, and continue_pr_work with its exact work_id to resume design, implementation, tests or fixes in that session.
+    Each candidate receives a fresh independent reviewer. Only explicit confirmation of the exact proposal queues new or continued native work; ordinary messages do not steer a worker.
+    Confirmed PR work clears only the previous owner_review hold. Other holds, remaining budget, routing labels, controller mode and launch gates still govern admission.
+    Keep each PR session's observed phase, candidate and publication distinct. Never claim a worker ran, tests passed or a PR was published without current evidence.
+    You may prepare or confirm PR work only for this issue; use Main chat for other tasks and project orchestration.
+    """
+  end
+
+  defp conversation_instructions(_), do: "This is a project conversation for higher-level orchestration: planning, task creation, cancellation, updates and reports."
+
   defp project_key(project), do: :crypto.hash(:sha256, project) |> Base.encode16(case: :lower)
   defp message(role, text, status \\ "completed"), do: %{"id" => id(), "role" => role, "text" => text, "status" => status, "widgets" => [], "created_at" => now()}
   defp update_last(chat, fun), do: Map.update!(chat, "messages", &List.update_at(&1, -1, fun))
@@ -821,6 +1035,7 @@ defmodule SymphonyElixir.Chat.Store do
   defp tool_context(state, chat, auth) do
     %{
       project_id: chat["project_id"],
+      task_id: chat["task_id"],
       tracker_fingerprint: chat["tracker_fingerprint"],
       auth: auth,
       orchestrator: state.orchestrator,
@@ -848,7 +1063,7 @@ defmodule SymphonyElixir.Chat.Store do
     details =
       proposal["args"]
       |> Map.put("project", chat["project_id"])
-      |> Map.merge(Map.take(proposal, ["queue_labels", "queue_unheld", "expected_revision", "expected_updated_at"]))
+      |> Map.merge(Map.take(proposal, ["queue_labels", "queue_unheld", "expected_revision", "expected_updated_at", "pr_work"]))
 
     proposal = proposal |> Map.put("title", preview["title"] || "Proposed action") |> Map.put("details", details)
     widget = Map.put(proposal, "type", "proposal")
@@ -903,11 +1118,13 @@ defmodule SymphonyElixir.Chat.Store do
   defp finish_job(state, id, result) do
     job = state.jobs[id]
     chat = state.chats[id]
+    result = if job[:stopping] == true, do: {:ok, %{status: :interrupted}}, else: result
     chat = if job.kind == :turn, do: finish_turn(chat, result), else: finish_action(chat, job, result)
+    chat = if (job.kind == :turn and chat["status"] != "idle") or match?({:error, _}, result), do: Map.put(chat, "queue_paused", true), else: chat
     state = %{state | jobs: Map.delete(state.jobs, id), dirty: MapSet.delete(state.dirty, id)}
 
     case put(state, chat) do
-      {:ok, next} -> {:noreply, next}
+      {:ok, next} -> {:noreply, dispatch_queued(next)}
       {:error, next} -> {:noreply, next}
     end
   end
@@ -961,13 +1178,15 @@ defmodule SymphonyElixir.Chat.Store do
   end
 
   defp recover(chat) do
+    chat = if queue(chat) != [], do: Map.put(chat, "queue_paused", true), else: chat
+
     chat =
       if chat["status"] == "running",
         do:
           chat
           |> Map.put("status", "interrupted")
           |> Map.put("activity", nil)
-          |> Map.put("error", "The service restarted. Your saved conversation is available; send a new message to continue.")
+          |> Map.put("error", recovery_message(chat))
           |> update_last(&Map.put(&1, "status", "interrupted")),
         else: chat
 
@@ -975,6 +1194,12 @@ defmodule SymphonyElixir.Chat.Store do
       %{"status" => "executing"} = proposal, acc -> update_proposal(acc, Map.put(proposal, "status", "unknown"))
       _, acc -> acc
     end)
+  end
+
+  defp recovery_message(chat) do
+    if queue(chat) == [],
+      do: "The service restarted. Your saved conversation is available; send a new message to continue.",
+      else: "The service restarted. Your messages are saved; select Resume queue to continue the queued messages."
   end
 
   defp runtime_error(reason) when reason in [:auth_required, :authentication_required], do: "Sign in to the dedicated management-chat Codex runtime, then try again."

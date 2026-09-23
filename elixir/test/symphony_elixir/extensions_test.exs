@@ -510,7 +510,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, view, _html} = live(build_conn(), "/")
     html = render_async(view)
     refute has_element?(view, "nav.workspace-tabs[aria-label='Workspace']")
-    assert has_element?(view, "header.board-header #open-chat-button", "Chat")
+    assert has_element?(view, "#management-chat-dock")
+    refute has_element?(view, "#open-chat-button")
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
