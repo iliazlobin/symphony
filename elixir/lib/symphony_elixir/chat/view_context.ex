@@ -56,15 +56,33 @@ defmodule SymphonyElixir.Chat.ViewContext do
     normalized = Map.merge(defaults, value)
 
     valid =
-      Enum.all?(Map.keys(value), &Map.has_key?(defaults, &1)) and
+      Enum.all?(Map.keys(value), &(Map.has_key?(defaults, &1) or &1 in ~w(milestone label assignee))) and
         selection?(normalized["project"], [project]) and selection?(normalized["status"], @statuses) and
         selection?(normalized["priority"], @priorities) and text?(normalized["q"], 2_000) and
+        Enum.all?(~w(milestone label assignee), &metadata_selection?(Map.get(normalized, &1, []), &1, project)) and
         normalized["sort"] in ~w(manual updated priority title oldest)
 
     if valid, do: {:ok, normalized}, else: {:error, :invalid_view_context}
   end
 
   defp filters(_, _), do: {:error, :invalid_view_context}
+
+  defp metadata_selection?(values, key, project) when is_list(values) and length(values) <= 20 do
+    Enum.uniq(values) == values and
+      Enum.all?(values, fn value ->
+        text?(value, 240) and
+          (value == "__none__" or metadata_value?(value, key, project))
+      end) and byte_size(Jason.encode!(values)) <= 2_000
+  end
+
+  defp metadata_selection?(_, _, _), do: false
+
+  defp metadata_value?(value, "milestone", project) do
+    prefix = "milestone:" <> project <> ":"
+    String.starts_with?(value, prefix) and Regex.match?(~r/\A[1-9][0-9]*\z/, String.replace_prefix(value, prefix, ""))
+  end
+
+  defp metadata_value?(value, key, _project), do: String.starts_with?(value, key <> ":") and byte_size(value) > byte_size(key) + 1
   defp selection?(values, allowed), do: is_list(values) and length(values) <= length(allowed) and Enum.all?(values, &(&1 in allowed)) and Enum.uniq(values) == values
   defp selected?(nil, _project), do: true
   defp selected?(id, project), do: task_id?(id, project)

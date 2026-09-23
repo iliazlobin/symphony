@@ -120,6 +120,8 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
     assert issue.state == "open"
     assert issue.url == "https://github.test/octo/repo/issues/42"
     assert issue.assignee_id == "octocat"
+    assert issue.assignees == ["octocat"]
+    assert issue.milestone == nil
     assert issue.labels == ["bug", "platform"]
     assert issue.blocked_by == []
     assert issue.dispatchable
@@ -135,6 +137,83 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
              Map.put(raw_issue(44), "title", " "),
              "octo/repo"
            ) == nil
+  end
+
+  test "client retains milestone identity and every assignee without changing the primary assignee" do
+    raw =
+      raw_issue(42)
+      |> Map.put("milestone", %{
+        "id" => 9_001,
+        "number" => 3,
+        "title" => " Release one ",
+        "state" => "open",
+        "html_url" => "https://github.test/octo/repo/milestone/3"
+      })
+      |> Map.put("assignees", [
+        %{"login" => "octocat"},
+        %{"login" => "reviewer"},
+        %{"login" => "octocat"},
+        nil,
+        "malformed",
+        %{"login" => 12},
+        %{"login" => " "}
+      ])
+
+    issue = GitHubClient.normalize_issue_for_test(raw, "octo/repo")
+
+    assert issue.milestone == %{
+             id: "3",
+             title: "Release one",
+             state: "open",
+             url: "https://github.test/octo/repo/milestone/3"
+           }
+
+    assert issue.assignee_id == "octocat"
+    assert issue.assignees == ["octocat", "reviewer"]
+    assert issue.dispatchable
+
+    raw = put_in(raw, ["milestone", "state"], "closed")
+    assert GitHubClient.normalize_issue_for_test(raw, "octo/repo").milestone.state == "closed"
+  end
+
+  test "optional malformed or absent board metadata does not discard valid issues" do
+    milestones = [
+      nil,
+      "release",
+      [],
+      %{},
+      %{"number" => "3", "title" => "Release", "state" => "open"},
+      %{"number" => 0, "title" => "Release", "state" => "open"},
+      %{"number" => 3, "title" => " ", "state" => "open"},
+      %{"number" => 3, "title" => 12, "state" => "open"},
+      %{"number" => 3, "title" => "Release", "state" => "unknown"}
+    ]
+
+    for milestone <- milestones, assignees <- [nil, "malformed", %{}, []] do
+      raw =
+        raw_issue(42)
+        |> Map.put("milestone", milestone)
+        |> Map.put("assignees", assignees)
+        |> Map.put("assignee", "malformed")
+
+      issue = GitHubClient.normalize_issue_for_test(raw, "octo/repo")
+      assert issue.id == "42"
+      assert issue.assignee_id == nil
+      assert issue.assignees == []
+      assert issue.milestone == nil
+      assert issue.dispatchable
+    end
+
+    raw = Map.drop(raw_issue(42), ["milestone", "assignee", "assignees"])
+    issue = GitHubClient.normalize_issue_for_test(raw, "octo/repo")
+    assert issue.assignee_id == nil
+    assert issue.assignees == []
+    assert issue.milestone == nil
+
+    for url <- [nil, 12, "javascript:alert(1)", "https://user:secret@github.test/milestone/3"] do
+      raw = Map.put(raw, "milestone", %{"number" => 3, "title" => "Release", "state" => "open", "html_url" => url})
+      assert GitHubClient.normalize_issue_for_test(raw, "octo/repo").milestone == %{id: "3", title: "Release", state: "open", url: nil}
+    end
   end
 
   test "client pages state reads, filters requested states, and drops malformed records" do

@@ -1,6 +1,11 @@
 (() => {
   "use strict";
   const lanes = [["backlog", "Backlog"], ["ready", "Ready"], ["running", "Running"], ["review", "Review"], ["done", "Done"]];
+  const metadataFilters = ["milestone", "label", "assignee"];
+  const boardFilters = ["project", "status", "priority", ...metadataFilters];
+  const filterNames = {project: "Project", status: "Status", priority: "Priority", milestone: "Milestone", label: "Tags", assignee: "Assignee"};
+  const emptyMetadata = {milestone: "No milestone", label: "No tags", assignee: "Unassigned"};
+  const byteLength = value => new TextEncoder().encode(value).length;
   const parse = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };
   const escapeText = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[c]));
   const storage = { get(key) { try { return localStorage.getItem(key); } catch { return null; } }, set(key, value) { try { localStorage.setItem(key, value); } catch { /* Preferences are optional. */ } } };
@@ -24,7 +29,7 @@
   };
   const TaskBoard = {
     mounted() {
-      this.prefs = {project: [], status: [], priority: [], query: "", sort: "manual", order: {}, lane: "ready", density: "compact", theme: "light", hiddenLanes: ["done"]};
+      this.prefs = {project: [], status: [], priority: [], milestone: [], label: [], assignee: [], query: "", sort: "manual", order: {}, lane: "ready", density: "compact", theme: "light", hiddenLanes: ["done"]};
       this.revealedLanes = new Set();
       this.popup = null;
       this.activeOption = 0;
@@ -34,8 +39,56 @@
       this.abort = new AbortController();
       this.darkMode = window.matchMedia("(prefers-color-scheme: dark)");
       const on = (name, handler) => this.el.addEventListener(name, handler, {signal: this.abort.signal});
-      this.options = key => key === "project" ? parse(this.el.dataset.projects, []).map(p => [p.id, p.label]) : key === "status" ? [...lanes, ["attention", "Needs input"]] : [["P1", "P1 · High"], ["P2", "P2 · Normal"], ["P3", "P3 · Low"], ["P4", "P4 · Lowest"], ["—", "Unspecified"]];
-      this.filterValues = (key, values) => Array.isArray(values) ? [...new Set(values.filter(value => this.options(key).some(([id]) => id === value)))] : [];
+      this.cardMetadata = card => {
+        const strings = raw => { const values = parse(raw, []); return Array.isArray(values) ? values.filter(value => typeof value === "string" && value.length) : []; };
+        const milestone = parse(card.dataset.milestone, null);
+        return {
+          labels: strings(card.dataset.labels), assignees: strings(card.dataset.assignees),
+          milestone: milestone && typeof milestone === "object" && !Array.isArray(milestone) && milestone.id && typeof milestone.title === "string" ? milestone : null
+        };
+      };
+      this.metadataLabel = (key, value) => {
+        if (value === "__none__") return emptyMetadata[key];
+        if (key === "label") return value.slice("label:".length);
+        if (key === "assignee") return "@" + value.slice("assignee:".length);
+        const separator = value.lastIndexOf(":"), projectId = value.slice("milestone:".length, separator);
+        const projects = parse(this.el.dataset.projects, []), project = projects.find(project => project.id === projectId)?.label || projectId;
+        return "Milestone #" + value.slice(separator + 1) + (projects.length > 1 ? ` · ${project}` : "");
+      };
+      this.refreshMetadata = () => {
+        const options = Object.fromEntries(metadataFilters.map(key => [key, new Map()]));
+        const projects = parse(this.el.dataset.projects, []);
+        const cards = [...this.el.querySelectorAll(".task-card[data-task-id]")];
+        const multipleProjects = new Set([...projects.map(project => project.id), ...cards.map(card => card.dataset.project)]).size > 1;
+        for (const card of cards) {
+          const {labels, assignees, milestone} = this.cardMetadata(card);
+          labels.forEach(label => options.label.set("label:" + label, label));
+          assignees.forEach(login => options.assignee.set("assignee:" + login, "@" + login));
+          if (milestone) {
+            const project = projects.find(project => project.id === card.dataset.project)?.label || card.dataset.project;
+            options.milestone.set(`milestone:${card.dataset.project}:${milestone.id}`, milestone.title + (multipleProjects ? ` · ${project}` : ""));
+          }
+        }
+        this.metadataOptions = options;
+      };
+      this.options = key => {
+        if (key === "project") return parse(this.el.dataset.projects, []).map(p => [p.id, p.label]);
+        if (key === "status") return [...lanes, ["attention", "Needs input"]];
+        if (key === "priority") return [["P1", "P1 · High"], ["P2", "P2 · Normal"], ["P3", "P3 · Low"], ["P4", "P4 · Lowest"], ["—", "Unspecified"]];
+        const options = new Map(this.metadataOptions?.[key] || []);
+        for (const value of this.prefs[key]) if (value !== "__none__" && !options.has(value)) options.set(value, this.metadataLabel(key, value));
+        return [...options].sort((a, b) => a[1].localeCompare(b[1])).concat([["__none__", emptyMetadata[key]]]);
+      };
+      this.metadataWithinLimits = values => values.length <= 20 && values.every(value => byteLength(value) <= 240) && byteLength(JSON.stringify(values)) <= 2000;
+      this.filterValues = (key, values) => {
+        if (!Array.isArray(values)) return [];
+        if (!metadataFilters.includes(key)) return [...new Set(values.filter(value => this.options(key).some(([id]) => id === value)))];
+        return values.reduce((selected, value) => {
+          const valid = typeof value === "string" && !value.includes("\0") && (value === "__none__" ||
+            (key === "milestone" ? /^milestone:.+:[1-9][0-9]*$/.test(value) : value.startsWith(key + ":") && value.length > key.length + 1));
+          return valid && !selected.includes(value) && this.metadataWithinLimits([...selected, value]) ? [...selected, value] : selected;
+        }, []);
+      };
       this.load = () => {
         const scope = this.el.dataset.scope;
         if (!scope || this.scope === scope) return;
@@ -43,7 +96,7 @@
         this.key = "symphony.board.v1:" + scope;
         const parsed = parse(storage.get(this.key), {});
         const saved = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-        for (const k of ["project", "status", "priority"]) this.prefs[k] = this.filterValues(k, saved[k]);
+        for (const k of boardFilters) this.prefs[k] = this.filterValues(k, saved[k]);
         this.prefs.query = typeof saved.query === "string" ? saved.query : "";
         this.prefs.sort = ["manual", "priority", "updated", "oldest", "title"].includes(saved.sort) ? saved.sort : "manual";
         this.prefs.lane = lanes.some(([id]) => id === saved.lane) ? saved.lane : "ready";
@@ -64,7 +117,7 @@
         const parsed = parse(encoded, {});
         const filters = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
         if (initial && !Object.keys(filters).length) return;
-        for (const key of ["project", "status", "priority"]) this.prefs[key] = this.filterValues(key, typeof filters[key] === "string" ? filters[key].split(",") : []);
+        for (const key of boardFilters) this.prefs[key] = this.filterValues(key, metadataFilters.includes(key) ? parse(filters[key], []) : typeof filters[key] === "string" ? filters[key].split(",") : []);
         this.prefs.query = typeof filters.q === "string" ? filters.q : "";
         this.prefs.sort = ["manual", "priority", "updated", "oldest", "title"].includes(filters.sort) ? filters.sort : "manual";
         this.el.querySelector("[data-board-search]").value = this.prefs.query;
@@ -74,7 +127,8 @@
         if (this.key) storage.set(this.key, JSON.stringify(this.prefs));
         clearTimeout(this.urlTimer);
         this.urlTimer = setTimeout(() => {
-          const filters = {project: this.prefs.project.join(","), status: this.prefs.status.join(","), priority: this.prefs.priority.join(","), q: this.prefs.query, sort: this.prefs.sort};
+          const filters = {q: this.prefs.query, sort: this.prefs.sort};
+          for (const key of boardFilters) filters[key] = metadataFilters.includes(key) ? (this.prefs[key].length ? JSON.stringify(this.prefs[key]) : "") : this.prefs[key].join(",");
           for (const key of Object.keys(filters)) if (!filters[key] || (key === "sort" && filters[key] === "manual")) delete filters[key];
           const parsed = parse(this.el.dataset.urlFilters || "{}", {});
           const current = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
@@ -128,7 +182,12 @@
       };
       this.openFilter = key => { this.closeMenus(); if (this.popup !== key) this.closeFilter(); this.popup = key; this.activeOption = 0; this.drawOptions(key); };
       this.toggle = (key, value) => {
-        this.prefs[key] = this.prefs[key].includes(value) ? this.prefs[key].filter(v => v !== value) : [...this.prefs[key], value];
+        const values = this.prefs[key].includes(value) ? this.prefs[key].filter(v => v !== value) : [...this.prefs[key], value];
+        if (metadataFilters.includes(key) && !this.metadataWithinLimits(values)) {
+          this.announce("Filter selection is too large to save. Choose fewer or shorter values (up to 20 per filter).");
+          return;
+        }
+        this.prefs[key] = values;
         this.el.querySelector("#filter-" + key).value = "";
         this.activeOption = 0; this.drawOptions(key); this.apply(); this.save();
         this.el.querySelector("#filter-" + key).focus();
@@ -157,7 +216,7 @@
         const visible = [...new Set([...viewport, ...cards])].slice(0, 50);
         const snapshot = {
           version: 1, project_id: project,
-          filters: {project: this.prefs.project, status: this.prefs.status, priority: this.prefs.priority, q: this.prefs.query, sort: this.prefs.sort},
+          filters: {...Object.fromEntries(boardFilters.map(key => [key, key === "milestone" ? this.prefs[key].filter(value => value === "__none__" || value.startsWith(`milestone:${project}:`)) : this.prefs[key]])), q: this.prefs.query, sort: this.prefs.sort},
           selected_task_id: this.el.dataset.selectedTask || null,
           visible_task_ids: visible.map(card => card.dataset.taskId), viewport_task_ids: viewport.map(card => card.dataset.taskId),
           hidden_columns: lanes.filter(([stage]) => this.el.querySelector(`[data-stage="${stage}"]`).hidden).map(([stage]) => stage),
@@ -174,6 +233,7 @@
         this.contextTimer = setTimeout(this.captureContext, 100);
       };
       this.apply = () => {
+        this.refreshMetadata();
         this.load();
         this.readURL();
         this.applyAppearance();
@@ -183,7 +243,11 @@
         let matched = 0;
         for (const card of cards) {
           const d = card.dataset, stage = card.closest("[data-stage]").dataset.stage;
-          const matches = (!this.prefs.project.length || this.prefs.project.includes(d.project)) && (!this.prefs.priority.length || this.prefs.priority.includes(d.priority)) && (!this.prefs.status.length || this.prefs.status.includes(stage) || (this.prefs.status.includes("attention") && d.attention === "true")) && (!this.prefs.query || [d.title, d.identifier].join(" ").toLowerCase().includes(this.prefs.query.toLowerCase()));
+          const {labels, assignees, milestone} = this.cardMetadata(card);
+          const metadata = {label: labels.map(label => "label:" + label), assignee: assignees.map(login => "assignee:" + login), milestone: milestone ? [`milestone:${d.project}:${milestone.id}`] : []};
+          const metadataMatches = metadataFilters.every(key => !this.prefs[key].length || this.prefs[key].some(value => value === "__none__" ? !metadata[key].length : metadata[key].includes(value)));
+          const searchable = [d.title, d.identifier, milestone?.title, ...labels, ...assignees.map(login => "@" + login)].join(" ").toLowerCase();
+          const matches = metadataMatches && (!this.prefs.project.length || this.prefs.project.includes(d.project)) && (!this.prefs.priority.length || this.prefs.priority.includes(d.priority)) && (!this.prefs.status.length || this.prefs.status.includes(stage) || (this.prefs.status.includes("attention") && d.attention === "true")) && (!this.prefs.query || searchable.includes(this.prefs.query.toLowerCase()));
           card.hidden = !matches;
           if (matches) matched++;
           if ((matches && this.prefs.status.includes("attention") && d.attention === "true") || d.taskId === linkedTask) this.revealedLanes.add(stage);
@@ -217,7 +281,7 @@
           lane.querySelector("[data-lane-empty]").textContent = matched ? "No matching tasks" : "No tasks match";
         }
         const linkedStage = cards.find(card => card.dataset.taskId === linkedTask)?.closest("[data-stage]").dataset.stage;
-        const mobileContext = JSON.stringify([this.prefs.project, this.prefs.status, this.prefs.priority, this.prefs.query, linkedTask, linkedStage]);
+        const mobileContext = JSON.stringify([...boardFilters.map(key => this.prefs[key]), this.prefs.query, linkedTask, linkedStage]);
         const contextChanged = this.mobileContext !== mobileContext;
         this.mobileContext = mobileContext;
         if (contextChanged && linkedStage) this.prefs.lane = linkedStage;
@@ -227,10 +291,10 @@
         this.el.querySelectorAll("[data-stage]").forEach(el => el.dataset.mobileActive = String(el.dataset.stage === this.prefs.lane));
         const mobile = this.el.querySelector("[data-mobile-lane]"); mobile.value = this.prefs.lane;
         for (const option of mobile.options) option.textContent = `${lanes.find(([s]) => s === option.value)[1]} (${this.el.querySelector(`[data-stage="${option.value}"] [data-lane-count]`).textContent})${hidden.has(option.value) ? " · hidden" : ""}`;
-        this.el.querySelector("[data-filter-chips]").innerHTML = ["status", "priority"].flatMap(key => this.prefs[key].map(value => { const label = this.options(key).find(([id]) => id === value)?.[1] || value; return `<button type="button" class="filter-chip" data-remove-key="${key}" data-remove-value="${escapeText(value)}" aria-label="Remove ${key} filter ${escapeText(label)}">${escapeText(label)} <span aria-hidden="true">×</span></button>`; })).join("");
-        for (const key of ["project", "status", "priority"]) {
+        this.el.querySelector("[data-filter-chips]").innerHTML = boardFilters.filter(key => key !== "project").flatMap(key => this.prefs[key].map(value => { const label = this.options(key).find(([id]) => id === value)?.[1] || value; return `<button type="button" class="filter-chip" data-remove-key="${key}" data-remove-value="${escapeText(value)}" aria-label="Remove ${key} filter ${escapeText(label)}">${escapeText(label)} <span aria-hidden="true">×</span></button>`; })).join("");
+        for (const key of boardFilters) {
           const selectedProject = key === "project" && this.prefs.project.length === 1 ? this.options(key).find(([id]) => id === this.prefs.project[0])?.[1] : null;
-          this.el.querySelector("#filter-" + key).placeholder = selectedProject || `${key[0].toUpperCase() + key.slice(1)}: ${this.prefs[key].length ? this.prefs[key].length + " selected" : "All"}`;
+          this.el.querySelector("#filter-" + key).placeholder = selectedProject || `${filterNames[key]}: ${this.prefs[key].length ? this.prefs[key].length + " selected" : "All"}`;
         }
         this.scheduleContext();
       };
@@ -285,7 +349,7 @@
         else if (button.dataset.filterToggle) { const key = button.dataset.filterToggle; if (this.popup === key) this.closeFilter(); else { this.openFilter(key); this.el.querySelector("#filter-" + key).focus(); } }
         else if (button.dataset.key) this.toggle(button.dataset.key, button.dataset.value);
         else if (button.dataset.removeKey) { this.prefs[button.dataset.removeKey] = this.prefs[button.dataset.removeKey].filter(v => v !== button.dataset.removeValue); this.apply(); this.save(); }
-        else if (button.hasAttribute("data-clear-filters")) { this.prefs.project = []; this.prefs.status = []; this.prefs.priority = []; this.prefs.query = ""; this.el.querySelector("[data-board-search]").value = ""; this.closeFilter(); this.apply(); this.save(); }
+        else if (button.hasAttribute("data-clear-filters")) { for (const key of boardFilters) this.prefs[key] = []; this.prefs.query = ""; this.el.querySelector("[data-board-search]").value = ""; this.closeFilter(); this.apply(); this.save(); }
         else if (button.dataset.copy) navigator.clipboard?.writeText(button.dataset.copy).then(() => { button.textContent = "Copied"; }).catch(() => { button.textContent = "Copy unavailable"; });
       });
       on("change", event => {

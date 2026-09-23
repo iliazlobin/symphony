@@ -258,6 +258,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#board-toolbar #filter-project")
     assert has_element?(view, "#filter-status[role=combobox]")
     assert has_element?(view, "#filter-priority[role=combobox]")
+    for key <- ~w(milestone label assignee), do: assert(has_element?(view, "#board-filter-panel #filter-#{key}[role=combobox]"))
+    assert has_element?(view, ".task-card[data-labels][data-milestone][data-assignees]")
     assert has_element?(view, "select[aria-label='Sort cards']")
     assert html =~ "Manual order is a browser preference"
     assert html =~ "Changes requested"
@@ -843,7 +845,16 @@ defmodule SymphonyElixir.DashboardLiveTest do
   @tag :threads_fixture
   test "card selection switches canonical chat without details and preserves board filters", ctx do
     view = authorized_board_view()
-    filters = %{"project" => "github:example/fixture", "q" => "fixture", "sort" => "updated"}
+
+    filters = %{
+      "project" => "github:example/fixture",
+      "q" => "fixture",
+      "sort" => "updated",
+      "milestone" => Jason.encode!(["milestone:github:example/fixture:7"]),
+      "label" => Jason.encode!(["label:bug, urgent"]),
+      "assignee" => Jason.encode!(["assignee:octocat"])
+    }
+
     render_patch(view, "/?" <> URI.encode_query(filters))
     render_click(view, "select-task", %{"id" => "github:example/fixture:2"})
     selected_path = "/?" <> URI.encode_query(Map.put(filters, "chat_task", "github:example/fixture:2"))

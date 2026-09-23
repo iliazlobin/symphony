@@ -77,4 +77,32 @@ defmodule SymphonyElixir.Chat.ViewContextTest do
       assert {:error, :invalid_view_context} = ViewContext.validate(Map.put(base, "filters", filters), @project)
     end
   end
+
+  test "retains bounded metadata filters and rejects malformed or foreign milestone hints" do
+    filters = %{
+      "milestone" => ["milestone:#{@project}:7", "__none__"],
+      "label" => ["label:bug, urgent", "label:work:operations"],
+      "assignee" => ["assignee:octocat", "__none__"]
+    }
+
+    base = %{"version" => 1, "project_id" => @project, "filters" => filters}
+    assert {:ok, context} = ViewContext.validate(base, @project)
+    assert Map.take(context["filters"], Map.keys(filters)) == filters
+
+    for {key, value} <- [
+          {"milestone", ["milestone:github:other/repo:7"]},
+          {"milestone", ["milestone:#{@project}:0"]},
+          {"label", ["label:"]},
+          {"label", ["label:a", "label:a"]},
+          {"label", ["label:" <> String.duplicate("x", 240)]},
+          {"label", Enum.map(1..21, &"label:#{&1}")},
+          {"label", Enum.map(1..20, &("label:#{&1}" <> String.duplicate("x", 100)))},
+          {"assignee", "octocat"},
+          {"assignee", [123]},
+          {"assignee", ["assignee:" <> <<0>>]}
+        ] do
+      invalid = put_in(base, ["filters", key], value)
+      assert {:error, :invalid_view_context} = ViewContext.validate(invalid, @project)
+    end
+  end
 end
