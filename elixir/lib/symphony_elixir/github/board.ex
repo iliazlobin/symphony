@@ -101,7 +101,7 @@ defmodule SymphonyElixir.GitHub.Board do
             pageInfo { hasPreviousPage }
             nodes { ... on CrossReferencedEvent {
               target { ... on Issue { number repository { nameWithOwner } } }
-              source { __typename ...BoardPullRequest }
+              source { __typename ... on PullRequest { body } ...BoardPullRequest }
             } }
           }
         }
@@ -113,7 +113,7 @@ defmodule SymphonyElixir.GitHub.Board do
       repository(owner: $owner, name: $name) { nameWithOwner #{issues} }
     }
     fragment BoardPullRequest on PullRequest {
-      number title url body state isDraft reviewDecision headRefOid createdAt updatedAt repository { nameWithOwner }
+      number title url state isDraft reviewDecision headRefOid createdAt updatedAt repository { nameWithOwner }
       headRefName baseRefName author { login } additions deletions changedFiles mergeable
       commits(last: 1) { nodes { commit { oid statusCheckRollup {
         state contexts(first: #{@check_limit}) {
