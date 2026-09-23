@@ -105,6 +105,30 @@ defmodule SymphonyElixir.Chat.CoordinationTest do
     }
   end
 
+  test "reopening a legacy main conversation refreshes the persisted project agent identity", c do
+    seed_chat(c, c.parent, %{"title" => "Main chat", "agent_name" => nil})
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    c = %{c | server: server}
+    assert disk(c, c.parent)["agent_name"] == nil
+
+    assert {:ok, parent} = Store.ensure_conversation(c.project, nil, c.auth, server)
+    assert parent["id"] == c.parent["id"]
+    assert parent["agent_name"] == "One"
+    assert disk(c, parent)["agent_name"] == "One"
+    assert Coordination.label(parent) == "One project agent"
+    assert {:ok, graph} = Store.agent_graph(c.project, c.auth, server)
+    assert [node] = Enum.filter(graph["nodes"], &(&1["role"] == "project"))
+    assert node["conversation_id"] == parent["id"]
+    assert node["name"] == "One project agent"
+
+    {agent, opts} = launch(c, parent, "Continue the existing project conversation")
+    assert opts.instructions =~ "Your agent identity is One project agent."
+    refute opts.instructions =~ "Main chat project agent"
+    send(agent, {:finish, ""})
+    wait_chat(c, parent, &(&1["status"] == "idle"))
+  end
+
   test "real Store delegates down, reports up, retains goals and gives the model trusted provenance", c do
     {parent, _} = launch(c, c.parent, "Coordinate release")
     graph = tool(parent, "symphony_agent_graph", %{})

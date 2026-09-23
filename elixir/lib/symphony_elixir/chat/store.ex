@@ -907,13 +907,13 @@ defmodule SymphonyElixir.Chat.Store do
   defp project_name(state, project), do: (Enum.find(state.project_reader.(), &(&1["id"] == project)) || %{})["label"] || project
 
   defp bind_parent_reply(state, chat) do
-    parent =
+    updated =
       case chat["conversation_role"] do
-        "main" -> nil
-        "task" -> canonical_id(chat["project_id"], nil, chat["tracker_fingerprint"])
+        "main" -> chat |> Map.put("parent_id", nil) |> Map.put("agent_name", project_name(state, chat["project_id"]))
+        "task" -> Map.put(chat, "parent_id", canonical_id(chat["project_id"], nil, chat["tracker_fingerprint"]))
       end
 
-    if chat["parent_id"] == parent, do: {:reply, {:ok, public(chat, state)}, state}, else: reply_put(state, Map.put(chat, "parent_id", parent))
+    if chat == updated, do: {:reply, {:ok, public(chat, state)}, state}, else: reply_put(state, updated)
   end
 
   defp create_bound_chat(state, project, task_id, auth, canonical_id) do
@@ -1361,7 +1361,11 @@ defmodule SymphonyElixir.Chat.Store do
   defp canonical_alias(state, %{"alias_of" => id} = chat, seen) when is_binary(id) do
     target = state.chats[id]
 
-    if (chat["id"] not in seen and target) && valid_pr_alias?(chat, target), do: canonical_alias(state, target, [chat["id"] | seen]), else: {:error, :chat_binding_conflict}
+    if chat["id"] not in seen and not is_nil(target) and valid_pr_alias?(chat, target) do
+      canonical_alias(state, target, [chat["id"] | seen])
+    else
+      {:error, :chat_binding_conflict}
+    end
   end
 
   defp canonical_alias(_state, chat, _seen), do: {:ok, chat}
