@@ -11,11 +11,11 @@ defmodule SymphonyElixirWeb.GoogleOIDC do
     "jwks_uri" => "https://www.googleapis.com/oauth2/v3/certs"
   }
 
-  @spec start(String.t()) :: {:ok, String.t(), String.t()} | {:error, atom()}
-  def start(return_to) do
+  @spec start(String.t(), :interactive | :continuation) :: {:ok, String.t(), String.t()} | {:error, atom()}
+  def start(return_to, mode \\ :interactive) when mode in [:interactive, :continuation] do
     with {:ok, config} <- BrowserIdentity.settings(),
-         {:ok, response} <- OIDC.authorize_url(strategy(config)),
-         {:ok, id} <- BrowserSessions.issue(:flow, %{params: response.session_params, fingerprint: config.fingerprint, scope: Orchestrator.tracker_fingerprint(), return_to: return_to}) do
+         {:ok, response} <- OIDC.authorize_url(strategy(config, mode)),
+         {:ok, id} <- BrowserSessions.issue(:flow, %{params: response.session_params, mode: mode, fingerprint: config.fingerprint, scope: Orchestrator.tracker_fingerprint(), return_to: return_to}) do
       {:ok, id, response.url}
     else
       _ -> {:error, :sign_in_failed}
@@ -33,7 +33,7 @@ defmodule SymphonyElixirWeb.GoogleOIDC do
   defp complete_claimed(flow_id, flow, params) do
     with {:ok, config} <- BrowserIdentity.settings(),
          true <- flow.fingerprint == config.fingerprint and flow.scope == Orchestrator.tracker_fingerprint(),
-         true <- valid_params?(params),
+         :ok <- callback_params(flow, params),
          options = Keyword.put(strategy(config), :session_params, flow.params),
          {:ok, %{user: claims}} <- OIDC.callback(options, params, __MODULE__),
          true <- BrowserIdentity.admit(claims, config),
@@ -41,6 +41,7 @@ defmodule SymphonyElixirWeb.GoogleOIDC do
          {:ok, id} <- BrowserSessions.complete_flow(flow_id, %{identity: identity, fingerprint: config.fingerprint, scope: flow.scope}) do
       {:ok, %{"provider" => "google", "id" => id}, flow.return_to}
     else
+      {:error, :interaction_required} -> fail_flow(flow_id, :interaction_required)
       _ -> fail_flow(flow_id)
     end
   rescue
@@ -48,10 +49,18 @@ defmodule SymphonyElixirWeb.GoogleOIDC do
     _ -> fail_flow(flow_id)
   end
 
-  defp fail_flow(flow_id) do
+  defp fail_flow(flow_id, reason \\ :sign_in_failed) do
     BrowserSessions.revoke(flow_id)
-    {:error, :sign_in_failed}
+    {:error, reason}
   end
+
+  defp callback_params(%{mode: :continuation, params: %{state: state}}, %{"state" => state, "error" => error} = params)
+       when is_binary(state) and byte_size(state) in 1..1_000 and
+              not is_map_key(params, "code") and
+              error in ["login_required", "interaction_required", "account_selection_required", "consent_required"],
+       do: {:error, :interaction_required}
+
+  defp callback_params(_flow, params), do: if(valid_params?(params), do: :ok, else: {:error, :sign_in_failed})
 
   @doc false
   @spec fetch_user(keyword(), map()) :: {:ok, map()} | {:error, atom()}
@@ -82,7 +91,7 @@ defmodule SymphonyElixirWeb.GoogleOIDC do
 
   defp valid_params?(_params), do: false
 
-  defp strategy(config) do
+  defp strategy(config, mode \\ :interactive) do
     [
       client_id: config.client_id,
       client_secret: config.client_secret,
@@ -90,7 +99,7 @@ defmodule SymphonyElixirWeb.GoogleOIDC do
       redirect_uri: config.origin <> "/auth/google/callback",
       openid_configuration: @metadata,
       client_authentication_method: "client_secret_post",
-      authorization_params: [scope: "email", prompt: "select_account"],
+      authorization_params: authorization_params(config, mode),
       code_verifier: true,
       nonce: Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false),
       id_token_signed_response_alg: "RS256",
@@ -98,6 +107,17 @@ defmodule SymphonyElixirWeb.GoogleOIDC do
       http_adapter: {Assent.HTTPAdapter.Req, http_options()}
     ]
   end
+
+  defp authorization_params(config, :continuation) do
+    params = [scope: "email", prompt: "none"]
+
+    case config.emails do
+      [email] -> Keyword.put(params, :login_hint, email)
+      _ -> params
+    end
+  end
+
+  defp authorization_params(_config, :interactive), do: [scope: "email", prompt: "select_account"]
 
   defp http_options do
     # Test transport replaces only I/O; Assent signature/claim checks still execute.

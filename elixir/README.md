@@ -542,6 +542,14 @@ validate state, nonce, PKCE and Google-signed identity claims. Browser cookies c
 an opaque reference to a bounded in-memory grant; no Google access or refresh token
 is retained in the cookie. Sign-out and restart invalidate browser sessions without
 erasing conversations. Identity configuration changes invalidate existing grants.
+Switching projects reuses a valid destination session immediately. Otherwise the
+destination tries Google single sign-on once, without an account picker, using its
+own CSRF-protected form and OAuth callback. Google may still require account selection
+or consent; that returns to the ordinary sign-in form. Explicit sign-out disables
+automatic continuation for that project's browser session until manual sign-in.
+Projects keep separate cookies and authorization policies; no credentials or grants
+are transferred between controllers. A restart still invalidates local grants;
+switching through the project picker can establish a new one using Google sign-in.
 Restart after provider, public-origin or private service-environment changes, then
 open the configured address; the socket origin policy is loaded at startup.
 Token-based local API/CLI clients

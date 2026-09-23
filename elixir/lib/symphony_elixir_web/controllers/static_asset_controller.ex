@@ -14,6 +14,9 @@ defmodule SymphonyElixirWeb.StaticAssetController do
   @spec dashboard_js(Conn.t(), map()) :: Conn.t()
   def dashboard_js(conn, _params), do: serve(conn, "/dashboard.js")
 
+  @spec browser_login_js(Conn.t(), map()) :: Conn.t()
+  def browser_login_js(conn, _params), do: serve(conn, "/browser-login.js")
+
   @spec favicon(Conn.t(), map()) :: Conn.t()
   def favicon(conn, _params), do: serve(conn, "/favicon.png")
 

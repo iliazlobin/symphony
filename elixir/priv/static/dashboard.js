@@ -85,7 +85,7 @@
       this.projectChoices = () => {
         const local = this.options("project");
         const remote = parse(this.el.dataset.projectLinks, []).filter(link => !local.some(([id]) => id === link.id));
-        return [["", "All projects"], ...local, ...remote.map(link => [link.id, link.label, link.url])];
+        return [["", "All projects"], ...local, ...remote.map(link => [link.id, link.label, link.url.replace(/\/$/, "") + "/login?continue=1"])];
       };
       this.metadataWithinLimits = values => values.length <= 20 && values.every(value => byteLength(value) <= 240) && byteLength(JSON.stringify(values)) <= 2000;
       this.filterValues = (key, values) => {

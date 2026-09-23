@@ -44,6 +44,8 @@ defmodule SymphonyElixir.GoogleOIDCTest do
     assert query["response_type"] == "code"
     assert query["scope"] == "openid email"
     assert query["code_challenge_method"] == "S256"
+    assert query["prompt"] == "select_account"
+    refute Map.has_key?(query, "login_hint")
     refute Map.has_key?(query, "access_type")
     assert byte_size(query["state"]) >= 32
     assert byte_size(query["nonce"]) >= 32
@@ -96,6 +98,103 @@ defmodule SymphonyElixir.GoogleOIDCTest do
     assert {:error, :sign_in_failed} = Task.await(callback)
     assert {:error, :expired} = BrowserSessions.session(flow)
     assert {:error, :sign_in_failed} = GoogleOIDC.complete(flow, callback(query))
+  end
+
+  test "continuation requests existing Google sign-in and still validates a signed response", ctx do
+    {flow, query} = start(:continuation)
+    assert query["prompt"] == "none"
+    assert query["login_hint"] == @email
+    assert query["redirect_uri"] == @origin <> "/auth/google/callback"
+    assert query["code_challenge_method"] == "S256"
+    provider(ctx.key, query)
+
+    assert {:ok, %{"provider" => "google", "id" => ^flow}, "/chat"} = GoogleOIDC.complete(flow, callback(query))
+    assert {:ok, session} = BrowserSessions.session(flow)
+    assert session.identity["email"] == @email
+    assert session.scope == SymphonyElixir.Orchestrator.tracker_fingerprint()
+    assert {:ok, config} = BrowserIdentity.settings()
+    assert session.fingerprint == config.fingerprint
+    assert_received :token_exchange
+    assert_received :jwks_request
+    assert {:error, :sign_in_failed} = GoogleOIDC.complete(flow, callback(query))
+  end
+
+  test "continuation does not choose a login hint when several identities are allowed", ctx do
+    configure(put_in(ctx.config, ["browser_auth", "allowed_emails"], [@email, "another@gmail.com"]))
+    {_flow, query} = start(:continuation)
+    assert query["prompt"] == "none"
+    refute Map.has_key?(query, "login_hint")
+  end
+
+  test "only correlated continuation interaction errors allow an interactive retry and burn the flow", ctx do
+    for reason <- ~w(login_required interaction_required account_selection_required consent_required) do
+      {flow, query} = start(:continuation)
+      provider(ctx.key, query)
+      parameters = %{"state" => query["state"], "error" => reason, "error_description" => "fixture-google-secret"}
+
+      log = capture_log(fn -> assert {:error, :interaction_required} = GoogleOIDC.complete(flow, parameters) end)
+      refute log =~ "fixture-google-secret"
+      assert {:error, :expired} = BrowserSessions.take_flow(flow)
+      assert {:error, :expired} = BrowserSessions.session(flow)
+      assert {:error, :sign_in_failed} = GoogleOIDC.complete(flow, parameters)
+      refute_received :token_exchange
+      refute_received :jwks_request
+    end
+  end
+
+  test "interactive flows and uncorrelated or malformed provider errors fail without a retry signal", ctx do
+    {interactive, query} = start()
+    provider(ctx.key, query)
+    assert {:error, :sign_in_failed} = GoogleOIDC.complete(interactive, %{"state" => query["state"], "error" => "login_required"})
+
+    invalid = [
+      fn query -> %{"state" => query["state"], "error" => "access_denied"} end,
+      fn query -> %{"state" => query["state"], "error" => "server_error"} end,
+      fn query -> %{"state" => query["state"], "error" => ["login_required"]} end,
+      fn query -> %{"state" => query["state"], "error" => "login_required", "code" => "unexpected-code"} end,
+      fn _query -> %{"error" => "login_required"} end,
+      fn _query -> %{"state" => [], "error" => "login_required"} end,
+      fn _query -> %{"state" => "different", "error" => "login_required"} end,
+      fn _query -> %{"state" => String.duplicate("x", 1_001), "error" => "login_required"} end
+    ]
+
+    for parameters <- invalid do
+      {flow, query} = start(:continuation)
+      provider(ctx.key, query)
+      assert {:error, :sign_in_failed} = GoogleOIDC.complete(flow, parameters.(query))
+      assert {:error, :expired} = BrowserSessions.take_flow(flow)
+      assert {:error, :expired} = BrowserSessions.session(flow)
+      refute_received :token_exchange
+    end
+  end
+
+  test "continuation errors from revoked or configuration-stale flows cannot request a retry", ctx do
+    changes = [
+      put_in(ctx.config, ["browser_auth", "allowed_emails"], ["another@gmail.com"]),
+      put_in(ctx.config, ["tracker", "active_states"], ["changed"])
+    ]
+
+    for changed <- changes do
+      configure(ctx.config)
+      {flow, query} = start(:continuation)
+      provider(ctx.key, query)
+      configure(changed)
+      assert {:error, :sign_in_failed} = GoogleOIDC.complete(flow, %{"state" => query["state"], "error" => "login_required"})
+      assert {:error, :expired} = BrowserSessions.take_flow(flow)
+      refute_received :token_exchange
+    end
+
+    configure(ctx.config)
+    {flow, query} = start(:continuation)
+    assert :ok = BrowserSessions.revoke(flow)
+    assert {:error, :sign_in_failed} = GoogleOIDC.complete(flow, %{"state" => query["state"], "error" => "login_required"})
+  end
+
+  test "continuation never bypasses the destination's allowed identity policy", ctx do
+    {flow, query} = start(:continuation)
+    provider(ctx.key, query, %{"email" => "unallowed@gmail.com"})
+    assert {:error, :sign_in_failed} = GoogleOIDC.complete(flow, callback(query))
+    assert {:error, :expired} = BrowserSessions.session(flow)
   end
 
   test "each attempt generates independent state nonce and PKCE challenges" do
@@ -264,8 +363,9 @@ defmodule SymphonyElixir.GoogleOIDCTest do
     assert {:error, :auth_unconfigured} = BrowserIdentity.settings()
   end
 
-  defp start do
-    assert {:ok, flow, url} = GoogleOIDC.start("/chat")
+  defp start(mode \\ nil) do
+    result = if mode, do: GoogleOIDC.start("/chat", mode), else: GoogleOIDC.start("/chat")
+    assert {:ok, flow, url} = result
     uri = URI.parse(url)
     assert uri.scheme == "https"
     assert uri.host == "accounts.google.com"
