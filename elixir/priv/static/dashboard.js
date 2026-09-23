@@ -421,6 +421,7 @@
         const key = this.tabKey();
         if (key === this.loadedTabKey) return;
         this.loadedTabKey = key;
+        if (this.el.dataset.embedded === "true") return;
         try {
           let tab = key && sessionStorage.getItem(key);
           const viewKey = this.viewKeyFor(this.el.dataset.chatId);
@@ -485,17 +486,6 @@
         const input = this.el.querySelector("#chat-message-input");
         if (input) { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 190) + "px"; }
       };
-      this.revealWork = () => {
-        const selected = this.pendingWork;
-        if (!selected) return;
-        if (selected.chat !== this.el.dataset.chatId) { this.pendingWork = null; return; }
-        if (this.el.dataset.sessionTab !== "outputs") return;
-        const article = document.getElementById("pr-work-" + selected.id);
-        if (!article || !this.el.contains(article) || article.dataset.selected !== "true") return;
-        this.pendingWork = null;
-        article.scrollIntoView({block: "nearest"});
-        this.el.querySelector("#session-outputs-tab")?.focus({preventScroll: true});
-      };
       // Scroll does not bubble; capture the retained conversation scroll container.
       this.el.addEventListener("scroll", event => {
         if (event.target.id === "session-chat-content") this.atBottom = event.target.scrollHeight - event.target.scrollTop - event.target.clientHeight < 90;
@@ -523,12 +513,6 @@
       on("click", event => {
         const tab = event.target.closest('[role="tab"][phx-click="session-tab"]');
         if (tab) this.saveTab(tab.getAttribute("phx-value-tab"));
-        const work = event.target.closest('[phx-click="inspect-pr-work"]');
-        if (work) {
-          this.saveTab("outputs");
-          this.pendingWork = {chat: this.el.dataset.chatId, id: work.getAttribute("phx-value-id")};
-          this.el.querySelector("#session-outputs-tab")?.focus({preventScroll: true});
-        }
         const thread = event.target.closest('button[phx-click="open-chat"]');
         if (thread && Date.now() < (this.ignoreThreadClickUntil || 0)) { event.preventDefault(); event.stopPropagation(); return; }
         if (thread) {
@@ -560,7 +544,7 @@
       this.loadTab();
       this.localizeTimes();
       this.resizeComposer();
-      requestAnimationFrame(() => { this.scroll(); this.revealWork(); });
+      requestAnimationFrame(() => this.scroll());
     },
     reconnected() {
       // A channel rejoin remounts server state but retains this hook instance.
@@ -615,6 +599,7 @@
       this.abort = new AbortController();
       this.menuSize = observeChatDropdown(this.el, ".issue-pr-list", this.abort.signal);
       this.close = (focus = false) => { this.el.open = false; if (focus) this.el.querySelector('summary')?.focus(); };
+      this.el.addEventListener('toggle', () => { if (this.el.open) this.el.querySelector('input[type="search"]')?.focus({preventScroll: true}); }, {signal: this.abort.signal});
       this.el.addEventListener('click', event => {
         if (event.target.closest('button, a')) this.close();
       }, {signal: this.abort.signal});
