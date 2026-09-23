@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.Chat.ViewContext do
   @moduledoc "Validates a per-message board snapshot. Browser hints never grant authority or establish current task state."
 
+  alias SymphonyElixir.TaskWorkType
+
   @keys ~w(version project_id filters selected_task_id visible_task_ids viewport_task_ids hidden_columns captured_at board_checked_at truncated)
   @columns ~w(backlog ready running review done)
   @statuses @columns ++ ["attention"]
@@ -52,13 +54,13 @@ defmodule SymphonyElixir.Chat.ViewContext do
   end
 
   defp filters(value, project) when is_map(value) do
-    defaults = %{"project" => [], "status" => [], "priority" => [], "q" => "", "sort" => "updated"}
+    defaults = %{"project" => [], "status" => [], "priority" => [], "work_type" => [], "q" => "", "sort" => "updated"}
     normalized = Map.merge(defaults, value)
 
     valid =
       Enum.all?(Map.keys(value), &Map.has_key?(defaults, &1)) and
         selection?(normalized["project"], [project]) and selection?(normalized["status"], @statuses) and
-        selection?(normalized["priority"], @priorities) and text?(normalized["q"], 2_000) and
+        selection?(normalized["priority"], @priorities) and selection?(normalized["work_type"], TaskWorkType.values() ++ ["invalid"]) and text?(normalized["q"], 2_000) and
         normalized["sort"] in ~w(manual updated priority title oldest)
 
     if valid, do: {:ok, normalized}, else: {:error, :invalid_view_context}

@@ -515,7 +515,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     {:ok, view, _html} = live_isolated(local_conn(), PanelHost, session: session)
     view = with_target(view, "#chat-app")
     render_submit(view, "send-message", %{"message" => "Use this view"})
-    expected = snapshot
+    expected = put_in(snapshot, ["filters", "work_type"], [])
     assert_receive {:view_seen, ^expected, %{"context_status" => "available", "snapshot" => ^expected, "current_tasks" => [%{"issue_id" => "2"}]}}
     chat = wait_chat(ctx, &(&1["status"] == "idle"))
     user = Enum.find(chat["messages"], &(&1["role"] == "user"))

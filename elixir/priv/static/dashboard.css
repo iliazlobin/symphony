@@ -205,6 +205,8 @@ input, select {
 .priority[data-priority=P1] { color: var(--warn); background: var(--warn-bg); }
 .card-title { display: flex; align-items: start; gap: 7px; width: 100%; text-align: left; border: 0; padding: 0; background: transparent; font-size: 13px; font-weight: 500; line-height: 1.45; overflow-wrap: anywhere; }
 .card-title .lane-dot { margin-top: 3px; }
+.work-type-badge { display: inline-flex; max-width: 100%; margin-top: 6px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 4px; font-size: 11px; color: var(--muted); }
+.work-type-badge[data-work-type=invalid] { color: var(--fg); border-style: dashed; }
 .card-project { font-size: 11px; color: var(--muted); margin-top: 8px; }
 .card-evidence, .task-evidence { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; margin-top: 8px; font-size: 11px; color: var(--muted); }
 .evidence-badge { display: inline-flex; max-width: 100%; padding: 2px 5px; border-radius: 4px; background: var(--soft); font-size: 11px; color: var(--muted); }
@@ -569,7 +571,7 @@ summary { cursor: pointer; color: var(--accent); }
 .intake-form, .intake-fields { display: grid; gap: 16px; }
 .intake-form { margin: 18px 0; }
 .intake-form label { display: grid; gap: 7px; font-size: 13px; font-weight: 600; }
-.intake-form input, .intake-form textarea { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--fg); padding: 10px 12px; font: inherit; font-weight: 400; }
+.intake-form input, .intake-form textarea, .intake-form select { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--fg); padding: 10px 12px; font: inherit; font-weight: 400; }
 .intake-form textarea { resize: vertical; line-height: 1.5; }
 .intake-form small { color: var(--muted); font-size: 12px; font-weight: 400; }
 .intake-preview-body { max-height: 340px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin: 12px 0; }

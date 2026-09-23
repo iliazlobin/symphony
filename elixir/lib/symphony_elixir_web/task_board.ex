@@ -12,7 +12,7 @@ defmodule SymphonyElixirWeb.TaskBoard do
   `completion_evidence`, `tracker_state`, `hold` and `attention`.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, Tracker}
+  alias SymphonyElixir.{Config, Orchestrator, TaskWorkType, Tracker}
   alias SymphonyElixir.GitHub.{Admission, Board, Client}
   alias SymphonyElixir.Tracker.Issue
   alias SymphonyElixirWeb.Presenter
@@ -247,6 +247,7 @@ defmodule SymphonyElixirWeb.TaskBoard do
       blocker_reason: blocker_reason(runtime, hold, attention),
       execution_status: execution_status(runtime, hold, ledger),
       priority: issue.priority,
+      work_type: TaskWorkType.from_labels(issue.labels),
       created_at: iso8601(issue.created_at),
       updated_at: iso8601(issue.updated_at),
       description: issue.description,

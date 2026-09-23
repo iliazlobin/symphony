@@ -331,7 +331,7 @@ The observability UI now runs on a minimal Phoenix stack:
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
 Open **Chat** at the right of the board header to show the conversation panel.
-Use **New task** to enter a title, outcome, scope, acceptance checks and dependencies.
+Use **New task** to enter a title, work type, outcome, scope, acceptance checks and dependencies.
 **Preview task** saves the exact proposed GitHub issue; **Create task** confirms it.
 Created tasks enter the backlog without execution routing labels. Recent submissions
 retain receipts and unfinished actions across reconnects. If the result is uncertain,
@@ -607,13 +607,16 @@ you.
 ## Web task board
 
 The optional HTTP service serves a LiveView Kanban board with searchable project,
-status and priority filters, per-lane sorting, and browser-local manual order.
+status, priority and work-type filters, per-lane sorting, and browser-local manual order.
 The compact board follows the Linear board shown in OpenAI's Symphony demo while
 retaining this fork's GitHub workflow. Project selection stays in the top bar;
-**Filter** opens status and priority selectors. **Display** controls sorting, card
+**Filter** opens status, priority and work-type selectors. **Display** controls sorting, card
 detail, light/dark appearance and visible columns. Hidden columns remain available
 in the restore rail; selecting a status reveals its column. Display preferences are
 saved only in this browser and do not change scheduling or issue state.
+Work type is derived from GitHub labels and appears on cards and task details.
+The [work-type design](../ARCHITECTURE.md#task-work-types) describes the data model
+and its separation from execution permissions.
 Card details and Settings open as native dialogs with Close and Escape. Settings has
 three sections: **Execution** for native controls, concurrency and read-only budgets;
 **AI & chat** for context behavior and read-only model presets;

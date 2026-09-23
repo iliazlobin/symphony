@@ -11,6 +11,7 @@ defmodule SymphonyElixir.Chat.ViewContextTest do
     assert snapshot["selected_task_id"] == nil
     assert snapshot["visible_task_ids"] == []
     assert snapshot["filters"]["q"] == ""
+    assert snapshot["filters"]["work_type"] == []
     assert ViewContext.task_ids(snapshot) == []
     assert ViewContext.prompt(nil) =~ ~s("context_status":"unavailable")
     assert ViewContext.prompt(snapshot) =~ ~s("context_status":"available")
@@ -21,7 +22,7 @@ defmodule SymphonyElixir.Chat.ViewContextTest do
     snapshot = %{
       "version" => 1,
       "project_id" => @project,
-      "filters" => %{"project" => [@project], "status" => ["attention"], "priority" => ["P2", "—"], "q" => "admin", "sort" => "manual"},
+      "filters" => %{"project" => [@project], "status" => ["attention"], "priority" => ["P2", "—"], "work_type" => ["infrastructure", "invalid"], "q" => "admin", "sort" => "manual"},
       "visible_task_ids" => [@id],
       "viewport_task_ids" => [@id],
       "selected_task_id" => @project <> ":2",
@@ -69,6 +70,9 @@ defmodule SymphonyElixir.Chat.ViewContextTest do
           %{"project" => ["github:other/repo"]},
           %{"status" => ["merged"]},
           %{"priority" => ["P0"]},
+          %{"work_type" => ["future"]},
+          %{"work_type" => ["application", "application"]},
+          %{"work_type" => "deployment"},
           %{"q" => <<255>>},
           %{"q" => <<0>>},
           %{"q" => String.duplicate("x", 2_001)},

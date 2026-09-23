@@ -416,9 +416,9 @@ defmodule SymphonyElixir.ChatLiveTest do
     widgets = [
       %{
         "type" => "tasks",
-        "tasks" => [%{"id" => "alpha:7", "identifier" => "GH-7", "title" => "Pending task", "stage" => "ready"}],
-        "url" => "/?project=alpha&status=ready",
-        "filters" => %{"status" => "ready"}
+        "tasks" => [%{"id" => "alpha:7", "identifier" => "GH-7", "title" => "Pending task", "stage" => "ready", "work_type" => "deployment"}],
+        "url" => "/?project=alpha&status=ready&work_type=deployment",
+        "filters" => %{"status" => "ready", "work_type" => "deployment"}
       },
       %{"type" => "status", "summary" => "Two tasks", "counts" => %{"ready" => 2}},
       %{"type" => "proposal", "id" => "p1", "title" => "Create a task", "action" => "create_task", "details" => %{"title" => "Review setup"}, "status" => "pending"},
@@ -428,8 +428,9 @@ defmodule SymphonyElixir.ChatLiveTest do
     {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
     FixtureStore.put(Map.update!(chat, "messages", &Enum.map(&1, fn message -> Map.put(message, "widgets", widgets) end)))
     {view, _} = chat_view(ctx, "/chat?project=alpha&chat=a1")
-    assert has_element?(view, ".chat-widget-tasks a[href='/?project=alpha&status=ready']")
-    assert has_element?(view, ".widget-task a[href='/?project=alpha&status=ready&task=alpha%3A7']")
+    assert has_element?(view, ".chat-widget-tasks a[href='/?project=alpha&status=ready&work_type=deployment']")
+    assert has_element?(view, ".widget-task a[href='/?project=alpha&status=ready&task=alpha%3A7&work_type=deployment']")
+    assert has_element?(view, ".widget-task .work-type-badge[data-work-type=deployment]", "Deployment")
     assert has_element?(view, ".status-counts dd", "2")
     assert has_element?(view, "button[phx-value-decision=confirm]")
     render_click(view, "decide", %{"id" => "p1", "decision" => "confirm"})
@@ -529,6 +530,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert has_element?(view, ".embedded-chat")
     refute has_element?(view, "#chat-project")
     assert has_element?(view, "#session-context-content", "2 visible tasks")
+    assert has_element?(view, "#session-context-content", "Operations")
     render_change(view, "draft", %{"message" => "Help with these cards"})
     render_click(view, "back-to-chats")
     render_change(view, "search-threads", %{"query" => "Alpha"})
@@ -672,7 +674,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     %{
       "version" => 1,
       "project_id" => "alpha",
-      "filters" => %{"project" => ["alpha"], "status" => ["ready"], "priority" => [], "q" => "", "sort" => "priority"},
+      "filters" => %{"project" => ["alpha"], "status" => ["ready"], "priority" => [], "work_type" => ["operations"], "q" => "", "sort" => "priority"},
       "selected_task_id" => "alpha:7",
       "visible_task_ids" => ["alpha:7", "alpha:8"],
       "viewport_task_ids" => ["alpha:7"],

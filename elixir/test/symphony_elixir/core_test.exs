@@ -1360,6 +1360,16 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "updated=2026-02-26T18:07:03Z"
   end
 
+  test "prompt work type follows labels without changing the source issue" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "{{ issue.work_type }}")
+
+    issue = %Issue{identifier: "GH-1", labels: ["work:infrastructure", "symphony:ready"]}
+    assert PromptBuilder.build_prompt(issue) == "infrastructure"
+    assert PromptBuilder.build_prompt(%{issue | labels: []}) == "unclassified"
+    assert PromptBuilder.build_prompt(%{issue | labels: ["work:operations", "work:deployment"]}) == "invalid"
+    assert issue.labels == ["work:infrastructure", "symphony:ready"]
+  end
+
   test "prompt builder normalizes nested date-like values, maps, and structs in issue fields" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Ticket {{ issue.identifier }}")
 

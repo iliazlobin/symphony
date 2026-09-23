@@ -2466,6 +2466,13 @@ they do not constitute admission, completion or scheduler priority. Missing sour
 data preserves last-known tasks with explicit uncertainty. Tracker-terminal issues
 are not evidence of merge, acceptance or deployment.
 
+The board and management tools derive `work_type` from exactly one `work:` label:
+`application`, `infrastructure`, `deployment` or `operations`. No label yields
+`unclassified`; unknown or conflicting values yield `invalid` (Needs classification).
+Filters and view context carry this additive field. Workflow templates may read
+`issue.work_type`. Classification MUST NOT change routing, permissions or execution
+policy, and requires no ledger migration. See [task work types](ARCHITECTURE.md#task-work-types).
+
 Optional GitHub enrichment reads explicit issue/PR relationships and reports draft
 state, GitHub review decisions and checks tied to the current PR head. Enrichment
 failure MUST NOT remove otherwise valid issue data or imply successful checks.
@@ -2527,8 +2534,14 @@ Write tools produce proposals; only a subsequent authenticated browser decision
 can execute them. Proposals retain exact arguments, scope, expected control revision
 and observed task update time. Supported writes are create/edit issue, additive
 feedback, configured queue-label changes, and existing native controls. Creation
-requires configured intake labels and creates an unlabeled backlog issue. Edit and
-queue/unqueue require a cancelled, inactive task and serialize with native dispatch.
+requires configured intake labels and creates a backlog issue without routing labels.
+An optional `work_type` on create/edit selects one supported work label;
+`unclassified` clears that label family. Unrelated labels MUST be retained. A work
+label MUST NOT also be a required routing label for classification or queue/unqueue writes. Missing
+repository label definitions MUST produce an explicit error rather than silently
+losing the selected type. Edit/unqueue require a cancelled, inactive task; queue also
+permits an open, unqueued, idle backlog task without a hold. These writes serialize
+with native dispatch.
 External GitHub writers remain outside this local serialization boundary.
 
 The store MUST persist execution intent before dispatch. Unknown outcomes MUST

@@ -662,9 +662,11 @@ defmodule SymphonyElixir.Chat.Store do
   end
 
   defp valid_submission(id, %{"action" => "create_task", "title" => title, "body" => body} = args) do
-    if Persistence.valid_id?(id) and map_size(args) == 3 and valid_text?(title, 200) and valid_text?(body, 16_000),
-      do: valid_intent(args),
-      else: {:error, :invalid_submission}
+    if Persistence.valid_id?(id) and Enum.all?(Map.keys(args), &(&1 in ~w(action title body work_type))) and
+         (not Map.has_key?(args, "work_type") or args["work_type"] in SymphonyElixir.TaskWorkType.values()) and
+         valid_text?(title, 200) and valid_text?(body, 16_000),
+       do: valid_intent(args),
+       else: {:error, :invalid_submission}
   end
 
   defp valid_submission(id, %{"action" => "queue_task", "task_id" => task_id} = args) do

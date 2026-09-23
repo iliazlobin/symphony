@@ -212,6 +212,10 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#board-toolbar #filter-project")
     assert has_element?(view, "#filter-status[role=combobox]")
     assert has_element?(view, "#filter-priority[role=combobox]")
+    assert has_element?(view, "#filter-work_type[role=combobox][aria-label='Work type filter']")
+    assert has_element?(view, ".task-card[data-work-type=unclassified] .work-type-badge", "Unclassified")
+    assert has_element?(view, ".task-card[data-work-type=application] .work-type-badge", "Application")
+    assert has_element?(view, ".task-card[data-work-type=invalid] .work-type-badge", "Needs classification")
     assert has_element?(view, "select[aria-label='Sort cards']")
     assert html =~ "Manual order is a browser preference"
     assert html =~ "Candidate needs review"
@@ -234,6 +238,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "dialog#board-dialog h2", "Ready fixture")
     assert has_element?(view, "#task-board-app[data-selected-task='github:example/fixture:2']")
     assert has_element?(view, "#board-dialog", "Acceptance for fixture 2")
+    assert has_element?(view, "#board-dialog .work-type-badge[data-work-type=application]", "Application")
     assert has_element?(view, "#lane-running [data-task-id='github:example/fixture:3']")
     render_click(view, "close-dialog")
     refute has_element?(view, "#board-dialog")
@@ -296,11 +301,13 @@ defmodule SymphonyElixir.DashboardLiveTest do
       "project_id" => "github:example/fixture",
       "visible_task_ids" => ["github:example/fixture:2"],
       "viewport_task_ids" => [],
+      "filters" => %{"work_type" => ["application"]},
       "selected_task_id" => "github:example/fixture:1"
     }
 
     render_click(view, "board-view-context", context)
     assert :sys.get_state(view.pid).socket.assigns.view_context["selected_task_id"] == "github:example/fixture:2"
+    assert :sys.get_state(view.pid).socket.assigns.view_context["filters"]["work_type"] == ["application"]
 
     render_click(view, "board-view-context", Map.put(context, "visible_task_ids", ["github:example/fixture:unknown"]))
     assert is_nil(:sys.get_state(view.pid).socket.assigns.view_context)
@@ -312,10 +319,11 @@ defmodule SymphonyElixir.DashboardLiveTest do
   test "chat references retain the dock and reject external or other project destinations" do
     {view, _html} = board_view()
     render_click(view, "open-chat")
-    send(view.pid, {:chat_panel, :board_link, "/?project=github%3Aexample%2Ffixture&status=review&task=github%3Aexample%2Ffixture%3A4"})
+    send(view.pid, {:chat_panel, :board_link, "/?project=github%3Aexample%2Ffixture&status=review&work_type=invalid&task=github%3Aexample%2Ffixture%3A4"})
     assert render(view) =~ "Review fixture"
     assert has_element?(view, "#management-chat-dock")
     assert has_element?(view, "#board-dialog[data-nonmodal=true]")
+    assert :sys.get_state(view.pid).socket.assigns.url_filters["work_type"] == "invalid"
     send(view.pid, {:chat_panel, :board_link, "https://example.com/?project=github%3Aexample%2Ffixture"})
     assert render(view) =~ "does not belong to this project board"
     send(view.pid, {:chat_panel, :board_link, "/?project=github%3Aexample%2Fother"})
@@ -403,9 +411,14 @@ defmodule SymphonyElixir.DashboardLiveTest do
     render_click(view, "new-task")
     assert has_element?(view, "#board-dialog h2", "New task")
     assert has_element?(view, "#task-intake-form input[name='task[dependencies]'][value=none]")
+    assert has_element?(view, "#task-intake-form select[name='task[work_type]'] option[value=unclassified][selected]")
+    for value <- ~w(application infrastructure deployment operations), do: assert(has_element?(view, "#task-intake-form option[value='#{value}']"))
+    refute has_element?(view, "#task-intake-form option[value=invalid]")
     params = intake_fields()
     view |> form("#task-intake-form", task: params) |> render_submit()
     assert_receive {:intake_prepared, id, args}
+    assert args["work_type"] == "infrastructure"
+    assert has_element?(view, "#task-action-preview", "Work type: Infrastructure")
     assert Regex.match?(~r/\A[a-f0-9]{32}\z/, id)
     assert args["action"] == "create_task"
     assert args["title"] == "Bounded fixture task"
@@ -423,6 +436,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     view |> element("#task-action-preview button[phx-click=new-draft]") |> render_click()
     assert has_element?(view, "#task-intake-form input[name='task[title]'][value='']")
     assert has_element?(view, "#task-intake-form input[name='task[dependencies]'][value='none']")
+    assert has_element?(view, "#task-intake-form select[name='task[work_type]'] option[value=unclassified][selected]")
     assert render(view |> element("#task-intake-form textarea[name='task[outcome]']")) =~ "></textarea>"
     assert render(view |> element("#task-intake-form textarea[name='task[scope]']")) =~ "></textarea>"
     assert render(view |> element("#task-intake-form textarea[name='task[acceptance]']")) =~ "></textarea>"
@@ -518,6 +532,17 @@ defmodule SymphonyElixir.DashboardLiveTest do
     view |> form("#task-intake-form", task: Map.put(intake_fields(), "scope", "Depends on: none")) |> render_submit()
     assert render(view) =~ "Use the Dependencies field"
     refute_receive {:intake_prepared, _, _}
+  end
+
+  test "intake rejects unknown or conflicting work types before preparing an action" do
+    view = authorized_board_view()
+    render_click(view, "new-task")
+
+    for value <- ["invalid", "infrastructure,deployment", "unknown"] do
+      view |> with_target("#task-intake-panel") |> render_submit("prepare", %{"task" => Map.put(intake_fields(), "work_type", value)})
+      assert has_element?(view, "#task-intake-panel [role=alert]", "Choose one of the available work types")
+      refute_receive {:intake_prepared, _, _}
+    end
   end
 
   test "uncertain action can only reconcile and is recoverable from recent actions" do
@@ -641,7 +666,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   test "chat references open a task popup with project filters and preserve them on close" do
-    params = %{"project" => "github:example/fixture", "status" => "ready", "q" => "Ready", "sort" => "priority", "task" => "github:example/fixture:2"}
+    params = %{"project" => "github:example/fixture", "status" => "ready", "work_type" => "application", "q" => "Ready", "sort" => "priority", "task" => "github:example/fixture:2"}
     {:ok, view, _} = live(build_conn(), "/?" <> URI.encode_query(params))
     render_async(view)
     assert has_element?(view, "#board-dialog h2", "Ready fixture")
@@ -656,8 +681,17 @@ defmodule SymphonyElixir.DashboardLiveTest do
 
   test "filter updates create reproducible board URLs and discard malformed filter values" do
     {view, _} = board_view()
-    render_click(view, "board-filters", %{"project" => "github:example/fixture", "status" => "running", "q" => "Fixture", "sort" => "updated", "priority" => %{"bad" => "shape"}})
-    assert_patch(view, "/?" <> URI.encode_query(%{"project" => "github:example/fixture", "status" => "running", "q" => "Fixture", "sort" => "updated"}))
+
+    render_click(view, "board-filters", %{
+      "project" => "github:example/fixture",
+      "status" => "running",
+      "work_type" => "infrastructure",
+      "q" => "Fixture",
+      "sort" => "updated",
+      "priority" => %{"bad" => "shape"}
+    })
+
+    assert_patch(view, "/?" <> URI.encode_query(%{"project" => "github:example/fixture", "status" => "running", "work_type" => "infrastructure", "q" => "Fixture", "sort" => "updated"}))
     assert has_element?(view, "#open-chat-button[phx-click=open-chat]")
     assert has_element?(view, "#task-board-app[data-chat-project='github:example/fixture']")
   end
@@ -1034,7 +1068,14 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   defp intake_fields do
-    %{"title" => "Bounded fixture task", "outcome" => "A useful result", "scope" => "One small change", "acceptance" => "- Focused checks pass", "dependencies" => "#12, #34"}
+    %{
+      "title" => "Bounded fixture task",
+      "outcome" => "A useful result",
+      "scope" => "One small change",
+      "acceptance" => "- Focused checks pass",
+      "dependencies" => "#12, #34",
+      "work_type" => "infrastructure"
+    }
   end
 
   defp authorized_board_view do
@@ -1068,9 +1109,9 @@ defmodule SymphonyElixir.DashboardLiveTest do
   defp issues do
     for {id, title, state, labels} <- [
           {"1", "Backlog fixture", "open", []},
-          {"2", "Ready fixture", "open", ["ready"]},
-          {"3", "Running fixture", "open", ["ready"]},
-          {"4", "Review fixture", "open", ["ready"]},
+          {"2", "Ready fixture", "open", ["ready", "work:application"]},
+          {"3", "Running fixture", "open", ["ready", "work:infrastructure"]},
+          {"4", "Review fixture", "open", ["ready", "work:infrastructure", "work:operations"]},
           {"5", "Closed fixture", "closed", []}
         ] do
       %Issue{
