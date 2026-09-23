@@ -812,7 +812,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     view = authorized_board_view()
     render_click(view, "select-task", %{"id" => "github:example/fixture:2"})
     render(view)
-    assert has_element?(view, "#issue-pr-menu summary", "PRs 0")
+    assert has_element?(view, "#issue-pr-menu summary", "Pull requests 0")
     assert has_element?(view, "#issue-pr-menu", "No linked pull requests yet.")
 
     for {status, label, message} <- [
@@ -825,7 +825,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
       refresh(view, ctx.runtime, update_task(board, "2", &%{&1 | github_status: status}))
       assert has_element?(view, "#issue-pr-menu summary", label)
       assert has_element?(view, "#issue-pr-menu [role=status]", message)
-      refute has_element?(view, "#issue-pr-menu summary", "PRs 0")
+      refute has_element?(view, "#issue-pr-menu summary", "Pull requests 0")
       refute has_element?(view, "#issue-pr-menu", "No linked pull requests yet.")
     end
 
@@ -836,7 +836,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#issue-pr-menu [role=status]", "PR details are incomplete.")
     for n <- 1..2, do: assert(has_element?(view, "#issue-pr-menu [data-pr-number='#{n}']", "Known PR #{n}"))
     refresh(view, ctx.runtime, update_task(partial, "2", &%{&1 | github_status: "available"}))
-    assert has_element?(view, "#issue-pr-menu summary", "PRs 2")
+    assert has_element?(view, "#issue-pr-menu summary", "Pull requests 2")
     refute has_element?(view, "#issue-pr-menu [role=status]")
   end
 
