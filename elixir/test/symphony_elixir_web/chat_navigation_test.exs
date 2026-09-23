@@ -133,8 +133,11 @@ defmodule SymphonyElixirWeb.ChatNavigationTest do
   end
 
   test "issue picker retains creation time, priority and PR evidence without inventing missing metadata" do
+    created = ~U[2026-09-22 21:27:05Z]
+    prs = [%{number: 9}, %{number: 10}]
+
     for priority <- [1, 2, 3, 4, nil, 0, 5, "1"] do
-      issue = task("1", "backlog", created_at: ~U[2026-09-22 21:27:05Z], priority: priority, github_status: "available", pull_requests: [%{number: 9}, %{number: 10}])
+      issue = task("1", "backlog", created_at: created, priority: priority, github_status: "available", pull_requests: prs)
       [%{issues: [row]}] = ChatNavigation.issues([issue], %{}, @project)
       assert row.created_at == "2026-09-22T21:27:05Z"
       assert row.priority == if(priority in 1..4, do: priority)

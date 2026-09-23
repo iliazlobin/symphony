@@ -821,13 +821,15 @@ defmodule SymphonyElixir.DashboardLiveTest do
       foreign_id => %{"id" => foreign_id, "issue_id" => "3", "publication" => %{"pr_number" => 7, "pr_url" => "https://github.com/example/fixture/pull/7"}}
     }
 
+    other_pr = %{number: 99, title: "Another issue's PR", state: "merged"}
+
     board =
       ctx.board
       |> update_task("2", fn task ->
         %{task | created_at: "2026-09-22T21:27:05Z", priority: 2, github_status: "available", pull_requests: prs, ledger: %{"pr_work" => works}}
       end)
       |> update_task("3", fn task ->
-        %{task | created_at: nil, priority: nil, github_status: "unavailable", pull_requests: [%{number: 99, title: "Another issue's PR", state: "merged"}]}
+        %{task | created_at: nil, priority: nil, github_status: "unavailable", pull_requests: [other_pr]}
       end)
 
     :ok = GenServer.call(ctx.runtime, {:board, board})
