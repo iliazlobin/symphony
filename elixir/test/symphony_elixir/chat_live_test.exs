@@ -2,6 +2,7 @@ defmodule SymphonyElixir.ChatLiveTest do
   use SymphonyElixir.TestSupport
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
+  alias SymphonyElixir.Chat.Tools
   alias SymphonyElixirWeb.{BrowserAuth, Endpoint}
   @endpoint Endpoint
 
@@ -532,6 +533,59 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert eventually(fn -> render(view) =~ "Unlock chat" end)
     refute has_element?(view, "#agent-progress")
     refute render(view) =~ goal["text"]
+  end
+
+  test "pending delivery badges use aggregate alias counts without double counting the local outbox", ctx do
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+
+    chat =
+      chat
+      |> Map.put("agent_outbox", [
+        %{"id" => "local-report", "kind" => "report", "status" => "pending"},
+        %{"id" => "local-instruction", "kind" => "instruction", "status" => "pending"}
+      ])
+      |> Map.put("agent_delivery_counts", %{"report" => 3, "instruction" => 2})
+
+    FixtureStore.put(chat)
+    view = embedded_view(ctx, view_context())
+    assert has_element?(view, "#agent-progress [data-pending-reports='3']", "3 reports pending")
+    assert has_element?(view, "#agent-progress [data-pending-instructions='2']", "2 instructions pending")
+    refute has_element?(view, "#agent-progress [data-pending-reports='1'], #agent-progress [data-pending-reports='4']")
+    refute has_element?(view, "#agent-progress .agent-goal, #agent-progress details, #agent-progress [hidden]")
+
+    FixtureStore.put(Map.put(chat, "agent_delivery_counts", %{"report" => 1, "instruction" => 0}))
+    assert eventually(fn -> has_element?(view, "#agent-progress [data-pending-reports='1']", "1 report pending") end)
+    refute has_element?(view, "#agent-progress [data-pending-instructions]")
+
+    FixtureStore.put(Map.put(chat, "agent_delivery_counts", %{"report" => 0, "instruction" => 0}))
+    assert eventually(fn -> not has_element?(view, "#agent-progress") end)
+    assert has_element?(view, "#chat-app[data-chat-id=a1]")
+    assert has_element?(view, "#chat-message-input")
+  end
+
+  test "agent recovery notices stay visible without other progress and clear after recovery or authorization loss", ctx do
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    notice = Tools.error_message(:agent_chain_limit)["message"]
+    FixtureStore.put(Map.put(chat, "agent_notice", notice))
+    view = embedded_view(ctx, view_context())
+
+    assert has_element?(view, "#agent-progress > p[role=status]", notice)
+    assert has_element?(view, "#agent-progress", "Send a new message to continue with a fresh goal.")
+    refute has_element?(view, "#agent-progress .agent-goal, #agent-progress [data-pending-reports], #agent-progress [data-pending-instructions]")
+    refute has_element?(view, "#agent-progress details, #agent-progress [hidden], .chat-session-tabs")
+    assert has_element?(view, "#chat-message-input:not([disabled])")
+
+    FixtureStore.put(chat)
+    assert eventually(fn -> not has_element?(view, "#agent-progress") end)
+    refute render(view) =~ notice
+
+    FixtureStore.put(Map.put(chat, "agent_notice", notice))
+    assert eventually(fn -> has_element?(view, "#agent-progress > p[role=status]", notice) end)
+    System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("revoked", 8))
+    send(view.pid, {:chat_updated, "a1"})
+    assert eventually(fn -> render(view) =~ "Unlock chat" end)
+    refute has_element?(view, "#agent-progress")
+    refute render(view) =~ notice
   end
 
   test "message times retain their original instant through streaming and queue dispatch with safe legacy fallbacks", ctx do

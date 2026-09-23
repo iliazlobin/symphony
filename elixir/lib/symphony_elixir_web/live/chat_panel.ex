@@ -630,14 +630,15 @@ defmodule SymphonyElixirWeb.ChatPanel do
     pending = Enum.filter(list(chat["agent_outbox"]), &(&1["status"] == "pending"))
 
     %{
+      notice: text(chat["agent_notice"]),
       goal: if(text(goal["text"]) != "" and goal["status"] in ~w(active achieved blocked), do: goal),
-      reports: Enum.count(pending, &(&1["kind"] == "report")),
-      instructions: Enum.count(pending, &(&1["kind"] == "instruction")),
+      reports: Map.get(map(chat["agent_delivery_counts"]), "report", Enum.count(pending, &(&1["kind"] == "report"))),
+      instructions: Map.get(map(chat["agent_delivery_counts"]), "instruction", Enum.count(pending, &(&1["kind"] == "instruction"))),
       queued_reports: Enum.count(queued(chat), &(&1["origin"] == "agent_message" and &1["agent_kind"] == "report"))
     }
   end
 
-  defp agent_progress_visible?(progress), do: progress.goal || progress.reports + progress.instructions + progress.queued_reports > 0
+  defp agent_progress_visible?(progress), do: progress.notice != "" || progress.goal || progress.reports + progress.instructions + progress.queued_reports > 0
   defp count_label(1, singular, _plural), do: "1 " <> singular
   defp count_label(count, _singular, plural), do: "#{count} " <> plural
 
@@ -977,6 +978,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
           </section>
           <div id="chat-conversation-detail" class="chat-conversation-detail" hidden={@workspace_view != "conversation"}>
           <div :if={agent_progress_visible?(@agent_progress)} id="agent-progress" class="agent-progress" aria-label="Agent goal and reports">
+            <p :if={@agent_progress.notice != ""} class="agent-report-status" role="status">{@agent_progress.notice}</p>
             <div :if={@agent_progress.goal} class="agent-goal"><span class="agent-goal-status" data-goal-status={@agent_progress.goal["status"]}>{String.capitalize(@agent_progress.goal["status"])} goal</span><span class="agent-goal-text" title={@agent_progress.goal["text"]}>{@agent_progress.goal["text"]}</span></div>
             <div :if={@agent_progress.reports + @agent_progress.instructions + @agent_progress.queued_reports > 0} class="agent-report-status" role="status">
               <span :if={@agent_progress.reports > 0} data-pending-reports={@agent_progress.reports} title="Waiting to be delivered to the parent agent">{count_label(@agent_progress.reports, "report pending", "reports pending")}</span>

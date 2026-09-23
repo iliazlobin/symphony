@@ -1303,10 +1303,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
       is_binary(socket.assigns.linked_task)
   end
 
+  defp session_option?(task, session) do
+    Enum.any?(Sessions.options(task), &(&1.id == session or (&1.pr && "pr:#{&1.pr.number}" == session)))
+  end
+
   defp focus_chat_session(socket, task_id, session) do
     task = Enum.find(socket.assigns.board.tasks, &(&1.id == task_id and &1.project == socket.assigns.chat_project))
 
-    if (BrowserAuth.authorized?(socket.assigns.auth) and task) && (is_nil(session) or Enum.any?(Sessions.options(task, [session]), &(&1.id == session))) do
+    if (BrowserAuth.authorized?(socket.assigns.auth) and task) && (is_nil(session) or session_option?(task, session)) do
       socket =
         socket
         |> clear_card_context()
@@ -1361,7 +1365,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     cond do
       task ->
-        session = if Enum.any?(Sessions.options(task, [socket.assigns.chat_session_id]), &(&1.id == socket.assigns.chat_session_id)), do: socket.assigns.chat_session_id
+        session = if session_option?(task, socket.assigns.chat_session_id), do: socket.assigns.chat_session_id
         assign(socket, chat_project: task.project, chat_session_id: session)
 
       id && socket.assigns.loading ->

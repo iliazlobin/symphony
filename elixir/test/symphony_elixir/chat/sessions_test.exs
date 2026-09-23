@@ -54,14 +54,15 @@ defmodule SymphonyElixir.Chat.SessionsTest do
     assert merged["text"] =~ "acceptance remains separate"
   end
 
-  test "discussion history remains read-only and receives updates after a worker publication arrives" do
+  test "discussion URLs resolve to the single verified feature agent after publication" do
     task = %{task() | ledger: %{}, pull_requests: [pr()]}
     assert {:ok, %{"work_id" => nil}} = Sessions.resolve(task, "pr:7", "scope")
     id = String.duplicate("a", 32)
     published = put_in(task(), [:ledger, "pr_work", id, "publication"], %{"pr_number" => 7, "pr_url" => pr().url}) |> Map.put(:pull_requests, [pr()])
-    assert [%{work: %{}}, %{id: "pr:7", work: nil, title: "PR #7 · Discussion"}] = Sessions.options(published, ["pr:7"])
-    assert {:ok, %{"work_id" => nil}} = Sessions.resolve(published, "pr:7", "scope")
-    assert [%{"session_id" => "pr:7"}] = Sessions.reports(published, "scope", "pr:7")
+    assert [%{work: %{id: ^id}}] = Sessions.options(published, ["pr:7"])
+    assert {:ok, %{"work_id" => ^id, "agent_session_id" => session}} = Sessions.resolve(published, "pr:7", "scope")
+    assert session == "work:" <> id
+    assert [%{"session_id" => ^session}, %{"session_id" => ^session}] = Sessions.reports(published, "scope", "pr:7")
     assert length(Sessions.reports(published, "scope")) == 2
   end
 

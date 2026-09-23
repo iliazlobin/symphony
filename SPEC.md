@@ -2569,6 +2569,23 @@ changes selection, never conversation ownership. Client message IDs deduplicate
 reconnect submissions and reject changed text under the same ID. The browser MUST
 not receive model credentials, private native thread IDs or another project's history.
 
+A project MUST have one project agent, each issue one task agent, and each associated
+PR one feature-agent conversation. Names use `<name> project agent`, `<name> task agent`
+and `<name> feature agent`. Agent records and typed `supervises` / `reports_to` edges
+MUST export stable identifiers, parent relationships, goals and activity without leaking
+credentials. Historical aliases MUST NOT create extra graph agents. Reconciliation
+MUST fence losing queues durably before copying history and recover before dispatch.
+
+Scoped coordination tools may read this graph, set their own or a direct child's goal,
+delegate to a direct child and report to their direct parent. Completed task/feature
+replies MUST report upward automatically; parent turns process source-labelled reports
+against their goals. Outgoing intent MUST precede admission and recipient receipts
+MUST prevent duplicate delivery after uncertain writes. Recipient backpressure retains
+pending delivery. Stop and restart MUST NOT silently resume supervision; fresh user
+authorization is required after restart. Each root chain is bounded to 24 deliveries
+and depth six. Model reports and goal status are not task acceptance or external-write
+authority; native scheduling and exact human action confirmation remain unchanged.
+
 Each turn uses Codex 0.154.0 App Server with `gpt-6-astra`, private stdio and a
 dedicated home. The runtime MUST verify effective configuration and model availability,
 register no execution environments on either thread or turn, disable inherited
@@ -2583,7 +2600,7 @@ WORKFLOW.md, PROJECT.md, README.md and AGENTS.md, capped at 128 KiB UTF-8. Sourc
 is untrusted data and never grants authority. Widgets use fixed renderers and safe
 links; model output cannot inject HTML, JavaScript or executable UI descriptions.
 
-Write tools produce proposals; only a subsequent authenticated browser decision
+External write tools produce proposals; only a subsequent authenticated browser decision
 can execute them. Proposals retain exact arguments, scope, expected control revision
 and observed task update time. Supported writes are create/edit issue, additive
 feedback, configured queue-label changes, and existing native controls. Creation

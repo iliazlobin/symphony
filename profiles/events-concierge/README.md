@@ -161,6 +161,16 @@ but the service's durable action store must be configured and healthy. The descr
 can include a `Depends on: #12, #34` declaration; otherwise dependencies default to none.
 The project agent accepts the same three fields and presents its exact creation proposal for confirmation.
 
+The single project selector shows the selected project's name. Chats form three levels:
+`<project name> project agent` coordinates the project, `<task name> task agent`
+coordinates one issue, and `<feature name> feature agent` owns one PR conversation.
+Parents can delegate and revise goals; children report back, and parents process those
+reports in their own chats. Goals and pending reports appear inline. The native scheduler
+still owns coding work, and exact action confirmation and human acceptance remain separate.
+Messages queue while an agent is busy. Stop pauses supervision; after restart, sign in
+and resume saved queues. New PR evidence is retained without launching a model until
+valid authorization is available. See [agent graph and delivery](../../ARCHITECTURE.md#management-conversations).
+
 | Stage | What you do | What Symphony does |
 | --- | --- | --- |
 | Backlog | Enter a title, description and verification, then choose **Create task**. | Creates an unqueued GitHub issue and keeps the receipt. |

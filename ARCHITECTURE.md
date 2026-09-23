@@ -142,7 +142,7 @@ commands to the native API and owns no scheduling state.
 - A controller owns one repository/workflow. The [Symphony project](profiles/symphony/README.md)
   uses a separate private configuration, service pair, port, ledger, worker home,
   workspace root, publication receipts and AppArmor policy from Events Concierge.
-- `server.project_links` lists trusted browser origins in the Projects menu. Each
+- `server.project_links` lists trusted browser origins in the single project selector. Each
   destination authenticates independently; navigation neither aggregates data nor
   transfers operator authority. `server.session_cookie` separates cookies for
   controllers sharing a hostname and defaults to the existing cookie key.
@@ -258,9 +258,9 @@ is a separate extension. Historical messages are records; tools refresh current 
 and attach source timestamps, task links and board filters.
 
 The board keeps the shared conversation component open beside task details. Each
-project/tracker identity has one project agent conversation, one main conversation per
-issue and separate PR conversations. Selecting a card switches conversations; closing its details keeps its chat
-selected. The conversation labeled **Project name · Project agent** handles project-level orchestration through the same typed tools
+project/tracker identity has one project agent conversation, one task agent conversation per
+issue and one feature agent conversation per PR. Selecting a card switches conversations; closing its details keeps its chat
+selected. The conversation labeled **<project name> project agent** handles project-level orchestration through the same typed tools
 and explicit action decisions. Binding is durable and immutable; existing free-standing
 conversations are preserved in the standalone `/chat` history rather than inferred from
 message text. Drafts and selected tabs are scoped to each conversation.
@@ -307,8 +307,12 @@ Feature names use PR titles, or the first line of the work instruction before pu
 Names truncate visually while the agent role stays visible; hover reveals the full label.
 Card details link directly to each agent's chat.
 Compact cards show three PRs and an overflow link to the complete list.
-Native work IDs remain stable before and after publication. An earlier PR discussion
-keeps its own identity and read-only worker scope when a publication receipt arrives.
+Native work IDs remain stable before and after publication. A verified publication binds an
+existing PR discussion to that feature agent. Historical duplicate conversations are
+reconciled only when no turn or action is running, with a durable intent that fences
+losing queues before copying their messages and receipts. Recovery completes this
+idempotently before dispatch; old links resolve to the canonical conversation.
+An external PR without a native work identity remains discussion-only.
 The project agent coordinates the project. Task creation accepts a title, description
 and verification through a shared normalizer. The form's **Create task** click authorizes
 submission through the durable action store without a second preview; model-created
@@ -327,9 +331,33 @@ confirmation, including cancellation and retry. Selection reads run outside the 
 every 15 seconds, reusing scoped board evidence no older than 10 seconds. Worker reports
 include run and candidate identity; GitHub reports require a known head. Missing or stale
 checks never imply readiness. Each recipient saves reports and deduplication receipts
-atomically, before any active streaming response; delivery does not enqueue model turns.
+atomically, before any active streaming response. New evidence queues coalesced task-agent
+reasoning while a valid in-memory authorization is available. Without it, observations
+remain saved until an authenticated interaction; no browser grant survives restart.
 The latest 80 host reports are retained per conversation without removing user messages.
 Read failures leave prior observations intact; tracker and credential changes fence reads.
+
+[`Chat.Graph`](elixir/lib/symphony_elixir/chat/graph.ex) exports versioned agent nodes
+and typed `supervises` / `reports_to` edges through the authorized store and
+`symphony_agent_graph` tool. Stable conversation IDs connect project, issue and PR/work
+identities, goals, activity and queue counts; historical aliases do not become extra agents.
+This graph is the input for future visualization, which is not implemented yet.
+
+A project agent delegates to its task agents; each task agent delegates to its feature
+agents. `symphony_delegate` sends a durable instruction to a direct child;
+`symphony_report` returns intermediate findings, and completed task/feature replies
+report upward automatically. Parents receive source-labelled messages, reason against
+their goals, and can revise their own or a child's goal with `symphony_set_goal`.
+A goal marked achieved does not accept the issue or move it to Done.
+
+[`Chat.Coordination`](elixir/lib/symphony_elixir/chat/coordination.ex) defines these
+bounded tools. The store persists outgoing intent before recipient admission, deduplicates
+recipient receipts, retries delivery when capacity returns and serializes reasoning in
+the existing FIFO. Each user-initiated chain permits 24 deliveries and depth six. Stop
+pauses further delivery; restart requires fresh authentication and explicit resumption
+of saved queues. Reports and observations are untrusted evidence, never authorization
+for native work or external writes. Source labels, goals and pending reports remain
+visible inline in chat.
 
 There are three distinct records: the app's visible messages and receipts, Codex's
 native thread history with automatic compaction, and committed project documents

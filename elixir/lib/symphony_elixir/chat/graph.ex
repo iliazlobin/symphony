@@ -26,7 +26,7 @@ defmodule SymphonyElixir.Chat.Graph do
 
     nodes =
       agents
-      |> Enum.map(fn {id, chat} -> node(chat, parents[id], aliases(chat, records)) end)
+      |> Enum.map(fn {id, chat} -> node(chat, parents[id], aliases(chat, records), records) end)
       |> Enum.sort_by(& &1["id"])
 
     edges =
@@ -102,7 +102,7 @@ defmodule SymphonyElixir.Chat.Graph do
     |> Enum.sort()
   end
 
-  defp node(chat, parent, aliases) do
+  defp node(chat, parent, aliases, records) do
     role = @roles[chat["conversation_role"]]
 
     %{
@@ -119,10 +119,17 @@ defmodule SymphonyElixir.Chat.Graph do
       "pr_number" => pr_number(chat),
       "parent_id" => if(parent, do: node_id(parent)),
       "status" => chat["status"],
+      "updated_at" => chat["updated_at"],
+      "queued_count" => length(chat["queue"] || []),
+      "pending_deliveries" => pending_count(chat, aliases, records),
       "goal" => chat["agent_goal"],
       "archived" => chat["archived"] == true,
       "aliases" => aliases
     }
+  end
+
+  defp pending_count(chat, aliases, records) do
+    records |> Enum.filter(&(&1["id"] == chat["id"] or &1["id"] in aliases)) |> Enum.flat_map(&(&1["agent_outbox"] || [])) |> Enum.count(&(&1["status"] == "pending"))
   end
 
   defp name(chat, role) do
