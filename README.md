@@ -32,7 +32,8 @@ changes; coding remains with the scheduler's workers. Browser access supports Go
 sign-in with an explicit operator allowlist; existing local installations retain
 operator-token login until configured. Google sign-in does not sign in the model or
 change worker permissions. Authenticated browsers invoke native operator controls;
-GitHub remains the task and publication record. See the
+the local ledger saves task transitions immediately and mirrors routing labels to GitHub
+in the background. GitHub retains issue content and publication evidence. See the
 [operator guide](profiles/events-concierge/README.md#operate) for setup and limits.
 
 Each issue has one task agent responsible for the entire task, with a searchable activity-grouped issue picker

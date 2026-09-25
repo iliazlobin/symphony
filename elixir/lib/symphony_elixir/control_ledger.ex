@@ -3,10 +3,10 @@ defmodule SymphonyElixir.ControlLedger do
   Durable admission controls owned exclusively by the orchestrator.
 
   GitHub remains the work tracker. This ledger retains only operator decisions,
-  execution budgets and handoff evidence. An advisory OS lock prevents two local
+  execution budgets, local routing decisions and handoff evidence. An advisory OS lock prevents two local
   services from sharing the ledger. Failed persistence always blocks admission.
   """
-  alias SymphonyElixir.{IssueAcceptance, PathSafety, PRWork}
+  alias SymphonyElixir.{IssueAcceptance, PathSafety, PRWork, TaskRouting}
   defstruct [:path, :lock, :settings, :data]
 
   @lock_script """
@@ -69,7 +69,8 @@ defmodule SymphonyElixir.ControlLedger do
   def eligible?(ledger, issue_id) do
     issue = issue(ledger, issue_id)
 
-    ledger.data["mode"] == "running" and not IssueAcceptance.accepted?(issue) and is_nil(issue["hold"]) and is_nil(issue["active"]) and PRWork.dispatchable?(issue) and
+    ledger.data["mode"] == "running" and not IssueAcceptance.accepted?(issue) and is_nil(issue["hold"]) and is_nil(issue["active"]) and get_in(issue, ["routing", "queued"]) != false and
+      PRWork.dispatchable?(issue) and
       cycle_attempts(issue) < ledger.settings.max_attempts and
       issue["runtime_ms"] < ledger.settings.max_total_runtime_ms and
       issue["tokens"] < ledger.settings.max_total_tokens
@@ -194,8 +195,10 @@ defmodule SymphonyElixir.ControlLedger do
   end
 
   defp transition_command(ledger, params, fingerprint, concurrency_ceiling, context) do
-    with {:ok, next} <- transition_settings(ledger, params, concurrency_ceiling, context) do
-      revision = ledger.data["revision"] + 1
+    revision = ledger.data["revision"] + 1
+
+    with {:ok, next} <- transition_settings(ledger, params, concurrency_ceiling, context),
+         {:ok, next} <- routing_intent(next, params, revision, context) do
       result = %{"command_id" => params["command_id"], "revision" => revision, "mode" => next.data["mode"], "action" => params["action"], "issue_id" => params["issue_id"]}
       result = if params["action"] == "set_concurrency", do: Map.put(result, "limit", params["limit"]), else: result
       result = if PRWork.command?(params), do: Map.put(result, "work_id", params["work_id"]), else: result
@@ -241,7 +244,34 @@ defmodule SymphonyElixir.ControlLedger do
     with {:ok, current} <- IssueAcceptance.accept(issue(ledger, id), params, context), do: {:ok, put_issue(ledger, id, current)}
   end
 
+  defp transition_settings(ledger, %{"action" => action, "issue_id" => id} = params, _ceiling, context) when action in ~w(queue_task unqueue_task) do
+    current = issue(ledger, id)
+    observed = get_in(ledger.data, ["tracker_issues", id]) || %{}
+
+    with :ok <- routing_observation(observed, params, context), :ok <- routing_hold(current, action), do: {:ok, ledger}
+  end
+
   defp transition_settings(ledger, params, _ceiling, _context), do: transition(ledger, params["action"], params["issue_id"])
+
+  defp routing_observation(observed, params, context) do
+    cond do
+      context[:tracker_kind] != "github" or observed["tracker_fingerprint"] != context[:tracker_fingerprint] -> {:error, :task_not_found}
+      observed["repository"] != context[:repository] -> {:error, :task_not_found}
+      observed["updated_at"] != params["expected_updated_at"] -> {:error, :task_changed}
+      observed["state"] != "open" or observed["dispatchable"] != true -> {:error, :task_not_queueable}
+      true -> :ok
+    end
+  end
+
+  defp routing_hold(current, action) do
+    cond do
+      IssueAcceptance.accepted?(current) -> {:error, :task_already_accepted}
+      not is_nil(current["active"]) -> {:error, :issue_running}
+      action == "unqueue_task" and current["hold"] != "cancelled" -> {:error, :task_must_be_cancelled}
+      action == "queue_task" and current["hold"] not in [nil, "cancelled"] -> {:error, :task_not_queueable}
+      true -> :ok
+    end
+  end
 
   defp transition(ledger, action, nil) when action in ["pause", "drain", "resume"] do
     mode = %{"pause" => "paused", "drain" => "draining", "resume" => "running"}[action]
@@ -290,17 +320,92 @@ defmodule SymphonyElixir.ControlLedger do
 
   defp validate_command(_), do: {:error, :invalid_command}
   defp valid_setting?("set_concurrency", params), do: Map.has_key?(params, "limit") and valid_override?(params["limit"])
+
+  defp valid_setting?(action, params) when action in ~w(queue_task unqueue_task),
+    do: is_binary(params["expected_updated_at"]) and match?({:ok, _, _}, DateTime.from_iso8601(params["expected_updated_at"]))
+
   defp valid_setting?("accept_task", params), do: IssueAcceptance.valid_command?(params)
   defp valid_setting?(action, params) when action in ["create_pr_work", "continue_pr_work"], do: PRWork.valid_command?(params)
   defp valid_setting?(_action, _params), do: true
 
   defp valid_action?(action, nil) when action in ["pause", "drain", "resume", "set_concurrency"], do: true
 
-  defp valid_action?(action, id) when action in ["cancel", "retry", "accept_task", "create_pr_work", "continue_pr_work"] and is_binary(id),
+  defp valid_action?(action, id) when action in ["cancel", "retry", "accept_task", "create_pr_work", "continue_pr_work", "queue_task", "unqueue_task"] and is_binary(id),
     do: byte_size(id) in 1..128
 
   defp valid_action?(_, _), do: false
+  defp command_fields(action) when action in ~w(queue_task unqueue_task), do: ["expected_updated_at"]
   defp command_fields(action), do: PRWork.command_fields(action) ++ IssueAcceptance.command_fields(action)
+
+  defp routing_intent(ledger, %{"issue_id" => id, "action" => action}, revision, context) when is_binary(id) do
+    current = issue(ledger, id)
+    updated = TaskRouting.intent(current, action, revision, context)
+
+    if TaskRouting.valid?(updated["routing"]),
+      do: {:ok, if(updated == current, do: ledger, else: put_issue(ledger, id, updated))},
+      else: {:error, :invalid_routing_configuration}
+  end
+
+  defp routing_intent(ledger, _params, _revision, _context), do: {:ok, ledger}
+
+  @spec observe_issues(t(), [SymphonyElixir.Tracker.Issue.t()], map()) :: {:ok, t()} | {:error, term()}
+  def observe_issues(ledger, issues, tracker) do
+    current = ledger.data["tracker_issues"] || %{}
+    observations = Enum.reduce(issues, current, &observe_issue(&1, &2, tracker))
+
+    cond do
+      observations == current ->
+        {:ok, ledger}
+
+      not valid_observations?(observations) ->
+        {:error, :task_catalog_full}
+
+      true ->
+        next = %{ledger | data: Map.put(ledger.data, "tracker_issues", observations)}
+        with :ok <- persist(next), do: {:ok, next}
+    end
+  end
+
+  defp observe_issue(issue, observations, tracker) do
+    case TaskRouting.observation(issue, tracker) do
+      nil ->
+        observations
+
+      record ->
+        if newer_observation?(observations[record["id"]], record), do: Map.put(observations, record["id"], record), else: observations
+    end
+  end
+
+  defp newer_observation?(nil, _record), do: true
+  defp newer_observation?(%{"tracker_fingerprint" => scope}, %{"tracker_fingerprint" => other}) when scope != other, do: true
+
+  defp newer_observation?(previous, record) do
+    {:ok, old, _} = DateTime.from_iso8601(previous["updated_at"])
+    {:ok, new, _} = DateTime.from_iso8601(record["updated_at"])
+    DateTime.compare(new, old) != :lt
+  end
+
+  @spec routing_sync_result(t(), String.t(), pos_integer(), String.t(), :ok | {:error, atom()}) ::
+          {:ok, t()} | {:error, term()}
+  def routing_sync_result(ledger, id, revision, scope, result) do
+    current = issue(ledger, id)
+
+    case current["routing"] do
+      %{"revision" => ^revision, "tracker_fingerprint" => ^scope} = routing ->
+        persist_routing_sync(ledger, id, current, routing, result)
+
+      _ ->
+        {:error, :stale_routing_intent}
+    end
+  end
+
+  defp persist_routing_sync(ledger, id, current, routing, result) do
+    with {:ok, routing} <- sync_result(routing, result), next = put_issue(ledger, id, Map.put(current, "routing", routing)), :ok <- persist(next), do: {:ok, next}
+  end
+
+  defp sync_result(routing, :ok), do: {:ok, %{routing | "status" => "synced", "error" => nil, "synced_at" => DateTime.utc_now() |> DateTime.to_iso8601()}}
+  defp sync_result(routing, {:error, reason}) when is_atom(reason), do: {:ok, %{routing | "status" => "pending", "error" => reason |> Atom.to_string() |> String.slice(0, 128)}}
+  defp sync_result(_routing, _result), do: {:error, :invalid_sync_result}
 
   defp update_active(ledger, issue_id, run_id, fun) do
     current = issue(ledger, issue_id)
@@ -363,15 +468,25 @@ defmodule SymphonyElixir.ControlLedger do
 
   defp valid_data?(%{"version" => 1, "revision" => revision, "mode" => mode, "issues" => issues, "commands" => commands} = data)
        when is_integer(revision) and revision >= 0 and mode in ["paused", "draining", "running"] and is_map(issues) and is_map(commands) do
-    valid_override?(data["concurrency_override"]) and valid_issues?(issues) and
-      Enum.all?(commands, &valid_command_entry?/1) and unique_pr_work_ids?(issues)
+    valid_observations?(data["tracker_issues"] || %{}) and valid_override?(data["concurrency_override"]) and
+      valid_records?(issues, commands)
   end
 
   defp valid_data?(_), do: false
 
+  defp valid_records?(issues, commands), do: valid_issues?(issues) and Enum.all?(commands, &valid_command_entry?/1) and unique_pr_work_ids?(issues)
+
   defp valid_issues?(issues) do
-    Enum.all?(issues, fn {id, item} -> is_binary(id) and valid_issue?(item) and PRWork.valid_issue?(id, item) and IssueAcceptance.valid_record?(item["acceptance"]) end)
+    Enum.all?(issues, fn {id, item} ->
+      is_binary(id) and valid_issue?(item) and PRWork.valid_issue?(id, item) and IssueAcceptance.valid_record?(item["acceptance"]) and TaskRouting.valid?(item["routing"])
+    end)
   end
+
+  defp valid_observations?(observations) when is_map(observations) do
+    map_size(observations) <= 10_000 and Enum.all?(observations, fn {id, record} -> TaskRouting.valid_observation?(record) and record["id"] == id end)
+  end
+
+  defp valid_observations?(_), do: false
 
   defp unique_pr_work_ids?(issues) do
     ids = Enum.flat_map(issues, fn {_id, item} -> Map.keys(item["pr_work"] || %{}) end)
@@ -451,11 +566,21 @@ defmodule SymphonyElixir.ControlLedger do
   end
 
   defp persist(ledger) do
+    bytes = Jason.encode!(ledger.data)
+
+    if byte_size(bytes) <= 10_000_000 do
+      persist_bytes(ledger, bytes)
+    else
+      {:error, {:control_persistence, :state_too_large}}
+    end
+  end
+
+  defp persist_bytes(ledger, bytes) do
     temp = ledger.path <> ".tmp-" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
 
     result =
       with {:ok, file} <- File.open(temp, [:write, :binary, :exclusive]) do
-        result = with :ok <- File.chmod(temp, 0o600), :ok <- IO.binwrite(file, Jason.encode!(ledger.data)), do: :file.sync(file)
+        result = with :ok <- File.chmod(temp, 0o600), :ok <- IO.binwrite(file, bytes), do: :file.sync(file)
         File.close(file)
         with :ok <- result, :ok <- File.rename(temp, ledger.path), do: sync_directory(Path.dirname(ledger.path))
       end

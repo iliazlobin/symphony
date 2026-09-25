@@ -86,7 +86,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_info(:observability_updated, socket) do
-    {:noreply, socket |> assign(:payload, load_payload()) |> update(:payload_revision, &(&1 + 1))}
+    socket = socket |> assign(:payload, load_payload()) |> update(:payload_revision, &(&1 + 1))
+    {:noreply, refresh_local_board(socket)}
   end
 
   def handle_info(:refresh_board, socket) do
@@ -106,7 +107,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       do: send_update(ChatPanel, id: "management-chat", refresh_threads: project)
 
     refresh_intake_history(socket)
-    {:noreply, refresh_chat_activity(socket)}
+    {:noreply, socket |> refresh_local_board() |> refresh_chat_activity()}
   end
 
   def handle_info({:chat_panel, :project_subscription, project}, socket) do
@@ -153,6 +154,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
   @impl true
   def handle_async(:board, {:ok, {scope, payload_revision, result}}, socket) do
     if scope == BoardCache.scope(orchestrator()) do
+      runtime =
+        if socket.assigns.payload_revision == payload_revision,
+          do: result[:runtime],
+          else: socket.assigns.payload
+
+      result = refresh_control(result, scope, runtime)
       :ok = BoardCache.put(scope, result)
       {:noreply, apply_board(socket, result, payload_revision)}
     else
@@ -699,7 +706,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <div class="card-project">{task.project_label}</div>
                 <.card_chat_status activity={Map.get(@chat_activity, task.id)} />
                 <.feedback_summary task={task} />
-                <.execution_summary summary={execution_summary(task, @board, @payload)} compact={true} />
+                <.execution_summary summary={execution_summary(task, @board, @payload)} routing={task[:routing]} compact={true} />
                 <span :if={blocker(task) && is_nil(task.hold)} class="attention-badge">{blocker(task)}</span>
                 <div :if={pull_requests(task) != []} class="card-pr-summary"><span :for={pr <- Enum.take(pull_requests(task), 3)}>
                   <a :if={safe_url(field(pr, :url))} href={safe_url(field(pr, :url))} target="_blank" rel="noopener noreferrer">PR #{field(pr, :number)}</a>
@@ -751,7 +758,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 runtime_duration={runtime_duration(@payload)} rate_limits={pretty(@payload[:rate_limits])} />
             <% :task -> %>
               <p class="muted">{@selected.project_label} · {@selected.identifier} · {lane_label(task_lane(@selected))}</p>
-              <.execution_summary summary={execution_summary(@selected, @board, @payload)} />
+              <.execution_summary summary={execution_summary(@selected, @board, @payload)} routing={@selected[:routing]} />
               <.feedback_details task={@selected} />
               <div :if={!@read_only && @controls_available} class="dialog-actions execution-actions">
                 <button :if={@selected.stage == "backlog" && is_nil(@selected.hold)} id="queue-task-button" class="button button-primary" phx-click="queue-task" phx-value-id={@selected.id}>Move to Work</button>
@@ -835,9 +842,37 @@ defmodule SymphonyElixirWeb.DashboardLive do
       do: send_update(TaskIntakePanel, id: "task-intake", refresh_history: true)
   end
 
-  defp refresh_board(%{assigns: %{loading: true}} = socket), do: socket
+  defp refresh_board(socket), do: socket |> refresh_local_board() |> refresh_source_board()
 
-  defp refresh_board(socket) do
+  defp refresh_local_board(socket) do
+    board = refresh_control(socket.assigns.board, socket.assigns.board_scope, socket.assigns.payload)
+    selected = socket.assigns.selected
+    current = selected && Enum.find(board.tasks, &(&1.id == selected.id))
+    :ok = BoardCache.put(socket.assigns.board_scope, board)
+    socket |> assign(:board, board) |> assign(:selected, current)
+  end
+
+  defp refresh_control(board, scope, payload) do
+    if scope == BoardCache.scope(orchestrator()) and not read_only?(board) and board.control["enabled"] == true do
+      refresh_control_snapshot(board, SymphonyElixir.Orchestrator.control_snapshot(orchestrator()), payload)
+    else
+      board
+    end
+  end
+
+  defp refresh_control_snapshot(board, %{"enabled" => true, "revision" => revision} = control, payload)
+       when is_integer(revision) do
+    if is_nil(control["fault"]) and control == board.control,
+      do: board,
+      else: TaskBoard.refresh_control(board, control, payload)
+  end
+
+  defp refresh_control_snapshot(board, unavailable, payload),
+    do: TaskBoard.refresh_control(board, unavailable, payload)
+
+  defp refresh_source_board(%{assigns: %{loading: true}} = socket), do: socket
+
+  defp refresh_source_board(socket) do
     server = orchestrator()
     scope = BoardCache.scope(server)
     loader = Endpoint.config(:board_loader) || (&TaskBoard.load/2)
@@ -958,11 +993,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   attr(:summary, :map, required: true)
   attr(:compact, :boolean, default: false)
+  attr(:routing, :map, default: nil)
 
   defp execution_summary(assigns) do
+    assigns = assign(assigns, :sync_label, routing_sync_label(assigns.routing))
+
     ~H"""
     <div class={["execution-summary", @compact && "compact"]} aria-label="Execution summary">
-      <p class="execution-state">{@summary.status}</p>
+      <p class="execution-state">{@summary.status}<small :if={@sync_label} class="routing-sync muted" title="Saved locally. GitHub routing labels synchronize automatically; failed attempts retry."> · {@sync_label}</small></p>
       <dl :if={@summary.metrics != []} class="execution-metrics">
         <div :for={metric <- @summary.metrics}>
           <dt>{metric.label}</dt><dd title={metric.title}>{metric.value}</dd>
@@ -972,6 +1010,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
     </div>
     """
   end
+
+  defp routing_sync_label(%{"status" => "pending", "error" => error}) when not is_nil(error), do: "GitHub sync retrying"
+  defp routing_sync_label(%{"status" => "pending"}), do: "Syncing GitHub"
+  defp routing_sync_label(_routing), do: nil
 
   defp feedback_items(task), do: get_in(task, [:feedback, :items]) || []
   defp feedback_status_value(task), do: get_in(task, [:feedback, :status]) || "unavailable"

@@ -70,6 +70,16 @@ defmodule SymphonyElixir.BrowserControlsTest do
     assert Orchestrator.control_snapshot(ctx.pid)["revision"] == 0
   end
 
+  test "routing rejects absent authority or altered command fields before native dispatch", ctx do
+    command = %{"action" => "queue_task", "issue_id" => "7", "command_id" => "queue", "expected_revision" => 0, "expected_updated_at" => "2026-09-24T00:00:00Z"}
+    assert {:error, :unauthorized} = BoardActions.routing_command(command, %{})
+    assert {:error, :unauthorized} = BoardActions.routing_command(command, %{ctx.authorization | tracker_fingerprint: "foreign"}, ctx.pid)
+    assert {:error, :invalid_command} = BoardActions.routing_command(Map.delete(command, "expected_updated_at"), ctx.authorization, ctx.pid)
+    assert {:error, :invalid_command} = BoardActions.routing_command(Map.put(command, "labels", ["extra"]), ctx.authorization, ctx.pid)
+    assert {:error, :invalid_command} = BoardActions.routing_command(%{command | "action" => "deploy"}, ctx.authorization, ctx.pid)
+    assert Orchestrator.control_snapshot(ctx.pid)["revision"] == 0
+  end
+
   test "settings commands keep browser auth, tracker scope and revision guards", ctx do
     assert {:error, :unauthorized} = BoardActions.settings_command(1, 0, "unauthorized", %{})
     assert {:error, :unauthorized} = BoardActions.settings_command(1, 0, "foreign", %{ctx.authorization | tracker_fingerprint: "foreign"}, ctx.pid)

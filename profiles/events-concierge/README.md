@@ -81,11 +81,13 @@ the shared-VM restart and verification of affected services afterward.
 **GitHub — task and PR interface.** Create or edit work in
 [Issues](https://github.com/iliazlobin/events-concierge/issues), using the
 [task contract below](#task-and-publication-contract). Once execution is activated,
-`symphony:ready` makes an eligible open issue available to the scheduler. Review the
+Move an issue to Work in Symphony to save its local routing decision. Existing issues
+without a local decision can still enter through `symphony:ready`. Review the
 candidate diff, independent review and check evidence in
 [Pull requests](https://github.com/iliazlobin/events-concierge/pulls). A draft PR is a
 review handoff; it does not mean the task is merged or deployed. Task creation and
-queue-label changes are available in the web board, GitHub and the optional web chat.
+task routing are available in the web board and project agent; GitHub receives the
+configured routing labels asynchronously.
 
 **Web board.** Open the configured browser origin; this Mac uses
 [Symphony](http://localhost:8778/) with Google sign-in. Real tracker issues,
@@ -205,13 +207,18 @@ refreshes automatically; use filters to hide tasks. Within a column, choose
 **Display → Sort by → Manual order** before dragging to reorder. This browser preference
 does not change scheduler priority. **Work → Backlog** offers confirmed cancellation;
 **Backlog → Work** on a held task offers Retry when remaining limits allow it.
-Cancel can stop work claimed since the card was displayed. Retry clears a hold without
-resetting budgets, adding queue labels or supplying a missing answer.
+Cancel can stop work claimed since the card was displayed. Retry clears a hold and
+saves Work routing without resetting budgets or supplying a missing answer.
 
-Queueing opens an exact preview and adds the configured routing labels to the existing
-GitHub issue. Closing the preview does not queue it. Pending actions and receipts reopen
+Queueing opens an exact preview and saves the routing decision in the local control
+ledger. The card updates immediately; GitHub routing labels synchronize automatically.
+Closing the preview does not queue it. Pending actions and receipts reopen
 from **New task → Recent submissions**; use **Check outcome** after an uncertain result.
 The native scheduler remains the only execution queue; queueing does not resume a paused controller.
+“Syncing GitHub” or “GitHub sync retrying” means the local decision is saved and its
+label update is pending. Retries survive restart and preserve unrelated labels. Inspect
+`GET /api/v1/control` → `issues` → issue number → `routing` for sync status. Do not edit
+routing labels to change a task already managed locally; use the board or project agent.
 
 **Work but idle.** Check **Settings → Execution** for a paused or draining controller.
 Review queued work before confirming **Resume**. Otherwise inspect dependencies, holds,
@@ -317,19 +324,20 @@ action, not proof of worker completion. **Check outcome** reconciles uncertain
 writes without repeating them; do not create a replacement request meanwhile.
 
 Chat can create a backlog issue, edit title/description/state/priority, add feedback,
-queue/unqueue intake labels and request native pause/drain/resume/cancel/retry.
+queue/unqueue tasks locally and request native pause/drain/resume/cancel/retry.
 Fresh open, unqueued Backlog tasks with no hold or active execution can be queued
 directly after confirmation. Editing, unqueueing, and queueing an already cancelled
 task preserve the existing cancelled, idle requirement. Queueing a cancelled task
-retains its hold; retry is a separate action. Queueing adds only the configured intake
-labels and retains dependency, budget, capacity and host launch gates. Creating a task requires explicit intake
-labels in the tracker configuration so a new unlabeled issue cannot launch itself.
+retains its hold; retry is a separate action. Local routing retains dependency, budget,
+capacity and host launch gates. GitHub receives only the configured intake labels.
+Creating a task requires explicit intake labels in the tracker configuration so a new
+unlabeled issue cannot launch itself.
 Feedback is saved to the GitHub issue; it is not injected into an active coding turn.
 To work on a separate PR, ask the issue chat to create a PR work session with its scope
 and acceptance checks, then confirm the preview. To address review feedback or CI,
 ask it to continue that session and confirm the new instruction. The builder resumes
 its retained thread and checkout; each candidate receives a fresh independent review.
-Sessions share the issue budget and run one at a time. They do not bypass intake labels,
+Sessions share the issue budget and run one at a time. They do not bypass local routing,
 holds, controller mode or launch gates. A completed candidate needs explicit continuation;
 Retry alone does not rebuild it. Existing PRs are not automatically adopted, and CI failures
 do not automatically start repairs. Deployment, merge and direct input into a running
@@ -462,14 +470,15 @@ independently launched VS Code/CLI sessions are not adopted by Symphony.
 
 The local control UI is part of this profile. GKE hosting and remote browser access
 have a separate [deployment contract](../../deploy/gke/README.md); a Slack command/reporting
-integration is not implemented. GitHub remains the task record; this Mac is the current
-execution host until an explicitly verified cloud ownership cutover.
+integration is not implemented. GitHub retains issue and PR content; the local ledger
+retains workflow decisions until an explicitly verified cloud ownership cutover.
 
 ## Task and publication contract
 
-GitHub is the only backlog. An open issue needs `symphony:ready`, a bounded outcome,
-scope, acceptance criteria and exactly one `Depends on: none` or `Depends on: #12, #34`
-declaration (at most 20 distinct same-repository issues). Missing/open/unreadable
+GitHub supplies issue content; Symphony owns local task routing. An open issue enters
+execution through Work (or `symphony:ready` before its first local decision). Include a
+bounded outcome, scope and acceptance criteria. Dispatch requires exactly one
+`Depends on: none` or `Depends on: #12, #34` declaration (at most 20 distinct same-repository issues). Missing/open/unreadable
 dependencies hold dispatch. Existing arbitrary Codex CLI sessions are not adopted.
 
 Managed task checkouts are standalone clones without submodules or nested repositories.

@@ -15,6 +15,11 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
       {:reply, snapshot, state}
     end
 
+    def handle_call({:observe_tracker_issues, issues, scope}, _from, state) do
+      send(state[:owner], {:source_observed, issues, scope})
+      {:reply, :ok, state}
+    end
+
     def handle_call(:control_snapshot, _from, state) do
       send(state[:owner], :control_read)
       {:reply, state[:control] || %{"enabled" => true, "issues" => %{}}, state}
@@ -55,6 +60,70 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     end)
 
     :ok
+  end
+
+  test "routing previews reuse scoped source data with current native controls and refresh on a cache miss" do
+    configure_workflow()
+    alias SymphonyElixirWeb.{BoardCache, Endpoint}
+    endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
+    cache_state = :sys.get_state(BoardCache)
+    Application.put_env(:symphony_elixir, Endpoint, server: false, secret_key_base: String.duplicate("c", 64))
+    start_supervised!({Endpoint, []})
+
+    on_exit(fn ->
+      Application.put_env(:symphony_elixir, Endpoint, endpoint_config)
+      :sys.replace_state(BoardCache, fn _ -> cache_state end)
+    end)
+
+    settings = Config.settings!()
+    fingerprint = SymphonyElixir.TaskRouting.fingerprint(settings.tracker)
+    context = %{tracker_kind: "github", tracker_fingerprint: fingerprint, repository: "example/repo", required_labels: ["ready"]}
+    queued = SymphonyElixir.TaskRouting.intent(%{}, "queue_task", 1, context)
+    control = %{"enabled" => true, "tracker_fingerprint" => fingerprint, "issues" => %{"1" => queued}}
+    name = start_runtime(control)
+    board = TaskBoard.project([issue("1", labels: [])], %{}, %{}, settings)
+    scope = BoardCache.scope(name)
+    assert :ok = BoardCache.put(scope, board)
+    Application.put_env(:symphony_elixir, :task_board_test_source, {self(), :wait})
+    assert [%{stage: "ready"}] = TaskBoard.load_cached(name, 500).tasks
+    refute_receive {:tracker_read, _, _}
+
+    BoardCache.put("different-scope", board)
+    Application.put_env(:symphony_elixir, :task_board_test_source, {self(), {:ok, [issue("1")]}})
+    assert TaskBoard.load_cached(name, 500).source_error == nil
+    assert_receive {:tracker_read, ["open", "closed"], _}
+    assert_receive {:source_observed, [_], ^fingerprint}
+  end
+
+  test "local routing immediately projects stale GitHub labels while retaining PR evidence" do
+    configure_workflow()
+    settings = Config.settings!()
+    scope = SymphonyElixir.TaskRouting.fingerprint(settings.tracker)
+    context = %{tracker_kind: "github", tracker_fingerprint: scope, repository: "example/repo", required_labels: ["ready"]}
+    native = SymphonyElixir.TaskRouting.intent(%{}, "queue_task", 1, context)
+    control = %{"enabled" => true, "tracker_fingerprint" => scope, "issues" => %{"1" => native}}
+    source = issue("1", labels: ["area:backend"])
+    board = TaskBoard.project([source], %{}, %{}, settings)
+    board = put_in(board, [:tasks, Access.at(0), :pull_requests], [%{number: 9, state: "OPEN"}])
+    pr_link = %{kind: "pull_request", label: "PR #9", url: "https://github.com/example/repo/pull/9"}
+    board = update_in(board, [:tasks, Access.at(0), :links], &(&1 ++ [pr_link]))
+    board = %{board | source_error: "GitHub unavailable", enrichment_error: "Checks unavailable"}
+
+    assert [task] = TaskBoard.refresh_control(board, control).tasks
+    assert task.stage == "ready"
+    assert task.labels == ["area:backend"]
+    assert task.routing["status"] == "pending"
+    assert task.pull_requests == [%{number: 9, state: "OPEN"}]
+    assert pr_link in task.links
+    assert TaskBoard.refresh_control(board, control).source_error == "GitHub unavailable"
+    assert TaskBoard.refresh_control(board, control).enrichment_error == "Checks unavailable"
+
+    cancelled = native |> Map.put("hold", "cancelled") |> SymphonyElixir.TaskRouting.intent("cancel", 2, context)
+    control = put_in(control, ["issues", "1"], cancelled)
+    assert [%{stage: "backlog"}] = TaskBoard.refresh_control(board, control).tasks
+    assert TaskBoard.refresh_control(board, {:error, :unavailable}).runtime_error =~ "unavailable"
+    assert TaskBoard.refresh_control(board, %{control | "tracker_fingerprint" => "other"}).runtime_error =~ "changed"
+    assert TaskBoard.refresh_control(board, Map.put(control, "fault", "broken")).tasks == board.tasks
   end
 
   test "board retains issue filter metadata and defaults for missing tracker rows" do

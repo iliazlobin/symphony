@@ -126,7 +126,8 @@ commands to the native API and owns no scheduling state.
   [`Chat.Runtime`](elixir/lib/symphony_elixir/chat/runtime.ex) runs private App Server
   turns in a dedicated Codex home, retaining native thread history and compaction.
   [`Chat.Tools`](elixir/lib/symphony_elixir/chat/tools.ex) exposes typed project reads and
-  bounded action proposals. `Chat.GitHub` owns the scoped tracker HTTP operations.
+  bounded action proposals. Queue/unqueue decisions use native controls; `Chat.GitHub`
+  owns scoped content and comment HTTP operations.
   [`ChatPanel`](elixir/lib/symphony_elixir_web/live/chat_panel.ex) renders messages, validated
   widgets, references and action previews through the existing LiveView connection.
 - [`ControlApiController`](elixir/lib/symphony_elixir_web/controllers/control_api_controller.ex)
@@ -154,11 +155,26 @@ commands to the native API and owns no scheduling state.
 
 ## Execution and ownership
 
-GitHub owns task intent and issue/PR state. Human acceptance in the native ledger owns
-Done on controlled boards; closure or PR merge alone leaves an unaccepted issue in Review.
-The control ledger owns execution
-controls, not a second backlog. Notion owns explanations and plans; reports should
-link current GitHub records and runtime observations rather than copy task status.
+GitHub owns issue content, comments and PR evidence. The native control ledger owns
+local task routing, execution and human acceptance. Backlog → Work changes commit
+locally; worker handoff produces Review; only human acceptance produces Done.
+GitHub closure or PR merge alone leaves an unaccepted issue in Review. Notion owns
+explanations and plans; reports link the owning records rather than copy task status.
+
+Routing decisions and their latest pending label update commit atomically with the
+operator receipt. A scoped, bounded source catalog retains the last observed issue
+identity and timestamp. Queue decisions use that catalog; scheduling still revalidates
+current issue state, dependencies, capacity, holds and launch gates. Unmanaged issues
+retain label-based intake until their first local routing decision. Later GitHub label
+edits cannot reverse that decision.
+
+[`LabelSync`](elixir/lib/symphony_elixir/label_sync.ex) mirrors only configured routing
+labels, preserving other tags and issue content. It checks pending decisions every
+15 seconds, retries failures with backoff up to five minutes, and checks synced labels
+for drift at one-minute intervals within its bounded batch capacity. Restart reloads pending work from the ledger; only an acknowledgement
+for the same issue, tracker scope and decision revision can mark it synced. The board
+shows pending or retrying sync while rendering committed local state immediately.
+The mirror neither schedules workers nor closes issues.
 
 Each controlled attempt reserves its budget before launch and receives a random
 run identifier. Worker events must match both the running record and the durable
@@ -373,11 +389,11 @@ retrieved references, not a claim to list every token in the model context.
 Only browser decisions execute write proposals. Native controls retain revision and
 idempotency checks inside the orchestrator. Tracker edits require a cancelled, idle
 task; fresh open, unqueued backlog tasks without a hold can also be queued directly.
-Both paths serialize with local dispatch and recheck task ownership. Queue previews
-pin whether the task has a hold, and confirmation never resumes the controller or
-clears an existing hold. Fresh GitHub timestamps reject observed
-staleness. GitHub does not provide an atomic compare-and-swap across the final read
-and patch, so concurrent external issue edits remain a limitation. Feedback is an
+Both paths serialize with local dispatch and recheck task ownership. Queue confirmation
+checks the native revision and last observed issue timestamp without waiting for GitHub.
+It never resumes the controller or clears an existing hold. Source changes not yet polled
+are checked again before worker admission. Content edits still verify a fresh GitHub
+timestamp; GitHub has no atomic compare-and-swap between that read and patch. Feedback is an
 additive issue comment, not a message delivered into a running coding turn.
 
 Before a write, the app persists its executing state. An uncertain result requires
