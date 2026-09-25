@@ -768,6 +768,10 @@ For refresh and continuation checks, `issue_routable(issue)` means only that ada
 `dispatchable` is true and all `tracker.required_labels` match. State, claims, and concurrency are
 checked separately by the surrounding algorithm.
 
+For controlled GitHub execution, a scoped local routing decision replaces the required-label
+check. Issues without a local decision retain label-based routing. Source state, assignee,
+dependencies and capacity checks still apply; see [Appendix B](#appendix-b-controlled-local-execution).
+
 Sorting order (stable intent):
 
 1. `priority` ascending for values `1..4`; all other integers and null sort after that bucket
@@ -2372,11 +2376,28 @@ read-only configured `budgets` and the retained `base_sha`; it contains no crede
 | `pause` | Persist paused mode, interrupt active workers, preserve workspaces. |
 | `drain` | Stop new worker lifetimes and retries; allow currently admitted bounded execution to finish. |
 | `resume` | Enable eligible dispatch without clearing issue holds or budgets. |
-| `cancel` | Persist a per-issue hold, stop owned work and retain its workspace. |
-| `retry` | Clear an issue hold only within remaining budgets; never reset counters. |
+| `cancel` | Persist a per-issue hold and local Backlog routing, stop owned work and retain its workspace. |
+| `retry` | Clear an issue hold and route to Work only within remaining budgets; never reset counters. |
+| `queue_task` | Persist local Work routing for a known open idle issue. Requires `issue_id` and `expected_updated_at`; retains any cancelled hold. |
+| `unqueue_task` | Persist local Backlog routing for a known open cancelled idle issue. Requires `issue_id` and `expected_updated_at`; retains the hold. |
 | `set_concurrency` | Persist `limit` (integer 1 through the configured ceiling), or `null` to restore the default. No `issue_id`; active work and consumed budgets are unchanged. |
 | `create_pr_work` | Retain a new PR work identity for `issue_id`, with a 32-character lowercase hexadecimal `work_id`, bounded `instruction` and exact configured `base_sha`. Releases only a prior review hold; preserves other holds and launch gates. |
 | `continue_pr_work` | Select existing `work_id` with a new bounded `instruction` and exact `expected_head_sha` (explicit `null` before a candidate). Releases only the issue's review hold; other holds require their existing recovery path. |
+
+On controlled GitHub projects, task routing and the latest desired routing-label update
+MUST commit in the same ledger write and idempotent command receipt. Routing commands
+compare `expected_updated_at` with the last successfully observed, scoped issue record.
+Local decisions override remote routing labels for board projection and scheduling;
+current source identity, state and dependencies still gate worker admission. Existing
+issues without a local decision retain configured label intake.
+
+A separate supervised mirror MUST retry pending label updates across restarts, preserve
+unrelated labels and issue content, and acknowledge only the exact current decision.
+It MUST fence tracker/configuration/owner changes before writes and acknowledgements.
+Stale delivery cannot clear a newer pending decision. Periodic reconciliation repairs
+owned-label drift. `issues[id].routing` exposes `queued`, decision `revision`,
+`tracker_fingerprint`, `repository`, owned `labels`, `status`, `error` and `synced_at`.
+Mirroring MUST NOT close issues, launch workers or change merge/deployment policy.
 
 `accept_task` records human acceptance of an idle, reviewable issue. It MUST bind
 `issue_id`, the expected tracker state/update timestamp and nullable candidate SHA,
@@ -2608,10 +2629,11 @@ links; model output cannot inject HTML, JavaScript or executable UI descriptions
 External write tools produce proposals; only a subsequent authenticated browser decision
 can execute them. Proposals retain exact arguments, scope, expected control revision
 and observed task update time. Supported writes are create/edit issue, additive
-feedback, configured queue-label changes, and existing native controls. Creation
-requires configured intake labels and creates an unlabeled backlog issue. Edit and
-queue/unqueue require a cancelled, inactive task and serialize with native dispatch.
-External GitHub writers remain outside this local serialization boundary.
+feedback, local queue/unqueue decisions, and existing native controls. Creation
+requires configured intake labels and creates an unlabeled backlog issue. Edits and
+unqueue require a cancelled, inactive task. Queue also permits an unheld, idle backlog
+task; all native routing decisions serialize with dispatch and retain existing holds.
+External GitHub content writers remain outside this local serialization boundary.
 
 The store MUST persist execution intent before dispatch. Unknown outcomes MUST
 reconcile read-only through exact native receipts or GitHub operation markers,

@@ -18,6 +18,28 @@ defmodule SymphonyElixirWeb.BoardActions do
     end
   end
 
+  @doc "Record local routing intent with the exact source revision; GitHub synchronization is asynchronous."
+  @spec routing_command(map(), BrowserAuth.context(), GenServer.server()) :: {:ok, map()} | {:error, term()}
+  def routing_command(command, context, orchestrator \\ Orchestrator) do
+    fields = ~w(action issue_id command_id expected_revision expected_updated_at)
+
+    cond do
+      not BrowserAuth.authorized?(context) ->
+        {:error, :unauthorized}
+
+      command["action"] not in ["queue_task", "unqueue_task"] or Enum.sort(Map.keys(command)) != Enum.sort(fields) ->
+        {:error, :invalid_command}
+
+      true ->
+        Orchestrator.control_command_guarded(
+          command,
+          context.tracker_fingerprint,
+          orchestrator,
+          fn -> BrowserAuth.authorized?(context) end
+        )
+    end
+  end
+
   @doc "Persist a project concurrency override (nil restores the configured default); running work is unaffected."
   @spec settings_command(pos_integer() | nil, non_neg_integer(), String.t(), BrowserAuth.context(), GenServer.server()) :: {:ok, map()} | {:error, term()}
   def settings_command(limit, expected_revision, command_id, context, orchestrator \\ Orchestrator) do

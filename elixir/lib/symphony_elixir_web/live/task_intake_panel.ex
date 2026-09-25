@@ -285,7 +285,7 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
         <div :if={@proposal["task_description"]} class="markdown-content intake-preview-body">{Markdown.render(@proposal["task_description"])}</div>
         <div :if={@args["body"] && @proposal["status"] == "pending"} class="markdown-content intake-preview-body">{Markdown.render(@args["body"])}</div>
         <div :if={@proposal["action"] == "queue_task" && @proposal["status"] == "pending"} class="queue-preview">
-          <p>Add queue labels: <strong>{Enum.join(@proposal["queue_labels"] || [], ", ")}</strong>.</p>
+          <p>Move this task to Work. GitHub routing labels synchronize in the background.</p>
           <p>This makes the task eligible for work. When the controller is running, Symphony can start it after checking dependencies, budget and capacity. A paused controller stays paused.</p>
           <p :if={@proposal["queue_unheld"] != true} class="muted">The existing cancellation hold stays in place. Retry is a separate action.</p>
         </div>

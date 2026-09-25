@@ -68,12 +68,11 @@ defmodule SymphonyElixir.Chat.GitHub do
     end
   end
 
-  def confirm(%{"action" => action} = proposal, tracker, context) when action in ~w(edit_task queue_task unqueue_task) do
+  def confirm(%{"action" => "edit_task"} = proposal, tracker, context) do
     callback = fn ->
       with {:ok, _settings} <- Tools.scope(context),
            {:ok, issue} <- fetch_issue(proposal, tracker, context),
-           :ok <- current_revision(issue, proposal),
-           :ok <- queue_precondition(issue, proposal, tracker) do
+           :ok <- current_revision(issue, proposal) do
         body = edit_body(proposal, issue, tracker)
         write("PATCH", issue_path(proposal, tracker), body, proposal, tracker, context)
       end
@@ -85,10 +84,7 @@ defmodule SymphonyElixir.Chat.GitHub do
     id = issue_id(proposal, context.project_id)
     server = context[:orchestrator] || Orchestrator
 
-    result =
-      if proposal["queue_unheld"] == true,
-        do: owner.tracker_action_guarded(scope, revision, id, callback, server, :queue_unheld),
-        else: owner.tracker_action_guarded(scope, revision, id, callback, server)
+    result = owner.tracker_action_guarded(scope, revision, id, callback, server)
 
     case result do
       {:error, :unavailable} -> {:error, :write_outcome_unknown}
@@ -97,7 +93,7 @@ defmodule SymphonyElixir.Chat.GitHub do
   end
 
   @spec reconcile(map(), map(), map()) :: {:ok, map()} | {:error, term()}
-  def reconcile(%{"action" => action} = proposal, tracker, context) when action in ~w(edit_task queue_task unqueue_task) do
+  def reconcile(%{"action" => "edit_task"} = proposal, tracker, context) do
     with {:ok, issue} <- fetch_issue(proposal, tracker, context),
          true <- marked?(issue, proposal) or {:error, :write_outcome_unknown} do
       receipt(issue, proposal, "Task update recovered from GitHub.")
@@ -139,6 +135,7 @@ defmodule SymphonyElixir.Chat.GitHub do
   defp method_atom("GET"), do: :get
   defp method_atom("POST"), do: :post
   defp method_atom("PATCH"), do: :patch
+  defp method_atom("DELETE"), do: :delete
 
   defp deliver_feedback(nil, proposal, tracker, context) do
     with {:ok, issue} <- fetch_issue(proposal, tracker, context), :ok <- current_revision(issue, proposal) do
@@ -180,14 +177,6 @@ defmodule SymphonyElixir.Chat.GitHub do
 
   defp valid_issue?(issue, number) when is_map(issue), do: not Map.has_key?(issue, "pull_request") and issue["number"] == number
   defp valid_issue?(_issue, _number), do: false
-
-  defp queue_precondition(issue, %{"action" => "queue_task", "queue_unheld" => true}, tracker) do
-    labels = Enum.map(issue_labels(issue), &String.downcase/1)
-    unqueued = tracker.required_labels != [] and not Enum.all?(tracker.required_labels, &(String.downcase(&1) in labels))
-    if issue["state"] == "open" and unqueued, do: :ok, else: {:error, :task_not_queueable}
-  end
-
-  defp queue_precondition(_issue, _proposal, _tracker), do: :ok
 
   defp current_revision(issue, proposal) do
     if is_binary(proposal["expected_updated_at"]) and issue["updated_at"] == proposal["expected_updated_at"], do: :ok, else: {:error, :task_changed}
@@ -231,16 +220,11 @@ defmodule SymphonyElixir.Chat.GitHub do
           "create_task" -> "Task created in the backlog; execution was not queued."
           "feedback" -> "Feedback recorded on GitHub; it does not interrupt or steer a running worker."
           "edit_task" -> "Task updated; its cancelled execution hold remains in place."
-          "queue_task" -> queue_summary(proposal)
-          "unqueue_task" -> "Routing labels removed; the cancelled execution hold remains in place."
         end
 
       receipt(result, proposal, summary)
     end
   end
-
-  defp queue_summary(%{"queue_unheld" => true}), do: "Task queued. Normal dependency, budget, capacity and launch checks still apply; a paused controller remains paused."
-  defp queue_summary(_proposal), do: "Routing labels added. The cancelled hold remains; Retry can release it after normal admission and launch checks."
 
   defp edit_body(proposal, issue, tracker) do
     args = proposal["args"]
@@ -249,22 +233,6 @@ defmodule SymphonyElixir.Chat.GitHub do
     body = Map.put(body, "body", text <> "\n\n" <> marker(proposal))
 
     update_labels(body, issue, proposal, tracker)
-  end
-
-  defp update_labels(body, issue, %{"action" => action}, tracker) when action in ~w(queue_task unqueue_task) do
-    labels = issue_labels(issue)
-    required = tracker.required_labels
-    normalized = Enum.map(labels, &String.downcase/1)
-
-    updated =
-      if action == "queue_task" do
-        labels ++ Enum.reject(required, &(String.downcase(&1) in normalized))
-      else
-        required = Enum.map(required, &String.downcase/1)
-        Enum.reject(labels, &(String.downcase(&1) in required))
-      end
-
-    Map.put(body, "labels", updated)
   end
 
   defp update_labels(body, issue, proposal, tracker) do

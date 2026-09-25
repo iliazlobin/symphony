@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias SymphonyElixir.{AgentRunner, Config, ControlLedger, IssueAcceptance}
-  alias SymphonyElixir.{PRWork, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{PRWork, StatusDashboard, TaskRouting, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -463,11 +463,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
-  @spec revalidate_issue_for_dispatch_for_test(Issue.t(), ([String.t()] -> term())) ::
+  @spec revalidate_issue_for_dispatch_for_test(Issue.t(), ([String.t()] -> term()), map() | nil) ::
           {:ok, Issue.t()} | {:skip, Issue.t() | :missing} | {:error, term()}
-  def revalidate_issue_for_dispatch_for_test(%Issue{} = issue, issue_fetcher)
+  def revalidate_issue_for_dispatch_for_test(%Issue{} = issue, issue_fetcher, state \\ nil)
       when is_function(issue_fetcher, 1) do
-    revalidate_issue_for_dispatch(issue, issue_fetcher, terminal_state_set())
+    revalidate_issue_for_dispatch(issue, issue_fetcher, terminal_state_set(), state)
   end
 
   @doc false
@@ -500,7 +500,7 @@ defmodule SymphonyElixir.Orchestrator do
 
         terminate_running_issue(state, issue.id, true)
 
-      !issue_routable?(issue) ->
+      !issue_routable?(issue, state) ->
         Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
 
         terminate_running_issue(state, issue.id, false)
@@ -535,7 +535,7 @@ defmodule SymphonyElixir.Orchestrator do
         cleanup_issue_workspace(issue, Map.get(state.blocked, issue.id, %{}))
         release_issue_claim(state, issue.id)
 
-      !issue_routable?(issue) ->
+      !issue_routable?(issue, state) ->
         Logger.info("Blocked issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block")
         release_issue_claim(state, issue.id)
 
@@ -896,7 +896,7 @@ defmodule SymphonyElixir.Orchestrator do
          active_states,
          terminal_states
        ) do
-    candidate_issue?(issue, active_states, terminal_states) and
+    candidate_issue?(issue, active_states, terminal_states, state) and
       !MapSet.member?(claimed, issue.id) and
       !Map.has_key?(running, issue.id) and
       !Map.has_key?(blocked, issue.id) and
@@ -935,19 +935,26 @@ defmodule SymphonyElixir.Orchestrator do
            state: state_name
          } = issue,
          active_states,
-         terminal_states
+         terminal_states,
+         state
        )
        when is_binary(id) and is_binary(identifier) and is_binary(title) and is_binary(state_name) do
     Enum.all?([id, identifier, title, state_name], &present_string?/1) and
-      issue_routable?(issue) and
+      issue_routable?(issue, state) and
       active_issue_state?(state_name, active_states) and
       !terminal_issue_state?(state_name, terminal_states)
   end
 
-  defp candidate_issue?(_issue, _active_states, _terminal_states), do: false
+  defp candidate_issue?(_issue, _active_states, _terminal_states, _state), do: false
 
-  defp issue_routable?(%Issue{} = issue) do
-    Issue.routable?(issue, Config.settings!().tracker.required_labels)
+  defp issue_routable?(%Issue{} = issue, state) do
+    item =
+      case state do
+        %{control: %ControlLedger{data: data}} -> data["issues"][issue.id]
+        _ -> nil
+      end
+
+    TaskRouting.routable?(issue, item, Config.settings!().tracker)
   end
 
   defp terminal_issue_state?(state_name, terminal_states) when is_binary(state_name) do
@@ -982,7 +989,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
-    case refresh_issue_for_dispatch(issue) do
+    case refresh_issue_for_dispatch(issue, state) do
       {:ok, %Issue{} = refreshed_issue} ->
         do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
 
@@ -994,8 +1001,8 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp refresh_issue_for_dispatch(issue) do
-    case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issues_by_ids/1, terminal_state_set()) do
+  defp refresh_issue_for_dispatch(issue, state) do
+    case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issues_by_ids/1, terminal_state_set(), state) do
       {:ok, %Issue{} = refreshed_issue} ->
         {:ok, refreshed_issue}
 
@@ -1096,17 +1103,17 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)
+  defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states, state)
        when is_binary(issue_id) and is_function(issue_fetcher, 1) do
     case issue_fetcher.([issue_id]) do
-      {:ok, [%Issue{} = refreshed_issue | _]} ->
-        if retry_candidate_issue?(refreshed_issue, terminal_states) do
+      {:ok, [%Issue{id: ^issue_id} = refreshed_issue]} ->
+        if retry_candidate_issue?(refreshed_issue, terminal_states, state) do
           {:ok, refreshed_issue}
         else
           {:skip, refreshed_issue}
         end
 
-      {:ok, []} ->
+      {:ok, _unexpected} ->
         {:skip, :missing}
 
       {:error, reason} ->
@@ -1114,7 +1121,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states), do: {:ok, issue}
+  defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states, _state), do: {:ok, issue}
 
   defp complete_issue(%State{} = state, issue_id) do
     %{
@@ -1213,7 +1220,7 @@ defmodule SymphonyElixir.Orchestrator do
         cleanup_issue_workspace(issue, metadata)
         {:noreply, release_issue_claim(state, issue_id)}
 
-      retry_candidate_issue?(issue, terminal_states) ->
+      retry_candidate_issue?(issue, terminal_states, state) ->
         handle_active_retry(state, issue, attempt, metadata)
 
       true ->
@@ -1272,10 +1279,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_active_retry(state, issue, attempt, metadata) do
-    if retry_candidate_issue?(issue, terminal_state_set()) and
+    if retry_candidate_issue?(issue, terminal_state_set(), state) and
          dispatch_slots_available?(issue, state) and
          worker_slots_available?(state, metadata[:worker_host]) do
-      case refresh_issue_for_dispatch(issue) do
+      case refresh_issue_for_dispatch(issue, state) do
         {:ok, %Issue{} = refreshed_issue} ->
           {:noreply, do_dispatch_issue(state, refreshed_issue, attempt, metadata[:worker_host])}
 
@@ -1481,6 +1488,12 @@ defmodule SymphonyElixir.Orchestrator do
   @spec control_snapshot(GenServer.server()) :: map() | {:error, term()}
   def control_snapshot(server \\ __MODULE__), do: safe_control_call(server, :control_snapshot)
 
+  @spec observe_tracker_issues([Issue.t()], String.t(), GenServer.server(), timeout()) :: :ok | {:error, term()}
+  def observe_tracker_issues(issues, scope, server \\ __MODULE__, timeout \\ 1_000), do: safe_control_call(server, {:observe_tracker_issues, issues, scope}, timeout)
+
+  @spec routing_sync_result(String.t(), pos_integer(), String.t(), :ok | {:error, atom()}, GenServer.server()) :: :ok | {:error, term()}
+  def routing_sync_result(id, revision, scope, result, server \\ __MODULE__), do: safe_control_call(server, {:routing_sync_result, id, revision, scope, result})
+
   @spec control_command(map(), GenServer.server()) :: {:ok, map()} | {:error, term()}
   def control_command(command, server \\ __MODULE__), do: safe_control_call(server, {:control_command, command})
 
@@ -1535,8 +1548,8 @@ defmodule SymphonyElixir.Orchestrator do
   @spec record_pr_publication(map(), GenServer.server()) :: {:ok, map()} | {:error, term()}
   def record_pr_publication(receipt, server \\ __MODULE__), do: safe_control_call(server, {:pr_publication, receipt})
 
-  defp safe_control_call(server, message) do
-    GenServer.call(server, message, 15_000)
+  defp safe_control_call(server, message, timeout \\ 15_000) do
+    GenServer.call(server, message, timeout)
   catch
     :exit, _ -> {:error, :unavailable}
   end
@@ -1653,6 +1666,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp apply_control_effect(state, %{"action" => "cancel", "issue_id" => id}), do: terminate_running_issue(state, id, false)
+  defp apply_control_effect(state, %{"action" => "queue_task"}), do: schedule_tick(state, 0)
   defp apply_control_effect(state, %{"action" => "retry", "issue_id" => id}), do: state |> release_issue_claim(id) |> schedule_tick(0)
   defp apply_control_effect(state, %{"action" => action, "issue_id" => id}) when action in ["create_pr_work", "continue_pr_work"], do: state |> release_issue_claim(id) |> schedule_tick(0)
   defp apply_control_effect(state, %{"action" => "set_concurrency"}), do: schedule_tick(state, 0)
@@ -1689,6 +1703,18 @@ defmodule SymphonyElixir.Orchestrator do
       |> Map.put("instance_id", if(state.control, do: inspect(state.control.lock)))
 
     {:reply, payload, state}
+  end
+
+  def handle_call({:observe_tracker_issues, issues, scope}, _from, state) do
+    update_local_routing(state, scope, fn ledger ->
+      ControlLedger.observe_issues(ledger, issues, Config.settings!().tracker)
+    end)
+  end
+
+  def handle_call({:routing_sync_result, id, revision, scope, result}, _from, state) do
+    update_local_routing(state, scope, fn ledger ->
+      ControlLedger.routing_sync_result(ledger, id, revision, scope, result)
+    end)
   end
 
   def handle_call({:guarded_control_command, command, expected_tracker}, from, state) do
@@ -1922,12 +1948,37 @@ defmodule SymphonyElixir.Orchestrator do
       {:ok, ledger, result, replayed} ->
         state = %{state | control: ledger}
         state = if replayed, do: state, else: apply_control_effect(state, command)
+        notify_dashboard()
         {:reply, {:ok, Map.put(result, "replayed", replayed)}, state}
 
       {:error, {:control_persistence, _} = reason} ->
         {:reply, {:error, :control_unavailable}, control_failure(state, reason)}
 
       {:error, :control_configuration_changed_restart_required = reason} ->
+        {:reply, {:error, :control_unavailable}, control_failure(state, reason)}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp update_local_routing(state, scope, update) do
+    state = refresh_runtime_config(state)
+
+    result =
+      cond do
+        is_nil(state.control) -> {:error, :control_disabled}
+        not is_nil(state.control_fault) -> {:error, :control_unavailable}
+        scope != tracker_fingerprint() -> {:error, :tracker_changed}
+        true -> with :ok <- unchanged_control_settings(state), do: update.(state.control)
+      end
+
+    case result do
+      {:ok, ledger} ->
+        if ledger != state.control, do: notify_dashboard()
+        {:reply, :ok, %{state | control: ledger}}
+
+      {:error, {:control_persistence, _} = reason} ->
         {:reply, {:error, :control_unavailable}, control_failure(state, reason)}
 
       {:error, reason} ->
@@ -1943,7 +1994,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp pr_work_context do
     repository = Config.settings!().tracker.provider["repo"]
-    %{tracker_fingerprint: tracker_fingerprint(), base_sha: Config.control_settings().base_sha, repository: repository}
+
+    %{
+      tracker_fingerprint: tracker_fingerprint(),
+      base_sha: Config.control_settings().base_sha,
+      repository: repository,
+      tracker_kind: Config.settings!().tracker.kind,
+      required_labels: Config.settings!().tracker.required_labels
+    }
   end
 
   defp acceptance_context(state, %{"action" => "accept_task"} = command, context) do
@@ -1954,7 +2012,7 @@ defmodule SymphonyElixir.Orchestrator do
         not IssueAcceptance.valid_command?(command) -> {:error, :invalid_command}
         command["expected_revision"] != state.control.data["revision"] -> {:error, :revision_conflict}
         acceptance_active?(state, id) -> {:error, :task_still_active}
-        true -> verify_acceptance_issue(id, context)
+        true -> cached_acceptance_issue(state, id, context)
       end
     else
       {:ok, context}
@@ -1965,6 +2023,17 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp acceptance_active?(state, id),
     do: Map.has_key?(state.running, id) or Map.has_key?(state.retry_attempts, id) or Map.has_key?(state.blocked, id)
+
+  defp cached_acceptance_issue(state, id, context) do
+    case get_in(state.control.data, ["tracker_issues", id]) do
+      %{"tracker_fingerprint" => scope, "dispatchable" => true} = record when scope == context.tracker_fingerprint ->
+        verified = %{id: id, state: record["state"], updated_at: record["updated_at"], terminal: MapSet.member?(terminal_state_set(), normalize_issue_state(record["state"]))}
+        {:ok, Map.put(context, :acceptance_issue, verified)}
+
+      _ ->
+        verify_acceptance_issue(id, context)
+    end
+  end
 
   defp verify_acceptance_issue(id, context) do
     tracker = Config.settings!().tracker
@@ -2002,10 +2071,11 @@ defmodule SymphonyElixir.Orchestrator do
     id = command["issue_id"]
 
     with {:ok, [%Issue{id: ^id} = issue]} <- Tracker.fetch_issues_by_ids([id]),
-         true <- candidate_issue?(issue, active_state_set(), terminal_state_set()) or {:error, :task_not_queueable},
+         true <- candidate_issue?(issue, active_state_set(), terminal_state_set(), state),
          :ok <- verify_continued_work(state, command) do
       :ok
     else
+      false -> {:error, :task_not_queueable}
       {:error, _} = error -> error
       _ -> {:error, :task_not_found}
     end
@@ -2178,8 +2248,8 @@ defmodule SymphonyElixir.Orchestrator do
     if changed?, do: control_failure(state, :control_configuration_changed_restart_required), else: state
   end
 
-  defp retry_candidate_issue?(%Issue{} = issue, terminal_states) do
-    candidate_issue?(issue, active_state_set(), terminal_states)
+  defp retry_candidate_issue?(%Issue{} = issue, terminal_states, state) do
+    candidate_issue?(issue, active_state_set(), terminal_states, state)
   end
 
   defp dispatch_slots_available?(%Issue{} = issue, %State{} = state) do

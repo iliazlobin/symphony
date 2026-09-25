@@ -12,10 +12,10 @@ defmodule SymphonyElixirWeb.TaskBoard do
   `completion_evidence`, `tracker_state`, `hold` and `attention`.
   """
 
-  alias SymphonyElixir.{Config, IssueAcceptance, Orchestrator, Tracker}
+  alias SymphonyElixir.{Config, IssueAcceptance, Orchestrator, TaskRouting, Tracker}
   alias SymphonyElixir.GitHub.{Admission, Board, Client}
   alias SymphonyElixir.Tracker.Issue
-  alias SymphonyElixirWeb.Presenter
+  alias SymphonyElixirWeb.{BoardCache, Presenter}
 
   @spec load(GenServer.name(), pos_integer()) :: map()
   def load(orchestrator, timeout) when is_integer(timeout) and timeout > 0 do
@@ -23,6 +23,49 @@ defmodule SymphonyElixirWeb.TaskBoard do
       {:ok, settings} -> load_settings(orchestrator, timeout, settings)
       {:error, _reason} -> unavailable_configuration()
     end
+  end
+
+  @doc "Uses cached source data with current native decisions for fast routing previews."
+  @spec load_cached(GenServer.name(), pos_integer()) :: map()
+  def load_cached(orchestrator, timeout) do
+    case BoardCache.get(BoardCache.scope(orchestrator)) do
+      {:ok, board} -> refresh_control(board, Orchestrator.control_snapshot(orchestrator))
+      :miss -> load(orchestrator, timeout)
+    end
+  end
+
+  @doc "Reprojects the last source snapshot against fresh local decisions without tracker IO."
+  def refresh_control(board, control, runtime \\ nil)
+
+  @spec refresh_control(map(), term(), map() | nil) :: map()
+  def refresh_control(board, control, runtime) when is_map(control) do
+    with {:ok, settings} <- Config.settings(),
+         true <- is_nil(control["fault"]) and not Map.has_key?(control, "error"),
+         true <- control["tracker_fingerprint"] == tracker_fingerprint(settings.tracker),
+         true <- board[:tracker_fingerprint] == control["tracker_fingerprint"],
+         issues when is_list(issues) <- board[:tracker_issues] do
+      runtime = runtime || board[:runtime] || %{}
+      refreshed = project(issues, runtime, control, settings)
+      tasks = refreshed_tasks(board.tasks, refreshed.tasks)
+      board |> Map.put(:tasks, tasks) |> Map.put(:control, control) |> Map.put(:runtime, runtime)
+    else
+      _ -> Map.put(board, :runtime_error, "Local task state is unavailable or changed. Waiting for a complete board.")
+    end
+  end
+
+  def refresh_control(board, _control, _runtime), do: Map.put(board, :runtime_error, "Durable controls unavailable. Task holds may be stale.")
+
+  defp refreshed_tasks(previous, current) do
+    previous = Map.new(previous, &{&1.id, &1})
+
+    Enum.map(current, fn task ->
+      old = Map.get(previous, task.id, %{})
+
+      old
+      |> Map.merge(task)
+      |> Map.merge(Map.take(old, [:pull_requests, :github_status, :github_error]))
+      |> Map.put(:links, task.links ++ Enum.filter(old[:links] || [], &(&1.kind in ["pull_request", "checks"])))
+    end)
   end
 
   @doc "Initial runtime-only view while the tracker is loading. It is not a complete board."
@@ -73,6 +116,8 @@ defmodule SymphonyElixirWeb.TaskBoard do
 
     %{
       tasks: Enum.sort_by(tasks ++ missing, & &1.id),
+      tracker_issues: issues,
+      tracker_fingerprint: settings.tracker_fingerprint,
       projects: [project],
       generated_at: timestamp(),
       source_error: nil,
@@ -112,14 +157,25 @@ defmodule SymphonyElixirWeb.TaskBoard do
     {issues, source_error} = source_result(results.source, settings.tracker)
     {runtime, runtime_error} = runtime_result(results.runtime)
     {control, control_error} = control_result(results.control)
+    remaining_ms = max(1, deadline - System.monotonic_time(:millisecond))
+    observation_error = observe_source(orchestrator, issues, source_error, settings, remaining_ms)
 
     issues
     |> project(runtime, control, settings)
     |> Map.put(:source_error, source_error)
-    |> Map.put(:runtime_error, runtime_error || control_error)
+    |> Map.put(:runtime_error, runtime_error || control_error || observation_error)
     |> Board.enrich(settings, max(0, deadline - System.monotonic_time(:millisecond)))
     |> verify_tracker(settings.tracker)
   end
+
+  defp observe_source(orchestrator, issues, nil, %{control: %{enabled: true}, tracker: %{kind: "github"} = tracker}, timeout) do
+    case Orchestrator.observe_tracker_issues(issues, tracker_fingerprint(tracker), orchestrator, timeout) do
+      :ok -> nil
+      {:error, _} -> "Local task storage unavailable. Changes may need a fresh board."
+    end
+  end
+
+  defp observe_source(_orchestrator, _issues, _source_error, _settings, _timeout), do: nil
 
   defp verify_tracker(board, tracker) do
     case Config.settings() do
@@ -266,6 +322,7 @@ defmodule SymphonyElixirWeb.TaskBoard do
       handoff: handoff,
       hold: hold,
       ledger: ledger,
+      routing: TaskRouting.scoped(ledger, settings.tracker_fingerprint),
       tracker_state: issue.state,
       tracker_terminal: terminal,
       acceptance: if(accepted, do: ledger["acceptance"]),
@@ -283,7 +340,8 @@ defmodule SymphonyElixirWeb.TaskBoard do
 
   defp project_stage(issue, admitted, runtime, ledger, terminal, accepted, settings) do
     routed = if settings.control.enabled, do: issue, else: admitted
-    queued = active?(issue, settings.tracker) and Issue.routable?(routed, settings.tracker.required_labels)
+    routing = if settings.control.enabled, do: ledger
+    queued = active?(issue, settings.tracker) and TaskRouting.routable?(routed, routing, settings.tracker)
 
     if settings.control.enabled,
       do: controlled_stage(runtime, ledger["hold"], ledger["handoff"], terminal, queued, accepted),
@@ -296,7 +354,7 @@ defmodule SymphonyElixirWeb.TaskBoard do
     issue_attention =
       if settings.control.enabled and terminal,
         do: "Awaiting your acceptance",
-        else: attention(runtime, ledger["hold"], admitted, issue, settings.tracker, terminal)
+        else: attention(runtime, ledger["hold"], admitted, issue, settings.tracker, terminal, ledger)
 
     reservation_attention(runtime, ledger) || issue_attention
   end
@@ -355,17 +413,17 @@ defmodule SymphonyElixirWeb.TaskBoard do
   defp reservation_attention(_runtime, %{"active" => active}) when is_map(active), do: "Execution reservation needs reconciliation"
   defp reservation_attention(_runtime, _ledger), do: nil
 
-  defp attention(%{status: "blocked"}, _hold, _admitted, _issue, _tracker, _terminal), do: "Worker needs input"
-  defp attention(%{status: "retrying"}, _hold, _admitted, _issue, _tracker, _terminal), do: "Retry scheduled"
-  defp attention(_runtime, hold, _admitted, _issue, _tracker, _terminal) when is_binary(hold), do: humanize_hold(hold)
+  defp attention(%{status: "blocked"}, _hold, _admitted, _issue, _tracker, _terminal, _ledger), do: "Worker needs input"
+  defp attention(%{status: "retrying"}, _hold, _admitted, _issue, _tracker, _terminal, _ledger), do: "Retry scheduled"
+  defp attention(_runtime, hold, _admitted, _issue, _tracker, _terminal, _ledger) when is_binary(hold), do: humanize_hold(hold)
 
-  defp attention(_runtime, _hold, admitted, issue, tracker, false) do
-    if active?(issue, tracker) and Issue.routable?(issue, tracker.required_labels),
+  defp attention(_runtime, _hold, admitted, issue, tracker, false, ledger) do
+    if active?(issue, tracker) and TaskRouting.routable?(issue, ledger, tracker),
       do: get_in(admitted.native_ref || %{}, ["admission_reason"]),
       else: nil
   end
 
-  defp attention(_runtime, _hold, _admitted, _issue, _tracker, _terminal), do: nil
+  defp attention(_runtime, _hold, _admitted, _issue, _tracker, _terminal, _ledger), do: nil
 
   defp humanize_hold("owner_review"), do: "Candidate needs review"
   defp humanize_hold("cancelled"), do: "Cancelled execution"

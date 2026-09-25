@@ -3,7 +3,9 @@
 The controlled GitHub board supports queueing from **Backlog → Work** by drag-and-drop
 or the task's **Move to Work** button. Both open a durable preview requiring **Queue task**
 confirmation. See the [profile workflow](../profiles/events-concierge/README.md#operate)
-for task creation, holds, review and completion. Queueing does not resume a paused controller.
+for task creation, holds, review and completion. Transitions commit to the local control
+ledger and update the board immediately. GitHub routing labels synchronize in the background
+with durable retry; queueing does not resume a paused controller.
 
 This directory contains the current Elixir/OTP implementation of Symphony, based on
 [`SPEC.md`](../SPEC.md) at the repository root.
@@ -381,7 +383,7 @@ losing messages, receipts or queued work.
 PRs linked to several issues share one feature agent: verified native work selects its
 owning task, and other issues reference it. Before publication, the first retained
 discussion owns the conversation. Active turns and pending reports delay reconciliation.
-Existing routing labels, launch permissions, publication and merge gates still apply.
+Local task routing, launch permissions, publication and merge gates still apply.
 Worker progress, review handoffs and GitHub state changes are checked every 15 seconds
 and recorded as **PR update** messages in the task agent and matching feature agent conversations.
 Reports survive restart and retain the latest 80 updates per conversation. With valid

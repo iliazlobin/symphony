@@ -16,7 +16,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     def handle_call({:snapshot, snapshot}, _from, state), do: {:reply, :ok, %{state | snapshot: snapshot}}
     def handle_call(:control_snapshot, _from, state), do: {:reply, state.control, state}
     def handle_call(:board, _from, state), do: {:reply, state.board, state}
-    def handle_call({:board, board}, _from, state), do: {:reply, :ok, %{state | board: board}}
+    def handle_call({:board, board}, _from, state), do: {:reply, :ok, %{state | board: board, control: board.control}}
 
     def handle_call({:authorized_control_command, command, _tracker, authorize}, _from, state) do
       send(state.owner, {:settings_command, command})
@@ -211,6 +211,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
       "enabled" => true,
       "mode" => "paused",
       "revision" => 0,
+      "tracker_fingerprint" => Orchestrator.tracker_fingerprint(),
       "fault" => nil,
       "issues" => %{"4" => %{"hold" => "owner_review", "handoff" => %{"candidate_sha" => String.duplicate("a", 40), "review" => %{"verdict" => "request_changes"}}}}
     }
@@ -351,6 +352,84 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert render_async(second) =~ "Board refresh failed"
     assert {:ok, ^updated} = BoardCache.get(BoardCache.scope(ctx.runtime))
     assert html_response(get(build_conn(), "/"), 200) =~ "Fresh after reload"
+  end
+
+  test "local routing updates cards during a blocked tracker read and stale completion cannot revert it", ctx do
+    owner = self()
+
+    configure_board_loaders(fn _, _ ->
+      send(owner, {:board_read, self()})
+      receive do: ({:complete, result} -> result)
+    end)
+
+    :ok = BoardCache.put(BoardCache.scope(ctx.runtime), ctx.board)
+    {:ok, view, _html} = live(build_conn(), "/")
+    assert_receive {:board_read, reader}
+    assert has_element?(view, "#lane-backlog [data-task-id='github:example/fixture:1']")
+    scope = Orchestrator.tracker_fingerprint()
+    routing = %{"tracker_fingerprint" => scope, "queued" => true, "status" => "pending"}
+    control = ctx.board.control |> Map.put("tracker_fingerprint", scope) |> Map.put("revision", 1) |> put_in(["issues", "1"], %{"routing" => routing})
+    :sys.replace_state(ctx.runtime, &%{&1 | control: control})
+
+    send(view.pid, :observability_updated)
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:1']")
+    refute has_element?(view, "#lane-backlog [data-task-id='github:example/fixture:1']")
+    assert {:ok, cached} = BoardCache.get(BoardCache.scope(ctx.runtime))
+    assert Enum.find(cached.tasks, &(&1.issue_id == "1")).routing["queued"]
+
+    # This remote read began before the native decision and still lacks its label.
+    send(reader, {:complete, ctx.board})
+    render_async(view)
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:1']")
+
+    unqueued = control |> Map.put("revision", 2) |> put_in(["issues", "1", "routing", "queued"], false)
+    :sys.replace_state(ctx.runtime, &%{&1 | control: unqueued})
+    send(view.pid, {:task_intake, :changed})
+    assert has_element?(view, "#lane-backlog [data-task-id='github:example/fixture:1']")
+    assert_receive {:board_read, next_reader}
+    send(next_reader, {:complete, ctx.board})
+    render_async(view)
+  end
+
+  test "fresh local control faults disable actions without waiting for a tracker refresh", ctx do
+    view = authorized_board_view()
+    open_task(view, "2")
+    assert has_element?(view, ".board-runtime-state", "Controller: Paused")
+
+    faulted = Map.put(ctx.board.control, "fault", "control_persistence")
+    :sys.replace_state(ctx.runtime, &%{&1 | control: faulted})
+    send(view.pid, :observability_updated)
+    assert has_element?(view, ".board-runtime-state", "Execution unavailable")
+    assert has_element?(view, "#board-dialog .execution-state", "Status unavailable")
+    refute has_element?(view, "#board-dialog button[phx-click=prepare-command]")
+    assert has_element?(view, "[data-task-id='github:example/fixture:2']", "Ready fixture")
+
+    :sys.replace_state(ctx.runtime, &%{&1 | control: {:error, :unavailable}})
+    send(view.pid, :observability_updated)
+    assert has_element?(view, ".board-runtime-state", "Execution unavailable")
+    assert has_element?(view, "#board-dialog .execution-state", "Status unavailable")
+    refute has_element?(view, "#board-dialog button[phx-click=prepare-command]")
+  end
+
+  test "pending GitHub routing is compact on cards and details and hides provider errors", ctx do
+    pending = %{"queued" => true, "status" => "pending", "error" => nil}
+    board = update_task(ctx.board, "2", &Map.put(&1, :routing, pending))
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    {view, _} = board_view()
+    selector = "[data-task-id='github:example/fixture:2'] .execution-state .routing-sync"
+    assert has_element?(view, selector, "Syncing GitHub")
+    open_task(view, "2")
+    assert has_element?(view, "#board-dialog .execution-state .routing-sync[title^='Saved locally']", "Syncing GitHub")
+
+    failed = update_task(board, "2", &put_in(&1, [:routing, "error"], "private provider reason"))
+    refresh(view, ctx.runtime, failed)
+    assert has_element?(view, selector, "GitHub sync retrying")
+    assert has_element?(view, "#board-dialog .routing-sync", "GitHub sync retrying")
+    refute render(view) =~ "private provider reason"
+
+    synced = update_task(failed, "2", &put_in(&1, [:routing, "status"], "synced"))
+    refresh(view, ctx.runtime, synced)
+    refute has_element?(view, ".routing-sync")
   end
 
   test "a configuration switch discards pending results and cached cards before loading the new scope", ctx do
@@ -1311,7 +1390,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#task-action-preview h4", "Fresh queue task title")
     assert has_element?(view, "#task-action-preview", "Current scope and acceptance")
     refute has_element?(view, "#task-action-preview h4", "Backlog fixture")
-    assert has_element?(view, "#task-action-preview", "Add queue labels: ready")
+    assert has_element?(view, "#task-action-preview", "GitHub routing labels synchronize in the background")
     assert has_element?(view, "#task-action-preview", "A paused controller stays paused")
     assert has_element?(view, "#lane-backlog [data-task-id='github:example/fixture:1']")
     refute has_element?(view, "#task-intake-form")

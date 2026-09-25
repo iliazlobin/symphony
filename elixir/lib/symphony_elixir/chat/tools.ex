@@ -5,12 +5,13 @@ defmodule SymphonyElixir.Chat.Tools do
   alias SymphonyElixir.{Config, Orchestrator, TaskDraft}
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, TaskBoard}
 
-  @controls ~w(pause drain resume cancel retry set_concurrency)
-  @writes ~w(create_task edit_task feedback queue_task unqueue_task)
+  @controls ~w(pause drain resume cancel retry set_concurrency queue_task unqueue_task)
+  @writes ~w(create_task edit_task feedback)
+  @routing_actions ~w(queue_task unqueue_task)
   @pr_work_actions ~w(create_pr_work continue_pr_work)
   @stages ~w(backlog ready running review done attention)
   @sorts ~w(updated priority title oldest)
-  @task_keys ~w(id issue_id identifier title project project_label stage attention priority updated_at created_at tracker_state completion_evidence source_missing hold github_status)a
+  @task_keys ~w(id issue_id identifier title project project_label stage attention priority updated_at created_at tracker_state completion_evidence source_missing hold github_status routing)a
   @pr_keys ~w(number title url state draft created_at updated_at review head_ref base_ref author additions deletions changed_files mergeable head_sha relation checks check_total check_details_status)a
   @check_keys ~w(kind name status conclusion url started_at completed_at duration_ms workflow_name run_url run_number run_event)a
   @proposal_keys ~w(id action args project_id tracker_fingerprint expected_revision expected_updated_at created_at queue_labels queue_unheld task_title task_description pr_work)
@@ -119,7 +120,7 @@ defmodule SymphonyElixir.Chat.Tools do
         ),
         spec(
           "symphony_propose_action",
-          "Prepare an exact action preview for operator approval. Never claim a proposal was executed. create_task makes an unqueued backlog issue. Supply a title; description and verification are optional and may be empty. Do not combine these fields with body. The legacy body form remains available for existing callers. queue_task can queue an open, unqueued idle backlog task with no hold. edit_task and unqueue_task require a cancelled, idle task; queueing a cancelled task also retains its hold, so Retry remains separate. Queue changes affect only configured routing labels, never bypass admission or launch gates. Feedback adds a GitHub comment without steering a running worker. set_concurrency persists an admission limit within the configured ceiling; limit:null restores the default. Running work and consumed budgets are unchanged. create_pr_work prepares a separate coding session for an issue; continue_pr_work resumes one exact work_id with the requested instruction. Use task details to select a session. The host binds its branch, approved base and candidate head; never supply those fields. Both require explicit operator confirmation to queue native execution, subject to remaining budget, routing labels, controller mode and launch gates. They clear only a previous owner_review hold; other holds remain. Review and publication policy are unchanged.",
+          "Prepare an exact action preview for operator approval. Never claim a proposal was executed. create_task makes an unqueued backlog issue. Supply a title; description and verification are optional and may be empty. Do not combine these fields with body. The legacy body form remains available for existing callers. queue_task can queue an open, unqueued idle backlog task with no hold. edit_task and unqueue_task require a cancelled, idle task; queueing a cancelled task also retains its hold, so Retry remains separate. Queue changes are recorded locally; configured GitHub routing labels synchronize in the background. They never bypass admission or launch gates. Feedback adds a GitHub comment without steering a running worker. set_concurrency persists an admission limit within the configured ceiling; limit:null restores the default. Running work and consumed budgets are unchanged. create_pr_work prepares a separate coding session for an issue; continue_pr_work resumes one exact work_id with the requested instruction. Use task details to select a session. The host binds its branch, approved base and candidate head; never supply those fields. Both require explicit operator confirmation to queue native execution, subject to remaining budget, local task routing, controller mode and launch gates. They clear only a previous owner_review hold; other holds remain. Review and publication policy are unchanged.",
           %{
             "action" => enum(@controls ++ @writes ++ @pr_work_actions),
             "limit" => %{"type" => ["integer", "null"], "minimum" => 1},
@@ -172,6 +173,10 @@ defmodule SymphonyElixir.Chat.Tools do
     end
   end
 
+  defp dispatch_call("symphony_propose_action" = name, %{"action" => action} = args, context, settings) when action in @routing_actions do
+    with {:ok, board} <- read_board(context, :load_cached), do: dispatch(name, args, context, settings, board)
+  end
+
   defp dispatch_call(name, args, context, settings) do
     with {:ok, board} <- read_board(context), do: dispatch(name, args, context, settings, board)
   end
@@ -222,6 +227,18 @@ defmodule SymphonyElixir.Chat.Tools do
 
   @doc "Executes only a persisted, explicitly approved proposal. The caller owns durable single-use execution and receipts."
   @spec confirm(map(), map()) :: {:ok, map()} | {:error, term()}
+  def confirm(%{"action" => action} = proposal, context) when action in @routing_actions do
+    with {:ok, _settings} <- scope(context),
+         :ok <- validate_proposal(proposal, context),
+         {:ok, result} <- native_command(proposal, context, %{issue_id: proposal["args"]["task_id"]}) do
+      native_receipt(proposal, context, result)
+    end
+  rescue
+    _ -> {:error, :write_outcome_unknown}
+  catch
+    _, _ -> {:error, :write_outcome_unknown}
+  end
+
   def confirm(proposal, context) do
     with {:ok, settings} <- scope(context),
          :ok <- validate_proposal(proposal, context),
@@ -304,9 +321,9 @@ defmodule SymphonyElixir.Chat.Tools do
 
   defp valid_value?(value, %{"type" => "integer", "minimum" => min, "maximum" => max}), do: is_integer(value) and value >= min and value <= max
 
-  defp read_board(context) do
+  defp read_board(context, loader \\ :load) do
     board_module = Application.get_env(:symphony_elixir, :chat_board_module, TaskBoard)
-    board = board_module.load(context[:orchestrator] || Orchestrator, 5_000)
+    board = apply(board_module, loader, [context[:orchestrator] || Orchestrator, 5_000])
 
     with {:ok, _settings} <- scope(context),
          true <- (is_map(board) and is_list(board[:tasks])) or {:error, :board_unavailable},
@@ -626,8 +643,12 @@ defmodule SymphonyElixir.Chat.Tools do
 
     task[:tracker_state] == "open" and task[:stage] == "backlog" and is_nil(task[:hold]) and
       is_nil(task[:runtime]) and is_nil(get_in(task, [:ledger, "active"])) and is_nil(task[:handoff]) and
-      tracker.required_labels != [] and not Enum.all?(tracker.required_labels, &(String.downcase(&1) in labels))
+      tracker.required_labels != [] and not locally_queued?(task, tracker.required_labels, labels)
   end
+
+  defp locally_queued?(%{routing: %{"queued" => queued}}, _required, _labels) when is_boolean(queued), do: queued
+  defp locally_queued?(%{ledger: %{"routing" => %{"queued" => queued}}}, _required, _labels) when is_boolean(queued), do: queued
+  defp locally_queued?(_task, required, labels), do: Enum.all?(required, &(String.downcase(&1) in labels))
 
   defp labels_available(%{"action" => action}, tracker) when action in ~w(queue_task unqueue_task) do
     if tracker.required_labels == [], do: {:error, :queue_labels_unconfigured}, else: :ok
@@ -665,6 +686,13 @@ defmodule SymphonyElixir.Chat.Tools do
   defp uuid?(id) when is_binary(id), do: String.match?(id, ~r/^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/)
   defp uuid?(_id), do: false
 
+  defp validate_pr_work_proposal(%{"action" => action} = proposal, context) when action in @routing_actions do
+    with true <- (not Map.has_key?(proposal, "pr_work") and present?(proposal["expected_updated_at"])) or {:error, :invalid_proposal},
+         true <- is_nil(context[:session_id]) or {:error, :pr_session_scope_mismatch} do
+      pr_work_scope(proposal["args"]["task_id"], context)
+    end
+  end
+
   defp validate_pr_work_proposal(%{"action" => action, "args" => args, "pr_work" => evidence}, context) when action in @pr_work_actions and is_map(evidence) do
     expected = if action == "create_pr_work", do: ~w(work_id base_sha), else: ~w(work_id expected_head_sha)
     revision_valid = pr_work_revision?(action, evidence)
@@ -697,10 +725,20 @@ defmodule SymphonyElixir.Chat.Tools do
     with :ok <- complete_board(board),
          {:ok, task} <- action_task(proposal["args"], context, board),
          {:ok, result} <- native_command(proposal, context, task) do
-      summary = action_title(proposal["action"]) <> " recorded. Refresh status to check execution."
-      widget = %{"type" => "receipt", "summary" => summary, "url" => board_url(context.project_id), "result" => result}
-      {:ok, %{"widgets" => [widget]}}
+      native_receipt(proposal, context, result)
     end
+  end
+
+  defp native_receipt(proposal, context, result) do
+    summary =
+      case proposal["action"] do
+        "queue_task" -> "Task queued locally. GitHub labels synchronize in the background; holds, controller mode and admission checks still apply."
+        "unqueue_task" -> "Task unqueued locally. GitHub labels synchronize in the background; its cancelled hold remains."
+        action -> action_title(action) <> " recorded. Refresh status to check execution."
+      end
+
+    widget = %{"type" => "receipt", "summary" => summary, "url" => board_url(context.project_id), "result" => result}
+    {:ok, %{"widgets" => [widget]}}
   end
 
   defp task_preview_matches?(proposal, evidence) do
@@ -715,6 +753,7 @@ defmodule SymphonyElixir.Chat.Tools do
 
     result =
       cond do
+        action in @routing_actions -> BoardActions.routing_command(native_payload(proposal), context.auth, server)
         action in @pr_work_actions -> BoardActions.pr_work_command(native_payload(proposal), context.auth, server)
         action == "set_concurrency" -> BoardActions.settings_command(proposal["args"]["limit"], revision, proposal["id"], context.auth, server)
         true -> BoardActions.command(action, task && task.issue_id, revision, proposal["id"], context.auth, server)
@@ -745,6 +784,7 @@ defmodule SymphonyElixir.Chat.Tools do
     command = %{"action" => proposal["action"], "issue_id" => proposal["args"]["task_id"], "expected_revision" => proposal["expected_revision"], "command_id" => proposal["id"]}
 
     cond do
+      proposal["action"] in @routing_actions -> Map.put(command, "expected_updated_at", proposal["expected_updated_at"])
       proposal["action"] in @pr_work_actions -> command |> Map.merge(proposal["pr_work"]) |> Map.put("instruction", proposal["args"]["body"])
       proposal["action"] == "set_concurrency" -> Map.put(command, "limit", proposal["args"]["limit"])
       true -> command

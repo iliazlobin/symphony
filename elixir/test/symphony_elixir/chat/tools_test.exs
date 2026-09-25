@@ -3,7 +3,6 @@ defmodule SymphonyElixir.Chat.ToolsTest do
 
   alias SymphonyElixir.Chat.{Artifacts, Tools}
   alias SymphonyElixir.Chat.GitHub, as: ChatGitHub
-  alias SymphonyElixir.GitHub.Admission
   alias SymphonyElixir.GitHub.Client, as: GitHubClient
   alias SymphonyElixir.PathSafety
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, TaskBoard}
@@ -11,6 +10,8 @@ defmodule SymphonyElixir.Chat.ToolsTest do
   @proposal_id "c63f2004-17cf-4f50-bae7-e1368b8d046a"
 
   defmodule Board do
+    def load_cached(owner, timeout), do: load(owner, timeout)
+
     def load(_owner, _timeout) do
       case Application.fetch_env!(:symphony_elixir, :chat_test_board) do
         fun when is_function(fun, 0) -> fun.()
@@ -29,11 +30,6 @@ defmodule SymphonyElixir.Chat.ToolsTest do
       end
     end
 
-    def tracker_action_guarded(fingerprint, revision, issue_id, callback, owner, :queue_unheld) do
-      send(Application.fetch_env!(:symphony_elixir, :chat_test_owner), :guarded_unheld_queue)
-      tracker_action_guarded(fingerprint, revision, issue_id, callback, owner)
-    end
-
     def control_receipt_guarded(command, fingerprint, _owner) do
       send(Application.fetch_env!(:symphony_elixir, :chat_test_owner), {:receipt_read, command, fingerprint})
       Application.get_env(:symphony_elixir, :chat_test_receipt, {:error, :command_not_found})
@@ -50,6 +46,18 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     def handle_call({:authorized_control_command, command, fingerprint, authorize}, _from, test_pid) do
       send(test_pid, {:native_command, command, fingerprint, authorize.()})
       {:reply, Application.get_env(:symphony_elixir, :chat_test_command, {:ok, %{"revision" => 4}}), test_pid}
+    end
+  end
+
+  defmodule FailingOwnerRegistry do
+    def whereis_name({observer, :raise}) do
+      send(observer, :native_owner_lookup)
+      raise "native owner registry unavailable"
+    end
+
+    def whereis_name({observer, :throw}) do
+      send(observer, :native_owner_lookup)
+      throw(:native_owner_registry_unavailable)
     end
   end
 
@@ -991,7 +999,9 @@ defmodule SymphonyElixir.Chat.ToolsTest do
   end
 
   test "HTTP transport sends bounded requests once and does not follow redirects" do
-    for {method, status, body} <- [{"GET", 200, nil}, {"POST", 503, %{"body" => "text"}}, {"PATCH", 302, %{"title" => "updated"}}] do
+    requests = [{"GET", 200, nil}, {"POST", 503, %{"body" => "text"}}, {"PATCH", 302, %{"title" => "updated"}}, {"DELETE", 404, nil}]
+
+    for {method, status, body} <- requests do
       {port, server} = http_server(status)
       settings = %{api_url: "http://127.0.0.1:#{port}", token: "test-token"}
       assert {:ok, %{status: ^status, body: %{}}} = ChatGitHub.request_once(method, "/bounded", %{}, body, settings)
@@ -1020,37 +1030,33 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     assert {:error, :write_outcome_unknown} = Tools.confirm(proposal, ctx.context)
   end
 
-  test "queue changes only routing labels under the cancelled owner guard and retain admission checks", ctx do
+  test "queue and unqueue record exact local commands without loading or writing GitHub", ctx do
+    owner = start_supervised!({CommandOwner, self()})
+    context = Map.put(ctx.context, :orchestrator, owner)
     board = put_in(ctx.board, [:tasks, Access.at(0), :hold], "cancelled")
-    Application.put_env(:symphony_elixir, :chat_test_board, board)
 
-    for {action, previous, expected} <- [
-          {"queue_task", ["publish-approved"], ["publish-approved", "ready"]},
-          {"queue_task", ["publish-approved", "Ready"], ["publish-approved", "Ready"]},
-          {"unqueue_task", ["publish-approved", "Ready"], ["publish-approved"]}
-        ] do
-      proposal = propose(ctx.context, %{"action" => action, "task_id" => "1"})
+    for action <- ~w(queue_task unqueue_task) do
+      Application.put_env(:symphony_elixir, :chat_test_board, board)
+      proposal = propose(context, %{"action" => action, "task_id" => "GH-1"})
       assert proposal["queue_labels"] == ["ready"]
-      assert {:error, :proposal_changed} = Tools.confirm(%{proposal | "queue_labels" => ["publish-approved"]}, ctx.context)
-      source = Map.put(raw_issue(), "labels", previous)
+      Application.put_env(:symphony_elixir, :chat_test_board, fn -> flunk("confirmation must not reload tracker data") end)
+      Application.put_env(:symphony_elixir, :chat_github_request, fn _, _, _, _, _ -> flunk("local routing must not call GitHub") end)
 
-      script([
-        fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: source}} end,
-        fn "PATCH", _, _, body, _ ->
-          assert body["labels"] == expected
-          issue = Map.merge(body, %{"state" => "open", "title" => "Task", "number" => 1})
-          normalized = GitHubClient.normalize_issue_for_test(issue, "example/repo")
-          [admitted] = Admission.evaluate([normalized], fn _ids -> {:ok, []} end)
-          refute admitted.dispatchable
-          assert admitted.native_ref["admission_reason"] =~ "Depends on:"
-          {:ok, %{status: 200, body: issue}}
-        end
-      ])
+      assert {:ok, %{"widgets" => [%{"summary" => summary}]}} = Tools.confirm(proposal, context)
+      assert summary =~ "locally"
+      assert summary =~ "background"
+      assert_receive {:native_command, command, fingerprint, true}
+      assert fingerprint == context.tracker_fingerprint
 
-      assert {:ok, %{"widgets" => [%{"summary" => summary}]}} = Tools.confirm(proposal, ctx.context)
-      assert summary =~ "cancelled"
-      assert_receive {:guarded_edit, _, 3, "1"}
-      assert_finished()
+      assert command == %{
+               "action" => action,
+               "issue_id" => "1",
+               "command_id" => @proposal_id,
+               "expected_revision" => 3,
+               "expected_updated_at" => proposal["expected_updated_at"]
+             }
+
+      refute_receive {:guarded_edit, _, _, _}
     end
   end
 
@@ -1066,32 +1072,20 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     assert {:error, :queue_labels_unconfigured} = Tools.call("symphony_propose_action", args, context)
   end
 
-  test "an unheld backlog task queues through its serialized owner and preserves other labels", ctx do
-    backlog = update_in(ctx.board, [:tasks, Access.at(0)], &Map.merge(&1, %{stage: "backlog", labels: ["documentation"]}))
-    Application.put_env(:symphony_elixir, :chat_test_board, backlog)
+  test "local routing takes precedence over lagging GitHub labels in a queue preview", ctx do
+    task = ctx.board.tasks |> hd() |> Map.merge(%{stage: "backlog", labels: ["ready"], routing: %{"queued" => false}})
+    Application.put_env(:symphony_elixir, :chat_test_board, %{ctx.board | tasks: [task]})
     proposal = propose(ctx.context, %{"action" => "queue_task", "task_id" => "GH-1"})
     assert proposal["queue_unheld"] == true
-    assert proposal["queue_labels"] == ["ready"]
-    assert {:error, :proposal_changed} = Tools.confirm(Map.delete(proposal, "queue_unheld"), ctx.context)
+    assert proposal["args"]["task_id"] == "1"
 
-    source = Map.merge(raw_issue(), %{"state" => "open", "labels" => ["documentation"]})
+    queued = %{task | labels: [], routing: %{"queued" => true}}
+    Application.put_env(:symphony_elixir, :chat_test_board, %{ctx.board | tasks: [queued]})
+    assert {:error, :task_not_queueable} = Tools.call("symphony_propose_action", %{"action" => "queue_task", "task_id" => "1"}, ctx.context)
 
-    script([
-      fn "GET", "/repos/example/repo/issues/1", _, _, _ -> {:ok, %{status: 200, body: source}} end,
-      fn "PATCH", "/repos/example/repo/issues/1", _, body, _ ->
-        assert body["labels"] == ["documentation", "ready"]
-        assert body["body"] == source["body"] <> "\n\n" <> marker(proposal)
-        refute Map.has_key?(body, "state")
-        {:ok, %{status: 200, body: Map.merge(source, body)}}
-      end
-    ])
-
-    assert {:ok, %{"widgets" => [%{"summary" => summary}]}} = Tools.confirm(proposal, ctx.context)
-    assert summary =~ "Task queued"
-    assert summary =~ "paused controller remains paused"
-    refute summary =~ "Retry"
-    assert_receive :guarded_unheld_queue
-    assert_finished()
+    ledger = task |> Map.delete(:routing) |> Map.put(:ledger, %{"routing" => %{"queued" => false}})
+    Application.put_env(:symphony_elixir, :chat_test_board, %{ctx.board | tasks: [ledger]})
+    assert {:ok, _} = Tools.call("symphony_propose_action", %{"action" => "queue_task", "task_id" => "1"}, ctx.context)
   end
 
   test "queue previews retain fresh task scope for both unheld and cancelled tasks", ctx do
@@ -1105,12 +1099,7 @@ defmodule SymphonyElixir.Chat.ToolsTest do
       assert proposal["task_title"] == "Updated task title"
       assert proposal["task_description"] == description
 
-      for change <- [%{title: "Changed again"}, %{description: "Different scope\n\nDepends on: none"}] do
-        changed = update_in(board, [:tasks, Access.at(0)], &Map.merge(&1, change))
-        Application.put_env(:symphony_elixir, :chat_test_board, changed)
-        assert {:error, :task_changed} = Tools.confirm(proposal, ctx.context)
-        refute_receive {:guarded_edit, _, _, _}
-      end
+      assert proposal["expected_updated_at"] == hd(board.tasks).updated_at
     end
   end
 
@@ -1133,44 +1122,59 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     end
   end
 
-  test "queue confirmation rejects a newly held task and rechecks open unqueued state inside the owner", ctx do
+  test "local routing confirmation preserves owner conflicts and authorization boundaries", ctx do
     backlog = update_in(ctx.board, [:tasks, Access.at(0)], &Map.merge(&1, %{stage: "backlog", labels: []}))
     Application.put_env(:symphony_elixir, :chat_test_board, backlog)
-    proposal = propose(ctx.context, %{"action" => "queue_task", "task_id" => "1"})
-    held = put_in(backlog, [:tasks, Access.at(0), :hold], "cancelled")
-    Application.put_env(:symphony_elixir, :chat_test_board, held)
-    assert {:error, :proposal_changed} = Tools.confirm(proposal, ctx.context)
-    Application.put_env(:symphony_elixir, :chat_test_board, backlog)
+    owner = start_supervised!({CommandOwner, self()})
+    context = Map.put(ctx.context, :orchestrator, owner)
+    proposal = propose(context, %{"action" => "queue_task", "task_id" => "1"})
+    Application.put_env(:symphony_elixir, :chat_test_board, fn -> flunk("no tracker read during confirmation") end)
 
-    for changed <- [%{"state" => "closed", "labels" => []}, %{"state" => "open", "labels" => ["READY"]}] do
-      source = Map.merge(raw_issue(), changed)
-      script([fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: source}} end])
-      assert {:error, :task_not_queueable} = Tools.confirm(proposal, ctx.context)
-      assert_finished()
+    for reason <- [:revision_conflict, :task_changed, :task_not_queueable, :task_still_active] do
+      Application.put_env(:symphony_elixir, :chat_test_command, {:error, reason})
+      assert {:error, ^reason} = Tools.confirm(proposal, context)
+      assert_receive {:native_command, _, _, true}
     end
 
-    source = Map.merge(raw_issue(), %{"state" => "open", "labels" => [], "updated_at" => "2026-09-15T10:00:01Z"})
-    script([fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: source}} end])
-    assert {:error, :task_changed} = Tools.confirm(proposal, ctx.context)
-    assert_finished()
+    assert {:error, :invalid_proposal} = Tools.confirm(Map.delete(proposal, "expected_updated_at"), context)
+    assert {:error, :task_scope_mismatch} = Tools.confirm(proposal, Map.put(context, :task_id, "github:example/repo:2"))
+    assert {:error, :pr_session_scope_mismatch} = Tools.confirm(proposal, Map.put(context, :session_id, "work:other"))
+    assert {:error, :unauthorized} = Tools.confirm(proposal, %{context | auth: %{context.auth | marker: nil}})
+    refute_receive {:native_command, _, _, _}
   end
 
-  test "an uncertain fresh queue outcome is recovered without another write", ctx do
+  test "an uncertain local queue result recovers its exact native receipt without another write", ctx do
+    backlog = update_in(ctx.board, [:tasks, Access.at(0)], &Map.merge(&1, %{stage: "backlog", labels: []}))
+    Application.put_env(:symphony_elixir, :chat_test_board, backlog)
+    owner = start_supervised!({CommandOwner, self()})
+    context = Map.put(ctx.context, :orchestrator, owner)
+    proposal = propose(context, %{"action" => "queue_task", "task_id" => "1"})
+    Application.put_env(:symphony_elixir, :chat_test_command, {:error, :unavailable})
+    assert {:error, :write_outcome_unknown} = Tools.confirm(proposal, context)
+    assert_receive {:native_command, command, fingerprint, true}
+    Application.put_env(:symphony_elixir, :chat_test_board, fn -> flunk("recovery must not read the tracker") end)
+    Application.put_env(:symphony_elixir, :chat_github_request, fn _, _, _, _, _ -> flunk("recovery must not call GitHub") end)
+    Application.put_env(:symphony_elixir, :chat_test_receipt, {:ok, %{"revision" => 4, "replayed" => true}})
+
+    assert {:ok, %{"widgets" => [%{"result" => %{"replayed" => true}}]}} = Tools.reconcile(proposal, context)
+    assert_receive {:receipt_read, ^command, ^fingerprint}
+    refute_receive {:native_command, _, _, _}
+    assert {:error, :task_scope_mismatch} = Tools.reconcile(proposal, Map.put(context, :task_id, "github:example/repo:2"))
+  end
+
+  test "unexpected native routing dispatch failures remain uncertain without a GitHub fallback", ctx do
     backlog = update_in(ctx.board, [:tasks, Access.at(0)], &Map.merge(&1, %{stage: "backlog", labels: []}))
     Application.put_env(:symphony_elixir, :chat_test_board, backlog)
     proposal = propose(ctx.context, %{"action" => "queue_task", "task_id" => "1"})
-    source = Map.merge(raw_issue(), %{"state" => "open", "labels" => []})
-    completed = Map.merge(source, %{"labels" => ["ready"], "body" => source["body"] <> "\n\n" <> marker(proposal)})
+    Application.put_env(:symphony_elixir, :chat_github_request, fn _, _, _, _, _ -> flunk("dispatch failure must not write GitHub") end)
 
-    script([
-      fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: source}} end,
-      fn "PATCH", _, _, _, _ -> {:error, :timeout} end,
-      fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: completed}} end
-    ])
-
-    assert {:error, :write_outcome_unknown} = Tools.confirm(proposal, ctx.context)
-    assert {:ok, %{"widgets" => [%{"summary" => "Task update recovered from GitHub."}]}} = Tools.reconcile(proposal, ctx.context)
-    assert_finished()
+    for failure <- [:raise, :throw] do
+      context = Map.put(ctx.context, :orchestrator, {:via, FailingOwnerRegistry, {self(), failure}})
+      assert {:error, :write_outcome_unknown} = Tools.confirm(proposal, context)
+      assert_received :native_owner_lookup
+      refute_received :native_owner_lookup
+      refute_received {:guarded_edit, _, _, _}
+    end
   end
 
   test "priority edits cannot remove reserved routing labels", ctx do
