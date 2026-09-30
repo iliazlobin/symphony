@@ -306,7 +306,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert restored["messages"] == main["messages"]
     assert {:ok, _} = Store.send_message(c.project, child["id"], "view", "view-pr", c.auth, server)
     assert_receive {:view_runtime, nil, instructions}
-    assert instructions =~ "PR session work:"
+    assert instructions =~ "work session work:"
     assert instructions =~ "Recent PR reports"
     assert instructions =~ "PR #14"
   end
@@ -1588,6 +1588,8 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert instructions =~ "permanently associated with task #{task_id}"
     assert instructions =~ "continue_pr_work with its exact work_id"
     assert instructions =~ "fresh independent reviewer"
+    assert instructions =~ "project agent -> task agent -> work agent"
+    assert instructions =~ "A task kind never grants tool or deployment permission"
     assert_receive {:view_tool, %{"task_id" => ^task_id}}
     completed = wait_chat(c, chat, &(&1["status"] == "idle"))
     retained = List.duplicate(hd(completed["messages"]), 400)
