@@ -441,7 +441,9 @@ project's token, ledger, chat store, baseline and launch/merge gates unchanged.
 
 **Activate a tested release:** install `tools/requirements.txt`; drain and settle all
 native work, retries, chat responses, queued reports and unknown action outcomes.
-Back up configuration/state, stop the old project launch agents, then start one service:
+Back up configuration/state, stop the old project launch agents and archive their
+plist files outside `~/Library/LaunchAgents` so they cannot return at login. Then start
+one service:
 
 ```sh
 python3 tools/symphony_workspace.py --config /absolute/workspace.json check
@@ -452,7 +454,10 @@ python3 tools/symphony_service.py --workspace-config /absolute/workspace.json st
 
 Check both project-scoped control snapshots and switch between project tabs after one
 sign-in. No listener should remain on 8779. The workspace has an exclusive owner lock;
-another launch cannot replace live sockets. An engine failure returns an unavailable
+another launch cannot replace live sockets. Each owned child retains that lock and
+monitors a private parent pipe. Abrupt gateway death stops its exact process group
+before a replacement can take ownership; no PID receipt or unrelated process is used.
+An engine failure returns an unavailable
 response until its supervised restart. Broker failure denies authorization. Logout
 revokes the shared grant; each active view rechecks it. Workspace restart signs out
 browsers; durable project conversations remain.

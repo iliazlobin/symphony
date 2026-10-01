@@ -72,7 +72,7 @@ def load_workspace(path):
         browser = settings.get("browser_auth", {})
         if browser.get("provider") != "google":
             raise ControlError("Shared workspace sessions require reviewed Google browser identity")
-        identity_policy = {key: browser.get(key) for key in ("provider", "client_id", "client_secret", "allowed_emails", "allowed_subjects")}
+        identity_policy = {key: browser.get(key) for key in ("provider", "client_id", "client_secret", "allowed_emails", "allowed_subjects", "trusted_proxy_ips")}
         identity_policy["credential_file"] = project.get("google_oauth_client_file")
         if policy is not None and identity_policy != policy:
             raise ControlError("Workspace projects must share the same reviewed browser admission policy")
@@ -145,7 +145,7 @@ def clean_headers(headers):
 class Workspace:
     def __init__(self, config):
         self.config = config
-        self.children, self.clients, self.monitors = {}, {}, []
+        self.children, self.clients, self.monitors, self.owner_pipes = {}, {}, [], {}
         self.stopping = False
         self.auth_runner, self.lock_fd = None, None
         self.broker = SessionBroker()
@@ -306,17 +306,34 @@ class Workspace:
         with (logs / ("workspace-" + role + ".out.log")).open("ab") as out, (logs / ("workspace-" + role + ".err.log")).open("ab") as err:
             command = ([sys.executable, str(ROOT / "tools/symphony_publish.py"), "--config", project["_config_path"], "watch"]
                        if ":" in slug else [sys.executable, project["profile_bin"], "--config", project["_config_path"], "run"])
-            self.children[slug] = await asyncio.create_subprocess_exec(*command, env=env, stdout=out, stderr=err, start_new_session=True)
+            read_fd, write_fd = os.pipe()
+            try:
+                wrapper = [sys.executable, str(Path(__file__).resolve()), "_owned_child", str(self.lock_fd), str(read_fd), *command]
+                self.children[slug] = await asyncio.create_subprocess_exec(
+                    *wrapper, env=env, stdout=out, stderr=err, start_new_session=True,
+                    pass_fds=(self.lock_fd, read_fd))
+                self.owner_pipes[slug] = write_fd
+            except BaseException:
+                os.close(write_fd)
+                raise
+            finally:
+                os.close(read_fd)
 
     async def monitor(self, slug):
         delay = 1
         while not self.stopping:
             started = time.monotonic()
             await self.children[slug].wait()
+            os.close(self.owner_pipes.pop(slug))
             if self.stopping:
                 return
-            await asyncio.sleep(delay)
-            await self.spawn(slug)
+            while not self.stopping:
+                await asyncio.sleep(delay)
+                try:
+                    await self.spawn(slug)
+                    break
+                except (OSError, ControlError):
+                    delay = min(delay * 2, 30)
             delay = 1 if time.monotonic() - started > 60 else min(delay * 2, 30)
 
     async def wait_ready(self, slug):
@@ -345,6 +362,9 @@ class Workspace:
         for task in self.monitors:
             task.cancel()
         await asyncio.gather(*self.monitors, return_exceptions=True)
+        for descriptor in self.owner_pipes.values():
+            os.close(descriptor)
+        self.owner_pipes.clear()
         for child in self.children.values():
             if child.returncode is None:
                 with contextlib.suppress(ProcessLookupError):
@@ -377,7 +397,61 @@ def application(config):
     return app
 
 
+async def owned_child(lock_fd, owner_fd, command):
+    """Hold inherited ownership until this exact engine group has stopped.
+
+    A private pipe closing proves that the supervising process died, without PID
+    reuse, process-list matching or another user's process becoming a kill target.
+    """
+    lock = os.fstat(lock_fd)
+    owner = os.fstat(owner_fd)
+    if (os.getpgrp() != os.getpid() or not stat.S_ISREG(lock.st_mode)
+            or lock.st_uid != os.getuid() or stat.S_IMODE(lock.st_mode) & 0o077
+            or not stat.S_ISFIFO(owner.st_mode) or owner.st_uid != os.getuid() or not command):
+        raise ControlError("Invalid inherited workspace ownership")
+    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    os.set_inheritable(lock_fd, False)
+    os.set_inheritable(owner_fd, False)
+    loop = asyncio.get_running_loop()
+    stopping = asyncio.Event()
+
+    def owner_lost():
+        loop.remove_reader(owner_fd)
+        stopping.set()
+
+    loop.add_reader(owner_fd, owner_lost)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stopping.set)
+    child = None
+    waits = []
+    try:
+        # Native engines inherit neither the ownership lock nor the liveness pipe.
+        child = await asyncio.create_subprocess_exec(*command, close_fds=True)
+        waits = [asyncio.create_task(child.wait()), asyncio.create_task(stopping.wait())]
+        await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+        # The wrapper is the group leader; it absorbs TERM while the native engine
+        # settles cleanup. A forced timeout kills this group, including the wrapper.
+        os.killpg(os.getpgrp(), signal.SIGTERM)
+        try:
+            await asyncio.wait_for(child.wait(), timeout=8)
+        except asyncio.TimeoutError:
+            os.killpg(os.getpgrp(), signal.SIGKILL)
+        # End any remaining same-group subprocesses before releasing the lock.
+        # Including this disposable group leader prevents group/PID reuse races.
+        os.killpg(os.getpgrp(), signal.SIGKILL)
+        return child.returncode if child.returncode is not None and child.returncode >= 0 else 1
+    finally:
+        for task in waits:
+            task.cancel()
+        await asyncio.gather(*waits, return_exceptions=True)
+        loop.remove_reader(owner_fd)
+        os.close(owner_fd)
+        os.close(lock_fd)
+
+
 def main():
+    if len(sys.argv) >= 5 and sys.argv[1] == "_owned_child":
+        raise SystemExit(asyncio.run(owned_child(int(sys.argv[2]), int(sys.argv[3]), sys.argv[4:])))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument("command", choices=("run", "check"))

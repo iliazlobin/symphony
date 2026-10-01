@@ -6,9 +6,12 @@ import io
 import json
 import os
 import shutil
+import signal
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -87,6 +90,11 @@ class WorkspaceConfigurationTest(unittest.TestCase):
                     load_workspace(workspace)
                 config["profile_bin"] = str(ROOT / "profiles/symphony/profile.py")
                 write(Path(projects[1]["config"]), json.dumps(config))
+                policy["trusted_proxy_ips"] = ["127.0.0.1"]
+                write(root / "symphony/WORKFLOW.md", "---\n" + json.dumps({"browser_auth": policy}) + "\n---\nTask")
+                with self.assertRaisesRegex(ControlError, "admission policy"):
+                    load_workspace(workspace)
+                policy.pop("trusted_proxy_ips")
                 policy["allowed_emails"] = ["other@gmail.com"]
                 write(root / "symphony/WORKFLOW.md", "---\n" + json.dumps({"browser_auth": policy}) + "\n---\nTask")
                 with self.assertRaisesRegex(ControlError, "admission policy"):
@@ -188,3 +196,149 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
             await second.start(None)
         self.assertIsNone(second.lock_fd)
         await first.stop(None)
+
+    async def test_owned_monitor_retries_transient_spawn_failure(self):
+        read_fd, write_fd = os.pipe()
+        next_read_fd, next_write_fd = os.pipe()
+        attempts = []
+        workspace = Workspace({})
+        class Completed:
+            async def wait(self):
+                return 1
+        class Recovered:
+            async def wait(self):
+                workspace.stopping = True
+                return 0
+        async def spawn(slug):
+            attempts.append(slug)
+            if len(attempts) == 1:
+                raise OSError("temporary process capacity")
+            workspace.children[slug] = Recovered()
+            workspace.owner_pipes[slug] = next_write_fd
+        workspace.children["fixture"] = Completed()
+        workspace.owner_pipes["fixture"] = write_fd
+        try:
+            with patch.object(workspace, "spawn", side_effect=spawn), patch("symphony_workspace.asyncio.sleep", return_value=None):
+                await workspace.monitor("fixture")
+            self.assertEqual(attempts, ["fixture", "fixture"])
+            self.assertEqual(workspace.owner_pipes, {})
+        finally:
+            os.close(read_fd)
+            os.close(next_read_fd)
+
+
+class CrashOwnershipTest(unittest.TestCase):
+    def test_abrupt_gateway_death_stops_owned_groups_before_replacement(self):
+        with tempfile.TemporaryDirectory(prefix="sw-crash-", dir="/private/tmp" if sys.platform == "darwin" else "/tmp") as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            runtime.mkdir(mode=0o700)
+            profile = root / "fixture_engine.py"
+            profile.write_text('''import asyncio, json, os, signal, subprocess, sys
+from pathlib import Path
+from aiohttp import web
+async def main():
+    state = Path(json.loads(Path(sys.argv[2]).read_text())["state_dir"])
+    app = web.Application()
+    async def status(request):
+        return web.json_response({"running": [], "retrying": []})
+    app.router.add_route("*", "/{path:.*}", status)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.UnixSite(runner, os.environ["SYMPHONY_WORKSPACE_ENGINE_SOCKET"]).start()
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(signal.SIGTERM, lambda: loop.call_later(2, stop.set))
+    descendant = subprocess.Popen([sys.executable, "-c", "import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(60)"])
+    lock = (state.parent / "workspace.lock").stat()
+    inherited = False
+    for entry in Path("/dev/fd").iterdir():
+        try:
+            info = os.fstat(int(entry.name))
+            inherited |= info.st_ino == lock.st_ino and info.st_dev == lock.st_dev
+        except (OSError, ValueError):
+            pass
+    (state / "engine.json").write_text(json.dumps({"engine": os.getpid(), "descendant": descendant.pid, "inherited_lock": inherited}))
+    await stop.wait()
+    await runner.cleanup()
+asyncio.run(main())
+''')
+            harness = root / "fixture_gateway.py"
+            harness.write_text('''import asyncio, json, signal, sys
+from pathlib import Path
+from types import SimpleNamespace
+from aiohttp import web
+sys.path.insert(0, sys.argv[1])
+from symphony_workspace import application
+async def main():
+    state = Path(sys.argv[2])
+    raw = json.loads((state / "fixture.json").read_text())
+    raw.update(runtime=state / "runtime", secret_file=state / "cookie-key", origin=SimpleNamespace(netloc="localhost:8778", hostname="localhost", port=8778))
+    runner = web.AppRunner(application(raw))
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    (state / "ready.json").write_text(json.dumps({"port": site._server.sockets[0].getsockname()[1]}))
+    stop = asyncio.Event()
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, stop.set)
+    await stop.wait()
+    await runner.cleanup()
+asyncio.run(main())
+''')
+            projects = {}
+            for slug in ("alpha", "beta"):
+                state = root / slug
+                state.mkdir(mode=0o700)
+                config = state / "config.json"
+                config.write_text(json.dumps({"state_dir": str(state)}))
+                projects[slug] = {"state_dir": str(state), "profile_bin": str(profile), "_config_path": str(config), "_token": "fixture", "_workspace_publication": False}
+            (root / "fixture.json").write_text(json.dumps({"state_dir": str(root), "public_origin": "http://localhost:8778", "listen_port": 8778, "projects": projects}))
+            processes, outputs = [], []
+            def start():
+                output = (root / ("gateway-" + str(len(processes)) + ".log")).open("wb")
+                outputs.append(output)
+                process = subprocess.Popen([sys.executable, str(harness), str(ROOT / "tools"), str(root)], stdout=output, stderr=output)
+                processes.append(process)
+                return process
+            def wait_until(predicate, timeout=12):
+                until = time.monotonic() + timeout
+                while time.monotonic() < until:
+                    if predicate():
+                        return
+                    time.sleep(0.02)
+                self.fail("Timed out waiting for isolated workspace ownership fixture")
+            def running(pid):
+                result = subprocess.run(["ps", "-p", str(pid), "-o", "stat="], capture_output=True, text=True)
+                return result.returncode == 0 and result.stdout.strip() and not result.stdout.strip().startswith("Z")
+            records = []
+            try:
+                first = start()
+                ready = root / "ready.json"
+                wait_until(ready.exists)
+                records = [json.loads((root / slug / "engine.json").read_text()) for slug in projects]
+                self.assertTrue(all(not entry["inherited_lock"] for entry in records))
+                before = {slug: (runtime / (slug + ".sock")).stat().st_ino for slug in projects}
+                first.kill()  # Abrupt gateway death: no application cleanup callback.
+                first.wait(timeout=3)
+                ready.unlink()
+                conflicting = start()
+                self.assertEqual(conflicting.wait(timeout=4), 1)
+                outputs[1].flush()
+                self.assertIn("already owned", (root / "gateway-1.log").read_text())
+                self.assertEqual(before, {slug: (runtime / (slug + ".sock")).stat().st_ino for slug in projects})
+                wait_until(lambda: all(not running(entry[key]) for entry in records for key in ("engine", "descendant")))
+                replacement = start()
+                wait_until(ready.exists)
+                new_records = [json.loads((root / slug / "engine.json").read_text()) for slug in projects]
+                self.assertTrue(all(old["engine"] != new["engine"] for old, new in zip(records, new_records)))
+                self.assertTrue(all(not running(entry["engine"]) for entry in records))
+                replacement.terminate()
+                self.assertEqual(replacement.wait(timeout=6), 0)
+                wait_until(lambda: all(not running(entry[key]) for entry in new_records for key in ("engine", "descendant")))
+            finally:
+                for process in processes:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=3)
+                for output in outputs:
+                    output.close()
