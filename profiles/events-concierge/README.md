@@ -285,7 +285,8 @@ The key is controller-only and is excluded from coding-worker and hook environme
 Keep existing `codex_home` and `executable` settings to preserve saved runtime identity.
 Follow the drain/restart procedure before changing provider/model. Conversations and
 bounded host tool receipts survive the change; native provider caches are not portable.
-OpenRouter returns reply chunks after each bounded request, rather than token streaming.
+OpenRouter shows host activity during tool calls and displays only the terminal answer;
+token streaming is not implemented. Tool receipts remain available for recovery.
 Additional test/security/deployment executors are not enabled by changing the chat provider.
 
 **Web chat.** After [dedicated runtime setup](../../elixir/README.md#web-board-and-chat),

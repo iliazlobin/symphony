@@ -341,9 +341,10 @@ identities, goals, activity and queue counts; historical aliases do not become e
 This graph is the input for future visualization, which is not implemented yet.
 
 A project agent delegates to its task agents; each task agent delegates to its work
-agents. `symphony_delegate` sends a durable instruction to a direct child;
-`symphony_report` returns intermediate findings, and completed task/work replies
-report upward automatically. Parents receive source-labelled messages, reason against
+agents. `symphony_delegate` sends a durable instruction to a direct child.
+`symphony_report` supplies that turn's parent outcome; a completed task/work reply
+reports automatically only when no explicit report was accepted. Changed findings
+after an explicit report require another explicit update. Parents receive source-labelled messages, reason against
 their goals, and can revise their own or a child's goal with `symphony_set_goal`.
 A goal marked achieved does not accept the issue or move it to Done.
 
@@ -355,6 +356,8 @@ pauses further delivery; restart requires fresh authentication and explicit resu
 of saved queues. Reports and observations are untrusted evidence, never authorization
 for native work or external writes. Source labels, goals and pending reports remain
 visible inline in chat.
+Report processing includes a bounded, authorized read of the receiving agent's current
+scope; unavailable data is labelled rather than replaced by historical conversation facts.
 
 The app retains visible messages, bounded tool receipts and provider/model provenance.
 OpenRouter receives that bounded portable history; Codex retains its native thread and

@@ -391,8 +391,10 @@ authorization, new evidence queues a task-agent reasoning turn; it never starts 
 worker. Without authorization, the saved evidence waits for an authenticated interaction. Missing or stale checks never imply completion; issue acceptance
 remains separate from PR merge.
 The project, task and work agents form a graph with stable IDs and typed supervision
-and reporting edges. Parents delegate to direct children; children report upward,
-including an automatic report after each completed reply. Parent agents process reports,
+and reporting edges. Parents delegate to direct children; children report upward.
+A successful explicit report supplies that turn's outcome and replaces its automatic
+completion report; changed findings require another explicit update. Other completed
+replies report automatically. Parents read their current scope before processing reports,
 revise goals and can delegate follow-ups. Chat shows the source agent, goals and pending
 reports inline. Each user-initiated chain is bounded to 24 deliveries and depth six;
 Stop pauses supervision and restart requires fresh authorization. The graph is exported
