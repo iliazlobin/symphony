@@ -16,7 +16,15 @@
       const menu = details.querySelector(selector), shell = details.closest(".chat-shell");
       if (!menu || !shell) return;
       const viewport = window.visualViewport;
-      const bottom = Math.min(shell.getBoundingClientRect().bottom, viewport ? viewport.offsetTop + viewport.height : window.innerHeight);
+      const shellBounds = shell.getBoundingClientRect();
+      const left = Math.max(shellBounds.left, viewport?.offsetLeft || 0) + 8;
+      const right = Math.min(shellBounds.right, viewport ? viewport.offsetLeft + viewport.width : window.innerWidth) - 8;
+      menu.style.setProperty("--chat-menu-width", Math.max(0, right - left) + "px");
+      menu.style.setProperty("--chat-menu-offset", "0px");
+      const bounds = menu.getBoundingClientRect();
+      const position = Math.max(left, Math.min(bounds.left, right - bounds.width));
+      menu.style.setProperty("--chat-menu-offset", Math.round(position - bounds.left) + "px");
+      const bottom = Math.min(shellBounds.bottom, viewport ? viewport.offsetTop + viewport.height : window.innerHeight);
       menu.style.setProperty("--chat-menu-space", Math.max(0, Math.floor(bottom - menu.getBoundingClientRect().top - 8)) + "px");
     };
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(fit) : null;

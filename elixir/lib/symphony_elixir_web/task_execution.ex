@@ -1,7 +1,7 @@
 defmodule SymphonyElixirWeb.TaskExecution do
   @moduledoc "Presents recorded execution progress without inferring worker or review completion."
 
-  @type metric :: %{label: String.t(), value: String.t(), title: String.t()}
+  @type metric :: %{label: String.t(), value: String.t(), title: String.t(), used: non_neg_integer() | nil}
   @type summary :: %{
           status: String.t(),
           metrics: [metric()],
@@ -138,7 +138,7 @@ defmodule SymphonyElixirWeb.TaskExecution do
 
   defp recorded_metric(label, value, format, available?) do
     prefix = if available?, do: "Recorded · ", else: "Last recorded · "
-    %{label: label, value: format.(value), title: prefix <> label <> ": " <> exact(value, label)}
+    %{label: label, value: format.(value), title: prefix <> label <> ": " <> exact(value, label), used: value}
   end
 
   defp metric(label, used, limit, format, available?) do
@@ -147,7 +147,8 @@ defmodule SymphonyElixirWeb.TaskExecution do
     %{
       label: label,
       value: formatted(used, format) <> " / " <> formatted(limit, format),
-      title: prefix <> label <> ": " <> exact(used, label) <> " used; limit " <> exact(limit, label)
+      title: prefix <> label <> ": " <> exact(used, label) <> " used; limit " <> exact(limit, label),
+      used: used
     }
   end
 

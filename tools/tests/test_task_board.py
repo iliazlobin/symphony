@@ -183,3 +183,41 @@ assert.equal(document.body.style.overflow,"");
             capture_output=True, text=True, check=False, timeout=20,
         )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_breadcrumb_menus_fit_chat_dock_and_visual_viewport(self):
+        script = r'''
+const assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
+function fit(shellBounds, menuLeft, viewport) {
+  const properties = new Map();
+  const menu = {style:{setProperty:(key,value)=>properties.set(key,value)},getBoundingClientRect:()=>({
+    left:menuLeft + (parseFloat(properties.get("--chat-menu-offset")) || 0),
+    width:Math.min(360, parseFloat(properties.get("--chat-menu-width")) || 360),top:300
+  })};
+  const details = {open:true,closest:()=>({getBoundingClientRect:()=>shellBounds}),
+    querySelector:selector=>selector === ".issue-pr-list" ? menu : null,addEventListener(){}};
+  const window = {innerWidth:1360,innerHeight:900,visualViewport:viewport,addEventListener(){}};
+  const document = {addEventListener(){}};
+  const sandbox = {window,document,AbortController};
+  vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),sandbox);
+  const hook = {...window.SymphonyHooks.IssuePRMenu,el:details};
+  hook.mounted();hook.menuSize.fit();
+  const bounds=menu.getBoundingClientRect();
+  assert(bounds.left >= Math.max(shellBounds.left,viewport?.offsetLeft || 0)+8);
+  assert(bounds.left+bounds.width <= Math.min(shellBounds.right,viewport ? viewport.offsetLeft+viewport.width : window.innerWidth)-8);
+  return properties;
+}
+const dock=fit({left:1000,right:1360,bottom:800},1170,null);
+assert.equal(dock.get("--chat-menu-width"),"344px");
+assert.equal(dock.get("--chat-menu-offset"),"-162px");
+assert.equal(dock.get("--chat-menu-space"),"492px");
+const zoomed=fit({left:0,right:390,bottom:800},20,{offsetLeft:50,width:300,offsetTop:40,height:640,addEventListener(){}});
+assert.equal(zoomed.get("--chat-menu-width"),"284px");
+assert.equal(zoomed.get("--chat-menu-offset"),"38px");
+assert.equal(zoomed.get("--chat-menu-space"),"372px");
+'''
+        root = pathlib.Path(__file__).resolve().parents[2]
+        completed = subprocess.run(
+            [shutil.which("node"), "-e", script, str(root / "elixir/priv/static/dashboard.js")],
+            capture_output=True, text=True, check=False, timeout=20,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)

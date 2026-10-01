@@ -416,9 +416,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp move_task(socket, nil, _stage), do: {:noreply, assign(socket, :notice, "Task unavailable; refresh the board.")}
+
+  defp move_task(socket, _task, "in_progress") do
+    {:noreply, assign(socket, :notice, "In progress shows active workers. Move the task to Work; the scheduler starts it when dependencies and capacity allow.")}
+  end
+
   defp move_task(socket, %{stage: stage} = task, "backlog") when stage in ["ready", "running"], do: prepare_command(socket, "cancel", task)
 
-  defp move_task(socket, %{stage: "backlog"} = task, stage) when stage in ["work", "ready", "in_progress"] do
+  defp move_task(socket, %{stage: "backlog"} = task, stage) when stage in ["work", "ready"] do
     if is_nil(task.hold), do: prepare_queue(socket, task), else: prepare_command(socket, "retry", task)
   end
 
@@ -802,7 +807,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 runtime_duration={runtime_duration(@payload)} rate_limits={pretty(@payload[:rate_limits])} />
             <% :task -> %>
               <p class="muted">{@selected.project_label} · {@selected.identifier} · {lane_label(task_lane(@selected))}</p>
-              <.execution_summary summary={execution_summary(@selected, @board, @payload)} routing={@selected[:routing]} />
+              <.execution_summary summary={execution_summary(@selected, @board, @payload)} routing={@selected[:routing]} hide_unused={@selected.stage == "backlog"} />
               <.feedback_details task={@selected} />
               <div :if={!@read_only && @controls_available} class="dialog-actions execution-actions">
                 <button :if={@selected.stage == "backlog" && is_nil(@selected.hold)} id="queue-task-button" class="button button-primary" phx-click="queue-task" phx-value-id={@selected.id}>Move to Work</button>
@@ -1039,13 +1044,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   attr(:summary, :map, required: true)
   attr(:compact, :boolean, default: false)
+  attr(:hide_unused, :boolean, default: false)
   attr(:routing, :map, default: nil)
 
   defp execution_summary(assigns) do
     assigns =
       assign(assigns,
         sync_label: routing_sync_label(assigns.routing),
-        metrics: if(assigns.compact, do: [], else: assigns.summary.metrics)
+        metrics: if(assigns.compact, do: [], else: Enum.reject(assigns.summary.metrics, &(assigns.hide_unused && (&1.used || 0) == 0)))
       )
 
     ~H"""

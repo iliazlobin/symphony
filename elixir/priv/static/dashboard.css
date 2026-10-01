@@ -797,7 +797,7 @@ h2, h3, strong { font-weight: 500; }
 .operator-breadcrumbs .issue-switcher > summary, .operator-breadcrumbs .issue-pr-menu > summary { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 6px; width: auto; max-width: 160px; border: 0; border-radius: 6px; background: transparent; color: var(--fg); font-size: 12px; }
 .operator-breadcrumbs details > summary:hover, .operator-breadcrumbs details[open] > summary { background: var(--soft); }
 .operator-breadcrumbs .issue-switcher > summary > span:not(.breadcrumb-category) { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.operator-breadcrumbs .issue-switcher-menu, .operator-breadcrumbs .issue-pr-list { width: min(360px, calc(100vw - 48px)); left: 0; right: auto; padding: 8px; box-shadow: 0 8px 32px #0002; border-radius: 10px; }
+.operator-breadcrumbs .issue-switcher-menu, .operator-breadcrumbs .issue-pr-list { width: min(360px, calc(100vw - 48px)); max-width: var(--chat-menu-width, 100vw); transform: translateX(var(--chat-menu-offset, 0px)); left: 0; right: auto; padding: 8px; box-shadow: 0 8px 32px #0002; border-radius: 10px; }
 .operator-breadcrumbs .issue-pr-list { left: auto; right: 0; }
 .operator-breadcrumbs .issue-switcher-menu input, .operator-breadcrumbs .issue-pr-search input { padding: 8px 10px; font-size: 13px; }
 .operator-breadcrumbs .issue-option { padding: 10px 8px; }
@@ -826,7 +826,11 @@ h2, h3, strong { font-weight: 500; }
 .widget-task { padding: 8px 0; font-size: 12px; }
 .chat-queue { border-radius: 8px; }
 .chat-queue ol { max-height: 120px; }
+@media (max-width: 860px) {
+  .board-dialog[data-kind=task] { max-height: calc(42dvh - 24px); }
+}
 @media (max-width: 540px) {
+  .dialog-inner { padding: 16px; }
   .operator-breadcrumbs { gap: 4px; padding: 8px 12px; }
   .breadcrumb-project { max-width: 115px; }
   .operator-breadcrumbs .issue-switcher > summary, .operator-breadcrumbs .issue-pr-menu > summary { padding: 4px; max-width: 100px; }
@@ -862,6 +866,6 @@ h2, h3, strong { font-weight: 500; }
 .graph-relationship-list { overflow-x: auto; }
 .graph-relationship-list h3 { font-size: 13px; margin-bottom: 8px; }
 .graph-relationship-list table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.graph-relationship-list :is(th,td) { padding: 8px; border-bottom: 1px solid var(--line); text-align: left; font-weight: 400; }
+.graph-relationship-list :is(th,td) { padding: 8px; border-bottom: 1px solid var(--line); text-align: left; font-weight: 400; overflow-wrap: anywhere; min-width: 100px; }
 .graph-relationship-list th { color: var(--muted); }
-.graph-ownership-list { padding-left: 20px; color: var(--muted); font-size: 12px; }
+.graph-ownership-list { padding-left: 20px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }

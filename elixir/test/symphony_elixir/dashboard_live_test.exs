@@ -648,6 +648,22 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#board-dialog .execution-summary", "Unavailable")
   end
 
+  test "Backlog details omit unused metrics but retain recorded usage", ctx do
+    view = authorized_board_view()
+    open_task(view, "1")
+    refute has_element?(view, "#board-dialog .execution-metrics")
+
+    board = execution_board(ctx.board, "1", %{"tokens" => 0, "attempts" => 0, "runtime_ms" => 0})
+    refresh(view, ctx.runtime, board)
+    refute has_element?(view, "#board-dialog .execution-metrics")
+
+    board = execution_board(ctx.board, "1", %{"tokens" => 123, "attempts" => 1})
+    refresh(view, ctx.runtime, board)
+    assert has_element?(view, "#board-dialog .execution-metrics", "123 / 1M")
+    assert has_element?(view, "#board-dialog .execution-metrics", "1 / 2")
+    refute has_element?(view, "#board-dialog .execution-metrics dt", "Time")
+  end
+
   test "agent review keeps reviewer findings without repeating historical builder notes or raw handoff JSON", ctx do
     sha = String.duplicate("a", 40)
 
@@ -1545,7 +1561,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
   test "uncertain moves replay the same command while stale rejection requires a fresh gesture", ctx do
     view = authorized_board_view()
     :sys.replace_state(ctx.runtime, &Map.put(&1, :command_error, :unavailable))
-    render_click(view, "move-task", %{"id" => "github:example/fixture:1", "stage" => "in_progress"})
+    render_click(view, "move-task", %{"id" => "github:example/fixture:1", "stage" => "work"})
     assert_receive {:settings_command, first}
     render_click(view, "move-task", %{"id" => "github:example/fixture:1", "stage" => "work"})
     assert_receive {:settings_command, replay}
@@ -1561,6 +1577,22 @@ defmodule SymphonyElixir.DashboardLiveTest do
     :sys.replace_state(ctx.runtime, &Map.put(&1, :command_error, :invalid_command))
     render_click(view, "move-task", %{"id" => "github:example/fixture:1", "stage" => "work"})
     assert render(view) =~ "Task could not move to Work"
+  end
+
+  test "In progress is scheduler-owned and dropping into it never queues or mutates a task", ctx do
+    view = authorized_board_view()
+
+    for issue_id <- ["1", "2", "4"] do
+      render_click(view, "move-task", %{"id" => "github:example/fixture:#{issue_id}", "stage" => "in_progress"})
+      assert render(view) =~ "In progress shows active workers"
+      refute_receive {:settings_command, _}
+      refute has_element?(view, "#board-dialog")
+    end
+
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    assert has_element?(view, "#lane-backlog [data-task-id='github:example/fixture:1']")
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:2']")
+    assert has_element?(view, "#lane-review [data-task-id='github:example/fixture:4']")
   end
 
   test "graph opens a keyboard-ready modal and creation controls are absent" do
