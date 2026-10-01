@@ -119,11 +119,42 @@ defmodule SymphonyElixir.Chat.OpenRouterTest do
     assert_received {:payload, %{"messages" => [_, _], "tools" => [%{"type" => "function", "function" => %{"name" => "symphony_status"}}]}}
     assert_received {:payload, %{"messages" => [_, _, assistant, result1, result2]}}
     assert assistant["tool_calls"] == first["choices"] |> hd() |> get_in(["message", "tool_calls"])
+    assert assistant["content"] == "Checking"
     assert result1 == %{"role" => "tool", "tool_call_id" => "call-1", "content" => ~s({"observed":1})}
     assert result2["tool_call_id"] == "call-2"
     assert_received {:event, {:usage, %{"total" => %{"totalTokens" => 13}}}}
-    assert_received {:event, {:delta, "Checking"}}
+    assert_received {:event, {:status, "Using symphony_status"}}
+    refute_received {:event, {:delta, "Checking"}}
     assert_received {:event, {:delta, "Finished"}}
+  end
+
+  test "multiple tool rounds replay preambles and reasoning without appending them to the answer" do
+    owner = self()
+    reasoning = [%{"type" => "reasoning.encrypted", "data" => "opaque-provider-context"}]
+    first = calls([call()], "I will inspect the task.") |> put_in(["choices", Access.at(0), "message", "reasoning_details"], reasoning)
+    second = calls([call(%{"id" => 2}, %{"id" => "call-2"})], "I will verify that observation.")
+
+    request = fn options ->
+      messages = Jason.decode!(options[:body])["messages"]
+      send(owner, {:round, messages})
+
+      case length(messages) do
+        2 -> http(first)
+        4 -> http(second)
+        6 -> http(response(%{"role" => "assistant", "content" => "The task is paused."}))
+      end
+    end
+
+    assert {:ok, %{status: :completed}} = OpenRouter.run(opts(%{tools: [spec()], request: request}), &send(owner, {:event, &1}), fn _, args -> %{"observed" => args["id"]} end)
+    assert_received {:round, [_, _, assistant, result]}
+    assert assistant["content"] == "I will inspect the task."
+    assert assistant["reasoning_details"] == reasoning
+    assert result["tool_call_id"] == "call-1"
+    assert_received {:round, [_, _, _, _, assistant2, result2]}
+    assert assistant2["content"] == "I will verify that observation."
+    assert result2["tool_call_id"] == "call-2"
+    assert_received {:event, {:delta, "The task is paused."}}
+    refute_received {:event, {:delta, _}}
   end
 
   test "validates every call before effects, quotas, schemas and malformed arguments" do

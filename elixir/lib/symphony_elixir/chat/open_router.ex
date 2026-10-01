@@ -179,7 +179,8 @@ defmodule SymphonyElixir.Chat.OpenRouter do
 
   defp continue_calls(message, calls, state) do
     validated = validate_calls(calls, state)
-    state = if is_nil(message["content"]) or message["content"] == "", do: state, else: emit_text(message["content"], state)
+    # Tool-round text is replay context, not the terminal user reply.
+    state = if is_nil(message["content"]) or message["content"] == "", do: state, else: bound_text(message["content"], state)
     state = %{state | messages: state.messages ++ [Map.take(message, ["role", "content", "tool_calls", "reasoning_details"])]}
     turn(Enum.reduce(validated, state, &execute_tool/2))
   end
@@ -285,10 +286,15 @@ defmodule SymphonyElixir.Chat.OpenRouter do
   defp usage(_, _state), do: fail(:protocol_error)
 
   defp emit_text(text, state) do
+    state = bound_text(text, state)
+    state.emit.({:delta, text})
+    state
+  end
+
+  defp bound_text(text, state) do
     size = state.text_bytes + byte_size(text)
     unless String.valid?(text) and size <= @max_text, do: fail(:protocol_limit)
     checkpoint(state)
-    state.emit.({:delta, text})
     %{state | text_bytes: size}
   end
 

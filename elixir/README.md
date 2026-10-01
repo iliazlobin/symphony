@@ -499,7 +499,8 @@ chat:
 - Requests use the fixed HTTPS OpenRouter endpoint, without redirects or automatic
   retries. `timeout_ms` bounds the whole turn; `max_tool_calls` accepts 1–24. Tools
   run sequentially through the same host authorization and confirmation boundary.
-- Responses appear after each bounded HTTP round; token streaming is not implemented.
+- Tool rounds show host activity; only the terminal answer enters the transcript.
+  Provider preambles and reasoning stay within the active turn. Token streaming is not implemented.
   Stop terminates and awaits the current request/tool operation before settling the turn.
   A stopped or failed write may still have taken effect; reconcile its recorded action
   before attempting it again.
