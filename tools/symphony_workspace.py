@@ -14,8 +14,10 @@ import os
 from pathlib import Path
 import re
 import secrets
+import select
 import signal
 import stat
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -140,6 +142,66 @@ def clean_headers(headers):
     nominated = {part.strip().lower() for part in headers.get("Connection", "").split(",")}
     return [(key, value) for key, value in headers.items()
             if key.lower() not in HOP_HEADERS | nominated | {"x-symphony-workspace", "content-length"}]
+
+
+class OwnedProcess:
+    """Keep a group leader unreaped until group cleanup prevents identity reuse."""
+    def __init__(self, *command, **options):
+        if not hasattr(select, "kqueue") and not hasattr(os, "waitid"):
+            raise ControlError("Cannot observe owned child exit safely on this platform")
+        self.process = subprocess.Popen(command, **options)
+        self.exit_observed, self.exit_queue = False, None
+        self.wait_lock = asyncio.Lock()
+        if hasattr(select, "kqueue"):
+            self.exit_queue = select.kqueue()
+            try:
+                self.exit_queue.control([select.kevent(self.pid, filter=select.KQ_FILTER_PROC,
+                                                       flags=select.KQ_EV_ADD, fflags=select.KQ_NOTE_EXIT)], 0, 0)
+            except ProcessLookupError:
+                self.exit_observed = True
+
+    @property
+    def pid(self):
+        return self.process.pid
+
+    @property
+    def returncode(self):
+        # Never poll here: reaping would free the group identity before cleanup.
+        return self.process.returncode
+
+    def exited(self):
+        if not self.exit_observed:
+            if self.exit_queue is not None:
+                self.exit_observed = bool(self.exit_queue.control(None, 1, 0))
+            else:
+                self.exit_observed = os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+        return self.exit_observed
+
+    async def wait(self):
+        async with self.wait_lock:
+            if self.returncode is not None:
+                return self.returncode
+            while not self.exited():
+                await asyncio.sleep(0.05)
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(self.pid, sig)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    # macOS returns EPERM for an already-dead group. The direct
+                    # leader remains ours and unreaped throughout this cleanup.
+                    if not self.exited():
+                        raise
+                if sig == signal.SIGTERM:
+                    await asyncio.sleep(0.2)
+            # No await between final group signal and reap. The leader's PID stays
+            # reserved even after guard-only death, including fast child exits.
+            result = self.process.wait(timeout=2)
+            if self.exit_queue is not None:
+                self.exit_queue.close()
+                self.exit_queue = None
+            return result
 
 
 class Workspace:
@@ -309,7 +371,7 @@ class Workspace:
             read_fd, write_fd = os.pipe()
             try:
                 wrapper = [sys.executable, str(Path(__file__).resolve()), "_owned_child", str(self.lock_fd), str(read_fd), *command]
-                self.children[slug] = await asyncio.create_subprocess_exec(
+                self.children[slug] = OwnedProcess(
                     *wrapper, env=env, stdout=out, stderr=err, start_new_session=True,
                     pass_fds=(self.lock_fd, read_fd))
                 self.owner_pipes[slug] = write_fd
@@ -425,8 +487,9 @@ async def owned_child(lock_fd, owner_fd, command):
     child = None
     waits = []
     try:
-        # Native engines inherit neither the ownership lock nor the liveness pipe.
-        child = await asyncio.create_subprocess_exec(*command, close_fds=True)
+        # Retain only the ownership lock through the native Python/escript/BEAM
+        # path. A simultaneous gateway/guard failure cannot discard that lease.
+        child = await asyncio.create_subprocess_exec(*command, close_fds=True, pass_fds=(lock_fd,))
         waits = [asyncio.create_task(child.wait()), asyncio.create_task(stopping.wait())]
         await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
         # The wrapper is the group leader; it absorbs TERM while the native engine

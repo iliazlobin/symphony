@@ -229,6 +229,15 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
 
 class CrashOwnershipTest(unittest.TestCase):
     def test_abrupt_gateway_death_stops_owned_groups_before_replacement(self):
+        self.exercise_failure("gateway")
+
+    def test_guard_death_cleans_its_group_before_engine_restart(self):
+        self.exercise_failure("guard")
+
+    def test_guard_and_gateway_death_retains_engine_lock_until_manual_cleanup(self):
+        self.exercise_failure("both")
+
+    def exercise_failure(self, failure):
         with tempfile.TemporaryDirectory(prefix="sw-crash-", dir="/private/tmp" if sys.platform == "darwin" else "/tmp") as directory:
             root = Path(directory)
             runtime = root / "runtime"
@@ -316,8 +325,32 @@ asyncio.run(main())
                 ready = root / "ready.json"
                 wait_until(ready.exists)
                 records = [json.loads((root / slug / "engine.json").read_text()) for slug in projects]
-                self.assertTrue(all(not entry["inherited_lock"] for entry in records))
+                self.assertTrue(all(entry["inherited_lock"] for entry in records))
                 before = {slug: (runtime / (slug + ".sock")).stat().st_ino for slug in projects}
+                if failure == "guard":
+                    original = records[0]
+                    guard = os.getpgid(original["engine"])
+                    self.assertNotEqual(guard, first.pid)
+                    os.kill(guard, signal.SIGKILL)
+                    def restarted():
+                        try:
+                            return json.loads((root / "alpha" / "engine.json").read_text())["engine"] != original["engine"]
+                        except (OSError, ValueError):
+                            return False
+                    wait_until(restarted)
+                    self.assertFalse(running(original["engine"]))
+                    self.assertFalse(running(original["descendant"]))
+                    self.assertIsNone(first.poll())
+                    new_records = [json.loads((root / slug / "engine.json").read_text()) for slug in projects]
+                    first.terminate()
+                    self.assertEqual(first.wait(timeout=6), 0, (root / "gateway-0.log").read_text())
+                    wait_until(lambda: all(not running(entry[key]) for entry in new_records for key in ("engine", "descendant")))
+                    return
+                if failure == "both":
+                    # Prevent the gateway from observing guard exit: this models
+                    # both supervisors failing before either can clean the engine.
+                    os.kill(first.pid, signal.SIGSTOP)
+                    os.kill(os.getpgid(records[0]["engine"]), signal.SIGKILL)
                 first.kill()  # Abrupt gateway death: no application cleanup callback.
                 first.wait(timeout=3)
                 ready.unlink()
@@ -326,6 +359,10 @@ asyncio.run(main())
                 outputs[1].flush()
                 self.assertIn("already owned", (root / "gateway-1.log").read_text())
                 self.assertEqual(before, {slug: (runtime / (slug + ".sock")).stat().st_ino for slug in projects})
+                if failure == "both":
+                    self.assertTrue(running(records[0]["engine"]))
+                    # Only this disposable fixture's exact known group is killed.
+                    os.killpg(os.getpgid(records[0]["engine"]), signal.SIGKILL)
                 wait_until(lambda: all(not running(entry[key]) for entry in records for key in ("engine", "descendant")))
                 replacement = start()
                 wait_until(ready.exists)
@@ -333,12 +370,15 @@ asyncio.run(main())
                 self.assertTrue(all(old["engine"] != new["engine"] for old, new in zip(records, new_records)))
                 self.assertTrue(all(not running(entry["engine"]) for entry in records))
                 replacement.terminate()
-                self.assertEqual(replacement.wait(timeout=6), 0)
+                self.assertEqual(replacement.wait(timeout=6), 0, (root / "gateway-2.log").read_text())
                 wait_until(lambda: all(not running(entry[key]) for entry in new_records for key in ("engine", "descendant")))
             finally:
                 for process in processes:
                     if process.poll() is None:
                         process.kill()
                         process.wait(timeout=3)
+                for entry in records:
+                    if running(entry["engine"]):
+                        os.killpg(os.getpgid(entry["engine"]), signal.SIGKILL)
                 for output in outputs:
                     output.close()

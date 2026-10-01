@@ -454,9 +454,13 @@ python3 tools/symphony_service.py --workspace-config /absolute/workspace.json st
 
 Check both project-scoped control snapshots and switch between project tabs after one
 sign-in. No listener should remain on 8779. The workspace has an exclusive owner lock;
-another launch cannot replace live sockets. Each owned child retains that lock and
-monitors a private parent pipe. Abrupt gateway death stops its exact process group
-before a replacement can take ownership; no PID receipt or unrelated process is used.
+another launch cannot replace live sockets. Each guard monitors a private parent pipe;
+the native engine inherits only the ownership lock, never that pipe. Abrupt gateway
+death stops its exact process group before a replacement can take ownership. Guard-only failure is
+cleaned before engine restart, keeping the group leader unreaped until cleanup.
+If both supervisors die together, a surviving engine retains the lock and replacement
+fails closed. Settle its ownership manually before restarting; never delete the lock
+or unlink its socket to force a replacement.
 An engine failure returns an unavailable
 response until its supervised restart. Broker failure denies authorization. Logout
 revokes the shared grant; each active view rechecks it. Workspace restart signs out
