@@ -6,7 +6,7 @@ defmodule SymphonyElixirWeb.TaskBoard do
   `runtime_error` means the caller must retain its previous complete task list.
   Reads never admit, retry, close or otherwise mutate a tracker issue.
 
-  Work includes queued and running tasks. With native controls, Done requires
+  Work retains nonrunning admitted tasks; In progress derives from active execution. With native controls, Done requires
   explicit human acceptance; tracker closure remains Review until accepted.
   In progress projects active native execution separately from waiting Work.
   Uncontrolled trackers retain their terminal-state behavior. Each task retains the distinction in

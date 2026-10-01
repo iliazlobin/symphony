@@ -102,12 +102,12 @@ defmodule SymphonyElixir.Chat.Tools do
         ),
         spec(
           "symphony_project_status",
-          "Read current board-lane counts, project execution mode and blockers. Work includes queued and running tasks; only current worker evidence proves running. A paused or draining controller blocks new admission even when a task has no hold. Unavailable data is never an idle project.",
+          "Read current board-lane counts, project execution mode and blockers. The Work lane holds queued, paused, blocked and failed tasks; In progress shows active execution backed by current worker evidence. A paused or draining controller blocks new admission even when a task has no hold. Unavailable data is never an idle project.",
           %{}
         ),
         spec(
           "symphony_search_tasks",
-          "Search this chat's project by board lane and render task cards with current execution status. Work includes queued and running tasks. Legacy ready/running inputs alias Work; returned stage, counts and links use board lanes.",
+          "Search this chat's project by board lane and render task cards with current execution status. Work holds nonrunning admitted tasks; In progress shows active execution. Legacy ready/running inputs alias Work for compatibility; returned stage, counts and links use board lanes.",
           %{
             "q" => string(200),
             "status" => enum(@stages),

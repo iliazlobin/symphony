@@ -2054,7 +2054,7 @@ defmodule SymphonyElixir.Chat.Store do
     To create a task, collect its title, then propose create_task. Description and verification (tests or observable acceptance checks) are optional and may be empty; do not require them before creating a task.
     #{backlog_instructions(chat, settings)}
     Keep the description focused on the requested outcome and scope; preserve any explicit Depends on declaration. Do not ask for separate outcome, scope or dependencies fields.
-    Prefer short, useful paragraphs and tool-generated widgets and references. Responses render as plain text, not HTML.
+    Prefer short, useful paragraphs and essential source links. Do not repeat the board or tool output as a separate status card. Responses support safe Markdown, not raw HTML.
     Normally use at most four short sentences or three bullets. Use plain text without Markdown headings, bold markers or tables.
     For a child report, state only what changed, your decision and the next step. Do not repeat the report, narrate tool plans or append another summary.
     Refresh facts before decisions. Use stage for Backlog/Work/Review/Done; scheduler_stage and runtime_status describe separate internal execution facts.
