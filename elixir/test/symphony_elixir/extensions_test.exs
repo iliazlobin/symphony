@@ -529,7 +529,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert has_element?(view, "dialog#board-dialog")
     assert render(view) =~ "Copy ID"
     assert render(view) =~ "Codex update"
-    refute has_element?(view, "#close-dialog")
+    assert has_element?(view, "#close-dialog")
     render_click(view, "close-dialog")
     refute has_element?(view, "#board-dialog")
     refute html =~ "data-runtime-clock="

@@ -640,7 +640,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert has_element?(view, "#message-stopped .message-outcome", "Stopped")
     assert has_element?(view, "#message-failed .message-outcome", "Failed")
     assert has_element?(view, "#message-tools .chat-widget-receipt", "Task updated")
-    assert has_element?(view, "#message-text .message-text", "A useful response")
+    assert has_element?(view, "#message-text .message-markdown", "A useful response")
   end
 
   test "typed widgets link filters and tasks while proposals require explicit confirmation", ctx do
@@ -712,7 +712,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     message = %{"id" => "unsafe", "role" => "assistant", "text" => "<script>bad()</script>", "widgets" => widgets}
     FixtureStore.put(%{chat | "messages" => [message], "context" => [%{"title" => "Malicious source", "url" => "//evil.example"}]})
     {view, html} = chat_view(ctx, "/chat?project=alpha&chat=a1")
-    assert html =~ "&lt;script&gt;bad()&lt;/script&gt;"
+    refute html =~ "<script>bad()</script>"
     refute has_element?(view, ".chat-message script")
     refute has_element?(view, ".chat-widget img")
     refute has_element?(view, "a[href^='javascript:']")
@@ -954,7 +954,7 @@ defmodule SymphonyElixir.ChatLiveTest do
   test "embedded chat stays open and selects one retained conversation per task and main", ctx do
     view = embedded_view(ctx, view_context())
     assert has_element?(view, "#chat-app[data-chat-id=a1][data-embedded=true]")
-    assert has_element?(view, ".chat-header", "Alpha project project agent")
+    assert has_element?(view, "#project-agent-breadcrumb[title='Alpha project project agent']", "Alpha project")
     refute has_element?(view, "#new-chat-button")
     refute has_element?(view, "button[phx-click=close-panel]")
     refute has_element?(view, "#back-to-chats")
@@ -962,14 +962,14 @@ defmodule SymphonyElixir.ChatLiveTest do
     draft_message(view, "Main draft")
     render_click(view, "session-tab", %{"tab" => "context"})
     send(view.pid, {:task, "alpha:7", "First task"})
-    assert has_element?(view, "#issue-switcher summary", "First task")
+    assert has_element?(view, "#issue-switcher summary[title='First task']")
     refute render(view) =~ "Main draft"
     task_chat = GenServer.call(FixtureStore, :all) |> Map.values() |> Enum.find(&(&1["task_id"] == "alpha:7"))
     assert has_element?(view, "#chat-composer-wrap-#{task_chat["id"]}")
     draft_message(view, "First task draft")
     render_click(view, "session-tab", %{"tab" => "sources"})
     send(view.pid, {:task, "alpha:8", "Second task"})
-    assert has_element?(view, "#issue-switcher summary", "Second task")
+    assert has_element?(view, "#issue-switcher summary[title='Second task']")
     refute render(view) =~ "First task draft"
     draft_message(view, "Second task draft")
     send(view.pid, {:task, "alpha:7", "First task"})
@@ -997,7 +997,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     :ok = WorkflowStore.force_reload()
     view = embedded_view(ctx, view_context())
     send(view.pid, {:project, "github:example/repo"})
-    assert has_element?(view, "#issue-switcher summary", "Friendly project project agent")
+    assert has_element?(view, "#project-agent-breadcrumb", "Friendly project")
     assert has_element?(view, "#issue-option-main", "Friendly project project agent")
     render_change(view, "search-issues", %{"query" => "friendly"})
     assert has_element?(view, "#issue-option-main")
@@ -1006,7 +1006,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     render_change(view, "search-issues", %{"query" => "unrelated"})
     refute has_element?(view, "#issue-option-main")
     send(view.pid, {:project, "github:example/fallback"})
-    assert has_element?(view, "#issue-switcher summary", "github:example/fallback project agent")
+    assert has_element?(view, "#project-agent-breadcrumb", "github:example/fallback")
     send(view.pid, {:read_only, true})
     assert has_element?(view, ".chat-header", "Project agent")
     refute has_element?(view, "#issue-switcher")
@@ -1045,7 +1045,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     {:ok, main} = FixtureStore.get("alpha", "a1", nil)
     [queued] = main["queue"]
     send(view.pid, {:task, "alpha:7", "Task seven"})
-    assert has_element?(view, "#issue-switcher summary", "Task seven")
+    assert has_element?(view, "#issue-switcher summary[title='Task seven']")
     render_submit(view, "send-message", %{"message" => "Late main message", "chat_id" => "a1"})
     render_submit(view, "send-message", %{"message" => "Missing binding"})
     render_change(view, "draft", %{"message" => "Stale main draft", "chat_id" => "a1"})

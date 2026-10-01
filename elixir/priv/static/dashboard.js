@@ -1,7 +1,7 @@
 (() => {
   "use strict";
-  const lanes = [["backlog", "Backlog"], ["work", "Work"], ["review", "Review"], ["done", "Done"]];
-  const laneForStatus = status => ["ready", "running"].includes(status) ? "work" : status;
+  const lanes = [["backlog", "Backlog"], ["work", "Work"], ["in_progress", "In progress"], ["review", "Review"], ["done", "Done"]];
+  const laneForStatus = status => status === "running" ? "in_progress" : status === "ready" ? "work" : status;
   const metadataFilters = ["milestone", "label", "assignee"];
   const boardFilters = ["project", "status", "priority", "kind", ...metadataFilters];
   const filterNames = {project: "Project", status: "Status", priority: "Priority", kind: "Kind", milestone: "Milestone", label: "Tags", assignee: "Assignee"};
@@ -43,13 +43,13 @@
         const strings = raw => { const values = parse(raw, []); return Array.isArray(values) ? values.filter(value => typeof value === "string" && value.length) : []; };
         const milestone = parse(card.dataset.milestone, null);
         return {
-          labels: strings(card.dataset.labels), assignees: strings(card.dataset.assignees),
+          labels: strings(card.dataset.labels).filter(label => !/^(kind:|priority:|symphony:|work:)/i.test(label) && !["ready", "running", "backlog", "review", "done"].includes(label.toLowerCase())), assignees: strings(card.dataset.assignees),
           milestone: milestone && typeof milestone === "object" && !Array.isArray(milestone) && milestone.id && typeof milestone.title === "string" ? milestone : null
         };
       };
       this.metadataLabel = (key, value) => {
         if (value === "__none__") return emptyMetadata[key];
-        if (key === "label") return value.slice("label:".length);
+        if (key === "label") return value.slice("label:".length).replace(/^category:/i, "");
         if (key === "assignee") return "@" + value.slice("assignee:".length);
         const separator = value.lastIndexOf(":"), projectId = value.slice("milestone:".length, separator);
         const projects = parse(this.el.dataset.projects, []), project = projects.find(project => project.id === projectId)?.label || projectId;
@@ -62,7 +62,7 @@
         const multipleProjects = new Set([...projects.map(project => project.id), ...cards.map(card => card.dataset.project)]).size > 1;
         for (const card of cards) {
           const {labels, assignees, milestone} = this.cardMetadata(card);
-          labels.forEach(label => options.label.set("label:" + label, label));
+          labels.forEach(label => options.label.set("label:" + label, label.replace(/^category:/i, "")));
           assignees.forEach(login => options.assignee.set("assignee:" + login, "@" + login));
           if (milestone) {
             const project = projects.find(project => project.id === card.dataset.project)?.label || card.dataset.project;
@@ -86,14 +86,14 @@
       this.projectChoices = () => {
         const local = this.options("project");
         const remote = parse(this.el.dataset.projectLinks, []).filter(link => !local.some(([id]) => id === link.id));
-        return [["", "All projects"], ...local, ...remote.map(link => [link.id, link.label, link.url.replace(/\/$/, "") + "/login?continue=1"])];
+        return [["", "All projects"], ...local, ...remote.map(link => [link.id, link.label, link.url])];
       };
       this.metadataWithinLimits = values => values.length <= 20 && values.every(value => byteLength(value) <= 240) && byteLength(JSON.stringify(values)) <= 2000;
       this.filterValues = (key, values) => {
         if (!Array.isArray(values)) return [];
         if (!metadataFilters.includes(key)) return [...new Set(values.filter(value => this.options(key).some(([id]) => id === value)))];
         return values.reduce((selected, value) => {
-          const valid = typeof value === "string" && !value.includes("\0") && (value === "__none__" ||
+          const valid = typeof value === "string" && !value.includes("\0") && (key !== "label" || !/^label:(kind:|priority:|symphony:|work:|ready$|running$|backlog$|review$|done$)/i.test(value)) && (value === "__none__" ||
             (key === "milestone" ? /^milestone:.+:[1-9][0-9]*$/.test(value) : value.startsWith(key + ":") && value.length > key.length + 1));
           return valid && !selected.includes(value) && this.metadataWithinLimits([...selected, value]) ? [...selected, value] : selected;
         }, []);
@@ -111,7 +111,7 @@
         const savedLane = laneForStatus(saved.lane);
         this.prefs.lane = lanes.some(([id]) => id === savedLane) ? savedLane : "work";
         const savedOrder = stage => Array.isArray(saved.order?.[stage]) ? saved.order[stage].filter(id => typeof id === "string") : [];
-        this.prefs.order = Object.fromEntries(lanes.map(([stage]) => [stage, [...new Set(stage === "work" ? [...savedOrder("work"), ...savedOrder("ready"), ...savedOrder("running")] : savedOrder(stage))]]));
+        this.prefs.order = Object.fromEntries(lanes.map(([stage]) => [stage, [...new Set(stage === "work" ? [...savedOrder("work"), ...savedOrder("ready")] : stage === "in_progress" ? [...savedOrder("in_progress"), ...savedOrder("running")] : savedOrder(stage))]]));
         this.prefs.density = ["compact", "details"].includes(saved.density) ? saved.density : "compact";
         this.prefs.theme = ["light", "dark", "system"].includes(saved.theme) ? saved.theme : "light";
         this.el.querySelector("[data-board-search]").value = this.prefs.query;

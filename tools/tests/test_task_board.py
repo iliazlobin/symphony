@@ -7,7 +7,7 @@ import unittest
 
 @unittest.skipUnless(shutil.which("node"), "Node is required for the board-hook regression")
 class TaskBoardHookTests(unittest.TestCase):
-    def test_four_lane_migration_filters_selection_and_drag(self):
+    def test_five_lane_migration_filters_selection_and_drag(self):
         script = r'''
 const assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
 const source = fs.readFileSync(process.argv[1], "utf8");
@@ -17,7 +17,7 @@ function mount(savedPrefs = {}, urlFilters = {}, projects = [{id:"github:example
   const saved = new Map([["symphony.board.v1:fixture", JSON.stringify(savedPrefs)]]);
   let timerId = 0;
   const classes = () => {const values = new Set(); return {add: (...names) => names.forEach(name => values.add(name)), remove: (...names) => names.forEach(name => values.delete(name)), contains: name => values.has(name)};};
-  const lanes = new Map(["backlog", "work", "review", "done"].map(stage => {
+  const lanes = new Map(["backlog", "work", "in_progress", "review", "done"].map(stage => {
     const lane = {dataset:{stage}, hidden:false, classList:classes(), count:{textContent:""}, empty:{}, container:{children:[]}};
     lane.querySelector = selector => selector === "[data-lane-cards]" ? lane.container : selector === "[data-lane-count]" ? lane.count : selector === "[data-lane-empty]" ? lane.empty : selector === ".task-card:not([hidden])" ? lane.container.children.find(card => !card.hidden) : null;
     lane.container.insertBefore = (card, before) => {const children=lane.container.children; children.splice(children.indexOf(card),1); children.splice(before ? children.indexOf(before) : children.length,0,card);};
@@ -27,7 +27,7 @@ function mount(savedPrefs = {}, urlFilters = {}, projects = [{id:"github:example
   }));
   const allCards = () => [...lanes.values()].flatMap(lane => lane.container.children);
   function add(id, status, labels = [], assignees = [], milestone = null) {
-    const lane = lanes.get(["ready","running"].includes(status) ? "work" : status);
+    const lane = lanes.get(status === "running" ? "in_progress" : status === "ready" ? "work" : status);
     const card = {dataset:{taskId:id,status,project:"github:example/repo",title:id,identifier:id,priority:"P2",labels:JSON.stringify(labels),assignees:JSON.stringify(assignees),milestone:JSON.stringify(milestone)},hidden:false,classList:classes(),focus(){},contains(){return false;},getAttribute:()=>"true",getBoundingClientRect:()=>({left:0,right:300,top:0,bottom:100,height:100}),getClientRects:()=>[{}],offsetHeight:100};
     card.closest = selector => selector === "[data-stage]" ? lane : selector === "[hidden]" ? (card.hidden ? card : null) : ["[data-task-id]",".task-card[data-task-id]"].includes(selector) ? card : null;
     Object.defineProperty(card,"nextSibling",{get:()=>lane.container.children[lane.container.children.indexOf(card)+1] || null});
@@ -53,40 +53,42 @@ function mount(savedPrefs = {}, urlFilters = {}, projects = [{id:"github:example
 // A single selector combines local scope and trusted remote boards without mixing their state.
 const projects = [{id:"github:example/repo",label:"example/repo"},{id:"github:example/other",label:"Other"}];
 const projectLinks = [{id:"github:example/repo",label:"Example project",url:"http://localhost:8778/"},{id:"github:example/remote",label:"Remote project",url:"http://localhost:8779/"}];
-const picker = mount({}, {project:"github:example/repo",status:"work",label:'["label:backend"]'}, projects, projectLinks);
+const picker = mount({}, {project:"github:example/repo",status:"in_progress",label:'["label:backend"]'}, projects, projectLinks);
 assert.equal(picker.elements.get("#filter-project").placeholder,"Example project");
 assert.equal(picker.elements.get("#filter-project").title,"Example project");
 assert.deepEqual(plain(picker.hook.options("project")),[["github:example/repo","Example project"],["github:example/other","Other"]]);
 picker.hook.openFilter("project");
 const rendered = picker.elements.get("#options-project").innerHTML;
-assert(rendered.includes('href="http://localhost:8779/login?continue=1"'));
+assert(rendered.includes('href="http://localhost:8779/"'));
 assert(!rendered.includes('href="http://localhost:8778/"')); // Selecting the current controller filters locally.
 assert(rendered.includes("All projects"));assert(rendered.includes("example/remote"));
 picker.hook.toggle("project", "github:example/other");
 assert.equal(picker.hook.popup,null);assert.equal(picker.elements.get("#filter-project").placeholder,"Other");
 assert.deepEqual(plain(picker.hook.prefs.project),["github:example/other"]);
-assert.deepEqual(plain(picker.hook.prefs.status),["work"]);assert.deepEqual(plain(picker.hook.prefs.label),["label:backend"]);
+assert.deepEqual(plain(picker.hook.prefs.status),["in_progress"]);assert.deepEqual(plain(picker.hook.prefs.label),["label:backend"]);
 picker.hook.openFilter("project");picker.hook.toggle("project", "");
 assert.equal(picker.elements.get("#filter-project").placeholder,"All projects");
 assert.deepEqual(plain(picker.hook.prefs.project),[]);assert.deepEqual(picker.visible(),["running"]);
 picker.flush();
 const beforeRemote = JSON.stringify(picker.hook.prefs), eventsBeforeRemote = picker.sent.length;
 picker.hook.toggle("project", "github:example/remote");
-assert.deepEqual(picker.navigations,["http://localhost:8779/login?continue=1"]); // Only a login hint; no task binding, identity or credential is transferred.
+assert.deepEqual(picker.navigations,["http://localhost:8779/"]); // Gateway reuses its session; task bindings and credentials are not copied.
 assert.equal(JSON.stringify(picker.hook.prefs),beforeRemote);assert.equal(picker.sent.length,eventsBeforeRemote);
 assert.deepEqual(plain(picker.hook.filterValues("project", ["github:example/remote"])),[]);
 picker.elements.get("#filter-project").value = "example/remote";
-assert.deepEqual(plain(picker.hook.drawOptions("project")),[["github:example/remote","Remote project","http://localhost:8779/login?continue=1"]]);
+assert.deepEqual(plain(picker.hook.drawOptions("project")),[["github:example/remote","Remote project","http://localhost:8779/"]]);
 const single = mount({}, {}, [projects[0]], projectLinks);
 assert.equal(single.elements.get("#filter-project").placeholder,"Example project");
 const multi = mount({project:projects.map(project=>project.id)}, {}, projects, projectLinks);
 assert.equal(multi.elements.get("#filter-project").placeholder,"2 projects");
-// Task kind is a bounded classifier, independent of stage and metadata filters.
+// Task kind is a bounded classifier, independent of subject tags.
+assert.deepEqual(plain(picker.hook.filterValues("label",["label:kind:testing","label:symphony:ready","label:category:performance"])),["label:category:performance"]);
+// Task kind remains independent of stage and metadata filters.
 const kinds=mount({}, {kind:"bug"});
 assert.deepEqual(kinds.visible(),["queued"]);
 assert.deepEqual(plain(kinds.hook.filterValues("kind",["bug","unknown","bug"])),["bug"]);
 assert(kinds.hook.options("kind").some(([id,label])=>id==="invalid" && label==="Needs classification"));
-kinds.el.dataset.urlFilters=JSON.stringify({kind:"operations",status:"work"}); kinds.hook.apply();
+kinds.el.dataset.urlFilters=JSON.stringify({kind:"operations",status:"in_progress"}); kinds.hook.apply();
 assert.deepEqual(kinds.visible(),["running"]);
 kinds.hook.save(); kinds.flush();
 assert.deepEqual(plain(kinds.hook.prefs.kind),["operations"]);
@@ -95,7 +97,8 @@ assert.deepEqual(plain(kinds.sent.at(-1).payload.filters.kind),["operations"]);
 // Existing browser preferences retain useful order and metadata, but cannot hide Done.
 const b = mount({lane:"running",hiddenLanes:["done","running"],order:{ready:["queued","shared"],running:["running","shared"],done:["done"]},label:["label:bug, ui"]});
 assert.equal(b.hook.prefs.lane,"work");
-assert.deepEqual(plain(b.hook.prefs.order.work),["queued","shared","running"]);
+assert.deepEqual(plain(b.hook.prefs.order.work),["queued","shared"]);
+assert.deepEqual(plain(b.hook.prefs.order.in_progress),["running","shared"]);
 assert(!("hiddenLanes" in b.hook.prefs));assert(!("ready" in b.hook.prefs.order));
 assert.equal(b.lanes.get("done").hidden,false);
 assert.deepEqual(b.visible(),["queued"]);
@@ -107,27 +110,28 @@ assert.equal(persisted.lane,"work");
 const restored=mount({...persisted,order:{...persisted.order,work:["running","queued"],ready:["queued"]}});
 assert.deepEqual(plain(restored.hook.prefs.order.work),["running","queued"]);
 for(const legacy of ["ready","running"]) {
-  const old=mount({lane:legacy,status:[legacy]});assert.equal(old.hook.prefs.lane,"work");assert.deepEqual(old.visible(),[legacy==="ready"?"queued":"running"]);
+  const old=mount({lane:legacy,status:[legacy]});assert.equal(old.hook.prefs.lane,legacy==="ready"?"work":"in_progress");assert.deepEqual(old.visible(),[legacy==="ready"?"queued":"running"]);
 }
-// Old share URLs remain fine-grained; Work includes both execution states.
-for(const [status,expected] of [["ready",["queued"]],["running",["running"]],["work",["queued","running"]]]) {
+// Share filters distinguish admission from native execution.
+for(const [status,expected] of [["ready",["queued"]],["running",["running"]],["work",["queued"]],["in_progress",["running"]]]) {
   b.el.dataset.urlFilters=JSON.stringify({status});b.hook.apply();assert.deepEqual(b.visible(),expected);
-  assert.equal(b.hook.prefs.lane,"work");
+  assert.equal(b.hook.prefs.lane,["running","in_progress"].includes(status)?"in_progress":"work");
 }
 b.el.dataset.urlFilters=JSON.stringify({status:"work",label:'["label:bug, ui"]',assignee:'["assignee:bob"]'});b.hook.apply();assert.deepEqual(b.visible(),["queued"]);
 const beforeSave=b.sent.length;b.hook.save();b.flush();assert.equal(b.sent.length,beforeSave); // URL already equals the selection.
-// A filter with no matches keeps its selected value and all four lane headings.
+// A filter with no matches keeps its selected value and all five lane headings.
 b.hook.prefs.label=["label:gone"];b.hook.apply();assert.deepEqual(b.visible(),[]);assert.equal(b.hook.prefs.label[0],"label:gone");assert([...b.lanes.values()].every(lane=>!lane.hidden));
 // Card background selects; title links do not invoke background selection.
 b.el.dataset.urlFilters="{}";b.hook.apply();b.hook.prefs.status=[];b.hook.prefs.label=[];b.hook.prefs.assignee=[];b.hook.apply();
 b.listeners.get("click")({target:b.queued,button:0});assert.equal(b.sent.at(-1).event,"select-task");
 const count=b.sent.length, link={closest:selector=>selector===".task-card[data-task-id]"?b.queued:selector.startsWith("a,button")?link:null};
 b.listeners.get("click")({target:link,button:0});assert.equal(b.sent.length,count);
-// Reordering within Work preserves execution states; cross-column drops request native transitions.
+// Crossing execution columns requests a native transition; it never changes running state locally.
 const begin=card=>b.listeners.get("dragstart")({target:card,dataTransfer:{setData(){}},preventDefault(){assert.fail("card drag was rejected");}});
 const drop=target=>b.listeners.get("drop")({target,preventDefault(){}});
 b.hook.announce=()=>{};begin(b.running);drop(b.queued);
-assert.deepEqual(plain(b.hook.prefs.order.work),["running","queued"]);
+assert.equal(b.sent.at(-1).event,"move-task");
+assert.equal(b.sent.at(-1).payload.stage,"work");
 assert.equal(b.running.dataset.status,"running");assert.equal(b.queued.dataset.status,"ready");
 begin(b.backlog);drop(b.lanes.get("work"));assert.equal(b.sent.at(-1).event,"move-task");assert.equal(b.sent.at(-1).payload.stage,"work");
 // The new context never advertises hidden columns; legacy detailed filters remain meaningful.

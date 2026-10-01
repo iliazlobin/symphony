@@ -32,15 +32,30 @@ defmodule SymphonyElixir.DashboardLiveTest do
           {:reply, {:error, :revision_conflict}, state}
 
         true ->
-          settings = state.board.control["settings"]
-
           control =
-            state.board.control
-            |> Map.put("revision", state.board.control["revision"] + 1)
-            |> put_in(["settings", "concurrency", "effective"], command["limit"] || settings["concurrency"]["default"])
-            |> put_in(["settings", "concurrency", "override"], command["limit"])
+            if command["action"] == "queue_task" do
+              id = command["issue_id"]
 
-          {:reply, {:ok, %{}}, %{state | board: %{state.board | control: control}, control: control}}
+              context = %{
+                tracker_kind: "github",
+                tracker_fingerprint: state.control["tracker_fingerprint"],
+                repository: "example/fixture",
+                required_labels: ["ready"]
+              }
+
+              item = SymphonyElixir.TaskRouting.intent(state.control["issues"][id] || %{}, "queue_task", state.control["revision"] + 1, context)
+              state.control |> Map.put("revision", state.control["revision"] + 1) |> put_in(["issues", id], item)
+            else
+              settings = state.board.control["settings"]
+
+              state.board.control
+              |> Map.put("revision", state.board.control["revision"] + 1)
+              |> put_in(["settings", "concurrency", "effective"], command["limit"] || settings["concurrency"]["default"])
+              |> put_in(["settings", "concurrency", "override"], command["limit"])
+            end
+
+          board = if command["action"] == "queue_task", do: TaskBoard.refresh_control(state.board, control), else: %{state.board | control: control}
+          {:reply, {:ok, %{}}, %{state | board: board, control: control}}
       end
     end
   end
@@ -292,7 +307,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#board-dialog")
     refute has_element?(view, "[data-hidden-lanes], [data-visible-lane], [data-hide-lane]")
     refute has_element?(view, ".board-summary button[phx-click=refresh]")
-    assert length(Floki.find(Floki.parse_document!(html), ".kanban-lane")) == 4
+    assert length(Floki.find(Floki.parse_document!(html), ".kanban-lane")) == 5
   end
 
   test "reload renders the last complete board before a blocked refresh and skips synchronous snapshot IO", ctx do
@@ -597,7 +612,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
 
     open_task(view, "2")
     assert has_element?(view, "dialog#board-dialog h2[tabindex='-1'][data-dialog-focus]", "Ready fixture")
-    refute has_element?(view, "#board-dialog #close-dialog")
+    assert has_element?(view, "#board-dialog #close-dialog")
     assert has_element?(view, "#task-board-app[data-selected-task='github:example/fixture:2']")
     assert has_element?(view, "#board-dialog", "Acceptance for fixture 2")
     assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:3']")
@@ -614,9 +629,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     card = "[data-task-id='github:example/fixture:4']"
 
     assert has_element?(view, card <> " .execution-summary", "Awaiting your review")
-    assert has_element?(view, card <> " .execution-summary dd[title='Tokens: 517,755 used; limit 1,000,000']", "518k / 1M")
-    assert has_element?(view, card <> " .execution-summary dd[title='Time: 188,700 ms used; limit 3,600,000 ms']", "3m 8s / 1h 0m")
-    assert has_element?(view, card <> " .execution-summary", "2 / 2")
+    refute has_element?(view, card <> " .execution-summary .execution-metrics")
     refute has_element?(view, card <> " .execution-summary details")
 
     open_task(view, "4")
@@ -875,11 +888,11 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#issue-pr-menu .issue-github-link")
     refute has_element?(view, "#issue-pr-menu #issue-card-link")
     refute has_element?(view, "#issue-pr-menu .issue-work-options")
-    assert has_element?(view, "#issue-pr-menu summary", "4")
-    assert has_element?(view, "#issue-pr-menu summary .issue-work-count", "1 work session")
+    assert has_element?(view, "#issue-pr-menu summary", "Work All")
+    refute has_element?(view, "#issue-pr-menu summary .issue-work-count")
     assert has_element?(view, "article[data-task-id='github:example/fixture:2'] .card-work-status[data-work-count='1'] [data-working-count='1']", "1 working")
     assert has_element?(view, "#operator-scope[data-agent-role=task] .operator-task-state", "Work")
-    assert has_element?(view, "#operator-scope [data-working-count='1']", "1 working")
+    assert has_element?(view, "#operator-scope [data-working-count='1']", "1 active")
     for n <- 1..4, do: assert(has_element?(view, "#issue-pr-menu a[href='https://github.com/example/fixture/pull/#{n}']", "PR ##{n}"))
     assert has_element?(view, "#issue-pr-menu [data-pr-number='4']", "Merged")
     assert has_element?(view, ".issue-chat-identity > details:first-child#issue-pr-menu")
@@ -907,21 +920,21 @@ defmodule SymphonyElixir.DashboardLiveTest do
     id = :sys.get_state(view.pid).socket.assigns.chat_id
     view |> element("#issue-pr-menu [phx-value-id='work:#{work_id}']") |> render_click()
     refute has_element?(view, "#board-dialog")
-    assert has_element?(view, "#issue-pr-menu summary", "Change 1 work agent")
-    assert has_element?(view, "#issue-pr-menu summary .work-session-state", "Working")
-    assert has_element?(view, "#operator-scope[data-agent-role=work] .agent-scope-trail [aria-current=location]", "Work")
-    assert has_element?(view, "#operator-scope .operator-work-goal", "Address PR checks")
+    assert has_element?(view, "#issue-pr-menu summary", "PR #1")
+    refute has_element?(view, "#issue-pr-menu summary .work-session-state")
+    assert has_element?(view, "#operator-scope[data-agent-role=work] #issue-pr-menu summary", "Work")
+    refute has_element?(view, "#operator-scope .operator-work-goal")
     refute :sys.get_state(view.pid).socket.assigns.chat_id == id
     assert :sys.get_state(view.pid).socket.assigns.chat_session_id == "work:" <> work_id
     pr_chat = :sys.get_state(view.pid).socket.assigns.chat_id
     view |> element("#pr-session-main") |> render_click()
-    assert has_element?(view, "#issue-pr-menu summary", "Ready fixture task agent")
+    assert has_element?(view, "#issue-pr-menu summary", "Work All")
     assert :sys.get_state(view.pid).socket.assigns.chat_id == id
     refute :sys.get_state(view.pid).socket.assigns.chat_id == pr_chat
     view |> element("article[data-task-id='github:example/fixture:2'] .card-work-status a") |> render_click()
     assert :sys.get_state(view.pid).socket.assigns.chat_id == pr_chat
     refute has_element?(view, "#board-dialog")
-    view |> element("#operator-scope .agent-scope-trail button[phx-click=select-pr-session]") |> render_click()
+    view |> element("#pr-session-main") |> render_click()
     assert has_element?(view, "#operator-scope[data-agent-role=task]")
     assert :sys.get_state(view.pid).socket.assigns.chat_id == id
     open_task(view, "2")
@@ -952,8 +965,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     view |> element("#board-dialog [data-pr-number='5'] a[aria-label='Open PR #5 work agent']") |> render_click()
     assert_push_event(view, "focus-chat-session", %{})
     refute has_element?(view, "#board-dialog")
-    assert has_element?(view, "#issue-pr-menu summary", "Change 5 work agent")
-    assert has_element?(view, "#issue-pr-menu summary .work-session-state", "Discussion")
+    assert has_element?(view, "#issue-pr-menu summary", "PR #5")
+    refute has_element?(view, "#issue-pr-menu summary .work-session-state")
     refute has_element?(view, "#issue-pr-menu summary .issue-work-count")
     refute has_element?(view, "#operator-scope .operator-work-goal")
     assert :sys.get_state(view.pid).socket.assigns.chat_session_id == "pr:5"
@@ -963,7 +976,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert :sys.get_state(view.pid).socket.assigns.chat_id == selected
     assert has_element?(view, "#pr-session-main")
     view |> element("#pr-session-main") |> render_click()
-    assert has_element?(view, "#issue-pr-menu summary", "Ready fixture task agent")
+    assert has_element?(view, "#issue-pr-menu summary", "Work All")
     assert is_nil(:sys.get_state(view.pid).socket.assigns.chat_session_id)
     refute :sys.get_state(view.pid).socket.assigns.chat_id == selected
   end
@@ -1036,7 +1049,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     view = authorized_board_view()
     render_click(view, "select-task", %{"id" => "github:example/fixture:2"})
     render(view)
-    assert has_element?(view, "#issue-pr-menu summary", "Ready fixture task agent 0")
+    assert has_element?(view, "#issue-pr-menu summary", "Work All")
     assert has_element?(view, "#issue-options [data-issue-id='github:example/fixture:2'] .issue-option-pr-count", "0 PRs")
     assert has_element?(view, "#issue-pr-menu", "No linked pull requests yet.")
 
@@ -1048,21 +1061,22 @@ defmodule SymphonyElixir.DashboardLiveTest do
           {"not_applicable", "Unavailable", "not available for this tracker"}
         ] do
       refresh(view, ctx.runtime, update_task(board, "2", &%{&1 | github_status: status}))
-      assert has_element?(view, "#issue-pr-menu summary", label)
+      assert has_element?(view, "#issue-pr-menu .issue-options-empty", message)
+      assert label in ["Unavailable", "Not loaded", "Incomplete"]
       assert has_element?(view, "#issue-options [data-issue-id='github:example/fixture:2'] .issue-option-pr-count", "PRs —")
       assert has_element?(view, "#issue-pr-menu [role=status]", message)
-      refute has_element?(view, "#issue-pr-menu summary", "Ready fixture task agent 0")
+      assert has_element?(view, "#issue-pr-menu summary", "Work All")
       refute has_element?(view, "#issue-pr-menu", "No linked pull requests yet.")
     end
 
     prs = for n <- 1..2, do: %{number: n, title: "Known PR #{n}", url: "https://github.com/example/fixture/pull/#{n}", state: "open"}
     partial = update_task(board, "2", &%{&1 | github_status: "partial", pull_requests: prs})
     refresh(view, ctx.runtime, partial)
-    assert has_element?(view, "#issue-pr-menu summary", "2 shown")
+    assert has_element?(view, "#issue-pr-menu summary", "Work All")
     assert has_element?(view, "#issue-pr-menu [role=status]", "PR details are incomplete.")
     for n <- 1..2, do: assert(has_element?(view, "#issue-pr-menu [data-pr-number='#{n}']", "Known PR #{n}"))
     refresh(view, ctx.runtime, update_task(partial, "2", &%{&1 | github_status: "available"}))
-    assert has_element?(view, "#issue-pr-menu summary", "Ready fixture task agent 2")
+    assert has_element?(view, "#issue-pr-menu summary", "Work All")
     refute has_element?(view, "#issue-pr-menu [role=status]")
   end
 
@@ -1324,7 +1338,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
 
   test "new task requires operator access instead of redirecting to GitHub" do
     {view, _html} = board_view()
-    view |> element("#new-task-button") |> render_click()
+    refute has_element?(view, "#new-task-button")
+    render_click(view, "new-task")
     assert has_element?(view, "#board-dialog h2", "Settings")
     assert render(view) =~ "Sign in before creating"
     refute has_element?(view, "#task-intake-form")
@@ -1398,55 +1413,34 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
   end
 
-  test "fresh backlog drag opens a queue preview and only confirmation submits it", ctx do
+  test "explicit backlog drop submits one local routing command without a preview", ctx do
     view = authorized_board_view()
-    render_click(view, "move-task", %{"id" => "github:example/fixture:1", "stage" => "ready"})
-    assert_receive {:intake_prepared, id, %{"action" => "queue_task", "task_id" => "1"}}
-    assert has_element?(view, "#board-dialog h2", "Move task to Work")
-    assert has_element?(view, "#task-action-preview h4", "Fresh queue task title")
-    assert has_element?(view, "#task-action-preview", "Current scope and acceptance")
-    refute has_element?(view, "#task-action-preview h4", "Backlog fixture")
-    assert has_element?(view, "#task-action-preview", "GitHub routing labels synchronize in the background")
-    assert has_element?(view, "#task-action-preview", "A paused controller stays paused")
-    assert has_element?(view, "#lane-backlog [data-task-id='github:example/fixture:1']")
-    refute has_element?(view, "#task-intake-form")
-    refute_receive {:intake_decided, _, _}
-    view |> element("#task-action-preview button[phx-value-decision=confirm]") |> render_click()
-    assert_receive {:intake_decided, ^id, "confirm"}
-    assert has_element?(view, "#task-action-preview", "Action completed")
-    assert GenServer.call(ctx.runtime, :control_snapshot)["mode"] == "paused"
-    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
-    refresh(view, ctx.runtime, update_task(ctx.board, "1", &%{&1 | stage: "ready"}))
+    render_click(view, "move-task", %{"id" => "github:example/fixture:1", "stage" => "work"})
+    assert_receive {:settings_command, %{"action" => "queue_task", "issue_id" => "1", "expected_revision" => 0} = command}
+    task = Enum.find(ctx.board.tasks, &(&1.issue_id == "1"))
+    assert command["expected_updated_at"] == task.updated_at
+    assert is_binary(command["command_id"])
+    refute has_element?(view, "#task-action-preview, #task-intake-form")
+    refute has_element?(view, "#board-dialog")
     assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:1']")
-    assert has_element?(view, "#task-action-preview", "Action completed")
+    assert GenServer.call(ctx.runtime, :control_snapshot)["mode"] == "paused"
+    refute_receive {:intake_prepared, _, _}
   end
 
-  test "task detail queue button supports cancellation and reopening without submitting a change" do
+  test "task detail admission has the same direct guarded flow" do
     view = authorized_board_view()
     open_task(view, "1")
     view |> element("#queue-task-button") |> render_click()
-    assert_receive {:intake_prepared, id, %{"action" => "queue_task"}}
-    view |> element("#task-action-preview button[phx-value-decision=cancel]") |> render_click()
-    assert_receive {:intake_decided, ^id, "cancel"}
-    assert has_element?(view, "#task-action-preview", "Action cancelled")
-    view |> element("button[phx-click=preview-queue]") |> render_click()
-    assert_receive {:intake_prepared, next_id, %{"action" => "queue_task"}}
-    assert next_id != id
-    render_click(view, "close-dialog")
-    render_click(view, "new-task")
-    assert has_element?(view, "#task-action-preview h3", "Queue task")
-    assert has_element?(view, "#task-action-preview button[phx-value-decision=confirm]", "Queue task")
+    assert_receive {:settings_command, %{"action" => "queue_task", "issue_id" => "1"}}
+    refute has_element?(view, "#task-action-preview, #task-intake-form, #board-dialog")
     refute_receive {:intake_prepared, _, _}
-    view |> element("#task-action-preview button[phx-value-decision=cancel]") |> render_click()
-    assert_receive {:intake_decided, ^next_id, "cancel"}
-    refute_receive {:intake_decided, _, "confirm"}
   end
 
   test "queueing requires sign-in and rejects unavailable or non-backlog tasks" do
     {view, _html} = board_view()
     render_click(view, "move-task", %{"id" => "github:example/fixture:1", "stage" => "ready"})
     assert has_element?(view, "#board-dialog h2", "Settings")
-    assert render(view) =~ "Sign in before queueing"
+    assert render(view) =~ "Sign in before moving"
     refute_receive {:intake_prepared, _, _}
     view = authorized_board_view()
 
@@ -1530,30 +1524,65 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute_receive {:intake_decided, _, _}
   end
 
-  test "revoked operator access prevents a prepared queue action and removes its fresh scope" do
+  test "revoked operator access rejects a direct admission", ctx do
     view = authorized_board_view()
-    render_click(view, "queue-task", %{"id" => "github:example/fixture:1"})
-    assert_receive {:intake_prepared, _id, _}
-    assert has_element?(view, "#task-action-preview", "Current scope and acceptance")
     System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("rotated-token", 4))
-    view |> element("#task-action-preview button[phx-value-decision=confirm]") |> render_click()
-    refute has_element?(view, "#task-action-preview")
-    refute has_element?(view, ".intake-history-item")
-    refute has_element?(view, "#task-intake-panel", "Current scope and acceptance")
-    refute_receive {:intake_decided, _, _}
+    render_click(view, "queue-task", %{"id" => "github:example/fixture:1"})
+    assert has_element?(view, "#board-dialog h2", "Settings")
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:settings_command, _}
   end
 
-  test "read-only refresh removes a pending queue preview and rejects further queue events", ctx do
+  test "read-only refresh rejects direct queue events", ctx do
     view = authorized_board_view()
-    render_click(view, "queue-task", %{"id" => "github:example/fixture:1"})
-    assert_receive {:intake_prepared, _id, _}
     refresh(view, ctx.runtime, Map.put(ctx.board, :read_only, true))
-    refute has_element?(view, "#task-action-preview")
-    refute has_element?(view, ".intake-history-item")
     render_click(view, "queue-task", %{"id" => "github:example/fixture:1"})
     assert render(view) =~ "This board is read-only"
-    refute_receive {:intake_decided, _, _}
+    refute_receive {:settings_command, _}
     refute_receive {:intake_prepared, _, _}
+  end
+
+  test "uncertain moves replay the same command while stale rejection requires a fresh gesture", ctx do
+    view = authorized_board_view()
+    :sys.replace_state(ctx.runtime, &Map.put(&1, :command_error, :unavailable))
+    render_click(view, "move-task", %{"id" => "github:example/fixture:1", "stage" => "in_progress"})
+    assert_receive {:settings_command, first}
+    render_click(view, "move-task", %{"id" => "github:example/fixture:1", "stage" => "work"})
+    assert_receive {:settings_command, replay}
+    assert replay == first
+    assert has_element?(view, "#lane-backlog [data-task-id='github:example/fixture:1']")
+    :sys.replace_state(ctx.runtime, &Map.put(&1, :command_error, :revision_conflict))
+    render_click(view, "move-task", %{"id" => "github:example/fixture:1", "stage" => "work"})
+    assert_receive {:settings_command, ^first}
+    assert render(view) =~ "The task changed"
+    render_click(view, "move-task", %{"id" => "github:example/fixture:1", "stage" => "work"})
+    assert_receive {:settings_command, fresh}
+    refute fresh["command_id"] == first["command_id"]
+    :sys.replace_state(ctx.runtime, &Map.put(&1, :command_error, :invalid_command))
+    render_click(view, "move-task", %{"id" => "github:example/fixture:1", "stage" => "work"})
+    assert render(view) =~ "Task could not move to Work"
+  end
+
+  test "graph opens a keyboard-ready modal and creation controls are absent" do
+    view = authorized_board_view()
+    refute has_element?(view, "#new-task-button, .lane-add")
+    view |> element("#workflow-graph-button") |> render_click()
+    assert has_element?(view, "#board-dialog[aria-modal=true][data-kind=graph] #workflow-graph")
+    assert has_element?(view, "#close-dialog")
+    view |> element("#close-dialog") |> render_click()
+    refute has_element?(view, "#board-dialog")
+  end
+
+  test "task intent and routing labels do not appear as subject tags", ctx do
+    board = update_task(ctx.board, "1", &Map.put(&1, :labels, ["kind:testing", "category:performance", "symphony:ready", "priority:p1", "work:operations", "ready"]))
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    card = element(view, "[data-task-id='github:example/fixture:1']") |> render()
+    assert card =~ "category:performance"
+    refute card =~ "kind:testing"
+    refute card =~ "symphony:ready"
+    refute card =~ "work:operations"
+    refute card =~ "priority:p1"
   end
 
   test "oversized submitted values cannot become shortened proposals" do
