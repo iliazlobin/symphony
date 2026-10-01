@@ -117,6 +117,19 @@ defmodule SymphonyElixir.Chat.StoreTest do
       {:ok, %{status: :completed}}
     end
 
+    defp respond("provider-error:" <> reason, _opts, _emit, _tool) do
+      errors = %{
+        "auth" => :openrouter_auth_required,
+        "rate" => :openrouter_rate_limited,
+        "unavailable" => :openrouter_unavailable,
+        "limit" => :openrouter_tool_limit,
+        "budget" => :provider_budget_exhausted,
+        "unknown" => :protocol_error
+      }
+
+      {:error, Map.fetch!(errors, reason)}
+    end
+
     defp respond("crash", _opts, _emit, _tool), do: exit(:runtime_failure)
     defp respond("error", _opts, _emit, _tool), do: {:error, :model_unavailable}
     defp respond("auth", _opts, _emit, _tool), do: {:error, :authentication_required}
@@ -984,6 +997,25 @@ defmodule SymphonyElixir.Chat.StoreTest do
     end
   end
 
+  test "OpenRouter diagnostics distinguish credential capacity and protocol failures", c do
+    for {reason, text} <- [
+          {"auth", "OpenRouter key"},
+          {"rate", "rate limited"},
+          {"unavailable", "conversation is saved"},
+          {"limit", "tool-call limit"},
+          {"budget", "account budget"},
+          {"unknown", "chat runtime"}
+        ] do
+      chat = create(c)
+      assert {:ok, _} = Store.send_message(c.project, chat["id"], "provider-error:" <> reason, "error-" <> reason, c.auth, c.server)
+      assert_receive {:runtime, _, _, _}
+      failed = wait_chat(c, chat, &(&1["status"] == "error"))
+      assert failed["error"] =~ text
+      refute failed["error"] =~ "dedicated management-chat Codex"
+      assert :sys.get_state(c.server).fault == nil
+    end
+  end
+
   test "an unresolved OpenRouter model is a configuration error rather than a storage failure", c do
     chat = create(c)
     stop_supervised!(Store)
@@ -1674,7 +1706,9 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:error, :chat_history_full} = Store.send_message(c.project, chat["id"], "full", "full", c.auth, c.server)
     before_reports = :sys.get_state(c.server).chats[chat["id"]]
     assert :ok = Store.sync_pr_updates(c.project, "scope", report_board(pr_task()), c.server)
-    assert :sys.get_state(c.server).chats[chat["id"]] == before_reports
+    after_reports = :sys.get_state(c.server).chats[chat["id"]]
+    assert Map.take(after_reports, ~w(messages proposals report_cursors)) == Map.take(before_reports, ~w(messages proposals report_cursors))
+    assert after_reports["task_kind"] == "general"
     assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
   end
 

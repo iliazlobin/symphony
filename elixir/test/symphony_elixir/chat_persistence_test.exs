@@ -38,6 +38,7 @@ defmodule SymphonyElixir.Chat.PersistenceTest do
     saved = c.chat |> Map.put("messages", [message() |> Map.put("runtime", runtime) |> Map.put("tool_receipts", [receipt])])
     assert :ok = Persistence.put(owner, saved)
     bytes = File.read!(record_path(c.root, c.chat))
+
     invalid = [
       put_in(saved, ["messages", Access.at(0), "runtime"], "wrong"),
       put_in(saved, ["messages", Access.at(0), "runtime", "provider"], "unknown"),
@@ -47,10 +48,12 @@ defmodule SymphonyElixir.Chat.PersistenceTest do
       put_in(saved, ["messages", Access.at(0), "tool_receipts"], List.duplicate(receipt, 25)),
       put_in(saved, ["messages", Access.at(0), "tool_receipts"], [Map.put(receipt, "result", String.duplicate("x", 65_537))])
     ]
+
     for record <- invalid do
       assert {:error, :chat_storage_unavailable} = Persistence.put(owner, record)
       assert File.read!(record_path(c.root, c.chat)) == bytes
     end
+
     Persistence.close(owner)
     {reopened, records} = open_when_released(c.root)
     assert records[c.chat["id"]] == saved

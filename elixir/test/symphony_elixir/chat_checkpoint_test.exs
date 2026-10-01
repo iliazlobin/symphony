@@ -13,6 +13,7 @@ defmodule SymphonyElixir.Chat.CheckpointTest do
       %{"role" => "user", "content" => "Earlier instruction"},
       %{"role" => "assistant", "content" => String.duplicate("€", 70_000)}
     ]
+
     assert [earlier, latest] = Checkpoint.bound(entries)
     assert earlier == hd(entries)
     assert byte_size(latest["content"]) <= 65_536
