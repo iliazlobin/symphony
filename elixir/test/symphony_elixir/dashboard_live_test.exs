@@ -1522,6 +1522,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#task-action-preview h4", "Bounded fixture task")
     System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("rotated-token", 4))
     send(view.pid, {:chat_updated, id})
+    # Settle the parent notification before the component's queued self-update is observed.
+    render(view)
     refute has_element?(view, "#task-action-preview")
     refute has_element?(view, ".intake-history-item")
     refute has_element?(view, "#task-intake-form")
