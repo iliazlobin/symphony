@@ -191,6 +191,26 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     refute_receive {:native_command, _, _, _}
   end
 
+  test "lost task work selection blocks a retained work agent from cancelling or retrying the issue", ctx do
+    id = String.duplicate("a", 32)
+    put_pr_work(ctx, id, %{"phase" => "paused"})
+    owner = start_supervised!({CommandOwner, self()})
+    context = Map.merge(ctx.context, %{task_id: "github:example/repo:1", session_id: "work:" <> id, orchestrator: owner})
+
+    for action <- ~w(cancel retry) do
+      board = Application.fetch_env!(:symphony_elixir, :chat_test_board)
+      selected = put_in(board, [:tasks, Access.at(0), :ledger, "selected_work_id"], id)
+      Application.put_env(:symphony_elixir, :chat_test_board, selected)
+      proposal = propose(context, %{"action" => action, "task_id" => "1"})
+      missing = update_in(selected, [:tasks, Access.at(0), :ledger], &Map.delete(&1, "selected_work_id"))
+      Application.put_env(:symphony_elixir, :chat_test_board, missing)
+      assert {:error, :pr_session_scope_mismatch} = Tools.call("symphony_propose_action", %{"action" => action, "task_id" => "1"}, context)
+      assert {:error, :pr_session_scope_mismatch} = Tools.confirm(proposal, context)
+    end
+
+    refute_receive {:native_command, _, _, _}
+  end
+
   test "attributed external PR chats allow discussion without adopting a coding agent", ctx do
     pr = %{number: 7, title: "External PR", url: "https://github.com/example/repo/pull/7", state: "open"}
     board = put_in(ctx.board, [:tasks, Access.at(0), :pull_requests], [pr])

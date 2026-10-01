@@ -363,6 +363,22 @@ defmodule SymphonyElixir.PRWorkTest do
     assert next.data["issues"]["7"]["tokens"] == before_issue["tokens"]
   end
 
+  test "missing or corrupt retained handoff cannot authorize publication", c do
+    {ledger, run} = reviewed(c.ledger)
+    issue = ledger.data["issues"]["7"]
+    receipt = publication(run)
+
+    for handoff <- [nil, [], "approved"] do
+      corrupted = put_in(issue, ["pr_work", @work, "handoff"], handoff)
+      refute PRWork.valid_issue?("7", corrupted)
+      assert {:error, :pr_head_changed} = PRWork.publication(corrupted, receipt, @context)
+      assert corrupted["pr_work"][@work]["publication"] == nil
+      assert corrupted["pr_work"][@work]["published_head_sha"] == nil
+    end
+
+    assert ledger.data["issues"]["7"] == issue
+  end
+
   test "continuation fences old goals and unsupported work never reaches dispatch", c do
     command = Map.put(create(), "purpose", "deployment")
     refute PRWork.valid_command?(command)
