@@ -2,7 +2,8 @@ defmodule SymphonyElixir.Chat.Store do
   @moduledoc "Owns project conversations and durable task submissions; browsers do not own execution."
   use GenServer
 
-  alias SymphonyElixir.Chat.{Checkpoint, Coordination, Graph, Persistence, Provider, Runtime, Sessions, Tools, ViewContext}
+  alias SymphonyElixir.Chat.Checkpoint
+  alias SymphonyElixir.Chat.{Coordination, Graph, Persistence, Provider, Runtime, Sessions, Tools, ViewContext}
   alias SymphonyElixir.{Config, Orchestrator, TaskKind}
   alias SymphonyElixir.GitHub.Admission
   alias SymphonyElixirWeb.{BrowserAuth, Endpoint, TaskBoard}

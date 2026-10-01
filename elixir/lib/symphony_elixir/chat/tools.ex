@@ -446,10 +446,10 @@ defmodule SymphonyElixir.Chat.Tools do
          work_id when is_binary(work_id) <- selection["work_id"],
          true <- args["task_id"] in [task.id, task.issue_id] do
       allowed =
-        case args["action"] do
-          "continue_pr_work" -> args["work_id"] == work_id
-          action when action in ["cancel", "retry"] -> get_in(task, [:ledger, "selected_work_id"]) == work_id
-          _ -> false
+        if args["action"] == "continue_pr_work" do
+          args["work_id"] == work_id
+        else
+          args["action"] in ["cancel", "retry"] and get_in(task, [:ledger, "selected_work_id"]) == work_id
         end
 
       if allowed, do: :ok, else: {:error, :pr_session_scope_mismatch}

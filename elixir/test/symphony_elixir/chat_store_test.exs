@@ -1030,6 +1030,22 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, %{"id" => _}} = Store.create(c.project, "Another chat", c.auth, server)
   end
 
+  test "legacy tool callbacks and oversized receipts cannot corrupt saved conversation state", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "receipt-compatibility", c.auth, c.server)
+    assert_receive {:runtime, pid, _, "wait"}
+    assert_receive {:phase_ready, ^pid, "wait"}
+    run = :sys.get_state(c.server).jobs[chat["id"]].run
+    result = %{"message" => "Legacy callback"}
+    assert ^result = GenServer.call(c.server, {:tool_result, chat["id"], run, result})
+    large = %{"message" => String.duplicate("x", 65_536)}
+    assert ^large = GenServer.call(c.server, {:tool_result, chat["id"], run, %{tool: "symphony_project_status", arguments: %{}}, large})
+    send(pid, :finish)
+    saved = wait_chat(c, chat, &(&1["status"] == "idle"))
+    assert Map.get(List.last(saved["messages"]), "tool_receipts", []) == []
+    assert :sys.get_state(c.server).fault == nil
+  end
+
   test "Stop denies new tools and delegation while the current runtime settles", c do
     chat = create(c)
     assert {:ok, _} = Store.send_message(c.project, chat["id"], "ignore stop", "stopping-tools", c.auth, c.server)

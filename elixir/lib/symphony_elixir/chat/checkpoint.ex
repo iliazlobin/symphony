@@ -12,7 +12,12 @@ defmodule SymphonyElixir.Chat.Checkpoint do
     |> Enum.reverse()
     |> Enum.reduce_while({[], 0}, fn entry, {retained, bytes} ->
       size = byte_size(entry["content"])
-      if bytes + size <= @history_bytes, do: {:cont, {[entry | retained], bytes + size}}, else: {:halt, {retained, bytes}}
+
+      if bytes + size <= @history_bytes do
+        {:cont, {[entry | retained], bytes + size}}
+      else
+        {:halt, {retained, bytes}}
+      end
     end)
     |> elem(0)
   end

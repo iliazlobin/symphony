@@ -1659,7 +1659,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   test "task kinds appear as classifications and persist in filter URLs without dispatch", ctx do
-    board = update_task(ctx.board, "2", &Map.put(&1, :labels, ["kind:testing"]))
+    board = update_task(ctx.board, "2", &(&1 |> Map.put(:labels, ["kind:testing"]) |> Map.put(:task_kind, "testing")))
     :ok = GenServer.call(ctx.runtime, {:board, board})
     view = authorized_board_view()
     assert has_element?(view, "#filter-kind[role=combobox][aria-label='Kind filter']")
