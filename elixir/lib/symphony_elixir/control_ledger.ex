@@ -29,6 +29,116 @@ defmodule SymphonyElixir.ControlLedger do
     end
   end
 
+  @doc "Offline, explicitly scoped legacy acceptance recovery; never performs startup recovery or starts execution."
+  @spec recover_legacy_acceptance(Path.t(), Path.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  def recover_legacy_acceptance(path, workspace_root, request, opts \\ []) do
+    with :ok <- validate_recovery_request(request, opts),
+         :ok <- existing_recovery_path(path, workspace_root),
+         {:ok, lock} <- acquire_lock(path <> ".lock") do
+      try do
+        recover_acceptance_locked(path, workspace_root, request, opts)
+      after
+        close(%__MODULE__{lock: lock})
+      end
+    end
+  end
+
+  defp validate_recovery_request(request, opts) do
+    valid =
+      recovery_ids?(request[:issue_ids]) and recovery_project?(request[:project_id]) and
+        is_binary(request[:tracker_fingerprint]) and byte_size(request.tracker_fingerprint) in 1..256 and
+        is_integer(request[:expected_revision]) and request.expected_revision >= 0 and
+        recovery_options?(opts)
+
+    if valid, do: :ok, else: {:error, :invalid_acceptance_recovery}
+  end
+
+  defp recovery_ids?(ids) when is_list(ids) do
+    length(ids) in 1..20 and length(Enum.uniq(ids)) == length(ids) and
+      Enum.all?(ids, &(is_binary(&1) and Regex.match?(~r/\A[1-9][0-9]{0,9}\z/, &1)))
+  end
+
+  defp recovery_ids?(_), do: false
+
+  defp recovery_project?(project),
+    do: is_binary(project) and Regex.match?(~r/\Agithub:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\z/, project)
+
+  defp recovery_options?(opts), do: opts[:apply] in [nil, false, true] and (opts[:apply] != true or is_binary(opts[:backup_path]))
+
+  defp existing_recovery_path(path, workspace_root) do
+    case File.lstat(path) do
+      {:ok, %{type: :regular}} -> validate_path(path, workspace_root)
+      _ -> {:error, :invalid_recovery_path}
+    end
+  end
+
+  defp recover_acceptance_locked(path, workspace_root, request, opts) do
+    with {:ok, bytes} <- File.read(path),
+         {:ok, data} <- decode_control_state(bytes),
+         :ok <- recovery_idle_revision(data, request),
+         {:ok, next, report} <- upgrade_acceptance_records(data, request),
+         :ok <- validate_control_state(next),
+         :ok <- persist_recovered_acceptance(path, workspace_root, bytes, next, report, opts) do
+      {:ok, report}
+    end
+  end
+
+  defp persist_recovered_acceptance(path, workspace_root, bytes, next, report, opts) do
+    if opts[:apply] == true and report.changed_ids != [] do
+      with :ok <- existing_recovery_path(path, workspace_root),
+           :ok <- unchanged_recovery_source(path, bytes),
+           :ok <- recovery_backup(opts[:backup_path], workspace_root, bytes),
+           :ok <- unchanged_recovery_source(path, bytes) do
+        persist(%__MODULE__{path: path, data: next})
+      end
+    else
+      :ok
+    end
+  end
+
+  defp recovery_idle_revision(data, request) do
+    cond do
+      data["revision"] != request.expected_revision -> {:error, :revision_conflict}
+      Enum.any?(data["issues"], fn {_id, item} -> not is_nil(item["active"]) end) -> {:error, :recovery_requires_idle_ledger}
+      true -> :ok
+    end
+  end
+
+  defp upgrade_acceptance_records(data, request) do
+    initial = {:ok, data, %{changed_ids: [], already_upgraded_ids: []}}
+    Enum.reduce_while(request.issue_ids, initial, &upgrade_acceptance_record(&1, &2, request))
+  end
+
+  defp upgrade_acceptance_record(id, {:ok, next, report}, request) do
+    item = get_in(next, ["issues", id]) || %{}
+    observed = get_in(next, ["tracker_issues", id]) || %{}
+    project = get_in(item, ["acceptance", "project_id"])
+    legacy = if project == request.project_id, do: update_in(item, ["acceptance"], &Map.delete(&1, "project_id")), else: item
+    result = IssueAcceptance.upgrade_legacy(legacy, observed, request.project_id, request.tracker_fingerprint)
+
+    case {observed["id"], result} do
+      {^id, {:ok, upgraded}} ->
+        key = if upgraded == item, do: :already_upgraded_ids, else: :changed_ids
+        {:cont, {:ok, put_in(next, ["issues", id], upgraded), Map.update!(report, key, &(&1 ++ [id]))}}
+
+      _ ->
+        {:halt, {:error, :acceptance_migration_mismatch}}
+    end
+  end
+
+  defp unchanged_recovery_source(path, expected) do
+    if File.read(path) == {:ok, expected}, do: :ok, else: {:error, :recovery_source_changed}
+  end
+
+  defp recovery_backup(path, workspace_root, bytes) do
+    with :ok <- validate_path(path, workspace_root),
+         {:ok, file} <- File.open(path, [:write, :binary, :exclusive]) do
+      result = with :ok <- File.chmod(path, 0o600), :ok <- IO.binwrite(file, bytes), do: :file.sync(file)
+      File.close(file)
+      if result == :ok, do: sync_directory(Path.dirname(path)), else: result
+    end
+  end
+
   defp load_locked(settings, lock) do
     with {:ok, data} <- load(settings.state_path, settings.initial_mode),
          ledger = %__MODULE__{path: settings.state_path, lock: lock, settings: settings, data: recover(data, settings)},
@@ -456,7 +566,7 @@ defmodule SymphonyElixir.ControlLedger do
   defp load(path, initial_mode) do
     case File.read(path) do
       {:ok, bytes} when byte_size(bytes) <= 10_000_000 ->
-        with {:ok, data} <- Jason.decode(bytes), true <- valid_data?(data), do: {:ok, data}, else: (_ -> {:error, :invalid_control_state})
+        decode_control_state(bytes)
 
       {:error, :enoent} ->
         {:ok, %{"version" => 1, "revision" => 0, "mode" => initial_mode, "issues" => %{}, "commands" => %{}, "concurrency_override" => nil}}
@@ -465,6 +575,13 @@ defmodule SymphonyElixir.ControlLedger do
         {:error, :unreadable_control_state}
     end
   end
+
+  defp decode_control_state(bytes) when byte_size(bytes) <= 10_000_000 do
+    with {:ok, data} <- Jason.decode(bytes), :ok <- validate_control_state(data), do: {:ok, data}, else: (_ -> {:error, :invalid_control_state})
+  end
+
+  defp decode_control_state(_), do: {:error, :unreadable_control_state}
+  defp validate_control_state(data), do: if(valid_data?(data), do: :ok, else: {:error, :invalid_control_state})
 
   defp valid_data?(%{"version" => 1, "revision" => revision, "mode" => mode, "issues" => issues, "commands" => commands} = data)
        when is_integer(revision) and revision >= 0 and mode in ["paused", "draining", "running"] and is_map(issues) and is_map(commands) do
