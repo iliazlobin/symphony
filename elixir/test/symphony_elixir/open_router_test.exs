@@ -62,7 +62,8 @@ defmodule SymphonyElixir.Chat.OpenRouterTest do
     assert options[:decode_body] == false
     assert options[:receive_timeout] > 0
     assert options[:finch][:pool_timeout] > 0
-    assert options[:connect_options][:timeout] > 0
+    assert options[:finch][:conn_opts][:transport_opts][:timeout] == 30_000
+    refute Keyword.has_key?(options, :connect_options)
     assert options[:headers] == [{"authorization", "Bearer test-key"}, {"content-type", "application/json"}]
     assert payload["model"] == "test/model"
     assert payload["parallel_tool_calls"] == false
@@ -74,6 +75,24 @@ defmodule SymphonyElixir.Chat.OpenRouterTest do
     assert current["content"] =~ ~s("context_status":"unavailable")
     assert_received {:event, {:delta, "Answer"}}
     refute_received {:event, {:thread, _}}
+  end
+
+  test "real Req and Finch options accept a bounded local HTTP response" do
+    body = Jason.encode!(response())
+    owner = self()
+
+    plug = fn conn, _ ->
+      send(owner, {:http_request, conn.method, conn.request_path})
+      Plug.Conn.send_resp(conn, 200, body)
+    end
+
+    server = start_supervised!({Bandit, plug: plug, port: 0, ip: {127, 0, 0, 1}})
+    {:ok, {_, port}} = ThousandIsland.listener_info(server)
+    request = fn options -> Req.request(Keyword.put(options, :url, "http://127.0.0.1:#{port}/fixture")) end
+
+    assert {:ok, %{status: :completed}} = OpenRouter.run(opts(%{request: request}), &send(owner, {:event, &1}), fn _, _ -> %{} end)
+    assert_received {:http_request, "POST", "/fixture"}
+    assert_received {:event, {:delta, "Answer"}}
   end
 
   test "sequential declared calls replay exact frames and accumulate usage" do

@@ -121,8 +121,7 @@ defmodule SymphonyElixir.Chat.OpenRouter do
       redirect: false,
       decode_body: false,
       receive_timeout: remaining(state),
-      finch: [pool_timeout: remaining(state)],
-      connect_options: [timeout: remaining(state)],
+      finch: [pool_timeout: remaining(state), conn_opts: [transport_opts: [timeout: 30_000]]],
       into: &receive_body/2
     ]
 
