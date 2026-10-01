@@ -61,7 +61,7 @@ defmodule SymphonyElixir.Chat.OpenRouterTest do
     assert options[:redirect] == false
     assert options[:decode_body] == false
     assert options[:receive_timeout] > 0
-    assert options[:pool_timeout] > 0
+    assert options[:finch][:pool_timeout] > 0
     assert options[:connect_options][:timeout] > 0
     assert options[:headers] == [{"authorization", "Bearer test-key"}, {"content-type", "application/json"}]
     assert payload["model"] == "test/model"
