@@ -166,7 +166,8 @@ The project agent accepts the same three fields and presents its exact creation 
 
 The single project selector shows the selected project's name. Chats form three levels:
 `<project name> project agent` coordinates the project, `<task name> task agent`
-coordinates one issue, and `<feature name> feature agent` owns one PR conversation.
+coordinates one issue, and `<work name> work agent` owns one working-session conversation.
+PRs are linked resources; external PR discussions do not create a coding worker.
 Parents can delegate and revise goals; children report back, and parents process those
 reports in their own chats. Goals and pending reports appear inline. The native scheduler
 still owns coding work, and exact action confirmation and human acceptance remain separate.
