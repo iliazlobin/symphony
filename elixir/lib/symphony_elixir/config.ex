@@ -88,8 +88,11 @@ defmodule SymphonyElixir.Config do
     settings!().chat
     |> Map.from_struct()
     |> Map.new(fn
-      {key, "$" <> name} when key in [:state_path, :codex_home, :executable] -> {key, System.get_env(name)}
-      entry -> entry
+      {key, "$" <> name} when key in [:state_path, :codex_home, :executable, :model, :api_key] ->
+        {key, System.get_env(name)}
+
+      entry ->
+        entry
     end)
   end
 

@@ -418,6 +418,7 @@ Enable management chat in the selected workflow's YAML front matter:
 ```yaml
 chat:
   enabled: true
+  provider: codex
   state_path: $SYMPHONY_CHAT_STATE
   codex_home: $SYMPHONY_CHAT_CODEX_HOME
   executable: $SYMPHONY_CHAT_CODEX_EXECUTABLE
@@ -458,7 +459,7 @@ Symphony, while the dedicated Codex home supplies model access. A disabled store
 exposes no chat history. See the
 [operator guide](../profiles/events-concierge/README.md#operate) for the user flow.
 
-Conversation JSON and the native Codex home both need durable private storage to
+For Codex, conversation JSON and the native Codex home both need durable private storage to
 retain display history and resume model threads after restart. Stop the service
 before moving or restoring either; preserve both together. A second store owner,
 corrupt records or failed writes block operation without overwriting recovery data.
@@ -470,6 +471,45 @@ chat list exposes pinning and ordering, with no Archive or Rename buttons.
 Task, PR and project conversations keep their identity beyond 400 messages. Storage remains
 bounded per record; a full history rejects additional messages without deleting it.
 Legacy free-standing chats retain their 400-message limit.
+
+### OpenRouter management runtime
+
+OpenRouter replaces only the management model connection. Coding workers still use
+their existing Codex runtime, and browser sign-in remains separate. Configure the
+selected workflow and supply the key through the private host environment:
+
+```yaml
+chat:
+  enabled: true
+  provider: openrouter
+  model: deepseek/deepseek-v4-flash
+  api_key: $OPENROUTER_API_KEY
+  state_path: $SYMPHONY_CHAT_STATE
+  timeout_ms: 300000
+  max_concurrent: 2
+  max_tool_calls: 8
+```
+
+- `model` accepts a provider/model ID or an environment reference; `api_key` must
+  reference an environment variable. Never store a literal key in the workflow.
+  No Codex home or executable is required for OpenRouter management chat.
+- Turns capture their configuration at start. After active turns and actions settle,
+  restart the controller to change provider or model; the durable chat identity and
+  transcript remain. Codex's management model stays fixed at `gpt-6-astra`.
+- Requests use the fixed HTTPS OpenRouter endpoint, without redirects or automatic
+  retries. `timeout_ms` bounds the whole turn; `max_tool_calls` accepts 1–24. Tools
+  run sequentially through the same host authorization and confirmation boundary.
+- Responses appear after each bounded HTTP round; token streaming is not implemented.
+  Stop terminates and awaits the current request/tool operation before settling the turn.
+  A stopped or failed write may still have taken effect; reconcile its recorded action
+  before attempting it again.
+- Context is rebuilt from bounded persisted messages and tool receipts (at most 80
+  prior messages / 256 KiB), without native provider thread IDs. Full display history
+  remains in the private conversation store. Back up that store before moving it;
+  OpenRouter needs no native session directory or copied model credentials.
+- Management API keys remain host-side and are excluded from coding-worker and hook
+  subprocess environments. Provider failures show sanitized diagnostics; raw HTTP
+  bodies, keys and model reasoning are not stored in the transcript.
 
 The current backend serves one configured project; the picker and immutable chat
 scope prepare the interface for additional controllers without mixing their data.
