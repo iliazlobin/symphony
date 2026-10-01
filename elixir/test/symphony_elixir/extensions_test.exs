@@ -521,11 +521,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~s(aria-label="Open MT-HTTP in the issue tracker")
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
-    assert has_element?(view, "#lane-work .task-card[data-status=running]")
+    assert has_element?(view, "#lane-in_progress .task-card[data-status=running]")
     assert html =~ "Live updates connected"
     assert html =~ "Disconnected"
     assert has_element?(view, "#settings-button", "Settings")
-    view |> element("#lane-work .task-card[data-status=running] .card-title") |> render_click()
+    view |> element("#lane-in_progress .task-card[data-status=running] .card-title") |> render_click()
     assert has_element?(view, "dialog#board-dialog")
     assert render(view) =~ "Copy ID"
     assert render(view) =~ "Codex update"
