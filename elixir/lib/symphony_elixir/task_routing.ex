@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.TaskRouting do
   @moduledoc "Local task routing decisions and their durable GitHub mirror intent."
 
+  alias SymphonyElixir.TaskDependencies
   alias SymphonyElixir.Tracker.Issue
 
   @queue_actions ~w(queue_task retry create_pr_work continue_pr_work)
@@ -54,6 +55,12 @@ defmodule SymphonyElixir.TaskRouting do
       "dispatchable" => issue.dispatchable
     }
 
+    record =
+      case TaskDependencies.parse(issue.description, issue.id) do
+        {:ok, dependencies} -> Map.put(record, "dependencies", dependencies)
+        _ -> record
+      end
+
     if tracker.kind == "github" and repo == tracker.provider["repo"] and valid_observation?(record), do: record
   end
 
@@ -61,13 +68,18 @@ defmodule SymphonyElixir.TaskRouting do
 
   @spec valid_observation?(term()) :: boolean()
   def valid_observation?(record) when is_map(record) do
-    Enum.sort(Map.keys(record)) == Enum.sort(~w(id repository tracker_fingerprint state updated_at dispatchable)) and
+    fields = ~w(id repository tracker_fingerprint state updated_at dispatchable)
+
+    Enum.sort(Map.keys(record)) in [Enum.sort(fields), Enum.sort(["dependencies" | fields])] and
+      valid_dependencies?(record) and
       is_binary(record["id"]) and String.match?(record["id"], ~r/\A[1-9][0-9]{0,9}\z/) and
       repository?(record["repository"]) and text?(record["tracker_fingerprint"], 256) and
       record["state"] in ~w(open closed) and timestamp?(record["updated_at"]) and is_boolean(record["dispatchable"])
   end
 
   def valid_observation?(_), do: false
+
+  defp valid_dependencies?(record), do: not Map.has_key?(record, "dependencies") or TaskDependencies.valid_records?(record["dependencies"])
 
   @spec valid?(term()) :: boolean()
   def valid?(nil), do: true

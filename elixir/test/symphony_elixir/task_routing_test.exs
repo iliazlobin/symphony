@@ -87,6 +87,10 @@ defmodule SymphonyElixir.TaskRoutingTest do
   test "queue decision and pending mirror survive restart together without resuming or spending budget", c do
     pid = owner(c)
     assert :ok = call(pid, :observe_issues, [[issue()], c.tracker])
+
+    assert [%{"issue_id" => "8", "kind" => "technical", "reason" => "schema"}] =
+             TaskRouting.observation(issue(description: "Depends on: #8 (technical: schema)"), c.tracker)["dependencies"]
+
     queue = command("queue_task", 0)
     assert {:ok, %{"revision" => 1, "mode" => "paused"}, false} = execute(pid, queue, c.context)
     assert %{"queued" => true, "revision" => 1, "status" => "pending", "error" => nil} = routing(pid)
@@ -104,6 +108,18 @@ defmodule SymphonyElixir.TaskRoutingTest do
     assert TaskRouting.routable?(issue(), snapshot(pid)["issues"]["7"], c.tracker)
     assert {:error, :not_admitted} = call(pid, :reserve, ["7"])
     assert {:ok, %{"revision" => 1}, true} = execute(pid, queue, c.context)
+  end
+
+  test "typed dependency source records survive owner restart and legacy observations remain valid", c do
+    pid = owner(c)
+    assert :ok = call(pid, :observe_issues, [[issue(description: "Depends on: #8 (design: reviewed baseline)")], c.tracker])
+    original = snapshot(pid)["tracker_issues"]["7"]
+    assert [%{"issue_id" => "8", "kind" => "design", "blocking" => true, "reason" => "reviewed baseline"}] = original["dependencies"]
+    assert TaskRouting.valid_observation?(Map.delete(original, "dependencies"))
+    refute TaskRouting.valid_observation?(Map.put(original, "dependencies", [%{}]))
+    stop_supervised!(Owner)
+    pid = owner(c)
+    assert snapshot(pid)["tracker_issues"]["7"] == original
   end
 
   test "replayed queue commands cannot undo a later cancellation and changed requests are rejected", c do

@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias SymphonyElixir.{AgentRunner, Config, ControlLedger, IssueAcceptance}
-  alias SymphonyElixir.{PRWork, StatusDashboard, TaskRouting, Tracker, Workspace}
+  alias SymphonyElixir.{PRWork, StatusDashboard, TaskDependencies, TaskRouting, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -337,7 +337,8 @@ defmodule SymphonyElixir.Orchestrator do
          :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_issues_by_states(Config.settings!().tracker.active_states),
          true <- available_slots(state) > 0 do
-      choose_issues(issues, state)
+      state = observe_dispatch_issues(state, issues)
+      if control_running?(state), do: choose_issues(issues, state), else: state
     else
       {:error, :missing_linear_api_token} ->
         Logger.error("Tracker API token missing in WORKFLOW.md")
@@ -379,6 +380,15 @@ defmodule SymphonyElixir.Orchestrator do
 
       false ->
         state
+    end
+  end
+
+  defp observe_dispatch_issues(%{control: nil} = state, _issues), do: state
+
+  defp observe_dispatch_issues(state, issues) do
+    case ControlLedger.observe_issues(state.control, issues, Config.settings!().tracker) do
+      {:ok, ledger} -> %{state | control: ledger}
+      {:error, reason} -> control_failure(state, reason)
     end
   end
 
@@ -459,7 +469,7 @@ defmodule SymphonyElixir.Orchestrator do
   @doc false
   @spec should_dispatch_issue_for_test(Issue.t(), term()) :: boolean()
   def should_dispatch_issue_for_test(%Issue{} = issue, %State{} = state) do
-    should_dispatch_issue?(issue, state, active_state_set(), terminal_state_set())
+    should_dispatch_issue?(gate_dependencies(issue, state), state, active_state_set(), terminal_state_set())
   end
 
   @doc false
@@ -482,10 +492,14 @@ defmodule SymphonyElixir.Orchestrator do
     select_worker_host(state, preferred_worker_host)
   end
 
-  defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
+  defp reconcile_running_issue_states(issues, state, active_states, terminal_states) do
+    issues |> gate_dependency_batch(state) |> do_reconcile_running_issue_states(state, active_states, terminal_states)
+  end
 
-  defp reconcile_running_issue_states([issue | rest], state, active_states, terminal_states) do
-    reconcile_running_issue_states(
+  defp do_reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
+
+  defp do_reconcile_running_issue_states([issue | rest], state, active_states, terminal_states) do
+    do_reconcile_running_issue_states(
       rest,
       reconcile_issue_state(issue, state, active_states, terminal_states),
       active_states,
@@ -517,10 +531,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp reconcile_issue_state(_issue, state, _active_states, _terminal_states), do: state
 
-  defp reconcile_blocked_issue_states([], state, _active_states, _terminal_states), do: state
+  defp reconcile_blocked_issue_states(issues, state, active_states, terminal_states) do
+    issues |> gate_dependency_batch(state) |> do_reconcile_blocked_issue_states(state, active_states, terminal_states)
+  end
 
-  defp reconcile_blocked_issue_states([issue | rest], state, active_states, terminal_states) do
-    reconcile_blocked_issue_states(
+  defp do_reconcile_blocked_issue_states([], state, _active_states, _terminal_states), do: state
+
+  defp do_reconcile_blocked_issue_states([issue | rest], state, active_states, terminal_states) do
+    do_reconcile_blocked_issue_states(
       rest,
       reconcile_blocked_issue_state(issue, state, active_states, terminal_states),
       active_states,
@@ -860,6 +878,7 @@ defmodule SymphonyElixir.Orchestrator do
     terminal_states = terminal_state_set()
 
     issues
+    |> gate_dependency_batch(state)
     |> sort_issues_for_dispatch()
     |> Enum.reduce(state, fn issue, state_acc ->
       if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
@@ -896,11 +915,11 @@ defmodule SymphonyElixir.Orchestrator do
          active_states,
          terminal_states
        ) do
-    candidate_issue?(issue, active_states, terminal_states, state) and
+    available_slots(state) > 0 and
       !MapSet.member?(claimed, issue.id) and
       !Map.has_key?(running, issue.id) and
       !Map.has_key?(blocked, issue.id) and
-      available_slots(state) > 0 and
+      candidate_issue?(issue, active_states, terminal_states, state) and
       state_slots_available?(issue, running) and
       worker_slots_available?(state)
   end
@@ -955,6 +974,18 @@ defmodule SymphonyElixir.Orchestrator do
       end
 
     TaskRouting.routable?(issue, item, Config.settings!().tracker)
+  end
+
+  defp gate_dependency_batch(issues, state) do
+    tracker = Config.settings!().tracker
+    control = if is_map(state), do: Map.get(state, :control)
+    if tracker.kind == "github" and not is_nil(control), do: TaskDependencies.evaluate(issues, control.data, tracker), else: issues
+  end
+
+  defp gate_dependencies(issue, state) do
+    tracker = Config.settings!().tracker
+    control = if is_map(state), do: Map.get(state, :control)
+    if tracker.kind == "github" and not is_nil(control), do: TaskDependencies.gate(issue, control.data, tracker), else: issue
   end
 
   defp terminal_issue_state?(state_name, terminal_states) when is_binary(state_name) do
@@ -1107,6 +1138,8 @@ defmodule SymphonyElixir.Orchestrator do
        when is_binary(issue_id) and is_function(issue_fetcher, 1) do
     case issue_fetcher.([issue_id]) do
       {:ok, [%Issue{id: ^issue_id} = refreshed_issue]} ->
+        refreshed_issue = gate_dependencies(refreshed_issue, state)
+
         if retry_candidate_issue?(refreshed_issue, terminal_states, state) do
           {:ok, refreshed_issue}
         else
@@ -1211,6 +1244,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_retry_issue_lookup(%Issue{} = issue, state, issue_id, attempt, metadata) do
+    issue = gate_dependencies(issue, state)
     terminal_states = terminal_state_set()
 
     cond do
@@ -2000,6 +2034,7 @@ defmodule SymphonyElixir.Orchestrator do
       base_sha: Config.control_settings().base_sha,
       repository: repository,
       tracker_kind: Config.settings!().tracker.kind,
+      project_id: SymphonyElixir.TaskIdentity.project_id(Config.settings!().tracker),
       required_labels: Config.settings!().tracker.required_labels
     }
   end
@@ -2071,6 +2106,7 @@ defmodule SymphonyElixir.Orchestrator do
     id = command["issue_id"]
 
     with {:ok, [%Issue{id: ^id} = issue]} <- Tracker.fetch_issues_by_ids([id]),
+         %Issue{} = issue <- gate_dependencies(issue, state),
          true <- candidate_issue?(issue, active_state_set(), terminal_state_set(), state),
          :ok <- verify_continued_work(state, command) do
       :ok

@@ -99,8 +99,54 @@ defmodule SymphonyElixir.IssueAcceptanceTest do
     verified = %{id: "7", state: "open", updated_at: DateTime.to_iso8601(@updated), terminal: true}
     context = %{tracker_fingerprint: "scope", acceptance_issue: verified}
     assert {:ok, accepted} = IssueAcceptance.accept(%{}, accept(), context)
-    assert {:error, :task_already_accepted} = IssueAcceptance.accept(accepted, accept(), context)
+    assert {:ok, ^accepted} = IssueAcceptance.accept(accepted, accept(), context)
     refute IssueAcceptance.valid_record?(Map.put(accepted["acceptance"], "accepted_at", "not-a-date"))
+  end
+
+  test "reaffirming acceptance converges successfully without replacing the original decision", c do
+    seed(c.pid, %{"hold" => "owner_review", "handoff" => %{"candidate_sha" => @head}})
+    assert {:ok, _} = Orchestrator.control_command(accept(@head), c.pid)
+    original = Orchestrator.control_snapshot(c.pid)["issues"]["7"]["acceptance"]
+    command = %{accept(@head) | "command_id" => "accept-again", "expected_revision" => 1}
+    assert {:ok, %{"revision" => 2, "replayed" => false}} = Orchestrator.control_command(command, c.pid)
+    assert Orchestrator.control_snapshot(c.pid)["issues"]["7"]["acceptance"] == original
+    assert {:ok, %{"revision" => 2, "replayed" => true}} = Orchestrator.control_command(command, c.pid)
+    assert {:error, :revision_conflict} = Orchestrator.control_command(%{command | "command_id" => "stale-again"}, c.pid)
+  end
+
+  test "legacy acceptance upgrade requires same repository, issue evidence and exact independently reviewed candidate" do
+    verified = %{id: "7", state: "open", updated_at: DateTime.to_iso8601(@updated), terminal: true}
+    context = %{tracker_fingerprint: "legacy", acceptance_issue: verified}
+    {:ok, legacy} = IssueAcceptance.accept(%{"handoff" => %{"candidate_sha" => @head, "review" => %{"candidate_sha" => @head}}}, accept(@head), context)
+    observed = %{"repository" => "owner/repo", "state" => "open", "updated_at" => verified.updated_at}
+    assert {:ok, upgraded} = IssueAcceptance.upgrade_legacy(legacy, observed, "github:owner/repo", "legacy")
+    assert Map.delete(upgraded["acceptance"], "project_id") == legacy["acceptance"]
+    assert IssueAcceptance.accepted_in_scope?(upgraded, "github:owner/repo", "rotated-config")
+    refute IssueAcceptance.accepted_in_scope?(upgraded, "github:other/repo", "legacy")
+    refute IssueAcceptance.accepted_in_scope?(legacy, "github:owner/repo", "rotated-config")
+
+    for {item, source, project, fingerprint} <- [
+          {legacy, %{observed | "repository" => "other/repo"}, "github:owner/repo", "legacy"},
+          {legacy, %{observed | "state" => "closed"}, "github:owner/repo", "legacy"},
+          {legacy, %{observed | "updated_at" => "2026-10-01T10:00:00Z"}, "github:owner/repo", "legacy"},
+          {put_in(legacy, ["handoff", "review", "candidate_sha"], @base), observed, "github:owner/repo", "legacy"},
+          {Map.put(legacy, "active", %{"run_id" => "active"}), observed, "github:owner/repo", "legacy"},
+          {legacy, observed, "github:owner/repo", "other"},
+          {legacy, observed, "memory:owner/repo", "legacy"},
+          {upgraded, observed, "github:owner/repo", "legacy"}
+        ] do
+      result = IssueAcceptance.upgrade_legacy(item, source, project, fingerprint)
+      assert {:error, :acceptance_migration_mismatch} = result
+    end
+
+    new_context = Map.merge(context, %{tracker_fingerprint: "rotated", project_id: "github:owner/repo"})
+    assert {:error, :tracker_changed} = IssueAcceptance.accept(legacy, accept(@head), new_context)
+    assert {:ok, reaffirmed} = IssueAcceptance.accept(upgraded, accept(@head), new_context)
+    assert reaffirmed["acceptance"]["project_id"] == "github:owner/repo"
+    assert reaffirmed["acceptance"] == upgraded["acceptance"]
+    assert {:error, :tracker_changed} = IssueAcceptance.accept(upgraded, accept(@head), %{new_context | project_id: "github:other/repo"})
+    changed = put_in(upgraded, ["handoff", "candidate_sha"], @base)
+    assert {:error, :candidate_changed} = IssueAcceptance.accept(changed, accept(@base), new_context)
   end
 
   test "native feedback poller reads owner state without publishing absent selected feedback", c do
