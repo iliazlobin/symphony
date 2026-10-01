@@ -345,23 +345,32 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     refute_receive {:native_command, _, _, _}
   end
 
-  test "Work counts and filters include queued and running tasks while their progress stays distinct", ctx do
+  test "Work and In progress counts and filters distinguish queued from running tasks", ctx do
     runtime = %{running: [%{issue_id: "2", issue_identifier: "GH-2"}]}
     board = TaskBoard.project([issue("1"), issue("2"), issue("3", labels: [])], runtime, ctx.board.control, Config.settings!())
     Application.put_env(:symphony_elixir, :chat_test_board, board)
     assert {:ok, %{"widgets" => [status]}} = Tools.call("symphony_project_status", %{}, ctx.context)
-    assert status["counts"] == %{"work" => 2, "backlog" => 1}
+    assert status["counts"] == %{"work" => 1, "in_progress" => 1, "backlog" => 1}
 
-    for filter <- ~w(work ready running) do
+    for filter <- ~w(work ready) do
       assert {:ok, %{"widgets" => [search]}} = Tools.call("symphony_search_tasks", %{"status" => filter}, ctx.context)
-      assert search["total"] == 2
+      assert search["total"] == 1
       assert search["filters"]["status"] == "work"
       assert URI.decode_query(URI.parse(search["url"]).query)["status"] == "work"
-      by_id = Map.new(search["tasks"], &{&1["issue_id"], &1})
-      assert by_id["1"]["execution_status"] == "Queued · paused"
-      assert by_id["2"]["execution_status"] == "Running"
-      assert by_id["2"]["scheduler_stage"] == "running"
-      assert by_id["2"]["project_execution"]["mode"] == "paused"
+      assert [%{"issue_id" => "1", "execution_status" => "Queued · paused"}] = search["tasks"]
+    end
+
+    for filter <- ~w(in_progress running) do
+      assert {:ok, %{"widgets" => [search]}} = Tools.call("symphony_search_tasks", %{"status" => filter}, ctx.context)
+      assert search["total"] == 1
+      assert search["filters"]["status"] == "in_progress"
+      assert URI.decode_query(URI.parse(search["url"]).query)["status"] == "in_progress"
+      assert [running] = search["tasks"]
+      assert running["issue_id"] == "2"
+      assert running["stage"] == "in_progress"
+      assert running["execution_status"] == "Running"
+      assert running["scheduler_stage"] == "running"
+      assert running["project_execution"]["mode"] == "paused"
     end
 
     assert {:ok, %{"widgets" => [%{"total" => 1, "tasks" => [%{"stage" => "backlog", "execution_status" => "Not queued"}]}]}} =
@@ -369,7 +378,7 @@ defmodule SymphonyElixir.Chat.ToolsTest do
 
     legacy = update_in(board, [:tasks], &Enum.map(&1, fn task -> Map.delete(task, :lane) end))
     Application.put_env(:symphony_elixir, :chat_test_board, legacy)
-    assert {:ok, %{"widgets" => [%{"counts" => %{"work" => 2, "backlog" => 1}}]}} = Tools.call("symphony_project_status", %{}, ctx.context)
+    assert {:ok, %{"widgets" => [%{"counts" => %{"work" => 1, "in_progress" => 1, "backlog" => 1}}]}} = Tools.call("symphony_project_status", %{}, ctx.context)
   end
 
   test "controller mode does not promise admission and unhealthy controller evidence remains unavailable", ctx do

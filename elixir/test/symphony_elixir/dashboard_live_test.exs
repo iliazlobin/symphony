@@ -1573,6 +1573,19 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#board-dialog")
   end
 
+  test "graph stays open across automatic refresh after opening a task title" do
+    view = authorized_board_view()
+    view |> element("[data-task-id='github:example/fixture:1'] .card-title") |> render_click()
+    assert has_element?(view, "#board-dialog[data-kind=task]")
+    view |> element("#workflow-graph-button") |> render_click()
+    assert has_element?(view, "#board-dialog[data-kind=graph]")
+
+    send(view.pid, :refresh_board)
+    render_async(view)
+    assert has_element?(view, "#board-dialog[data-kind=graph] #workflow-graph")
+    refute has_element?(view, "#board-dialog[data-kind=task]")
+  end
+
   test "task intent and routing labels do not appear as subject tags", ctx do
     board = update_task(ctx.board, "1", &Map.put(&1, :labels, ["kind:testing", "category:performance", "symphony:ready", "priority:p1", "work:operations", "ready"]))
     :ok = GenServer.call(ctx.runtime, {:board, board})

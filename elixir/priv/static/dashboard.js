@@ -410,8 +410,8 @@
       this.closeSelector = this.el.dataset.closeSelector || "#close-dialog";
       this.focusDialog = () => (this.el.querySelector(this.closeSelector) || this.el.querySelector("[data-dialog-focus]"))?.focus({preventScroll: true});
       document.addEventListener("click", event => {
-        // LiveView links replace the card themselves; a second patch can overwrite their URL.
-        if (event.target.closest("a[data-phx-link]")) return;
+        // Links and Graph handle their own navigation; closing details here can overwrite it.
+        if (event.target.closest("a[data-phx-link], #workflow-graph-button")) return;
         if (this.nonmodal && this.el.open && !this.el.contains(event.target)) this.closeDialog();
       }, {capture: true, signal: this.abort.signal});
       document.addEventListener("keydown", event => {
@@ -443,9 +443,13 @@
     updated() {
       const changed = this.contentKey !== this.el.dataset.contentKey;
       this.contentKey = this.el.dataset.contentKey;
+      const control = this.focusedControl;
+      if (changed && control?.isConnected && control !== document.body && control !== document.documentElement && !this.el.contains(control) && control.getClientRects().length) {
+        this.previous = control;
+        this.taskId = control.closest("[data-task-id]")?.dataset.taskId;
+      }
       this.showDialog();
       this.el.scrollTop = changed ? 0 : (this.scrollPosition ?? this.el.scrollTop);
-      const control = this.focusedControl;
       if (!changed && control?.isConnected && !control.disabled && control !== document.body && control !== document.documentElement && control.getClientRects().length && (this.nonmodal || this.el.contains(control))) {
         control.focus({preventScroll: true});
         if (this.textSelection) control.setSelectionRange(...this.textSelection);

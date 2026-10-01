@@ -9,7 +9,7 @@ defmodule SymphonyElixir.Chat.Tools do
   @writes ~w(create_task edit_task feedback)
   @routing_actions ~w(queue_task unqueue_task)
   @pr_work_actions ~w(create_pr_work continue_pr_work)
-  @stages ~w(backlog work review done attention ready running)
+  @stages ~w(backlog work in_progress review done attention ready running)
   @sorts ~w(updated priority title oldest)
   @task_keys ~w(id issue_id identifier title project project_label task_kind stage attention priority updated_at created_at tracker_state completion_evidence source_missing hold github_status routing)a
   @pr_keys ~w(number title url state draft created_at updated_at review head_ref base_ref author additions deletions changed_files mergeable head_sha relation checks check_total check_details_status)a
@@ -535,7 +535,8 @@ defmodule SymphonyElixir.Chat.Tools do
   end
 
   defp task_lane(task), do: task[:lane] || scheduler_lane(task.stage)
-  defp scheduler_lane(stage) when stage in ["ready", "running"], do: "work"
+  defp scheduler_lane("ready"), do: "work"
+  defp scheduler_lane("running"), do: "in_progress"
   defp scheduler_lane(stage), do: stage
 
   defp normalize_stage_filter(%{"status" => stage} = filters), do: Map.put(filters, "status", scheduler_lane(stage))

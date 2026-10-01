@@ -812,12 +812,15 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
   defp task_stage(issue) do
     case issue[:lane] || issue[:stage] do
-      stage when stage in ["ready", "running"] -> "Work"
+      "ready" -> "Work"
+      "running" -> "In progress"
       "in_progress" -> "In progress"
       stage when stage in ["backlog", "work", "review", "done"] -> String.capitalize(stage)
       _ -> "State unavailable"
     end
   end
+
+  defp lane_label(label), do: label |> text() |> String.replace("_", " ") |> String.capitalize()
 
   @impl true
   def render(assigns) do
@@ -1157,12 +1160,12 @@ defmodule SymphonyElixirWeb.ChatPanel do
         <.task_reference :for={task <- list(@widget["tasks"])} task={map(task)} project={@project} myself={@myself} embedded={@embedded} filters={map(@widget["filters"])} />
       </div>
       <.task_reference :if={@type == "task"} task={Map.put_new(@task, "url", @widget["url"])} project={@project} myself={@myself} embedded={@embedded} filters={map(@widget["filters"])} />
-      <details :if={@type == "status"} class="tool-observation"><summary>Board snapshot<span :if={map(@widget["counts"]) != %{}} class="observation-counts">{Enum.map_join(Enum.sort(map(@widget["counts"])), " · ", fn {label, value} -> "#{String.capitalize(text(label))} #{text(value)}" end)}</span></summary>
+      <details :if={@type == "status"} class="tool-observation"><summary>Board snapshot<span :if={map(@widget["counts"]) != %{}} class="observation-counts">{Enum.map_join(Enum.sort(map(@widget["counts"])), " · ", fn {label, value} -> "#{lane_label(label)} #{text(value)}" end)}</span></summary>
         <div class="widget-heading"><strong>Project status</strong><a :if={reference_url(@widget["url"], @project)} href={reference_url(@widget["url"], @project)} phx-target={@myself} phx-click={if @embedded && board_link?(@widget["url"], @project && @project["id"]), do: "board-link"} phx-value-url={@widget["url"]}>Open board ↗</a></div>
         <.source_state widget={@widget} />
         <p>{text(@widget["summary"])}</p>
         <p :if={map(@widget["control"])["mode"]} class="muted">Execution: {text(map(@widget["control"])["mode"])}</p>
-        <dl :if={map(@widget["counts"]) != %{} && !source_failed?(@widget)} class="status-counts"><div :for={{label, value} <- Enum.sort(map(@widget["counts"]))}><dt>{text(label)}</dt><dd>{text(value)}</dd></div></dl>
+        <dl :if={map(@widget["counts"]) != %{} && !source_failed?(@widget)} class="status-counts"><div :for={{label, value} <- Enum.sort(map(@widget["counts"]))}><dt>{lane_label(label)}</dt><dd>{text(value)}</dd></div></dl>
         <div :if={list(@widget["blockers"]) != []} class="widget-blockers"><strong>Needs attention</strong><.task_reference :for={task <- list(@widget["blockers"])} task={map(task)} project={@project} myself={@myself} embedded={@embedded} filters={%{"status" => "attention"}} /></div>
       </details>
       <div :if={@type == "proposal"}>

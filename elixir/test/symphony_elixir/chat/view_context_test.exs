@@ -37,11 +37,14 @@ defmodule SymphonyElixir.Chat.ViewContextTest do
     assert ViewContext.task_ids(repeated) == [@id]
   end
 
-  test "accepts Work filters while retaining historical stage and hidden-column snapshots" do
+  test "accepts Work and In progress filters while retaining historical snapshots" do
     base = %{"version" => 1, "project_id" => @project, "hidden_columns" => []}
-    assert {:ok, current} = ViewContext.validate(Map.put(base, "filters", %{"status" => ["work"]}), @project)
-    assert current["filters"]["status"] == ["work"]
-    assert current["hidden_columns"] == []
+
+    for status <- ~w(work in_progress) do
+      assert {:ok, current} = ViewContext.validate(Map.put(base, "filters", %{"status" => [status]}), @project)
+      assert current["filters"]["status"] == [status]
+      assert current["hidden_columns"] == []
+    end
 
     historical = Map.merge(base, %{"hidden_columns" => ["running", "done"], "filters" => %{"status" => ["ready", "running"]}})
     assert {:ok, retained} = ViewContext.validate(historical, @project)

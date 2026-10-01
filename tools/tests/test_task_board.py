@@ -144,3 +144,42 @@ const snapshot=b.sent.at(-1).payload;assert.deepEqual(plain(snapshot.hidden_colu
             capture_output=True, text=True, check=False, timeout=20,
         )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_graph_switch_avoids_close_race_and_restores_opener_focus(self):
+        script = r'''
+const assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
+const listeners = new Map(), commands = [];
+let document;
+function button(id) {
+  return {id, isConnected:true, disabled:false, dataset:{}, getClientRects:()=>[{}],
+    closest:selector=>selector.includes("#workflow-graph-button") && id === "workflow-graph-button" ? graph : null,
+    focus(){document.activeElement=this;}};
+}
+const title=button("task-title"), graph=button("workflow-graph-button"), close=button("close-dialog");
+document={activeElement:title,body:{style:{overflow:""}},documentElement:{},
+  addEventListener:(event,handler)=>listeners.set(event,handler),querySelectorAll:()=>[],
+  getElementById:id=>id === graph.id ? graph : null};
+const dialog={dataset:{nonmodal:"true",contentKey:"task:1"},open:false,scrollTop:0,
+  addEventListener(){},querySelector:()=>close,contains:target=>target === close,
+  show(){this.open=true;},showModal(){this.open=true;close.focus();},close(){this.open=false;}};
+const sandbox={window:{},document,AbortController,queueMicrotask:fn=>fn()};
+vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),sandbox);
+const hook={...sandbox.window.SymphonyHooks.BoardDialog,el:dialog,pushEvent:event=>commands.push(event)};
+hook.mounted();
+listeners.get("click")({target:graph});
+assert.deepEqual(commands,[]);
+document.activeElement=graph;hook.beforeUpdate();
+dialog.dataset.nonmodal="false";dialog.dataset.contentKey="graph";hook.updated();
+assert.equal(hook.previous,graph);
+assert.equal(hook.nonmodal,false);
+assert.equal(document.activeElement,close);
+hook.destroyed();
+assert.equal(document.activeElement,graph);
+assert.equal(document.body.style.overflow,"");
+'''
+        root = pathlib.Path(__file__).resolve().parents[2]
+        completed = subprocess.run(
+            [shutil.which("node"), "-e", script, str(root / "elixir/priv/static/dashboard.js")],
+            capture_output=True, text=True, check=False, timeout=20,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)

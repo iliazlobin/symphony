@@ -1584,7 +1584,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp chat_board_link(_url, _project), do: :error
 
-  defp open_linked_task(%{assigns: %{dialog: dialog}} = socket) when dialog in [:settings, :new_task, :queue_task, :confirm],
+  defp open_linked_task(%{assigns: %{dialog: dialog}} = socket) when dialog in [:settings, :new_task, :queue_task, :confirm, :graph],
     do: socket
 
   defp open_linked_task(%{assigns: %{linked_task: id}} = socket) when is_binary(id) do

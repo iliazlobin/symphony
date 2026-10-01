@@ -651,7 +651,7 @@ defmodule SymphonyElixir.ChatLiveTest do
         "url" => "/?project=alpha&status=ready",
         "filters" => %{"status" => "ready"}
       },
-      %{"type" => "status", "summary" => "Two tasks", "counts" => %{"ready" => 2}},
+      %{"type" => "status", "summary" => "Three tasks", "counts" => %{"ready" => 2, "in_progress" => 1}},
       %{"type" => "proposal", "id" => "p1", "title" => "Create a task", "action" => "create_task", "details" => %{"title" => "Review setup"}, "status" => "pending"},
       %{"type" => "receipt", "summary" => "Task updated", "url" => "https://github.com/example/alpha/issues/7"}
     ]
@@ -662,6 +662,8 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert has_element?(view, ".chat-widget-tasks a[href='/?project=alpha&status=ready']")
     assert has_element?(view, ".widget-task a[href='/?project=alpha&status=ready&task=alpha%3A7']")
     assert has_element?(view, ".status-counts dd", "2")
+    assert has_element?(view, ".observation-counts", "In progress 1")
+    assert has_element?(view, ".status-counts dt", "In progress")
     assert has_element?(view, "button[phx-value-decision=confirm]")
     render_click(view, "decide", %{"id" => "p1", "decision" => "confirm"})
     refute has_element?(view, "button[phx-value-decision=confirm]")

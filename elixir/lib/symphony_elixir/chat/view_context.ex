@@ -5,7 +5,7 @@ defmodule SymphonyElixir.Chat.ViewContext do
 
   @keys ~w(version project_id filters selected_task_id visible_task_ids viewport_task_ids hidden_columns captured_at board_checked_at truncated)
   # Retained version-1 messages may refer to the former Ready/Running columns.
-  @columns ~w(backlog work ready running review done)
+  @columns ~w(backlog work in_progress ready running review done)
   @statuses @columns ++ ["attention"]
   @priorities ["P1", "P2", "P3", "P4", "—"]
 
