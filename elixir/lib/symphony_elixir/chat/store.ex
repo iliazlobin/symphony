@@ -2159,12 +2159,7 @@ defmodule SymphonyElixir.Chat.Store do
   defp record_tool_receipt(chat, _, _), do: chat
 
   defp attach_proposal(chat, %{"proposal" => %{} = proposal} = result) do
-    previous =
-      if proposal["action"] == "create_task" do
-        unresolved = Enum.find(chat["proposals"], &(&1["action"] == "create_task" and &1["status"] in ~w(executing unknown)))
-        current = (List.last(chat["messages"]) || %{})["widgets"] || []
-        unresolved || Enum.find(current, &(&1["type"] == "proposal" and &1["action"] == "create_task" and &1["args"] == proposal["args"]))
-      end
+    previous = previous_creation(chat, proposal)
 
     if previous do
       saved = result |> Map.put("proposal", previous) |> Map.put("widgets", [])
@@ -2176,6 +2171,14 @@ defmodule SymphonyElixir.Chat.Store do
   end
 
   defp attach_proposal(chat, result), do: {chat, result}
+
+  defp previous_creation(chat, %{"action" => "create_task"} = proposal) do
+    unresolved = Enum.find(chat["proposals"], &(&1["action"] == "create_task" and &1["status"] in ~w(executing unknown)))
+    current = (List.last(chat["messages"]) || %{})["widgets"] || []
+    unresolved || Enum.find(current, &(&1["type"] == "proposal" and &1["action"] == "create_task" and &1["args"] == proposal["args"]))
+  end
+
+  defp previous_creation(_, _), do: nil
 
   defp attach_new_proposal(chat, proposal, result) do
     preview = Enum.find(result["widgets"] || [], &(&1["type"] == "proposal")) || %{}

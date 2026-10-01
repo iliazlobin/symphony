@@ -462,6 +462,15 @@ response until its supervised restart. Broker failure denies authorization. Logo
 revokes the shared grant; each active view rechecks it. Workspace restart signs out
 browsers; durable project conversations remain.
 
+For legacy acceptance bound to an old runtime fingerprint, stop all ledger owners and
+use `mix acceptance.recover_legacy --help` from the reviewed release's `elixir/` directory.
+Select explicit issue IDs, the original fingerprint and the stopped ledger revision.
+Run the default dry run first, then `--apply --backup /absolute/new-private-backup.json`,
+and repeat the dry run. Recovery validates retained evidence and adds only stable project
+identity; it preserves decisions, commands, revisions and budgets. Keep the exact-byte
+backup. An older build cannot read the new field; never restore a stale backup over
+subsequent operator changes. An uncertain persistence result requires inspection before restart.
+
 Use the same service command with `stop` only after settling all work. The command
 refuses active native work or retries; unavailable snapshots require investigation.
 A direct OS kill can interrupt work and leaves retained state for reconciliation.
