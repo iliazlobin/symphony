@@ -22,17 +22,19 @@ defmodule SymphonyElixirWeb.BrowserAccess do
     if BrowserAuth.authorized?(BrowserAuth.conn_context(conn)) do
       put_resp_header(conn, "cache-control", "no-store")
     else
-      conn |> Phoenix.Controller.redirect(to: "/login") |> halt()
+      conn |> Phoenix.Controller.redirect(to: SymphonyElixirWeb.WorkspacePath.path("/login")) |> halt()
     end
   end
 
   @spec on_mount(atom(), map(), map(), Phoenix.LiveView.Socket.t()) :: {:cont | :halt, Phoenix.LiveView.Socket.t()}
-  def on_mount(:default, _params, session, socket) do
+  def on_mount(:default, params, session, socket) do
     auth = BrowserAuth.context(session, socket)
     socket = Phoenix.Component.assign(socket, :browser_gate_auth, auth)
 
-    if BrowserAuth.google_enabled?() and not BrowserAuth.authorized?(auth) do
-      {:halt, LiveView.redirect(socket, to: "/login")}
+    mismatched_project = is_binary(params["workspace"]) and SymphonyElixirWeb.WorkspacePath.prefix() != "/projects/" <> params["workspace"]
+
+    if mismatched_project or (BrowserAuth.google_enabled?() and not BrowserAuth.authorized?(auth)) do
+      {:halt, LiveView.redirect(socket, to: SymphonyElixirWeb.WorkspacePath.path("/login"))}
     else
       if LiveView.connected?(socket), do: Process.send_after(self(), :browser_session_check, 15_000)
 
@@ -64,7 +66,7 @@ defmodule SymphonyElixirWeb.BrowserAccess do
     if not BrowserAuth.google_enabled?() or BrowserAuth.authorized?(socket.assigns.browser_gate_auth) do
       {:cont, socket}
     else
-      {:halt, LiveView.redirect(socket, to: "/login")}
+      {:halt, LiveView.redirect(socket, to: SymphonyElixirWeb.WorkspacePath.path("/login"))}
     end
   end
 end

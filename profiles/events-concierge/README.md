@@ -413,18 +413,58 @@ The last two commands are examples for issue #6: runtime details require a track
 session, and publisher inspection requires a settled, independently approved
 candidate. An unavailable API means worker state is unknown, not that workers stopped.
 
-For an initialized host, install and start both persistent user services:
+## Workspace service
 
-```sh
-python3 tools/symphony_service.py install
-python3 tools/symphony_service.py start
+The workspace owns one public listener, browser session broker and supervised private
+project engines. Engines use owner-only Unix sockets, retain their existing state and
+keep their own native schedulers. The publication watcher remains a separate child
+only for a project with an explicitly enabled existing watcher.
+
+Prepare an owned mode-0600 workspace configuration after all projects are initialized:
+
+```json
+{
+  "public_origin": "http://localhost:8778",
+  "bind_host": "127.0.0.1",
+  "state_dir": "/absolute/private/workspace-state",
+  "projects": [
+    {"config": "/absolute/events-concierge/config.json", "publication": true},
+    {"config": "/absolute/symphony/config.json", "publication": false}
+  ]
+}
 ```
 
-`python3 tools/symphony_service.py stop` unloads the scheduler and publication service.
-For foreground scheduler diagnosis, use `python3 profiles/events-concierge/profile.py run`
-only when the persistent scheduler is stopped. The publication service watches
-completed handoffs; it does not schedule coding tasks. Keep the Mac awake and
-Colima/Docker running. Service process status alone does not prove task progress.
+Project `api_url` values become `http://127.0.0.1:8778/projects/<slug>`. Existing project
+workflow identity policies must match; the workspace supplies the shared public origin.
+Register one Google callback: `http://localhost:8778/auth/google/callback`. Keep each
+project's token, ledger, chat store, baseline and launch/merge gates unchanged.
+
+**Activate a tested release:** install `tools/requirements.txt`; drain and settle all
+native work, retries, chat responses, queued reports and unknown action outcomes.
+Back up configuration/state, stop the old project launch agents, then start one service:
+
+```sh
+python3 tools/symphony_workspace.py --config /absolute/workspace.json check
+python3 tools/symphony_service.py --workspace-config /absolute/workspace.json install
+python3 tools/symphony_service.py --workspace-config /absolute/workspace.json start
+python3 tools/symphony_service.py --workspace-config /absolute/workspace.json status
+```
+
+Check both project-scoped control snapshots and switch between project tabs after one
+sign-in. No listener should remain on 8779. The workspace has an exclusive owner lock;
+another launch cannot replace live sockets. An engine failure returns an unavailable
+response until its supervised restart. Broker failure denies authorization. Logout
+revokes the shared grant; each active view rechecks it. Workspace restart signs out
+browsers; durable project conversations remain.
+
+Use the same service command with `stop` only after settling all work. The command
+refuses active native work or retries; unavailable snapshots require investigation.
+A direct OS kill can interrupt work and leaves retained state for reconciliation.
+Do not start standalone project services alongside the workspace. Preserve the previous
+configuration/release for rollback; restore its services only after stopping the workspace.
+
+Keep the Mac awake and Colima/Docker running. A service PID alone does not prove task
+progress. The [cloud package](../../deploy/gke/README.md) has separate release acceptance.
 
 Read `status` immediately before a control change and use its **`control.revision`**:
 

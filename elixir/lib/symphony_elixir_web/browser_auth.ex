@@ -35,7 +35,7 @@ defmodule SymphonyElixirWeb.BrowserAuth do
     %{
       marker: session[@session_key],
       host: if(is_map(uri), do: Map.get(uri, :host)),
-      peer_ip: if(is_map(peer), do: Map.get(peer, :address)),
+      peer_ip: if(is_map(peer), do: SymphonyElixirWeb.WorkspacePath.peer_ip(Map.get(peer, :address))),
       scheme: if(is_map(uri), do: Map.get(uri, :scheme)),
       port: if(is_map(uri), do: Map.get(uri, :port)),
       tracker_fingerprint: Orchestrator.tracker_fingerprint()
@@ -47,7 +47,7 @@ defmodule SymphonyElixirWeb.BrowserAuth do
     with {:ok, config} <- BrowserIdentity.settings(),
          true <- google_address?(context, config),
          {:ok, session} <- BrowserSessions.session(id) do
-      session.fingerprint == config.fingerprint and session.scope == scope and
+      session.fingerprint == config.fingerprint and (SymphonyElixirWeb.WorkspacePath.enabled?() or session.scope == scope) and
         scope == Orchestrator.tracker_fingerprint() and BrowserIdentity.admit(session.identity, config)
     else
       _ -> false
@@ -101,7 +101,7 @@ defmodule SymphonyElixirWeb.BrowserAuth do
       host: conn.host,
       port: conn.port,
       scheme: Atom.to_string(conn.scheme),
-      peer_ip: Conn.get_peer_data(conn).address,
+      peer_ip: SymphonyElixirWeb.WorkspacePath.peer_ip(Conn.get_peer_data(conn).address),
       tracker_fingerprint: Orchestrator.tracker_fingerprint()
     }
   end
@@ -118,7 +118,7 @@ defmodule SymphonyElixirWeb.BrowserAuth do
   @spec local_request?(Conn.t()) :: boolean()
   def local_request?(conn) do
     # Neither Host nor forwarded headers establish where the connection came from.
-    local_address?(conn.host, Conn.get_peer_data(conn).address) and same_origin?(conn)
+    local_address?(conn.host, SymphonyElixirWeb.WorkspacePath.peer_ip(Conn.get_peer_data(conn).address)) and same_origin?(conn)
   end
 
   defp local_address?(host, ip), do: host in @loopback_hosts and loopback_ip?(ip)

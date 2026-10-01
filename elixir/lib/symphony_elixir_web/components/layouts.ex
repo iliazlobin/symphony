@@ -9,6 +9,7 @@ defmodule SymphonyElixirWeb.Layouts do
   def root(assigns) do
     assigns =
       assigns
+      |> assign(:workspace_prefix, SymphonyElixirWeb.WorkspacePath.prefix())
       |> assign(:csrf_token, Plug.CSRFProtection.get_csrf_token())
       |> assign(:dashboard_css_url, SymphonyElixirWeb.StaticAssets.dashboard_css_url())
       |> assign(:dashboard_js_url, SymphonyElixirWeb.StaticAssets.dashboard_js_url())
@@ -20,6 +21,7 @@ defmodule SymphonyElixirWeb.Layouts do
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="workspace-prefix" content={@workspace_prefix} />
         <meta name="csrf-token" content={@csrf_token} />
         <title>Symphony · Workspace</title>
         <link rel="icon" type="image/png" sizes="128x128" href={@favicon_url} />
@@ -35,7 +37,7 @@ defmodule SymphonyElixirWeb.Layouts do
 
             if (!window.Phoenix || !window.LiveView) return;
 
-            var liveSocket = new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {
+            var liveSocket = new window.LiveView.LiveSocket((document.querySelector("meta[name='workspace-prefix']")?.content || "") + "/live", window.Phoenix.Socket, {
               params: {_csrf_token: csrfToken}, hooks: window.SymphonyHooks || {}
             });
 

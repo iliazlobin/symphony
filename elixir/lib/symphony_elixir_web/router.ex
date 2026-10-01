@@ -48,6 +48,8 @@ defmodule SymphonyElixirWeb.Router do
     live_session :browser, on_mount: [{SymphonyElixirWeb.BrowserAccess, :default}] do
       live("/", DashboardLive, :index)
       live("/chat", ChatLive, :index)
+      live("/projects/:workspace/", DashboardLive, :index)
+      live("/projects/:workspace/chat", ChatLive, :index)
     end
   end
 

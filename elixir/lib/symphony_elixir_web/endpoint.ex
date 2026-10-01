@@ -34,10 +34,15 @@ defmodule SymphonyElixirWeb.Endpoint do
   plug(:project_session)
   plug(SymphonyElixirWeb.Router)
 
-  @doc "Shared HTTP and LiveView cookie options; project controllers on one host need distinct keys."
+  @doc "Shared HTTP and LiveView cookie options; a workspace owns one browser session."
   @spec session_options() :: keyword()
   def session_options do
-    Keyword.put(@session_options, :key, SymphonyElixir.Config.settings!().server.session_cookie)
+    cookie =
+      if SymphonyElixirWeb.WorkspacePath.enabled?(),
+        do: "_symphony_workspace",
+        else: SymphonyElixir.Config.settings!().server.session_cookie
+
+    Keyword.put(@session_options, :key, cookie)
   end
 
   defp project_session(conn, _opts), do: Plug.Session.call(conn, Plug.Session.init(session_options()))

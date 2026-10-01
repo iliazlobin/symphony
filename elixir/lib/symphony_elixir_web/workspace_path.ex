@@ -17,11 +17,26 @@ defmodule SymphonyElixirWeb.WorkspacePath do
   @spec relative(String.t()) :: String.t()
   def relative(value) do
     current = prefix()
-    if current != "" and String.starts_with?(value, current <> "/"), do: String.replace_prefix(value, current, ""), else: value
+
+    if current != "" and String.starts_with?(value, current <> "/") do
+      String.replace_prefix(value, current, "")
+    else
+      value
+    end
   end
 
   @spec enabled?() :: boolean()
-  def enabled?, do: prefix() != "" and is_binary(System.get_env("SYMPHONY_WORKSPACE_AUTH_SOCKET"))
+  def enabled? do
+    prefix() != "" and absolute_socket?("SYMPHONY_WORKSPACE_AUTH_SOCKET") and
+      absolute_socket?("SYMPHONY_WORKSPACE_ENGINE_SOCKET")
+  end
+
+  defp absolute_socket?(name) do
+    case System.get_env(name) do
+      "/" <> _ -> true
+      _ -> false
+    end
+  end
 
   @spec peer_ip(term()) :: term()
   def peer_ip(ip) when ip in [:unspec], do: if(enabled?(), do: {127, 0, 0, 1}, else: ip)

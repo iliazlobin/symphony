@@ -382,7 +382,8 @@ def start_service(config: dict) -> None:
     pinned_bin = ROOT / ".runtime/elixir-1.19.5/bin"
     if pinned_bin.is_dir():
         env["PATH"] = str(pinned_bin) + ":/opt/homebrew/opt/erlang@28/bin:" + env.get("PATH", WORKER_PATH)
-    port = config["api_url"].rsplit(":", 1)[1]
+    from urllib.parse import urlsplit
+    port = "0" if os.environ.get("SYMPHONY_WORKSPACE_ENGINE_SOCKET") else str(urlsplit(config["api_url"]).port)
     os.chdir(ROOT / "elixir")
     os.execve(str(binary), [str(binary), config["workflow_path"], "--port", port,
                            "--logs-root", str(Path(config["state_dir"]) / "logs"),

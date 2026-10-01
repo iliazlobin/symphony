@@ -32,7 +32,7 @@ defmodule SymphonyElixirWeb.GoogleOIDC do
 
   defp complete_claimed(flow_id, flow, params) do
     with {:ok, config} <- BrowserIdentity.settings(),
-         true <- flow.fingerprint == config.fingerprint and flow.scope == Orchestrator.tracker_fingerprint(),
+         true <- flow.fingerprint == config.fingerprint and (SymphonyElixirWeb.WorkspacePath.enabled?() or flow.scope == Orchestrator.tracker_fingerprint()),
          :ok <- callback_params(flow, params),
          options = Keyword.put(strategy(config), :session_params, flow.params),
          {:ok, %{user: claims}} <- OIDC.callback(options, params, __MODULE__),

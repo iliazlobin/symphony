@@ -14,6 +14,15 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 > Symphony Elixir is prototype software intended for evaluation only and is presented as-is.
 > We recommend implementing your own hardened version based on `SPEC.md`.
 
+## Multi-project workspace
+
+Use the [workspace service](../profiles/events-concierge/README.md#workspace-service)
+for one browser origin and project-scoped board, chat and control API. The workspace
+supervises isolated engines on private Unix sockets and owns the shared revocable
+browser grant. Internal navigation uses `WorkspacePath`; LiveView aliases preserve
+explicit project scope. Standalone workflows retain their existing endpoint behavior.
+
+
 ## Controlled local execution
 
 Set `control.enabled: true` to use the local builder/reviewer pipeline and durable

@@ -1,5 +1,5 @@
 defmodule SymphonyElixirWeb.BrowserSessions do
-  @moduledoc "Bounded, single-owner login attempts and revocable sessions. Restart signs browsers out."
+  @moduledoc "Bounded login attempts and revocable sessions; a workspace delegates their ownership to its private broker."
   use GenServer
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -67,7 +67,9 @@ defmodule SymphonyElixirWeb.BrowserSessions do
   defp execute(_invalid, state, _now), do: {:reply, {:error, :invalid}, state}
 
   defp call(server, message) do
-    GenServer.call(server, message)
+    if server == __MODULE__ and SymphonyElixirWeb.WorkspacePath.enabled?(),
+      do: SymphonyElixirWeb.WorkspaceSessions.call(message),
+      else: GenServer.call(server, message)
   catch
     :exit, _reason -> {:error, :unavailable}
   end

@@ -44,16 +44,16 @@ defmodule SymphonyElixirWeb.StaticAssets do
   }
 
   @spec dashboard_css_url() :: String.t()
-  def dashboard_css_url, do: "/dashboard.css?v=#{@dashboard_css_digest}"
+  def dashboard_css_url, do: SymphonyElixirWeb.WorkspacePath.path("/dashboard.css?v=#{@dashboard_css_digest}")
 
   @spec dashboard_js_url() :: String.t()
-  def dashboard_js_url, do: "/dashboard.js?v=#{@dashboard_js_digest}"
+  def dashboard_js_url, do: SymphonyElixirWeb.WorkspacePath.path("/dashboard.js?v=#{@dashboard_js_digest}")
 
   @spec browser_login_js_url() :: String.t()
-  def browser_login_js_url, do: "/browser-login.js?v=#{@browser_login_js_digest}"
+  def browser_login_js_url, do: SymphonyElixirWeb.WorkspacePath.path("/browser-login.js?v=#{@browser_login_js_digest}")
 
   @spec favicon_url() :: String.t()
-  def favicon_url, do: "/favicon.png?v=#{@favicon_digest}"
+  def favicon_url, do: SymphonyElixirWeb.WorkspacePath.path("/favicon.png?v=#{@favicon_digest}")
 
   @spec fetch(String.t()) :: {:ok, String.t(), binary()} | :error
   def fetch(path) when is_binary(path) do

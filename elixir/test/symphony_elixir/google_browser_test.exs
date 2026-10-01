@@ -4,6 +4,41 @@ defmodule SymphonyElixir.GoogleBrowserTest do
   alias SymphonyElixirWeb.{BrowserAuth, BrowserIdentity, BrowserOrigin, BrowserSessions, Endpoint}
   @endpoint Endpoint
 
+  defmodule WorkspaceBroker do
+    def init(server), do: server
+
+    def call(conn, server) do
+      conn = Plug.Parsers.call(conn, Plug.Parsers.init(parsers: [:json], json_decoder: Jason))
+      command = conn.body_params
+      value = if command["value"], do: command["value"] |> Base.decode64!() |> :erlang.binary_to_term([:safe])
+
+      result = execute(command, value, server)
+
+      response =
+        case result do
+          {:ok, value} when is_map(value) -> %{"value" => value |> :erlang.term_to_binary() |> Base.encode64()}
+          {:ok, id} -> %{"id" => id}
+          {:error, reason} -> %{"error" => Atom.to_string(reason)}
+          :ok -> %{"ok" => true}
+        end
+
+      Plug.Conn.send_resp(Plug.Conn.put_resp_content_type(conn, "application/json"), 200, Jason.encode!(response))
+    end
+
+    defp execute(%{"op" => "issue", "kind" => kind}, value, server),
+      do: BrowserSessions.issue(String.to_existing_atom(kind), value, server)
+
+    defp execute(%{"op" => "get", "kind" => "flow", "id" => id}, _value, server),
+      do: BrowserSessions.take_flow(id, server)
+
+    defp execute(%{"op" => "get", "id" => id}, _value, server), do: BrowserSessions.session(id, server)
+
+    defp execute(%{"op" => "complete_flow", "id" => id}, value, server),
+      do: BrowserSessions.complete_flow(id, value, server)
+
+    defp execute(%{"op" => "revoke", "id" => id}, _value, server), do: BrowserSessions.revoke(id, server)
+  end
+
   setup do
     root = Path.join(System.tmp_dir!(), "google-browser-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
@@ -417,6 +452,61 @@ defmodule SymphonyElixir.GoogleBrowserTest do
       {:ok, id} -> fill_store([id | ids])
       {:error, :capacity} -> ids
     end
+  end
+
+  test "workspace root callback completes a non-default project's flow and retains its destination", ctx do
+    keys = ~w(SYMPHONY_WORKSPACE_PROJECT SYMPHONY_WORKSPACE_ORIGIN SYMPHONY_WORKSPACE_AUTH_SOCKET SYMPHONY_WORKSPACE_ENGINE_SOCKET)
+    previous = Map.new(keys, &{&1, System.get_env(&1)})
+    socket_path = Path.join(System.tmp_dir!(), "oidc-broker-#{System.unique_integer([:positive])}.sock")
+    grants = start_supervised!(Supervisor.child_spec({BrowserSessions, name: nil}, id: :workspace_grants))
+    options = [plug: {WorkspaceBroker, grants}, ip: {:local, socket_path}, port: 0]
+    child = Supervisor.child_spec({Bandit, options}, id: :workspace_broker)
+    start_supervised!(child)
+
+    on_exit(fn ->
+      Enum.each(previous, fn {key, value} -> restore_env(key, value) end)
+      File.rm(socket_path)
+    end)
+
+    System.put_env("SYMPHONY_WORKSPACE_PROJECT", "symphony")
+    System.put_env("SYMPHONY_WORKSPACE_ORIGIN", "http://localhost")
+    System.put_env("SYMPHONY_WORKSPACE_AUTH_SOCKET", socket_path)
+    System.put_env("SYMPHONY_WORKSPACE_ENGINE_SOCKET", "/private/engine.sock")
+
+    for {requested, destination} <- [
+          {"/projects/symphony/chat", "/projects/symphony/chat"},
+          {"/projects/events-concierge/chat", "/projects/symphony/?panel=settings"},
+          {"https://evil.example", "/projects/symphony/?panel=settings"}
+        ] do
+      login = get(local_conn(), "/login")
+      started = post(browser_recycle(login), "/auth/google", %{"_csrf_token" => csrf(login), "return_to" => requested})
+      flow = Plug.Conn.get_session(started, "google_flow")
+      assert {:ok, %{return_to: ^destination}} = BrowserSessions.take_flow(flow)
+      assert :ok = BrowserSessions.revoke(flow)
+    end
+
+    login = get(local_conn(), "/login")
+    started = post(browser_recycle(login) |> Plug.Conn.put_req_header("origin", "http://localhost"), "/auth/google", %{"_csrf_token" => csrf(login), "return_to" => "/projects/symphony/"})
+    query = URI.decode_query(URI.parse(redirected_to(started)).query)
+    assert query["redirect_uri"] == "http://localhost/auth/google/callback"
+    old_scope = Orchestrator.tracker_fingerprint()
+    # The registered root callback reaches the default engine, whose tracker scope differs.
+    System.put_env("SYMPHONY_WORKSPACE_PROJECT", "events-concierge")
+    config = %{ctx.config | tracker: Map.put(ctx.config.tracker, :project_slug, "other-project")}
+    File.write!(ctx.workflow, "---\n" <> Jason.encode!(config) <> "\n---\nTask")
+    :ok = WorkflowStore.force_reload()
+    refute Orchestrator.tracker_fingerprint() == old_scope
+    provider(query)
+    callback = get(browser_recycle(started), "/auth/google/callback?" <> URI.encode_query(%{"state" => query["state"], "code" => "fixture-code"}))
+    assert redirected_to(callback) == "/projects/symphony/"
+    assert BrowserAuth.authorized?(BrowserAuth.conn_context(callback))
+    assert callback.resp_cookies["_symphony_workspace"].same_site == "Lax"
+    # Restarting an engine's local grant process leaves the workspace-owned grant valid.
+    previous_grants = Process.whereis(BrowserSessions)
+    assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, BrowserSessions)
+    assert {:ok, current_grants} = Supervisor.restart_child(SymphonyElixir.Supervisor, BrowserSessions)
+    refute previous_grants == current_grants
+    assert BrowserAuth.authorized?(BrowserAuth.conn_context(callback))
   end
 
   defp provider(query) do
