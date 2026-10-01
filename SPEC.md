@@ -2583,6 +2583,17 @@ not provided by the local login mechanism.
 Settings are fixed for the store lifetime. The current service resolves only its
 configured tracker project; it does not aggregate other Symphony controllers.
 
+Management reads MUST expose `stage` / `lane` as Backlog, Work, Review or Done,
+with queued and running tasks counted and filtered together in Work. Legacy
+ready/running search inputs alias Work. `scheduler_stage` and `runtime_status`
+retain internal observations without changing admission or action permissions.
+`execution_status` / `execution_note` MUST use the same task presentation as the
+board, with current project controller mode and `admission_status` included in
+task, search, view and project results. Paused/draining blocks new admission;
+running remains subject to all admission checks. Missing or unhealthy controller
+evidence is unavailable. An idle runtime or absent issue hold does not prove
+execution is resumed, eligible or running.
+
 The conversation store MUST bind each record to an immutable project, tracker
 fingerprint and native runtime identity. Every read, turn, tool request and action
 decision MUST revalidate browser authorization and project scope. A project picker
