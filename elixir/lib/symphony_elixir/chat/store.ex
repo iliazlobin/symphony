@@ -2161,12 +2161,18 @@ defmodule SymphonyElixir.Chat.Store do
   defp attach_proposal(chat, %{"proposal" => %{} = proposal} = result) do
     previous =
       if proposal["action"] == "create_task" do
-        (List.last(chat["messages"]) || %{})["widgets"]
-        |> then(&(&1 || []))
-        |> Enum.find(&(&1["type"] == "proposal" and &1["action"] == "create_task" and &1["args"] == proposal["args"]))
+        unresolved = Enum.find(chat["proposals"], &(&1["action"] == "create_task" and &1["status"] in ~w(executing unknown)))
+        current = (List.last(chat["messages"]) || %{})["widgets"] || []
+        unresolved || Enum.find(current, &(&1["type"] == "proposal" and &1["action"] == "create_task" and &1["args"] == proposal["args"]))
       end
 
-    if previous, do: {chat, result |> Map.put("proposal", previous) |> Map.put("widgets", [])}, else: attach_new_proposal(chat, proposal, result)
+    if previous do
+      saved = result |> Map.put("proposal", previous) |> Map.put("widgets", [])
+      saved = if previous["status"] in ~w(executing unknown), do: Map.put(saved, "error", action_error("unknown", :runtime_disconnected)), else: saved
+      {chat, saved}
+    else
+      attach_new_proposal(chat, proposal, result)
+    end
   end
 
   defp attach_proposal(chat, result), do: {chat, result}
@@ -2232,7 +2238,7 @@ defmodule SymphonyElixir.Chat.Store do
     job = state.jobs[id]
     chat = state.chats[id]
     result = if job[:stopping] == true, do: {:ok, %{status: :interrupted}}, else: result
-    chat = if job.kind == :turn, do: finish_turn(chat, result), else: finish_action(chat, job, result)
+    chat = if job.kind == :turn, do: chat |> finish_turn(result) |> recover_actions(), else: finish_action(chat, job, result)
     chat = if (job.kind == :turn and chat["status"] != "idle") or match?({:error, _}, result), do: Map.put(chat, "queue_paused", true), else: chat
     state = %{state | jobs: Map.delete(state.jobs, id), dirty: MapSet.delete(state.dirty, id)}
 
@@ -2312,8 +2318,12 @@ defmodule SymphonyElixir.Chat.Store do
           |> update_last(&Map.put(&1, "status", "interrupted")),
         else: chat
 
+    recover_actions(chat)
+  end
+
+  defp recover_actions(chat) do
     Enum.reduce(chat["proposals"], chat, fn
-      %{"status" => "executing"} = proposal, acc -> update_proposal(acc, Map.put(proposal, "status", "unknown"))
+      %{"status" => "executing"} = proposal, acc -> update_proposal(acc, proposal |> Map.put("status", "unknown") |> Map.put("error", action_error("unknown", :runtime_disconnected)))
       _, acc -> acc
     end)
   end

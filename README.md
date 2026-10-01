@@ -26,8 +26,8 @@ do not define this profile's authorization policy.
 
 The local service includes a Kanban task board and optional project-specific management
 chat through Codex or OpenRouter and a project → task → work-agent hierarchy. Parent
-agents supervise children and process their reports in durable conversations. A versioned
-graph connects the agents, issues and PR work for future visualization. Chat uses bounded management tools to read work and preview authorized
+agents supervise children and process their reports in durable conversations. A graph popup shows agent ownership and typed task prerequisites. One workspace endpoint
+serves all projects; private project engines use Unix sockets and share browser sign-in. Chat uses bounded management tools to read work and preview authorized
 changes; coding remains with the scheduler's workers. Browser access supports Google
 sign-in with an explicit operator allowlist; existing local installations retain
 operator-token login until configured. Google sign-in does not sign in the model or
@@ -41,7 +41,10 @@ showing creation time, priority, PR count and latest activity. Card titles open 
 click outside or press Escape to dismiss them. Card bodies select chat without opening details. The working-session selector shows the
 selected `<task name> task agent` or `<work name> work agent`, with the task agent first.
 Work agents and card shortcuts select retained working sessions; linked PRs remain resources.
-Cards show retained session counts and their recorded working/queued phases separately from chat activity. Compact cards show three PRs, then an overflow link.
+The board shows Backlog, Work, In progress, Review and Done. In progress is derived from
+active execution; Work retains queued, paused, blocked and failed tasks. Compact cards
+show useful state and PR evidence; chat renders safe Markdown without duplicating the board.
+Describe new tasks to the project agent; Backlog creation never starts coding work.
 The task agent receives worker and GitHub milestone updates and coordinates individual
 work agents. Confirmed PR work sessions retain their own
 builder thread and checkout across design, implementation and follow-up validation.

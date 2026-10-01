@@ -154,15 +154,13 @@ Use `--config /absolute/path/to/config.json` for another configured profile.
 The profile binds the repository to the controller address; the current controller
 API does not attest repository identity in its response.
 
-**New task** opens a compact form with a required **Title** and optional **Description** and **Test (verification)**.
-Description and verification can be left empty.
-Choose **Create task** to submit those fields directly. It appears in GitHub as an unqueued
-backlog issue; creating it does not start a worker. The form's recent submissions
-retain completed receipts and unfinished actions and refresh automatically. If the result is uncertain, use
-**Check outcome** rather than creating another request. Model access is not required,
-but the service's durable action store must be configured and healthy. The description
-can include a `Depends on: #12, #34` declaration; otherwise dependencies default to none.
-The project agent accepts the same three fields and presents its exact creation proposal for confirmation.
+Describe tasks to the project agent. A title is required; description and verification
+may be empty. `chat.auto_create_backlog: true` enables creation directly from an authenticated
+human project-chat turn. The receipt survives reconnects; uncertain outcomes require
+reconciliation before retrying. Agent reports cannot use this authority, and creation never
+queues a worker. Other writes still require their scoped action confirmation.
+Declare prerequisites in the description, for example
+`Depends on: #19 (technical: approved baseline)`; omitted dependencies default to none.
 
 The single project selector shows the selected project's name. Chats form three levels:
 `<project name> project agent` coordinates the project, `<task name> task agent`
@@ -177,12 +175,14 @@ valid authorization is available. See [agent graph and delivery](../../ARCHITECT
 
 | Stage | What you do | What Symphony does |
 | --- | --- | --- |
-| Backlog | Enter a title, optionally add description and verification, then choose **Create task**. | Creates an unqueued GitHub issue and keeps the receipt. |
-| Work | Drag from Backlog or choose **Move to Work**, then confirm **Queue task**. | Queues the issue; starts eligible work by priority, dependencies, budgets and concurrency; runs a builder and independent reviewer. |
+| Backlog | Describe the requested task to the project agent. | Creates an unqueued GitHub issue and keeps the receipt. |
+| Work | Drag from Backlog or choose **Move to Work**. | Saves routing immediately, then queues eligible work by priority, dependencies, budgets and concurrency. |
+| In progress | Inspect active sessions; stop through execution controls when needed. | Shows active Work automatically; runs a builder and independent reviewer. |
 | Review | Inspect the candidate, PRs and checks; merge code when needed. Choose **Return to Work** for corrections. | Retains the candidate and review evidence. A confirmed correction starts or continues a PR session and returns the issue to Work. |
 | Done | Drag from Review or choose **Accept · Done**. This directly records acceptance, without another popup. | Checks the current issue and candidate, records acceptance, and retains usage and evidence. It does not close the GitHub issue, merge or deploy. |
 
-Work includes queued and running tasks. The agent moves completed work to Review.
+Work retains queued, paused, blocked and failed tasks. In progress is a view of active
+Work, not another human-controlled lifecycle state. The agent moves completed work to Review.
 A merged PR or closed issue is not acceptance; existing closed issues without an
 acceptance record also appear in Review. Accepted tasks cannot be retried or requeued.
 Reopen a closed GitHub issue before returning it to Work for further corrections.
@@ -211,10 +211,10 @@ does not change scheduler priority. **Work → Backlog** offers confirmed cancel
 Cancel can stop work claimed since the card was displayed. Retry clears a hold and
 saves Work routing without resetting budgets or supplying a missing answer.
 
-Queueing opens an exact preview and saves the routing decision in the local control
-ledger. The card updates immediately; GitHub routing labels synchronize automatically.
-Closing the preview does not queue it. Pending actions and receipts reopen
-from **New task → Recent submissions**; use **Check outcome** after an uncertain result.
+Moving Backlog to Work saves the routing decision directly in the local control ledger.
+The card updates immediately; GitHub routing labels synchronize automatically.
+Repeated uncertain moves reuse the same command. Chat proposals retain their receipts;
+use **Check outcome** to reconcile uncertain creation before requesting another task.
 The native scheduler remains the only execution queue; queueing does not resume a paused controller.
 “Syncing GitHub” or “GitHub sync retrying” means the local decision is saved and its
 label update is pending. Retries survive restart and preserve unrelated labels. Inspect
