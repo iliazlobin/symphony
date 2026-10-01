@@ -308,8 +308,10 @@ defmodule SymphonyElixir.Chat.OpenRouter do
         end
       end)
 
+    ref = task.ref
+
     receive do
-      {ref, result} when ref == task.ref ->
+      {^ref, result} ->
         Process.demonitor(task.ref, [:flush])
         result
 
