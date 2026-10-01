@@ -177,6 +177,19 @@ class OwnedProcess:
                 self.exit_observed = os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
         return self.exit_observed
 
+    def signal_group(self, sig):
+        if self.returncode is not None:
+            return
+        try:
+            os.killpg(self.pid, sig)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            # macOS returns EPERM for an already-dead group. Its direct leader
+            # remains ours and unreaped until wait completes group cleanup.
+            if not self.exited():
+                raise
+
     async def wait(self):
         async with self.wait_lock:
             if self.returncode is not None:
@@ -184,15 +197,7 @@ class OwnedProcess:
             while not self.exited():
                 await asyncio.sleep(0.05)
             for sig in (signal.SIGTERM, signal.SIGKILL):
-                try:
-                    os.killpg(self.pid, sig)
-                except ProcessLookupError:
-                    pass
-                except PermissionError:
-                    # macOS returns EPERM for an already-dead group. The direct
-                    # leader remains ours and unreaped throughout this cleanup.
-                    if not self.exited():
-                        raise
+                self.signal_group(sig)
                 if sig == signal.SIGTERM:
                     await asyncio.sleep(0.2)
             # No await between final group signal and reap. The leader's PID stays
@@ -429,14 +434,12 @@ class Workspace:
         self.owner_pipes.clear()
         for child in self.children.values():
             if child.returncode is None:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(child.pid, signal.SIGTERM)
+                child.signal_group(signal.SIGTERM)
         for child in self.children.values():
             try:
                 await asyncio.wait_for(child.wait(), timeout=10)
             except asyncio.TimeoutError:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(child.pid, signal.SIGKILL)
+                child.signal_group(signal.SIGKILL)
                 await child.wait()
         for client in self.clients.values():
             await client.close()

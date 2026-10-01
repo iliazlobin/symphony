@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from aiohttp import ClientSession, web
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from symphony_workspace import ROOT, SessionBroker, Workspace, clean_headers, valid_value, load_workspace
+from symphony_workspace import ROOT, OwnedProcess, SessionBroker, Workspace, clean_headers, valid_value, load_workspace
 from symphony_control import valid_api_prefix, ControlError
 
 
@@ -225,6 +225,20 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
         finally:
             os.close(read_fd)
             os.close(next_read_fd)
+
+    async def test_shutdown_reaps_an_already_exited_owned_group(self):
+        workspace = Workspace({})
+        child = OwnedProcess(sys.executable, "-c", "pass", start_new_session=True)
+        workspace.children["fixture"] = child
+        try:
+            while not child.exited():
+                await asyncio.sleep(0.01)
+            await workspace.stop(None)
+            self.assertEqual(child.returncode, 0)
+        finally:
+            if child.returncode is None:
+                child.signal_group(signal.SIGKILL)
+                await child.wait()
 
 
 class CrashOwnershipTest(unittest.TestCase):
