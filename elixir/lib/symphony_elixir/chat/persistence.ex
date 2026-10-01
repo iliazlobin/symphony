@@ -292,8 +292,10 @@ defmodule SymphonyElixir.Chat.Persistence do
 
   defp runtime_valid?(nil), do: true
 
-  defp runtime_valid?(%{"provider" => provider, "model" => model, "run_id" => run, "instruction_version" => version} = runtime),
-    do: map_size(runtime) == 4 and provider in ~w(codex openrouter) and bounded_string?(model, 200) and valid_id?(run) and version == "project-task-work-v2"
+  defp runtime_valid?(%{"provider" => provider, "model" => model, "run_id" => run, "instruction_version" => version} = runtime) do
+    map_size(runtime) == 4 and provider in ~w(codex openrouter) and bounded_string?(model, 200) and
+      valid_id?(run) and version in ~w(project-task-work-v2 project-task-work-v3)
+  end
 
   defp runtime_valid?(_), do: false
 

@@ -451,6 +451,9 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, _} = Store.send_message(c.project, running_id, "wait", "active", c.auth, c.server)
     assert_receive {:runtime, runtime, _, "wait"}
     monitor = Process.monitor(runtime)
+    # Settle this recipient's bootstrap receipt before replacing its record;
+    # the other conversation remains active for the storage-fault assertion.
+    wait_chat(c, %{"id" => failed_id}, &(&1["status"] == "idle"))
     block_record(c, %{"id" => failed_id})
     # Simulate recovery where only this recipient still needs the same report.
     :sys.replace_state(c.server, &put_in(&1, [:chats, failed_id, "pr_report_receipts"], %{}))

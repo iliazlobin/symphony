@@ -2615,13 +2615,25 @@ owners MUST be rejected rather than adopting another issue's worker.
 
 Scoped coordination tools may read this graph, set their own or a direct child's goal,
 delegate to a direct child and report to their direct parent. Completed task/work
-replies MUST report upward automatically; parent turns process source-labelled reports
+replies MUST report upward automatically unless the same turn successfully submitted
+an explicit parent report, including a durable pending delivery. Earlier-turn reports
+and rejected reports MUST NOT suppress automatic completion. Changed findings after
+an explicit report require another explicit update. Parent turns process source-labelled reports
 against their goals. Outgoing intent MUST precede admission and recipient receipts
 MUST prevent duplicate delivery after uncertain writes. Recipient backpressure retains
 pending delivery. Stop and restart MUST NOT silently resume supervision; fresh user
 authorization is required after restart. Each root chain is bounded to 24 deliveries
 and depth six. Model reports and goal status are not task acceptance or external-write
 authority; native scheduling and exact human action confirmation remain unchanged.
+Before inference on a report or host-evidence turn, the host MUST refresh role-scoped
+facts through the normal authorized tool callback: project status, task details or
+the bound work session. The bounded snapshot is untrusted evidence, not permission;
+unavailable facts MUST be explicit. Receipts survive Stop/restart; a post-read fence
+MUST prevent inference after Stop or revoked access. OpenRouter replays retained
+history as conversation history, without also promoting it into system instructions.
+Current proposal statuses and uncertain action outcomes MUST remain available as a
+bounded, source-labelled host snapshot after restart. Runtime provenance uses
+`project-task-work-v3`; retained v2 messages remain readable.
 
 The graph export uses version 2 and public roles `project`, `task`, `work`. Persisted
 `conversation_role=pr`, `pr:N` discussion and `work:ID` native identities remain compatible;
@@ -2656,6 +2668,9 @@ register no execution environments on either thread or turn, disable inherited
 tools/instructions and reject unexpected requests. The host exposes only typed
 management tools. Codex owns native history and automatic compaction; the application
 separately persists visible messages, references, action previews and receipts.
+OpenRouter tool-round preambles and provider reasoning MUST remain transient replay
+context; only terminal assistant content enters the visible transcript. Host activity,
+tool receipts and interrupted/error status remain durable.
 
 Read tools expose current project status, filtered tasks, task details and a bounded
 set of committed project documents. Document reads resolve a full default-branch SHA

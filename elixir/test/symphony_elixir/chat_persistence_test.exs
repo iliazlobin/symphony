@@ -37,12 +37,15 @@ defmodule SymphonyElixir.Chat.PersistenceTest do
     receipt = %{"tool" => "symphony_project_status", "arguments" => %{}, "result" => "{}"}
     saved = c.chat |> Map.put("messages", [message() |> Map.put("runtime", runtime) |> Map.put("tool_receipts", [receipt])])
     assert :ok = Persistence.put(owner, saved)
+    saved = put_in(saved, ["messages", Access.at(0), "runtime", "instruction_version"], "project-task-work-v3")
+    assert :ok = Persistence.put(owner, saved)
     bytes = File.read!(record_path(c.root, c.chat))
 
     invalid = [
       put_in(saved, ["messages", Access.at(0), "runtime"], "wrong"),
       put_in(saved, ["messages", Access.at(0), "runtime", "provider"], "unknown"),
       put_in(saved, ["messages", Access.at(0), "runtime", "run_id"], "not-a-run"),
+      put_in(saved, ["messages", Access.at(0), "runtime", "instruction_version"], "unknown-policy"),
       put_in(saved, ["messages", Access.at(0), "tool_receipts"], %{}),
       put_in(saved, ["messages", Access.at(0), "tool_receipts"], [nil]),
       put_in(saved, ["messages", Access.at(0), "tool_receipts"], List.duplicate(receipt, 25)),
