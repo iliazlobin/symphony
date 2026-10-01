@@ -34,7 +34,8 @@ function mount(savedPrefs = {}, urlFilters = {}, projects = [{id:"github:example
     lane.container.children.push(card); return card;
   }
   const backlog=add("backlog","backlog"), queued=add("queued","ready",["bug, ui"],["alice","bob"],{id:"7",title:"Launch"}), running=add("running","running",["backend"],["bob"]), reviewed=add("reviewed","review"), done=add("done","done");
-  const el = {dataset:{scope:"fixture",projects:JSON.stringify(projects),projectLinks:JSON.stringify(projectLinks),urlFilters:JSON.stringify(urlFilters)},style:{},addEventListener:(name,handler)=>listeners.set(name,handler),
+  queued.dataset.kind="bug"; running.dataset.kind="operations";
+  const el = {dataset:{scope:"fixture",taskKinds:JSON.stringify(["feature","bug","testing","operations","general","invalid"]),projects:JSON.stringify(projects),projectLinks:JSON.stringify(projectLinks),urlFilters:JSON.stringify(urlFilters)},style:{},addEventListener:(name,handler)=>listeners.set(name,handler),
     querySelectorAll(selector) {if(["[data-task-id]",".task-card[data-task-id]"].includes(selector))return allCards();if(selector==="[data-stage]")return [...lanes.values()];if(selector===".drop-target,.drop-before,.drop-after")return [...lanes.values(),...allCards()];return [];},
     querySelector(selector) {
       if(selector.startsWith('[data-stage="')) {const lane=lanes.get(selector.match(/="([^"]+)"/)[1]);if(selector.includes("[data-lane-count]"))return lane.count;if(selector.includes(".task-card"))return lane.querySelector(".task-card:not([hidden])");return lane;}
@@ -80,6 +81,17 @@ const single = mount({}, {}, [projects[0]], projectLinks);
 assert.equal(single.elements.get("#filter-project").placeholder,"Example project");
 const multi = mount({project:projects.map(project=>project.id)}, {}, projects, projectLinks);
 assert.equal(multi.elements.get("#filter-project").placeholder,"2 projects");
+// Task kind is a bounded classifier, independent of stage and metadata filters.
+const kinds=mount({}, {kind:"bug"});
+assert.deepEqual(kinds.visible(),["queued"]);
+assert.deepEqual(plain(kinds.hook.filterValues("kind",["bug","unknown","bug"])),["bug"]);
+assert(kinds.hook.options("kind").some(([id,label])=>id==="invalid" && label==="Needs classification"));
+kinds.el.dataset.urlFilters=JSON.stringify({kind:"operations",status:"work"}); kinds.hook.apply();
+assert.deepEqual(kinds.visible(),["running"]);
+kinds.hook.save(); kinds.flush();
+assert.deepEqual(plain(kinds.hook.prefs.kind),["operations"]);
+kinds.el.dataset.chatOpen="true"; kinds.el.dataset.chatProject="github:example/repo"; kinds.hook.captureContext();
+assert.deepEqual(plain(kinds.sent.at(-1).payload.filters.kind),["operations"]);
 // Existing browser preferences retain useful order and metadata, but cannot hide Done.
 const b = mount({lane:"running",hiddenLanes:["done","running"],order:{ready:["queued","shared"],running:["running","shared"],done:["done"]},label:["label:bug, ui"]});
 assert.equal(b.hook.prefs.lane,"work");

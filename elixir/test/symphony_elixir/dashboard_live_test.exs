@@ -876,6 +876,10 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#issue-pr-menu #issue-card-link")
     refute has_element?(view, "#issue-pr-menu .issue-work-options")
     assert has_element?(view, "#issue-pr-menu summary", "4")
+    assert has_element?(view, "#issue-pr-menu summary .issue-work-count", "1 work session")
+    assert has_element?(view, "article[data-task-id='github:example/fixture:2'] .card-work-status[data-work-count='1'] [data-working-count='1']", "1 working")
+    assert has_element?(view, "#operator-scope[data-agent-role=task] .operator-task-state", "Work")
+    assert has_element?(view, "#operator-scope [data-working-count='1']", "1 working")
     for n <- 1..4, do: assert(has_element?(view, "#issue-pr-menu a[href='https://github.com/example/fixture/pull/#{n}']", "PR ##{n}"))
     assert has_element?(view, "#issue-pr-menu [data-pr-number='4']", "Merged")
     assert has_element?(view, ".issue-chat-identity > details:first-child#issue-pr-menu")
@@ -896,14 +900,17 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#issue-pr-menu [data-pr-number='2']")
     refute has_element?(view, "#issue-pr-menu [data-pr-number='4']")
     render_change(chat, "search-prs", %{"query" => "not-a-real-pr"})
-    assert has_element?(view, "#issue-pr-menu", "No matching feature agents.")
+    assert has_element?(view, "#issue-pr-menu", "No matching work agents.")
     render_change(chat, "search-prs", %{"query" => "PR #1"})
     assert has_element?(view, "#issue-pr-menu [data-pr-number='1'] [phx-value-id='work:#{work_id}']")
     refute has_element?(view, "#issue-pr-menu [data-pr-number='2']")
     id = :sys.get_state(view.pid).socket.assigns.chat_id
     view |> element("#issue-pr-menu [phx-value-id='work:#{work_id}']") |> render_click()
     refute has_element?(view, "#board-dialog")
-    assert has_element?(view, "#issue-pr-menu summary", "Change 1 feature agent")
+    assert has_element?(view, "#issue-pr-menu summary", "Change 1 work agent")
+    assert has_element?(view, "#issue-pr-menu summary .work-session-state", "Working")
+    assert has_element?(view, "#operator-scope[data-agent-role=work] .agent-scope-trail [aria-current=location]", "Work")
+    assert has_element?(view, "#operator-scope .operator-work-goal", "Address PR checks")
     refute :sys.get_state(view.pid).socket.assigns.chat_id == id
     assert :sys.get_state(view.pid).socket.assigns.chat_session_id == "work:" <> work_id
     pr_chat = :sys.get_state(view.pid).socket.assigns.chat_id
@@ -911,6 +918,12 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#issue-pr-menu summary", "Ready fixture task agent")
     assert :sys.get_state(view.pid).socket.assigns.chat_id == id
     refute :sys.get_state(view.pid).socket.assigns.chat_id == pr_chat
+    view |> element("article[data-task-id='github:example/fixture:2'] .card-work-status a") |> render_click()
+    assert :sys.get_state(view.pid).socket.assigns.chat_id == pr_chat
+    refute has_element?(view, "#board-dialog")
+    view |> element("#operator-scope .agent-scope-trail button[phx-click=select-pr-session]") |> render_click()
+    assert has_element?(view, "#operator-scope[data-agent-role=task]")
+    assert :sys.get_state(view.pid).socket.assigns.chat_id == id
     open_task(view, "2")
     assert has_element?(view, "#board-dialog .issue-work-session[data-work-id='#{work_id}']", "Session retained")
     assert has_element?(view, "#board-dialog a", "Ready fixture task agent")
@@ -936,10 +949,13 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, card <> " .card-pr-summary .card-pr-overflow", "… +2")
     view |> element(card <> " .card-pr-summary .card-pr-overflow") |> render_click()
     assert has_element?(view, "#board-dialog [data-pr-number='5']")
-    view |> element("#board-dialog [data-pr-number='5'] a[aria-label='Open PR #5 feature agent']") |> render_click()
+    view |> element("#board-dialog [data-pr-number='5'] a[aria-label='Open PR #5 work agent']") |> render_click()
     assert_push_event(view, "focus-chat-session", %{})
     refute has_element?(view, "#board-dialog")
-    assert has_element?(view, "#issue-pr-menu summary", "Change 5 feature agent")
+    assert has_element?(view, "#issue-pr-menu summary", "Change 5 work agent")
+    assert has_element?(view, "#issue-pr-menu summary .work-session-state", "Discussion")
+    refute has_element?(view, "#issue-pr-menu summary .issue-work-count")
+    refute has_element?(view, "#operator-scope .operator-work-goal")
     assert :sys.get_state(view.pid).socket.assigns.chat_session_id == "pr:5"
     selected = :sys.get_state(view.pid).socket.assigns.chat_id
     path = "/?" <> URI.encode_query(%{"chat_task" => "github:example/fixture:2", "chat_session" => "pr:5"})
@@ -1506,6 +1522,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#task-action-preview h4", "Bounded fixture task")
     System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("rotated-token", 4))
     send(view.pid, {:chat_updated, id})
+    # Settle the parent notification before the component's queued self-update is observed.
+    render(view)
     refute has_element?(view, "#task-action-preview")
     refute has_element?(view, ".intake-history-item")
     refute has_element?(view, "#task-intake-form")
@@ -1640,6 +1658,21 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#management-chat-dock")
     refute has_element?(view, "#open-chat-button")
     assert has_element?(view, "#task-board-app[data-chat-project='github:example/fixture']")
+  end
+
+  test "task kinds appear as classifications and persist in filter URLs without dispatch", ctx do
+    board = update_task(ctx.board, "2", &(&1 |> Map.put(:labels, ["kind:testing"]) |> Map.put(:task_kind, "testing")))
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    assert has_element?(view, "#filter-kind[role=combobox][aria-label='Kind filter']")
+    assert has_element?(view, "article[data-task-id='github:example/fixture:2'][data-kind=testing] .card-task-kind", "Testing")
+    refute has_element?(view, "button[phx-click=start-deployment]")
+    render_click(view, "board-filters", %{"project" => "github:example/fixture", "kind" => "testing", "status" => "work"})
+    assert_patch(view, "/?" <> URI.encode_query(%{"project" => "github:example/fixture", "kind" => "testing", "status" => "work"}))
+    view |> element("article[data-task-id='github:example/fixture:2'] .card-title") |> render_click()
+    assert :sys.get_state(view.pid).socket.assigns.url_filters["kind"] == "testing"
+    assert has_element?(view, "#board-dialog")
+    refute_received {:settings_command, _}
   end
 
   test "cards and popups distinguish tracker, execution, blocker and verified PR evidence", ctx do

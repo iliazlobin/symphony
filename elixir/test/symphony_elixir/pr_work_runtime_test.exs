@@ -39,15 +39,17 @@ defmodule SymphonyElixir.PrWorkRuntimeTest do
     assert :ok = AgentRunner.run(issue(), self(), options(c))
     assert_receive {:worker_candidate_ready, "42", first}, 1_000
     assert first.work_id == c.work["id"]
+    assert first.goal_revision == 1
     assert first.expected_head_sha == nil
     assert first.builder_thread_id == "retained-builder"
     assert first.branch == c.work["branch"]
     assert first.base_sha == c.work["base_sha"]
     assert first.review["candidate_sha"] == first.candidate_sha
-    second_work = Map.merge(c.work, %{"builder_thread_id" => first.builder_thread_id, "head_sha" => first.candidate_sha})
+    second_work = Map.merge(c.work, %{"builder_thread_id" => first.builder_thread_id, "head_sha" => first.candidate_sha, "goal_revision" => 2})
     File.rm!(Path.join(c.root, "checkpoint"))
     assert {:ok, second} = CandidatePipeline.run(c.workspace, issue(), options(%{c | work: second_work}), fn _ -> :ok end)
     assert second.builder_thread_id == first.builder_thread_id
+    assert second.goal_revision == 2
     assert second.expected_head_sha == first.candidate_sha
     assert second.candidate_sha != first.candidate_sha
     assert second.reviewer_session_id != first.reviewer_session_id

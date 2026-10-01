@@ -34,6 +34,39 @@ Keep scope bounded.
 
 
 class ProfileTests(unittest.TestCase):
+    def test_openrouter_loads_only_explicit_private_key_without_sourcing_env(self):
+        self.assertEqual(profile.openrouter_environment({}), {})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            path = root / ".env"
+            key = "sk-or-v1-" + "x" * 32
+            path.write_text('OTHER_SECRET=not-for-symphony\nOPENROUTER_API_KEY="' + key + '"\n')
+            path.chmod(0o600)
+            config = {"openrouter_env_file": str(path), "codex_home": str(root / "worker-home")}
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "ambient"}):
+                self.assertEqual(profile.openrouter_environment(config), {"OPENROUTER_API_KEY": key})
+                self.assertEqual(os.environ["OPENROUTER_API_KEY"], "ambient")
+                self.assertNotIn("OPENROUTER_API_KEY", profile.worker_env(config))
+            for content in ["", "OTHER_SECRET=only", "OPENROUTER_API_KEY=$(command)",
+                            "OPENROUTER_API_KEY=" + key + "\nOPENROUTER_API_KEY=" + key]:
+                path.write_text(content)
+                with self.assertRaises(profile.ControlError) as error:
+                    profile.openrouter_environment(config)
+                self.assertNotIn(key, str(error.exception))
+                if content:
+                    self.assertNotIn(content, str(error.exception))
+            path.write_text("OPENROUTER_API_KEY=" + key)
+            path.chmod(0o644)
+            with self.assertRaises(profile.ControlError):
+                profile.openrouter_environment(config)
+            path.chmod(0o600)
+            link = root / "linked.env"
+            link.symlink_to(path)
+            with self.assertRaises(profile.ControlError):
+                profile.openrouter_environment({"openrouter_env_file": str(link)})
+            with self.assertRaises(profile.ControlError):
+                profile.openrouter_environment({"openrouter_env_file": "relative.env"})
+
     def oauth_file(self, root):
         path = root / "google-client.json"
         path.write_text(json.dumps({"web": {

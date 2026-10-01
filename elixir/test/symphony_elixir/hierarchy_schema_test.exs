@@ -78,7 +78,7 @@ defmodule SymphonyElixir.Chat.HierarchySchemaTest do
   end
 
   test "agent labels preserve the name and express the three hierarchy roles" do
-    for {role, suffix} <- [{"main", "project"}, {"task", "task"}, {"pr", "feature"}, {"legacy", "project"}] do
+    for {role, suffix} <- [{"main", "project"}, {"task", "task"}, {"pr", "work"}, {"legacy", "project"}] do
       assert Coordination.label(%{"conversation_role" => role, "agent_name" => "README", "title" => "Old title"}) == "README #{suffix} agent"
     end
 
@@ -103,7 +103,7 @@ defmodule SymphonyElixir.Chat.HierarchySchemaTest do
   end
 
   test "hierarchy metadata and provenance roundtrip with canonical and effective PR identities", c do
-    record = hierarchy_chat()
+    record = hierarchy_chat() |> Map.merge(%{"task_kind" => "testing", "work_purpose" => "coding"})
     assert {:ok, owner, %{}} = Persistence.open(c.root)
     assert :ok = Persistence.put(owner, record)
     Persistence.close(owner)
@@ -133,6 +133,8 @@ defmodule SymphonyElixir.Chat.HierarchySchemaTest do
     invalid =
       [
         Map.put(record, "parent_id", "not-a-conversation"),
+        Map.put(record, "task_kind", "unknown"),
+        Map.put(record, "work_purpose", "arbitrary_command"),
         Map.put(record, "alias_of", 7),
         Map.put(record, "agent_session_id", "work:invalid"),
         Map.put(record, "agent_session_id", 7),
@@ -300,7 +302,7 @@ defmodule SymphonyElixir.Chat.HierarchySchemaTest do
       "root" => @root_id,
       "root_chat" => parent,
       "text" => "Checks passed",
-      "source_name" => "README feature agent",
+      "source_name" => "README work agent",
       "kind" => "report",
       "status" => "pending",
       "depth" => 1,

@@ -111,7 +111,7 @@ defmodule SymphonyElixir.CandidatePipeline do
   defp work_evidence(candidate, nil, _builder), do: candidate
 
   defp work_evidence(candidate, work, builder) do
-    Map.merge(candidate, %{work_id: work["id"], expected_head_sha: work["head_sha"], builder_thread_id: builder.thread_id})
+    Map.merge(candidate, %{work_id: work["id"], goal_revision: Map.get(work, "goal_revision", 1), expected_head_sha: work["head_sha"], builder_thread_id: builder.thread_id})
   end
 
   defp approved_base(workspace) do

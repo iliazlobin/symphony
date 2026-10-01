@@ -5,6 +5,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixir.Chat.Sessions
   alias SymphonyElixir.Chat.ViewContext
   alias SymphonyElixir.Config
+  alias SymphonyElixir.TaskKind
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, ChatPanel, Endpoint, Markdown, SettingsPanel, TaskIntakePanel}
   alias SymphonyElixirWeb.{BoardCache, ChatNavigation, ObservabilityPubSub, Presenter}
   alias SymphonyElixirWeb.{TaskBoard, TaskExecution, TaskRework}
@@ -623,7 +624,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     ~H"""
     <section id="task-board-app" class="dashboard-shell" phx-hook="TaskBoard" data-density="compact" data-theme="light"
       data-chat-open="true" data-chat-project={@chat_project} data-board-checked-at={@board.generated_at} data-context-revision={@context_revision}
-      data-scope={scope(@board)} data-projects={Jason.encode!(@board.projects)} data-project-links={Jason.encode!(@project_links)} data-url-filters={Jason.encode!(@url_filters)} data-selected-task={@chat_task_id}>
+      data-task-kinds={Jason.encode!(TaskKind.values() ++ ["invalid"])} data-scope={scope(@board)} data-projects={Jason.encode!(@board.projects)} data-project-links={Jason.encode!(@project_links)} data-url-filters={Jason.encode!(@url_filters)} data-selected-task={@chat_task_id}>
       <div class="board-main">
       <header class="board-header">
         <div class="board-location">
@@ -645,7 +646,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       <div id="board-toolbar" class="board-toolbar" phx-update="ignore">
         <div class="toolbar-primary">
           <div id="board-filter-panel" class="filter-row">
-            <div :for={{key, label} <- [{"status", "Status"}, {"priority", "Priority"}, {"milestone", "Milestone"}, {"label", "Tags"}, {"assignee", "Assignee"}]} class="filter-combo" data-filter={key}>
+            <div :for={{key, label} <- [{"status", "Status"}, {"priority", "Priority"}, {"kind", "Kind"}, {"milestone", "Milestone"}, {"label", "Tags"}, {"assignee", "Assignee"}]} class="filter-combo" data-filter={key}>
               <div class="combo-control"><input id={"filter-#{key}"} role="combobox" aria-label={"#{label} filter"}
                 autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls={"options-#{key}"}
                 placeholder={"#{label}: All"} /><button type="button" data-filter-toggle={key} aria-label={"Open #{label} filter"}>⌄</button></div>
@@ -696,10 +697,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 tabindex="0" aria-label={"#{task.identifier}: #{task.title}"} aria-describedby="card-selection-help" aria-current={if @chat_task_id == task.id, do: "true"}
                 data-status={task.stage} data-task-id={task.id} data-selected={to_string(@chat_task_id == task.id)} data-project={task.project} data-priority={priority(task.priority)} data-attention={to_string(not is_nil(task.attention))}
                 data-labels={Jason.encode!(Map.get(task, :labels, []))} data-milestone={Jason.encode!(Map.get(task, :milestone))} data-assignees={Jason.encode!(Map.get(task, :assignees, []))}
-                data-title={task.title} data-identifier={task.identifier} data-created={task.created_at || ""} data-updated={task.updated_at || ""}>
+                data-kind={task_kind(task)} data-title={task.title} data-identifier={task.identifier} data-created={task.created_at || ""} data-updated={task.updated_at || ""}>
                 <div class="card-top"><a :if={safe_url(task.url)} href={safe_url(task.url)} target="_blank" rel="noopener noreferrer"
                   aria-label={"Open #{task.identifier} in the issue tracker"}>{task.identifier}</a><span :if={!safe_url(task.url)}>{task.identifier}</span>
-                  <span class="priority" data-priority={priority(task.priority)}>{priority(task.priority)}</span></div>
+                  <span class="card-task-kind" data-task-kind={task_kind(task)}>{kind_label(task_kind(task))}</span><span class="priority" data-priority={priority(task.priority)}>{priority(task.priority)}</span></div>
                 <div class="card-title-row"><span class={"lane-dot lane-dot-#{stage}"} aria-hidden="true"></span>
                   <span class="card-title-text"><.link id={"open-#{card_id(task)}"} class="card-title" patch={task_detail_path(@url_filters, task.id, @chat_task_id, @chat_session_id)}>{task.title}</.link></span>
                 </div>
@@ -707,6 +708,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <.card_chat_status activity={Map.get(@chat_activity, task.id)} />
                 <.feedback_summary task={task} />
                 <.execution_summary summary={execution_summary(task, @board, @payload)} routing={task[:routing]} compact={true} />
+                <.card_work_status task={task} filters={@url_filters} />
                 <span :if={blocker(task) && is_nil(task.hold)} class="attention-badge">{blocker(task)}</span>
                 <div :if={pull_requests(task) != []} class="card-pr-summary"><span :for={pr <- Enum.take(pull_requests(task), 3)}>
                   <a :if={safe_url(field(pr, :url))} href={safe_url(field(pr, :url))} target="_blank" rel="noopener noreferrer">PR #{field(pr, :number)}</a>
@@ -775,10 +777,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <p :if={blocker(@selected) && is_nil(@selected.hold)} class="attention-badge"><strong>Needs attention:</strong> {blocker(@selected)}</p>
               <p :if={Map.get(@selected, :completion_evidence)} class="muted">{Map.get(@selected, :completion_evidence)}</p>
               <section :if={pull_requests(@selected) != []} class="dialog-section"><h3>Pull requests <span class="section-count">{length(pull_requests(@selected))}</span></h3><.pull_request :for={pr <- pull_requests(@selected)} pr={pr} compact={false} chat_url={session_path(@url_filters, @selected.id, pr_session_id(@selected, pr))} /></section>
-              <section :if={ChatNavigation.work_sessions(@selected) != []} class="dialog-section" aria-label="Feature agents">
-                <h3>Feature agents</h3>
+              <section :if={ChatNavigation.work_sessions(@selected) != []} class="dialog-section" aria-label="Work sessions">
+                <h3>Work sessions <span class="section-count">{ChatNavigation.work_counts(@selected).total}</span></h3>
                 <article :for={work <- ChatNavigation.work_sessions(@selected)} class="issue-work-session" data-work-id={work.id}>
-                  <div class="widget-heading"><a :if={work.pr_url} href={work.pr_url} target="_blank" rel="noopener noreferrer">{work.title} ↗</a><span class="widget-label">{work.phase}</span><.link class="button button-small agent-chat-link" patch={session_path(@url_filters, @selected.id, "work:" <> work.id)}><ChatPanel.agent_label name={work.name} role="feature" /><span aria-hidden="true">→</span></.link></div>
+                  <div class="widget-heading"><.link class="agent-chat-link" patch={session_path(@url_filters, @selected.id, "work:" <> work.id)}><ChatPanel.agent_label name={work.name} role="work" /><span aria-hidden="true">→</span></.link><span class="widget-label">{work.phase}</span></div>
+                  <a :if={work.pr_url} class="work-resource-link" href={work.pr_url} target="_blank" rel="noopener noreferrer">PR #{work.pr_number} ↗</a>
                   <p class="issue-work-instruction">{work.instruction}</p>
                   <p :if={work.summary != ""}>{work.summary}</p>
                   <div class="issue-work-meta"><span :if={work.session_retained}>Session retained</span><span :if={work.review}>Review: {String.replace(work.review, "_", " ")}</span><code :if={work.head != ""}>{work.head}</code><time :if={work.updated_at} datetime={work.updated_at} title={updated_at(work.updated_at)}>{compact_updated_at(work.updated_at)}</time></div>
@@ -792,9 +795,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <% :rework -> %>
               <p>Describe the corrections or select GitHub feedback. The task returns to Work after confirmation.</p>
               <form id="task-rework-form" phx-submit="prepare-rework">
-                <label class="display-field">Feature agent<select name="rework[work_id]" aria-label="Feature agent to continue">
+                <label class="display-field">Work agent<select name="rework[work_id]" aria-label="Work agent to continue">
                   <option :for={work <- TaskRework.options(@selected)} value={work.id}>{work.label}</option>
-                  <option value="new">New feature agent</option>
+                  <option value="new">New work agent</option>
                 </select></label>
                 <label class="rework-instruction">Corrections<textarea name="rework[instruction]" aria-label="Corrections" rows="4" maxlength="8000" placeholder="What needs to change?"></textarea></label>
                 <fieldset :if={feedback_items(@selected) != []} class="feedback-selection"><legend>Include feedback</legend>
@@ -810,7 +813,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <p>{command_description(@pending_command)}</p>
               <div :if={@pending_command.action in ["create_pr_work", "continue_pr_work"]} class="rework-preview">
                 <p>{@pending_command.command["instruction"]}</p>
-                <p>{length(@pending_command.command["feedback"])} selected comments · {if @pending_command.action == "create_pr_work", do: "New feature agent", else: "Continue feature agent"}</p>
+                <p>{length(@pending_command.command["feedback"])} selected comments · {if @pending_command.action == "create_pr_work", do: "New work agent", else: "Continue work agent"}</p>
                 <ul><li :for={item <- @pending_command.command["feedback"]}><a href={safe_url(item["url"])} target="_blank" rel="noopener noreferrer">@{item["author"]}</a>: {item["body"]}</li></ul>
                 <div :if={@pending_command.command["feedback"] != []} class="feedback-mirror-preview" aria-label="GitHub status reply preview">
                   <p>One status reply on this GitHub issue will be updated as work progresses. It contains source links and statuses, not copied comment text:</p>
@@ -1179,7 +1182,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     ~H"""
     <div class={"pull-request-evidence #{if @compact, do: "compact", else: ""}"} data-pr-number={@number}>
-      <div class="pull-request-heading"><a :if={@url} href={@url} target="_blank" rel="noopener noreferrer" title={@title}>{@label}<span :if={!@compact && is_binary(@title)}> · {@title}</span></a><strong :if={!@url}>{@label}</strong><span class="pr-state" data-pr-state={String.downcase(@state)}>{@state}</span><.link :if={@chat_url} class="button button-small agent-chat-link" patch={@chat_url} aria-label={"Open #{@label} feature agent"}><ChatPanel.agent_label name={if is_binary(@title) && @title != "", do: @title, else: @label} role="feature" /><span aria-hidden="true">→</span></.link></div>
+      <div class="pull-request-heading"><a :if={@url} href={@url} target="_blank" rel="noopener noreferrer" title={@title}>{@label}<span :if={!@compact && is_binary(@title)}> · {@title}</span></a><strong :if={!@url}>{@label}</strong><span class="pr-state" data-pr-state={String.downcase(@state)}>{@state}</span><.link :if={@chat_url} class="button button-small agent-chat-link" patch={@chat_url} aria-label={"Open #{@label} work agent"}><ChatPanel.agent_label name={if is_binary(@title) && @title != "", do: @title, else: @label} role="work" /><span aria-hidden="true">→</span></.link></div>
       <div class="pull-request-checks"><span>GitHub review: {@review}</span>
         <a :if={@checks_url} href={@checks_url} target="_blank" rel="noopener noreferrer" title={@ci_summary} aria-label={"#{@label} checks: #{@ci_status}"}>CI: {@ci_status} ↗</a>
         <span :if={!@checks_url} title={@ci_summary}>CI: {@ci_status}</span><span :if={@mergeability}>{@mergeability}</span>
@@ -1316,7 +1319,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp url_filters(params),
     do:
       params
-      |> Map.take(["project", "status", "priority", "milestone", "label", "assignee", "q", "sort"])
+      |> Map.take(["project", "status", "priority", "kind", "milestone", "label", "assignee", "q", "sort"])
       |> Map.reject(fn {_key, value} -> not is_binary(value) or byte_size(value) > 2_000 or value == "" end)
 
   defp board_path(filters), do: if(filters == %{}, do: "/", else: "/?" <> URI.encode_query(filters))
@@ -1469,6 +1472,25 @@ defmodule SymphonyElixirWeb.DashboardLive do
     """
   end
 
+  defp task_kind(task), do: task[:task_kind] || TaskKind.from_labels(task[:labels])
+  defp kind_label("invalid"), do: "Needs classification"
+  defp kind_label(kind), do: String.capitalize(kind)
+
+  defp card_work_status(assigns) do
+    works = ChatNavigation.work_sessions(assigns.task)
+    assigns = assign(assigns, counts: ChatNavigation.work_counts(assigns.task), first_work: List.first(works))
+
+    ~H"""
+    <div :if={@first_work} class="card-work-status" data-work-count={@counts.total} aria-label="Task work sessions">
+      <.link patch={session_path(@filters, @task.id, "work:" <> @first_work.id)} aria-label={"Open work agent for #{@task.identifier}"}>{@counts.total} work {if @counts.total == 1, do: "session", else: "sessions"}</.link>
+      <span :if={@counts.working > 0} data-working-count={@counts.working}>{@counts.working} working</span>
+      <span :if={@counts.queued > 0} data-queued-work={@counts.queued}>{@counts.queued} queued</span>
+      <span :if={@counts.review > 0}>{@counts.review} ready for review</span>
+      <span :if={@counts.paused > 0}>{@counts.paused} paused</span>
+    </div>
+    """
+  end
+
   defp project_picker_label(board, filters, links) do
     case Enum.find(board.projects, &(&1.id == selected_project(board, filters))) do
       nil -> "All projects"
@@ -1504,7 +1526,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     params = URI.decode_query(uri.query || "")
 
     if uri.path == "/" && is_nil(uri.host) && is_nil(uri.scheme) && is_nil(uri.fragment) && params["project"] == project do
-      {:ok, Map.take(params, ["project", "status", "priority", "milestone", "label", "assignee", "q", "sort", "task"])}
+      {:ok, Map.take(params, ["project", "status", "priority", "kind", "milestone", "label", "assignee", "q", "sort", "task"])}
     else
       :error
     end

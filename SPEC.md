@@ -2583,6 +2583,17 @@ not provided by the local login mechanism.
 Settings are fixed for the store lifetime. The current service resolves only its
 configured tracker project; it does not aggregate other Symphony controllers.
 
+Management reads MUST expose `stage` / `lane` as Backlog, Work, Review or Done,
+with queued and running tasks counted and filtered together in Work. Legacy
+ready/running search inputs alias Work. `scheduler_stage` and `runtime_status`
+retain internal observations without changing admission or action permissions.
+`execution_status` / `execution_note` MUST use the same task presentation as the
+board, with current project controller mode and `admission_status` included in
+task, search, view and project results. Paused/draining blocks new admission;
+running remains subject to all admission checks. Missing or unhealthy controller
+evidence is unavailable. An idle runtime or absent issue hold does not prove
+execution is resumed, eligible or running.
+
 The conversation store MUST bind each record to an immutable project, tracker
 fingerprint and native runtime identity. Every read, turn, tool request and action
 decision MUST revalidate browser authorization and project scope. A project picker
@@ -2591,26 +2602,65 @@ reconnect submissions and reject changed text under the same ID. The browser MUS
 not receive model credentials, private native thread IDs or another project's history.
 
 A project MUST have one project agent, each issue one task agent, and each associated
-PR one feature-agent conversation. Names use `<name> project agent`, `<name> task agent`
-and `<name> feature agent`. Agent records and typed `supervises` / `reports_to` edges
+work session one work-agent conversation. Names use `<name> project agent`, `<name> task agent`
+and `<name> work agent`. Agent records and typed `supervises` / `reports_to` edges
 MUST export stable identifiers, parent relationships, goals and activity without leaking
 credentials. Historical aliases MUST NOT create extra graph agents. Reconciliation
 MUST fence losing queues durably before copying history and recover before dispatch.
-One PR linked to several issues MUST keep one feature agent and one owning task.
+One PR linked to several issues MUST keep one work agent and one owning task.
 Verified native work selects its owner; before that, the first retained discussion
 owns it. Other associated issues use reference edges without supervision authority.
 Ownership changes MUST wait for active work and pending reports; conflicting native
 owners MUST be rejected rather than adopting another issue's worker.
 
 Scoped coordination tools may read this graph, set their own or a direct child's goal,
-delegate to a direct child and report to their direct parent. Completed task/feature
-replies MUST report upward automatically; parent turns process source-labelled reports
+delegate to a direct child and report to their direct parent. Completed task/work
+replies MUST report upward automatically unless the same turn successfully submitted
+an explicit parent report, including a durable pending delivery. Earlier-turn reports
+and rejected reports MUST NOT suppress automatic completion. Changed findings after
+an explicit report require another explicit update. Parent turns process source-labelled reports
 against their goals. Outgoing intent MUST precede admission and recipient receipts
 MUST prevent duplicate delivery after uncertain writes. Recipient backpressure retains
 pending delivery. Stop and restart MUST NOT silently resume supervision; fresh user
 authorization is required after restart. Each root chain is bounded to 24 deliveries
 and depth six. Model reports and goal status are not task acceptance or external-write
 authority; native scheduling and exact human action confirmation remain unchanged.
+Before inference on a report or host-evidence turn, the host MUST refresh role-scoped
+facts through the normal authorized tool callback: project status, task details or
+the bound work session. The bounded snapshot is untrusted evidence, not permission;
+unavailable facts MUST be explicit. Receipts survive Stop/restart; a post-read fence
+MUST prevent inference after Stop or revoked access. OpenRouter replays retained
+history as conversation history, without also promoting it into system instructions.
+Current proposal statuses and uncertain action outcomes MUST remain available as a
+bounded, source-labelled host snapshot after restart. Runtime provenance uses
+`project-task-work-v3`; retained v2 messages remain readable.
+
+The graph export uses version 2 and public roles `project`, `task`, `work`. Persisted
+`conversation_role=pr`, `pr:N` discussion and `work:ID` native identities remain compatible;
+PR URLs are artifact references, never agent identity or execution authority. Task kinds
+are `feature`, `enhancement`, `bug`, `testing`, `security`, `release`, `operations`,
+`analysis`, `maintenance`, `general`. Host-owned `kind:` labels classify intent; legacy
+`work:deployment` / `work:operations` map to release / operations when no explicit kind
+exists. Domain labels such as `work:application` grant no execution capability.
+
+The host MUST enforce role and scope at proposal and confirmation: project agents may
+propose project controls, task agents may propose changes and coding work only for their
+issue, and work agents may continue/cancel/retry only their verified native session.
+Every mutation still requires the authenticated human decision. Coordination remains
+adjacent; model instructions and task kinds never expand the tool allowlist.
+
+Native work has purpose `coding` and a positive instruction `goal_revision`, incremented
+on continuation. Candidate evidence MUST match that revision, work, run, branch, base
+and reviewed candidate SHA. Old stored records without these fields retain purpose
+coding and revision 1. Retained evidence from an older instruction remains available
+but is not current readiness. Session results expose verdict, reported checks and
+limitations; empty checks mean not reported, never passed. Results label their evidence as retained-candidate scope. For published work, session
+readiness MUST also compare the observed associated PR head; changed heads become stale
+and missing/unavailable GitHub heads remain unverified. GitHub check facts and human
+acceptance stay separate.
+Work purposes testing/security/analysis/deployment are vocabulary for future adapters;
+this iteration MUST reject them for native execution. Discussion-only external PRs
+remain read-only. The existing coding scheduler and lifecycle are unchanged.
 
 Each turn uses Codex 0.154.0 App Server with `gpt-6-astra`, private stdio and a
 dedicated home. The runtime MUST verify effective configuration and model availability,
@@ -2618,6 +2668,9 @@ register no execution environments on either thread or turn, disable inherited
 tools/instructions and reject unexpected requests. The host exposes only typed
 management tools. Codex owns native history and automatic compaction; the application
 separately persists visible messages, references, action previews and receipts.
+OpenRouter tool-round preambles and provider reasoning MUST remain transient replay
+context; only terminal assistant content enters the visible transcript. Host activity,
+tool receipts and interrupted/error status remain durable.
 
 Read tools expose current project status, filtered tasks, task details and a bounded
 set of committed project documents. Document reads resolve a full default-branch SHA

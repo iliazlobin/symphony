@@ -1,5 +1,9 @@
 # Architecture
 
+The [Symphony design](https://app.notion.com/p/3ebd865005a881acbbc1cc9799077ef4)
+owns the component diagrams, agent model and planned extensions. This file maps the
+implemented runtime to its code, ownership and recovery contracts.
+
 Symphony schedules coding work from GitHub Issues on one trusted Mac. The controlled
 profile adds durable execution limits, operator commands, a separate reviewer and a
 host publication broker. Coding workers run in local Docker containers; application
@@ -28,36 +32,9 @@ owns those acceptance steps.
 
 ## System boundary
 
-```mermaid
-flowchart TB
-  User["User"] --> Client["CLI or narrow MCP tools"]
-  subgraph Mac["Trusted Mac services"]
-    Web["Web client · Board and Chat"] --> Browser["Google or local browser session · CSRF checks"]
-    Browser --> Scheduler
-    Browser --> Chat["Conversation store · project scope and action receipts"]
-    Chat --- History["Private durable chat records"]
-    Chat --> Runtime["Management App Server · Astra · no coding tools"]
-    Runtime --> Tools["Typed management tools"]
-    Tools --> Scheduler
-    Client --> API["Authenticated loopback API"]
-    API --> Scheduler["Symphony orchestrator"]
-    Scheduler --- Ledger["Durable control ledger"]
-    Scheduler --> Pipeline["Candidate pipeline and guardian"]
-    Broker["Host publication broker"] --> API
-    Broker --- Policy["Owner-approved publication policy"]
-  end
-  subgraph Docker["Local Docker workers"]
-    Builder["Builder App Server · writable checkout"]
-    Reviewer["Fresh reviewer App Server · read-only checkout"]
-    Builder -->|"candidate SHA"| Reviewer
-  end
-  GitHub["GitHub Issues"] --> Scheduler
-  Tools --> GitHub
-  Pipeline --> Builder
-  Pipeline --> Reviewer
-  Pipeline -->|"candidate and review evidence"| Ledger
-  Broker --> PR["GitHub branch, PR and gated merge"]
-```
+The component and data-flow diagrams live in the [Symphony design](https://app.notion.com/p/3ebd865005a881acbbc1cc9799077ef4).
+The trusted host owns authentication, scheduling, state and publication; isolated
+Docker builders and reviewers receive only their scoped checkout and runtime home.
 
 The scheduler owns admission and execution. The builder commits locally and the
 reviewer examines that exact SHA in a separate checkout. The host broker validates
@@ -275,7 +252,7 @@ and attach source timestamps, task links and board filters.
 
 The board keeps the shared conversation component open beside task details. Each
 project/tracker identity has one project agent conversation, one task agent conversation per
-issue and one feature agent conversation per PR. Selecting a card switches conversations; closing its details keeps its chat
+issue and one work agent conversation per retained working session. PRs are linked resources. Selecting a card switches conversations; closing its details keeps its chat
 selected. The conversation labeled **<project name> project agent** handles project-level orchestration through the same typed tools
 and explicit action decisions. Binding is durable and immutable; existing free-standing
 conversations are preserved in the standalone `/chat` history rather than inferred from
@@ -300,16 +277,15 @@ the immutable project boundary again before persistence and model execution.
 
 The board snapshot accompanies each message automatically and is retained with that
 message. A standalone conversation without a matching board view has no current snapshot;
-it must not reuse an older view. The Context tab separates the next message's snapshot
-from retained history; Outputs and Sources expose recorded tool artifacts and references.
-Changing tabs does not reset the composer or conversation. Tabs are presentation state;
-conversation records remain owned by the store. `symphony_view_context` refreshes
+it must not reuse an older view. The board dock exposes chat and keeps context and outputs
+on the card; the standalone history retains its artifact views. Conversation records
+remain owned by the store. `symphony_view_context` refreshes
 authorized task summaries and reports missing records, stale sources and truncation.
 Snapshot hints never grant write authority. `symphony_task_details` retains each
 linked PR’s independent state, review, head revision and CI; a merged PR does not
 imply issue completion.
 
-The task agent manages the entire issue and coordinates its feature agents. Its headline picker groups
+The task agent manages the entire issue and coordinates its work agents. Its headline picker groups
 Work, Ready for review, Needs attention, Backlog and Done, then sorts each
 group by the newest issue, worker, chat, PR or check activity. Search matches categories,
 identifiers, titles and latest activity. Issue rows include creation date, priority,
@@ -318,18 +294,18 @@ open details; clicking outside or pressing Escape closes them without clearing s
 The PR selector includes explicit GitHub links and exact Symphony publisher markers
 for that issue, excluding incidental cross-references. This attribution is display
 evidence, not execution authority. The collapsed selector shows the current session;
-its first item is `<task name> task agent`, followed by `<feature name> feature agent` entries.
-Feature names use PR titles, or the first line of the work instruction before publication.
+its first item is `<task name> task agent`, followed by `<work name> work agent` entries.
+Work names use PR titles, or the first line of the work instruction before publication.
 Names truncate visually while the agent role stays visible; hover reveals the full label.
 Card details link directly to each agent's chat.
 Compact cards show three PRs and an overflow link to the complete list.
 Native work IDs remain stable before and after publication. A verified publication binds an
-existing PR discussion to that feature agent. Historical duplicate conversations are
+existing PR discussion to that work agent. Historical duplicate conversations are
 reconciled only when no turn or action is running, with a durable intent that fences
 losing queues before copying their messages and receipts. Recovery completes this
 idempotently before dispatch; old links resolve to the canonical conversation.
 An external PR without a native work identity remains discussion-only.
-If a PR links several issues, they share one feature agent. Its verified native work
+If a PR links several issues, they share one work agent. Its verified native work
 selects the owning task; before publication, the first retained discussion owns it.
 Other issue associations become graph references, not extra supervisors. Ownership
 reconciliation waits for active turns and pending reports; conflicting native owners
@@ -346,7 +322,7 @@ and publication, merge and deployment retain their separate gates.
 [`Chat.Sessions`](elixir/lib/symphony_elixir/chat/sessions.ex) binds native work to its
 issue and tracker identity. `symphony_pr_session` reads the retained agent's state;
 confirmed `continue_pr_work` sends its next instruction through the existing native
-scheduler. Feature agent controls are checked against the persisted binding at preview and
+scheduler. Work agent controls are checked against the persisted binding at preview and
 confirmation, including cancellation and retry. Selection reads run outside the chat owner.
 [`Chat.PRUpdates`](elixir/lib/symphony_elixir/chat/pr_updates.ex) checks tracked issues
 every 15 seconds, reusing scoped board evidence no older than 10 seconds. Worker reports
@@ -364,10 +340,11 @@ and typed `supervises` / `reports_to` / `references` edges through the authorize
 identities, goals, activity and queue counts; historical aliases do not become extra agents.
 This graph is the input for future visualization, which is not implemented yet.
 
-A project agent delegates to its task agents; each task agent delegates to its feature
-agents. `symphony_delegate` sends a durable instruction to a direct child;
-`symphony_report` returns intermediate findings, and completed task/feature replies
-report upward automatically. Parents receive source-labelled messages, reason against
+A project agent delegates to its task agents; each task agent delegates to its work
+agents. `symphony_delegate` sends a durable instruction to a direct child.
+`symphony_report` supplies that turn's parent outcome; a completed task/work reply
+reports automatically only when no explicit report was accepted. Changed findings
+after an explicit report require another explicit update. Parents receive source-labelled messages, reason against
 their goals, and can revise their own or a child's goal with `symphony_set_goal`.
 A goal marked achieved does not accept the issue or move it to Done.
 
@@ -379,12 +356,14 @@ pauses further delivery; restart requires fresh authentication and explicit resu
 of saved queues. Reports and observations are untrusted evidence, never authorization
 for native work or external writes. Source labels, goals and pending reports remain
 visible inline in chat.
+Report processing includes a bounded, authorized read of the receiving agent's current
+scope; unavailable data is labelled rather than replaced by historical conversation facts.
 
-There are three distinct records: the app's visible messages and receipts, Codex's
-native thread history with automatic compaction, and committed project documents
-retrieved on demand. Compaction does not erase the visible conversation or create a
-shared project memory. Documents and task text are untrusted data. The Sources tab shows
-retrieved references, not a claim to list every token in the model context.
+The app retains visible messages, bounded tool receipts and provider/model provenance.
+OpenRouter receives that bounded portable history; Codex retains its native thread and
+automatic compaction. Committed documents are retrieved on demand. Compaction does not
+erase the visible conversation or create shared project memory. Documents and task text
+are untrusted data; recorded references do not list every token in the model context.
 
 Only browser decisions execute write proposals. Native controls retain revision and
 idempotency checks inside the orchestrator. Tracker edits require a cancelled, idle
@@ -405,8 +384,11 @@ storage design requires persistent local storage and is not a multi-replica data
 
 Direct dynamic tools keep project authority, UI widgets and existing controls in one
 backend. MCP remains an optional client interface for external management agents;
-the web chat does not call MCP to reach its own service. Codex 0.154.0 is pinned for
-this experimental protocol. The management runtime registers no execution environments
+the web chat does not call MCP to reach its own service. The OpenRouter adapter accepts
+only declared typed functions through the active host turn, with bounded requests,
+tool calls and cancellation. Its private credentials never enter the transcript or
+coding environment. Codex 0.154.0 remains the alternative management provider for
+this experimental protocol. That runtime registers no execution environments
 or coding tools and disables inherited Apps, plugins, MCP servers and instructions.
 Its Symphony functions use the direct-only `functions` namespace. This overrides
 the model catalog's Code Mode routing without enabling the Code Mode host; local

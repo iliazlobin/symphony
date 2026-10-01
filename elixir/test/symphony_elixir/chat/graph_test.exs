@@ -6,23 +6,26 @@ defmodule SymphonyElixir.Chat.GraphTest do
   test "exports a serializable three-layer hierarchy without private conversation content" do
     [project, task, feature] = hierarchy()
     goal = %{"text" => "Ship the documented command", "status" => "active", "updated_at" => "2026-09-23T12:00:00Z"}
-    feature = Map.merge(feature, %{"agent_goal" => goal, "pr_number" => 7, "status" => "running"})
+    feature = Map.merge(feature, %{"agent_goal" => goal, "pr_number" => 7, "status" => "running", "task_kind" => "testing", "work_purpose" => "coding"})
     graph = Graph.export([project, task, feature])
 
-    assert graph["version"] == 1
+    assert graph["version"] == 2
     assert length(graph["nodes"]) == 3
     assert length(graph["edges"]) == 4
-    assert Enum.sort(Enum.map(graph["nodes"], & &1["role"])) == ["feature", "project", "task"]
+    assert Enum.sort(Enum.map(graph["nodes"], & &1["role"])) == ["project", "task", "work"]
     assert node(graph, project)["name"] == "Example project agent"
     assert node(graph, task)["name"] == "Document tests task agent"
 
     assert %{
-             "name" => "README feature agent",
+             "name" => "README work agent",
              "conversation_id" => id,
              "parent_id" => parent,
              "work_id" => work_id,
              "pr_number" => 7,
              "status" => "running",
+             "task_kind" => "testing",
+             "work_purpose" => "coding",
+             "executable" => true,
              "goal" => ^goal,
              "aliases" => []
            } = node(graph, feature)
@@ -30,11 +33,14 @@ defmodule SymphonyElixir.Chat.GraphTest do
     assert id == feature["id"]
     assert parent == Graph.node_id(task["id"])
     assert work_id == String.duplicate("a", 32)
+    assert node(graph, feature)["artifacts"] == [%{"type" => "pull_request", "number" => 7, "url" => "https://github.com/example/repo/pull/7"}]
+    assert "create_task" in node(graph, project)["capabilities"]
+    refute "create_task" in node(graph, feature)["capabilities"]
     assert node(graph, project)["parent_id"] == nil
     assert Jason.decode!(Jason.encode!(graph)) == graph
     refute Jason.encode!(graph) =~ "private-secret"
 
-    ranks = %{"project" => 0, "task" => 1, "feature" => 2}
+    ranks = %{"project" => 0, "task" => 1, "work" => 2}
     roles = Map.new(graph["nodes"], &{&1["id"], &1["role"]})
 
     for edge <- graph["edges"], edge["type"] == "supervises" do
@@ -224,7 +230,7 @@ defmodule SymphonyElixir.Chat.GraphTest do
       Map.put(task, "id", "invalid")
     ]
 
-    assert Graph.export(invalid) == %{"version" => 1, "nodes" => [], "edges" => []}
+    assert Graph.export(invalid) == %{"version" => 2, "nodes" => [], "edges" => []}
   end
 
   test "preserves archived agents and supplies stable fallback names for older records" do

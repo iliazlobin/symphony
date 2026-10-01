@@ -3,8 +3,8 @@
   const lanes = [["backlog", "Backlog"], ["work", "Work"], ["review", "Review"], ["done", "Done"]];
   const laneForStatus = status => ["ready", "running"].includes(status) ? "work" : status;
   const metadataFilters = ["milestone", "label", "assignee"];
-  const boardFilters = ["project", "status", "priority", ...metadataFilters];
-  const filterNames = {project: "Project", status: "Status", priority: "Priority", milestone: "Milestone", label: "Tags", assignee: "Assignee"};
+  const boardFilters = ["project", "status", "priority", "kind", ...metadataFilters];
+  const filterNames = {project: "Project", status: "Status", priority: "Priority", kind: "Kind", milestone: "Milestone", label: "Tags", assignee: "Assignee"};
   const emptyMetadata = {milestone: "No milestone", label: "No tags", assignee: "Unassigned"};
   const byteLength = value => new TextEncoder().encode(value).length;
   const parse = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };
@@ -30,7 +30,7 @@
   };
   const TaskBoard = {
     mounted() {
-      this.prefs = {project: [], status: [], priority: [], milestone: [], label: [], assignee: [], query: "", sort: "manual", order: {}, lane: "work", density: "compact", theme: "light"};
+      this.prefs = {project: [], status: [], priority: [], kind: [], milestone: [], label: [], assignee: [], query: "", sort: "manual", order: {}, lane: "work", density: "compact", theme: "light"};
       this.popup = null;
       this.activeOption = 0;
       this.drag = null;
@@ -78,6 +78,7 @@
         }
         if (key === "status") return [...lanes, ["ready", "Queued"], ["running", "Running"], ["attention", "Needs input"]];
         if (key === "priority") return [["P1", "P1 · High"], ["P2", "P2 · Normal"], ["P3", "P3 · Low"], ["P4", "P4 · Lowest"], ["—", "Unspecified"]];
+        if (key === "kind") return parse(this.el.dataset.taskKinds, []).filter(value => typeof value === "string").map(value => [value, value === "invalid" ? "Needs classification" : value[0].toUpperCase() + value.slice(1)]);
         const options = new Map(this.metadataOptions?.[key] || []);
         for (const value of this.prefs[key]) if (value !== "__none__" && !options.has(value)) options.set(value, this.metadataLabel(key, value));
         return [...options].sort((a, b) => a[1].localeCompare(b[1])).concat([["__none__", emptyMetadata[key]]]);
@@ -262,8 +263,8 @@
           const {labels, assignees, milestone} = this.cardMetadata(card);
           const metadata = {label: labels.map(label => "label:" + label), assignee: assignees.map(login => "assignee:" + login), milestone: milestone ? [`milestone:${d.project}:${milestone.id}`] : []};
           const metadataMatches = metadataFilters.every(key => !this.prefs[key].length || this.prefs[key].some(value => value === "__none__" ? !metadata[key].length : metadata[key].includes(value)));
-          const searchable = [d.title, d.identifier, milestone?.title, ...labels, ...assignees.map(login => "@" + login)].join(" ").toLowerCase();
-          const matches = metadataMatches && (!this.prefs.project.length || this.prefs.project.includes(d.project)) && (!this.prefs.priority.length || this.prefs.priority.includes(d.priority)) && (!this.prefs.status.length || this.prefs.status.includes(stage) || this.prefs.status.includes(d.status) || (this.prefs.status.includes("attention") && d.attention === "true")) && (!this.prefs.query || searchable.includes(this.prefs.query.toLowerCase()));
+          const searchable = [d.title, d.identifier, d.kind, milestone?.title, ...labels, ...assignees.map(login => "@" + login)].join(" ").toLowerCase();
+          const matches = (!this.prefs.kind.length || this.prefs.kind.includes(d.kind || "general")) && metadataMatches && (!this.prefs.project.length || this.prefs.project.includes(d.project)) && (!this.prefs.priority.length || this.prefs.priority.includes(d.priority)) && (!this.prefs.status.length || this.prefs.status.includes(stage) || this.prefs.status.includes(d.status) || (this.prefs.status.includes("attention") && d.attention === "true")) && (!this.prefs.query || searchable.includes(this.prefs.query.toLowerCase()));
           card.hidden = !matches;
           if (matches) matched++;
         }

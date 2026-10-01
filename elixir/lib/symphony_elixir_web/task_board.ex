@@ -12,7 +12,7 @@ defmodule SymphonyElixirWeb.TaskBoard do
   `completion_evidence`, `tracker_state`, `hold` and `attention`.
   """
 
-  alias SymphonyElixir.{Config, IssueAcceptance, Orchestrator, TaskRouting, Tracker}
+  alias SymphonyElixir.{Config, IssueAcceptance, Orchestrator, TaskKind, TaskRouting, Tracker}
   alias SymphonyElixir.GitHub.{Admission, Board, Client}
   alias SymphonyElixir.Tracker.Issue
   alias SymphonyElixirWeb.{BoardCache, Presenter}
@@ -316,6 +316,7 @@ defmodule SymphonyElixirWeb.TaskBoard do
       updated_at: iso8601(issue.updated_at),
       description: issue.description,
       labels: issue.labels,
+      task_kind: TaskKind.from_labels(issue.labels),
       milestone: issue.milestone,
       assignees: issue.assignees,
       runtime: runtime,

@@ -297,7 +297,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp tracker_secret_unset_command(dynamic_tool_binding) do
-    names = dynamic_tool_binding.secret_environment_names ++ Config.browser_auth_secret_environment_names()
+    names = dynamic_tool_binding.secret_environment_names ++ Config.process_secret_environment_names()
 
     "unset " <> Enum.join(names |> valid_environment_names() |> Enum.uniq(), " ")
   end

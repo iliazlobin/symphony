@@ -24,8 +24,8 @@ do not define this profile's authorization policy.
 
 ### Web operation in this fork
 
-The local service includes a Kanban task board and optional project-specific Astra
-chat with streaming replies and a project → task → feature-agent hierarchy. Parent
+The local service includes a Kanban task board and optional project-specific management
+chat through Codex or OpenRouter and a project → task → work-agent hierarchy. Parent
 agents supervise children and process their reports in durable conversations. A versioned
 graph connects the agents, issues and PR work for future visualization. Chat uses bounded management tools to read work and preview authorized
 changes; coding remains with the scheduler's workers. Browser access supports Google
@@ -38,12 +38,12 @@ in the background. GitHub retains issue content and publication evidence. See th
 
 Each issue has one task agent responsible for the entire task, with a searchable activity-grouped issue picker
 showing creation time, priority, PR count and latest activity. Card titles open details;
-click outside or press Escape to dismiss them. The full-width PR selector shows the
-selected `<task name> task agent` or `<feature name> feature agent`, with the task agent first.
-Feature agents and card shortcuts cover native feature work and linked PRs.
-Compact cards show three PRs, then an overflow link.
+click outside or press Escape to dismiss them. Card bodies select chat without opening details. The working-session selector shows the
+selected `<task name> task agent` or `<work name> work agent`, with the task agent first.
+Work agents and card shortcuts select retained working sessions; linked PRs remain resources.
+Cards show retained session counts and their recorded working/queued phases separately from chat activity. Compact cards show three PRs, then an overflow link.
 The task agent receives worker and GitHub milestone updates and coordinates individual
-feature agents. Confirmed PR work sessions retain their own
+work agents. Confirmed PR work sessions retain their own
 builder thread and checkout across design, implementation and follow-up validation.
 They run sequentially within the issue budget, with a fresh reviewer for each candidate;
 publication, merge and deployment keep their existing authorization gates.

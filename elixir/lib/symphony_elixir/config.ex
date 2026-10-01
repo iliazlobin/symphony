@@ -59,6 +59,22 @@ defmodule SymphonyElixir.Config do
     |> Enum.uniq()
   end
 
+  @doc "Environment-only host credentials excluded from child processes and login shells."
+  @spec process_secret_environment_names() :: [String.t()]
+  def process_secret_environment_names do
+    chat_key = Map.get(settings!().chat, :api_key)
+
+    (browser_auth_secret_environment_names() ++ secret_reference_names([chat_key]) ++ ["OPENROUTER_API_KEY"])
+    |> Enum.uniq()
+  end
+
+  defp secret_reference_names(values) do
+    Enum.flat_map(values, fn
+      "$" <> name -> if String.match?(name, ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/), do: [name], else: []
+      _ -> []
+    end)
+  end
+
   @spec control_settings() :: map()
   def control_settings do
     settings = settings!().control |> Map.from_struct()
@@ -88,8 +104,11 @@ defmodule SymphonyElixir.Config do
     settings!().chat
     |> Map.from_struct()
     |> Map.new(fn
-      {key, "$" <> name} when key in [:state_path, :codex_home, :executable] -> {key, System.get_env(name)}
-      entry -> entry
+      {key, "$" <> name} when key in [:state_path, :codex_home, :executable, :model, :api_key] ->
+        {key, System.get_env(name)}
+
+      entry ->
+        entry
     end)
   end
 

@@ -363,6 +363,43 @@ defmodule SymphonyElixir.PRWorkTest do
     assert next.data["issues"]["7"]["tokens"] == before_issue["tokens"]
   end
 
+  test "missing or corrupt retained handoff cannot authorize publication", c do
+    {ledger, run} = reviewed(c.ledger)
+    issue = ledger.data["issues"]["7"]
+    receipt = publication(run)
+
+    for handoff <- [nil, [], "approved"] do
+      corrupted = put_in(issue, ["pr_work", @work, "handoff"], handoff)
+      refute PRWork.valid_issue?("7", corrupted)
+      assert {:error, :pr_head_changed} = PRWork.publication(corrupted, receipt, @context)
+      assert corrupted["pr_work"][@work]["publication"] == nil
+      assert corrupted["pr_work"][@work]["published_head_sha"] == nil
+    end
+
+    assert ledger.data["issues"]["7"] == issue
+  end
+
+  test "continuation fences old goals and unsupported work never reaches dispatch", c do
+    command = Map.put(create(), "purpose", "deployment")
+    refute PRWork.valid_command?(command)
+    assert {:error, :unsupported_work_purpose} = PRWork.transition(%{}, command, @context)
+    {ledger, _run} = reviewed(c.ledger)
+    assert ControlLedger.selected_work(ledger, "7")["goal_revision"] == 1
+    assert {:ok, ledger, _, false} = ControlLedger.command(ledger, continue(1, @head), 5, @context)
+    assert ControlLedger.selected_work(ledger, "7")["goal_revision"] == 2
+    assert PRWork.valid_issue?("7", ledger.data["issues"]["7"])
+    assert {:ok, ledger, run, _} = ControlLedger.reserve(ledger, "7")
+    stale = evidence(run, @work, @head) |> Map.put("goal_revision", 1)
+    assert {:error, :invalid_pr_handoff} = ControlLedger.finish(ledger, "7", run, "owner_review", stale)
+    assert {:ok, ledger} = ControlLedger.finish(ledger, "7", run, "owner_review", evidence(run, @work, @head))
+    stale_review = put_in(ledger.data["issues"]["7"], ["pr_work", @work, "handoff", "goal_revision"], 1)
+    refute PRWork.valid_issue?("7", stale_review)
+    assert {:error, :pr_head_changed} = PRWork.publication(stale_review, publication(run) |> Map.put("expected_head_sha", @head), @context)
+    refute PRWork.valid_issue?("7", put_in(ledger.data["issues"]["7"], ["pr_work", @work, "handoff", "goal_revision"], 3))
+    refute PRWork.valid_issue?("7", put_in(ledger.data["issues"]["7"], ["pr_work", @work, "purpose"], "deployment"))
+    refute PRWork.dispatchable?(put_in(ledger.data["issues"]["7"], ["pr_work", @work, "purpose"], "deployment"))
+  end
+
   defp create(work \\ @work, revision \\ 0), do: Map.merge(cmd("create_pr_work", revision), %{"work_id" => work, "instruction" => "Implement the scoped PR", "base_sha" => @base})
   defp continue(revision, head), do: Map.merge(cmd("continue_pr_work", revision), %{"work_id" => @work, "instruction" => "Address the review findings", "expected_head_sha" => head})
   defp cmd(action, revision), do: %{"action" => action, "issue_id" => "7", "expected_revision" => revision, "command_id" => "#{action}-#{revision}"}
@@ -373,6 +410,7 @@ defmodule SymphonyElixir.PRWorkTest do
       "run_id" => run,
       "work_id" => work,
       "expected_head_sha" => previous,
+      "goal_revision" => if(previous, do: 2, else: 1),
       "candidate_sha" => @head,
       "base_sha" => @base,
       "branch" => "codex/gh-7-#{work}",

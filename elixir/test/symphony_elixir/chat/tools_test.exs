@@ -119,6 +119,25 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     refute Jason.encode!(specs) =~ "github_api"
   end
 
+  test "task and work roles cannot escalate or change a sibling task at proposal or confirmation", ctx do
+    task = Map.put(ctx.context, :task_id, "github:example/repo:1")
+
+    for args <- [%{"action" => "pause"}, %{"action" => "create_task", "title" => "Escalate"}] do
+      assert {:error, :agent_role_forbidden} = Tools.call("symphony_propose_action", args, task)
+      proposal = propose(ctx.context, args)
+      assert {:error, :agent_role_forbidden} = Tools.confirm(proposal, task)
+      assert {:error, :agent_role_forbidden} = Tools.reconcile(proposal, task)
+    end
+
+    sibling = %{"action" => "feedback", "task_id" => "2", "body" => "Change sibling"}
+    assert {:error, :task_scope_mismatch} = Tools.call("symphony_propose_action", sibling, task)
+    proposal = propose(ctx.context, sibling)
+    assert {:error, :task_scope_mismatch} = Tools.confirm(proposal, task)
+    work = Map.put(task, :session_id, "pr:7")
+    assert {:error, :agent_role_forbidden} = Tools.confirm(proposal, work)
+    refute_receive {:native_command, _, _, _}
+  end
+
   test "PR chat resolves its immutable worker and sends only exact-session commands", ctx do
     id = String.duplicate("a", 32)
 
@@ -131,7 +150,9 @@ defmodule SymphonyElixir.Chat.ToolsTest do
 
     owner = start_supervised!({CommandOwner, self()})
     context = Map.merge(ctx.context, %{task_id: "github:example/repo:1", session_id: "work:" <> id, orchestrator: owner})
-    assert {:ok, %{"work_id" => ^id, "work" => %{"result" => "Validation complete"}}} = Tools.call("symphony_pr_session", %{}, context)
+    assert {:ok, %{"work_id" => ^id, "work" => %{"result" => "Validation complete"}, "task" => task}} = Tools.call("symphony_pr_session", %{}, context)
+    assert task["stage"] == "work"
+    assert task["project_execution"] == %{"enabled" => true, "mode" => "paused", "admission_status" => "paused"}
     assert {:error, :pr_session_scope_mismatch} = Tools.call("symphony_pr_session", %{"task_id" => "2"}, context)
     proposal = propose(context, %{"action" => "continue_pr_work", "task_id" => "1", "work_id" => id, "body" => "Fix the failing check and report your validation"})
     assert {:ok, _} = Tools.confirm(proposal, context)
@@ -147,7 +168,8 @@ defmodule SymphonyElixir.Chat.ToolsTest do
           %{"action" => "pause"},
           %{"action" => "create_pr_work", "task_id" => "1", "body" => "Another PR"}
         ] do
-      assert {:error, :pr_session_scope_mismatch} = Tools.call("symphony_propose_action", args, context)
+      expected = if args["action"] in ~w(edit_task pause create_pr_work), do: :agent_role_forbidden, else: :pr_session_scope_mismatch
+      assert {:error, ^expected} = Tools.call("symphony_propose_action", args, context)
     end
 
     refute_receive {:native_command, _, _, _}
@@ -166,6 +188,26 @@ defmodule SymphonyElixir.Chat.ToolsTest do
       Application.put_env(:symphony_elixir, :chat_test_board, put_in(board, [:tasks, Access.at(0), :ledger, "selected_work_id"], String.duplicate("c", 32)))
       assert {:error, :pr_session_scope_mismatch} = Tools.confirm(proposal, context)
       assert {:error, :pr_session_scope_mismatch} = Tools.call("symphony_propose_action", %{"action" => action, "task_id" => "1"}, context)
+    end
+
+    refute_receive {:native_command, _, _, _}
+  end
+
+  test "lost task work selection blocks a retained work agent from cancelling or retrying the issue", ctx do
+    id = String.duplicate("a", 32)
+    put_pr_work(ctx, id, %{"phase" => "paused"})
+    owner = start_supervised!({CommandOwner, self()})
+    context = Map.merge(ctx.context, %{task_id: "github:example/repo:1", session_id: "work:" <> id, orchestrator: owner})
+
+    for action <- ~w(cancel retry) do
+      board = Application.fetch_env!(:symphony_elixir, :chat_test_board)
+      selected = put_in(board, [:tasks, Access.at(0), :ledger, "selected_work_id"], id)
+      Application.put_env(:symphony_elixir, :chat_test_board, selected)
+      proposal = propose(context, %{"action" => action, "task_id" => "1"})
+      missing = update_in(selected, [:tasks, Access.at(0), :ledger], &Map.delete(&1, "selected_work_id"))
+      Application.put_env(:symphony_elixir, :chat_test_board, missing)
+      assert {:error, :pr_session_scope_mismatch} = Tools.call("symphony_propose_action", %{"action" => action, "task_id" => "1"}, context)
+      assert {:error, :pr_session_scope_mismatch} = Tools.confirm(proposal, context)
     end
 
     refute_receive {:native_command, _, _, _}
@@ -243,7 +285,7 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     Application.put_env(:symphony_elixir, :chat_test_board, board)
     assert {:ok, %{"widgets" => [%{"type" => "status"} = status]}} = Tools.call("symphony_project_status", %{}, ctx.context)
     assert status["source_error"] == "Tracker unavailable"
-    assert status["counts"] == %{"ready" => 2}
+    assert status["counts"] == %{"work" => 2}
     assert length(status["blockers"]) == 1
     refute Jason.encode!(status) =~ "private-token"
     assert {:error, :board_unavailable} = Tools.call("symphony_search_tasks", %{}, ctx.context)
@@ -255,7 +297,7 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     assert [task] = widget["tasks"]
     assert task["issue_id"] == "2"
     assert task["url"] == "/?project=github%3Aexample%2Frepo&task=github%3Aexample%2Frepo%3A2"
-    assert URI.decode_query(URI.parse(widget["url"]).query) == %{"project" => ctx.context.project_id, "q" => "Earlier", "status" => "ready", "sort" => "priority"}
+    assert URI.decode_query(URI.parse(widget["url"]).query) == %{"project" => ctx.context.project_id, "q" => "Earlier", "status" => "work", "sort" => "priority"}
 
     for sort <- ~w(title oldest updated priority) do
       assert {:ok, %{"widgets" => [%{"tasks" => tasks}]}} = Tools.call("symphony_search_tasks", %{"sort" => sort}, ctx.context)
@@ -263,6 +305,123 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     end
 
     assert {:ok, _} = Tools.call("symphony_search_tasks", %{}, ctx.context)
+  end
+
+  test "a ready idle task reports Work and the paused project admission gate in every read", ctx do
+    assert {:ok, %{"widgets" => [%{"task" => task}]}} = Tools.call("symphony_task_details", %{"task_id" => "1"}, ctx.context)
+    assert task["stage"] == "work"
+    assert task["lane"] == "work"
+    assert task["scheduler_stage"] == "ready"
+    assert task["runtime_status"] == "idle"
+    assert task["execution_status"] == "Queued · paused"
+    assert task["execution_note"] =~ "Resume execution"
+    assert task["hold"] == nil
+    assert task["project_execution"] == %{"enabled" => true, "mode" => "paused", "admission_status" => "paused"}
+
+    assert {:ok, %{"widgets" => [status]}} = Tools.call("symphony_project_status", %{}, ctx.context)
+    assert status["counts"] == %{"work" => 2}
+    assert status["project_execution"] == task["project_execution"]
+
+    assert {:ok, %{"widgets" => [search]}} = Tools.call("symphony_search_tasks", %{"status" => "work"}, ctx.context)
+    assert search["total"] == 2
+    assert Enum.all?(search["tasks"], &(&1["stage"] == "work" and &1["execution_status"] == "Queued · paused"))
+    assert search["project_execution"] == task["project_execution"]
+    assert URI.decode_query(URI.parse(search["url"]).query)["status"] == "work"
+
+    snapshot = %{"version" => 1, "project_id" => ctx.context.project_id, "selected_task_id" => "github:example/repo:1"}
+    assert {:ok, view} = Tools.call("symphony_view_context", %{}, Map.put(ctx.context, :view_context, snapshot))
+    assert [%{"stage" => "work", "execution_status" => "Queued · paused", "project_execution" => execution}] = view["current_tasks"]
+    assert execution == task["project_execution"]
+    assert view["project_execution"] == execution
+    assert hd(Application.fetch_env!(:symphony_elixir, :chat_test_board).tasks).stage == "ready"
+    refute_receive {:native_command, _, _, _}
+  end
+
+  test "Work counts and filters include queued and running tasks while their progress stays distinct", ctx do
+    runtime = %{running: [%{issue_id: "2", issue_identifier: "GH-2"}]}
+    board = TaskBoard.project([issue("1"), issue("2"), issue("3", labels: [])], runtime, ctx.board.control, Config.settings!())
+    Application.put_env(:symphony_elixir, :chat_test_board, board)
+    assert {:ok, %{"widgets" => [status]}} = Tools.call("symphony_project_status", %{}, ctx.context)
+    assert status["counts"] == %{"work" => 2, "backlog" => 1}
+
+    for filter <- ~w(work ready running) do
+      assert {:ok, %{"widgets" => [search]}} = Tools.call("symphony_search_tasks", %{"status" => filter}, ctx.context)
+      assert search["total"] == 2
+      assert search["filters"]["status"] == "work"
+      assert URI.decode_query(URI.parse(search["url"]).query)["status"] == "work"
+      by_id = Map.new(search["tasks"], &{&1["issue_id"], &1})
+      assert by_id["1"]["execution_status"] == "Queued · paused"
+      assert by_id["2"]["execution_status"] == "Running"
+      assert by_id["2"]["scheduler_stage"] == "running"
+      assert by_id["2"]["project_execution"]["mode"] == "paused"
+    end
+
+    assert {:ok, %{"widgets" => [%{"total" => 1, "tasks" => [%{"stage" => "backlog", "execution_status" => "Not queued"}]}]}} =
+             Tools.call("symphony_search_tasks", %{"status" => "backlog"}, ctx.context)
+
+    legacy = update_in(board, [:tasks], &Enum.map(&1, fn task -> Map.delete(task, :lane) end))
+    Application.put_env(:symphony_elixir, :chat_test_board, legacy)
+    assert {:ok, %{"widgets" => [%{"counts" => %{"work" => 2, "backlog" => 1}}]}} = Tools.call("symphony_project_status", %{}, ctx.context)
+  end
+
+  test "controller mode does not promise admission and unhealthy controller evidence remains unavailable", ctx do
+    for {mode, status, admission} <- [
+          {"paused", "Queued · paused", "paused"},
+          {"draining", "Queued · draining", "draining"},
+          {"running", "Queued", "subject_to_admission"},
+          {"unknown", "Queued", "unavailable"}
+        ] do
+      board = put_in(ctx.board, [:control, "mode"], mode)
+      Application.put_env(:symphony_elixir, :chat_test_board, board)
+      assert {:ok, %{"widgets" => [%{"task" => task}]}} = Tools.call("symphony_task_details", %{"task_id" => "1"}, ctx.context)
+      assert task["execution_status"] == status
+      assert task["project_execution"]["admission_status"] == admission
+      assert task["runtime_status"] == "idle"
+    end
+
+    for control <- [
+          %{},
+          Map.delete(ctx.board.control, "revision"),
+          Map.put(ctx.board.control, "revision", -1),
+          Map.put(ctx.board.control, "fault", "unavailable"),
+          Map.put(ctx.board.control, "error", "unavailable")
+        ] do
+      Application.put_env(:symphony_elixir, :chat_test_board, %{ctx.board | control: control})
+      assert {:ok, %{"widgets" => [%{"task" => task}]}} = Tools.call("symphony_task_details", %{"task_id" => "1"}, ctx.context)
+      assert task["execution_status"] == "Status unavailable"
+      assert task["project_execution"]["admission_status"] == "unavailable"
+    end
+
+    for board <- [%{ctx.board | runtime_error: "Runtime unavailable"}, %{ctx.board | source_error: "Tracker unavailable"}] do
+      Application.put_env(:symphony_elixir, :chat_test_board, board)
+      assert {:ok, %{"widgets" => [status]}} = Tools.call("symphony_project_status", %{}, ctx.context)
+      assert status["project_execution"]["admission_status"] == "unavailable"
+      assert {:error, :board_unavailable} = Tools.call("symphony_task_details", %{"task_id" => "1"}, ctx.context)
+    end
+
+    Application.put_env(:symphony_elixir, :chat_test_board, %{ctx.board | control: %{"enabled" => false}})
+    assert {:ok, %{"widgets" => [%{"task" => task}]}} = Tools.call("symphony_task_details", %{"task_id" => "1"}, ctx.context)
+    assert task["execution_status"] == "Queued"
+    assert task["project_execution"] == %{"enabled" => false, "admission_status" => "uncontrolled"}
+    refute_receive {:native_command, _, _, _}
+  end
+
+  test "a queued task at its attempt limit exposes the board hold and never promises admission", ctx do
+    control =
+      ctx.board.control
+      |> Map.put("mode", "running")
+      |> Map.put("settings", %{"budgets" => %{"max_attempts" => 2}})
+      |> Map.put("issues", %{"1" => %{"hold" => "attempt_limit", "attempts" => 2}})
+
+    board = TaskBoard.project([issue("1")], %{}, control, Config.settings!())
+    Application.put_env(:symphony_elixir, :chat_test_board, board)
+    assert {:ok, %{"widgets" => [%{"task" => task}]}} = Tools.call("symphony_task_details", %{"task_id" => "1"}, ctx.context)
+    assert task["stage"] == "work"
+    assert task["scheduler_stage"] == "ready"
+    assert task["execution_status"] == "Held"
+    assert task["execution_note"] =~ "Attempts limit reached"
+    assert task["project_execution"]["admission_status"] == "subject_to_admission"
+    refute_receive {:native_command, _, _, _}
   end
 
   test "priority and attention filter widgets match the linked board semantics", ctx do
@@ -1137,8 +1296,8 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     end
 
     assert {:error, :invalid_proposal} = Tools.confirm(Map.delete(proposal, "expected_updated_at"), context)
-    assert {:error, :task_scope_mismatch} = Tools.confirm(proposal, Map.put(context, :task_id, "github:example/repo:2"))
-    assert {:error, :pr_session_scope_mismatch} = Tools.confirm(proposal, Map.put(context, :session_id, "work:other"))
+    assert {:error, :agent_role_forbidden} = Tools.confirm(proposal, Map.put(context, :task_id, "github:example/repo:2"))
+    assert {:error, :agent_role_forbidden} = Tools.confirm(proposal, Map.put(context, :session_id, "work:other"))
     assert {:error, :unauthorized} = Tools.confirm(proposal, %{context | auth: %{context.auth | marker: nil}})
     refute_receive {:native_command, _, _, _}
   end
@@ -1159,7 +1318,7 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     assert {:ok, %{"widgets" => [%{"result" => %{"replayed" => true}}]}} = Tools.reconcile(proposal, context)
     assert_receive {:receipt_read, ^command, ^fingerprint}
     refute_receive {:native_command, _, _, _}
-    assert {:error, :task_scope_mismatch} = Tools.reconcile(proposal, Map.put(context, :task_id, "github:example/repo:2"))
+    assert {:error, :agent_role_forbidden} = Tools.reconcile(proposal, Map.put(context, :task_id, "github:example/repo:2"))
   end
 
   test "unexpected native routing dispatch failures remain uncertain without a GitHub fallback", ctx do

@@ -163,10 +163,10 @@ defmodule SymphonyElixir.ProcessGroup do
     end
   end
 
-  @doc "Removes browser identity credentials before a port or its descendants start."
+  @doc "Removes host browser and chat credentials before a port or its descendants start."
   @spec port_environment(list()) :: list()
   def port_environment(environment \\ []) do
-    names = SymphonyElixir.Config.browser_auth_secret_environment_names()
+    names = SymphonyElixir.Config.process_secret_environment_names()
     Enum.reject(environment, fn {name, _value} -> to_string(name) in names end) ++ Enum.map(names, &{String.to_charlist(&1), false})
   end
 
@@ -180,10 +180,10 @@ defmodule SymphonyElixir.ProcessGroup do
     end)
   end
 
-  @doc "Removes browser credentials that a login profile may have reintroduced."
+  @doc "Removes host credentials that a login profile may have reintroduced."
   @spec shell_command(String.t()) :: String.t()
   def shell_command(command) do
-    names = SymphonyElixir.Config.browser_auth_secret_environment_names()
+    names = SymphonyElixir.Config.process_secret_environment_names()
     "unset " <> Enum.join(names, " ") <> " && " <> command
   end
 

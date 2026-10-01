@@ -49,6 +49,16 @@ defmodule SymphonyElixir.Chat.ViewContextTest do
     assert retained["filters"]["status"] == ["ready", "running"]
   end
 
+  test "task-kind snapshots retain bounded classifications without granting capabilities" do
+    base = %{"version" => 1, "project_id" => @project, "filters" => %{"kind" => ["bug", "testing"]}}
+    assert {:ok, context} = ViewContext.validate(base, @project)
+    assert context["filters"]["kind"] == ["bug", "testing"]
+
+    for kinds <- [["deployment"], ["bug", "bug"], ["kind:bug"], "bug", [123]] do
+      assert {:error, :invalid_view_context} = ViewContext.validate(put_in(base, ["filters", "kind"], kinds), @project)
+    end
+  end
+
   test "rejects foreign, malformed, duplicate, oversized and authority-bearing fields" do
     base = %{"version" => 1, "project_id" => @project}
 

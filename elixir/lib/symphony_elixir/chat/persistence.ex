@@ -1,8 +1,8 @@
 defmodule SymphonyElixir.Chat.Persistence do
   @moduledoc "Private conversation records with an OS ownership lock and atomic, synced writes."
 
+  alias SymphonyElixir.{AgentProtocol, PathSafety, TaskKind}
   alias SymphonyElixir.Chat.{Sessions, ViewContext}
-  alias SymphonyElixir.PathSafety
 
   @preferences_file "presentation.json"
 
@@ -164,11 +164,21 @@ defmodule SymphonyElixir.Chat.Persistence do
 
   defp hierarchy_valid?(chat) do
     optional_id?(chat["parent_id"]) and optional_id?(chat["alias_of"]) and
+      classification_valid?(chat) and
       valid_agent_session?(chat) and
-      (is_nil(chat["agent_name"]) or bounded_string?(chat["agent_name"], 16_000)) and goal_valid?(chat["agent_goal"]) and
+      agent_description_valid?(chat) and
       valid_chains?(Map.get(chat, "agent_chains", %{})) and
       valid_task_refs?(Map.get(chat, "agent_task_refs", []), chat["project_id"]) and
       valid_outbox?(Map.get(chat, "agent_outbox", []), chat)
+  end
+
+  defp agent_description_valid?(chat) do
+    (is_nil(chat["agent_name"]) or bounded_string?(chat["agent_name"], 16_000)) and goal_valid?(chat["agent_goal"])
+  end
+
+  defp classification_valid?(chat) do
+    (is_nil(chat["task_kind"]) or chat["task_kind"] in (TaskKind.values() ++ ["invalid"])) and
+      (is_nil(chat["work_purpose"]) or chat["work_purpose"] in (AgentProtocol.purposes() ++ ["discussion"]))
   end
 
   defp valid_outbox?(outbox, chat), do: is_list(outbox) and Enum.all?(outbox, &outbox_valid?(&1, chat))
@@ -275,10 +285,29 @@ defmodule SymphonyElixir.Chat.Persistence do
   defp message_valid?(message) when is_map(message) do
     Enum.all?(~w(id text status), &is_binary(message[&1])) and
       message["role"] in ["user", "assistant"] and collection?(message["widgets"], &is_map/1) and report_message_valid?(message) and
-      agent_message_valid?(message)
+      agent_message_valid?(message) and runtime_valid?(message["runtime"]) and tool_receipts_valid?(Map.get(message, "tool_receipts", []))
   end
 
   defp message_valid?(_), do: false
+
+  defp runtime_valid?(nil), do: true
+
+  defp runtime_valid?(%{"provider" => provider, "model" => model, "run_id" => run, "instruction_version" => version} = runtime) do
+    map_size(runtime) == 4 and provider in ~w(codex openrouter) and bounded_string?(model, 200) and
+      valid_id?(run) and version in ~w(project-task-work-v2 project-task-work-v3)
+  end
+
+  defp runtime_valid?(_), do: false
+
+  defp tool_receipts_valid?(receipts) when is_list(receipts),
+    do: length(receipts) <= 24 and Enum.all?(receipts, &tool_receipt_valid?/1)
+
+  defp tool_receipts_valid?(_), do: false
+
+  defp tool_receipt_valid?(%{"tool" => name, "arguments" => args, "result" => result} = receipt),
+    do: map_size(receipt) == 3 and bounded_string?(name, 100) and is_map(args) and bounded_string?(result, 65_536) and byte_size(Jason.encode!(receipt)) <= 65_536
+
+  defp tool_receipt_valid?(_), do: false
 
   defp agent_message_valid?(%{"origin" => "agent_message"} = message) do
     message["role"] == "user" and Enum.all?(~w(source_agent agent_root agent_root_chat), &valid_id?(message[&1])) and
