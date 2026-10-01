@@ -257,7 +257,7 @@ defmodule SymphonyElixir.PRWork do
       not is_nil(issue["active"]) -> {:error, :issue_running}
       issue["hold"] != "owner_review" -> {:error, :pr_work_pending}
       work["phase"] != "owner_review" -> {:error, :pr_work_pending}
-      not same_handoff?(work["handoff"], receipt) -> {:error, :pr_head_changed}
+      not publication_handoff?(work, receipt) -> {:error, :pr_head_changed}
       true -> accept_publication(issue, work, receipt)
     end
   end
@@ -280,6 +280,8 @@ defmodule SymphonyElixir.PRWork do
         {:ok, update_work(issue, work["id"], attrs), false}
     end
   end
+
+  defp publication_handoff?(work, receipt), do: current_handoff?(work) and same_handoff?(work["handoff"], receipt)
 
   defp same_handoff?(handoff, receipt) when is_map(handoff) do
     Enum.all?(~w(work_id run_id candidate_sha expected_head_sha branch base_sha), &(handoff[&1] == receipt[&1])) and
@@ -418,8 +420,14 @@ defmodule SymphonyElixir.PRWork do
 
   defp valid_stored_handoff?(work) do
     (work["phase"] != "owner_review" or is_map(work["handoff"])) and
-      is_nil(work["head_sha"]) == is_nil(work["handoff"]) and stored_handoff_matches?(work)
+      is_nil(work["head_sha"]) == is_nil(work["handoff"]) and
+      (work["phase"] != "owner_review" or current_handoff?(work)) and stored_handoff_matches?(work)
   end
+
+  defp current_handoff?(%{"handoff" => handoff} = work) when is_map(handoff),
+    do: Map.get(handoff, "goal_revision", 1) == Map.get(work, "goal_revision", 1)
+
+  defp current_handoff?(_work), do: false
 
   defp stored_handoff_matches?(%{"handoff" => handoff} = work) when is_map(handoff) do
     Map.has_key?(handoff, "expected_head_sha") and optional_sha?(handoff["expected_head_sha"]) and
