@@ -213,7 +213,8 @@ defmodule SymphonyElixir.Chat.GitHub do
   end
 
   defp write(method, path, body, proposal, tracker, context) do
-    with {:ok, result} <- request(method, path, %{}, body, tracker, context),
+    with :ok <- before_write(context),
+         {:ok, result} <- request(method, path, %{}, body, tracker, context),
          true <- (is_map(result) and marked?(result, proposal)) or {:error, :write_outcome_unknown} do
       summary =
         case proposal["action"] do
@@ -225,6 +226,9 @@ defmodule SymphonyElixir.Chat.GitHub do
       receipt(result, proposal, summary)
     end
   end
+
+  defp before_write(%{before_write: guard}), do: guard.()
+  defp before_write(_context), do: :ok
 
   defp edit_body(proposal, issue, tracker) do
     args = proposal["args"]

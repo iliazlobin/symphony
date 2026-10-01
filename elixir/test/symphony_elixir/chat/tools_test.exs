@@ -119,6 +119,14 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     refute Jason.encode!(specs) =~ "github_api"
   end
 
+  test "automatic intake rechecks active human authorization immediately before creating", ctx do
+    proposal = propose(ctx.context, %{"action" => "create_task", "title" => "New", "body" => "Body"})
+    reader = fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: []}} end
+    Application.put_env(:symphony_elixir, :chat_github_request, reader)
+    stopped = Map.put(ctx.context, :before_write, fn -> {:error, :stale_turn} end)
+    assert {:error, :stale_turn} = Tools.confirm(proposal, stopped)
+  end
+
   test "task and work roles cannot escalate or change a sibling task at proposal or confirmation", ctx do
     task = Map.put(ctx.context, :task_id, "github:example/repo:1")
 
