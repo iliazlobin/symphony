@@ -338,14 +338,14 @@ closing task details keeps that conversation selected. **Project name · Project
 project conversation for reports and task creation, updates or cancellation.
 The headline picker searches issue numbers, titles, categories and recent activity.
 Issues appear in Work, Ready for review, Needs attention, Backlog and Done
-groups, newest activity first within each group. The full-width PR selector shows the
+groups, newest activity first within each group. The working-session selector shows the
 selected agent and status when closed. `<task name> task agent`, its first item, manages
-the entire task. `<feature name> feature agent` entries handle individual features and PRs.
-Feature names use the PR title or the first line of the work instruction before publication.
+the entire task. `<work name> work agent` entries select retained coding sessions. PRs are linked resources; external PR-only entries remain discussions.
+Work names use the PR title or the first line of the work instruction before publication.
 Long names truncate while the role stays visible; hover reveals the full label. Search
 matches names, PR numbers, status, review or CI. Incomplete GitHub evidence stays labeled.
 Named agent links in task details focus the corresponding conversation.
-The selected session is retained in the board URL across reloads.
+Filter **Kind** separates features, bugs, testing, security, releases, operations and other task intents. Classification grants no execution tools. The selected session is retained in the board URL across reloads. Project → Task → Work breadcrumbs return to the supervising conversation. Work cards and chat show retained session counts, recorded execution phases and the selected working goal, separately from chat activity.
 Use **New task** to enter a required **Title** and optional **Description** and **Test (verification)**.
 Description and verification can be left empty.
 **Create task** submits once without a separate preview. The project agent accepts the
@@ -357,7 +357,7 @@ the durable action store and works without a model turn or subscription login.
 The board and full-page chat share `ChatPanel`. The dock retains board filters and
 selected task links. Each message automatically attaches a validated project-bound
 snapshot of bounded task IDs and filters, not raw browser contents. Each task has
-one task agent conversation plus separate feature agent conversations, and each project has its own agent
+one task agent conversation plus separate work agent conversations, and each project has its own agent
 conversation. These bindings survive reconnects and restarts; prior free-standing chats
 remain available at `/chat`. Drafts and response queues stay separate when switching sessions.
 The board chat shows messages and actions directly, without a tab bar; the issue card
@@ -368,29 +368,29 @@ At `/chat`, **Chat**, **Context**,
 the next message's view from snapshots retained with earlier messages. Outputs collect
 the latest 100 distinct issue/PR summaries and action results; original tool results stay
 in message history. Sources retain retrieved references.
-Ask the task agent to create feature work with a bounded instruction, or continue an existing
+Ask the task agent to create coding work with a bounded instruction, or continue an existing
 work session to address feedback or checks, then confirm its preview. Each PR work keeps
 its builder thread and checkout across attempts; every candidate gets a fresh reviewer.
 One PR work runs per issue at a time, sharing the issue's cumulative budget. A review
 handoff requires explicit continuation; **Retry** does not replay a completed candidate.
-The task agent can inspect feature agent state with `symphony_pr_session` and propose
-`continue_pr_work` with an instruction for that agent. A feature agent restricts controls to
+The task agent can inspect work agent state with `symphony_pr_session` and propose
+`continue_pr_work` with an instruction for that agent. A work agent restricts controls to
 its own retained worker; all actions still require confirmation and fresh ownership checks.
 Previously linked PRs support discussion without automatically adopting a coding worker.
-A verified publication binds the earlier discussion to the same feature agent. Historical
+A verified publication binds the earlier discussion to the same work agent. Historical
 duplicates reconcile when idle; old links resolve to the canonical conversation without
 losing messages, receipts or queued work.
-PRs linked to several issues share one feature agent: verified native work selects its
+PRs linked to several issues share one work agent: verified native work selects its
 owning task, and other issues reference it. Before publication, the first retained
 discussion owns the conversation. Active turns and pending reports delay reconciliation.
-Local task routing, launch permissions, publication and merge gates still apply.
+Local task routing, launch permissions, publication and merge gates still apply. Testing-only, security and deployment adapters are design targets; changing the public role name does not enable them. The retained PR conversation still supervises the existing native builder/reviewer pipeline until that runtime is replaced.
 Worker progress, review handoffs and GitHub state changes are checked every 15 seconds
-and recorded as **PR update** messages in the task agent and matching feature agent conversations.
+and recorded as **PR update** messages in the task agent and matching work agent conversations.
 Reports survive restart and retain the latest 80 updates per conversation. With valid
 authorization, new evidence queues a task-agent reasoning turn; it never starts a coding
 worker. Without authorization, the saved evidence waits for an authenticated interaction. Missing or stale checks never imply completion; issue acceptance
 remains separate from PR merge.
-The project, task and feature agents form a graph with stable IDs and typed supervision
+The project, task and work agents form a graph with stable IDs and typed supervision
 and reporting edges. Parents delegate to direct children; children report upward,
 including an automatic report after each completed reply. Parent agents process reports,
 revise goals and can delegate follow-ups. Chat shows the source agent, goals and pending

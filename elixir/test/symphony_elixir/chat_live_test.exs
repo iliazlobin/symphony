@@ -477,12 +477,12 @@ defmodule SymphonyElixir.ChatLiveTest do
     FixtureStore.put(chat |> Map.put("messages", [report, instruction, evidence, user, assistant, update]) |> Map.put("queue", queued))
     view = embedded_view(ctx, view_context())
 
-    assert has_element?(view, "#message-feature-report.chat-message-agent .agent-label[title='README checks feature agent']")
+    assert has_element?(view, "#message-feature-report.chat-message-agent .agent-label[title='README checks work agent']")
     assert has_element?(view, "#message-feature-report .message-kind", "Report")
     assert has_element?(view, "#message-feature-report time[data-time-label=Received]")
     assert has_element?(view, "#message-project-instruction .agent-label[title='Alpha project project agent']")
     assert has_element?(view, "#message-project-instruction .message-kind", "Instruction")
-    assert has_element?(view, "#message-host-evidence .message-author", "Feature reports")
+    assert has_element?(view, "#message-host-evidence .message-author", "Work reports")
     assert has_element?(view, "#message-host-evidence .message-kind", "Evidence")
     assert has_element?(view, "#message-human-message.chat-message-user .message-author", "You")
     refute has_element?(view, "#message-human-message", "Forged author")
@@ -494,9 +494,9 @@ defmodule SymphonyElixir.ChatLiveTest do
       assert has_element?(view, "#queued-queued-#{id} .chat-queued-source .message-kind")
     end
 
-    assert has_element?(view, "#queued-queued-feature-report .agent-label[title='README checks feature agent']")
+    assert has_element?(view, "#queued-queued-feature-report .agent-label[title='README checks work agent']")
     assert has_element?(view, "#queued-queued-project-instruction .agent-label[title='Alpha project project agent']")
-    assert has_element?(view, "#queued-queued-host-evidence .message-author", "Feature reports")
+    assert has_element?(view, "#queued-queued-host-evidence .message-author", "Work reports")
     assert has_element?(view, "#queued-queued-human-message .message-author", "You")
     assert has_element?(view, "#agent-progress [data-queued-reports='1']", "1 report queued for review")
     refute has_element?(view, "#agent-progress .agent-goal")
@@ -695,8 +695,8 @@ defmodule SymphonyElixir.ChatLiveTest do
     message = %{"id" => "pr-preview", "role" => "assistant", "text" => "", "widgets" => widgets}
     FixtureStore.put(Map.put(chat, "messages", [message]))
     {view, _} = chat_view(ctx, "/chat?project=alpha&chat=a1")
-    assert has_element?(view, ".chat-widget-proposal", "Create a feature agent for issue #7")
-    assert has_element?(view, ".chat-widget-proposal", "Continue feature agent aaaaaaaa for issue #7")
+    assert has_element?(view, ".chat-widget-proposal", "Create a work agent for issue #7")
+    assert has_element?(view, ".chat-widget-proposal", "Continue work agent aaaaaaaa for issue #7")
     assert has_element?(view, ".chat-widget-proposal", "Build the scoped implementation")
     assert has_element?(view, ".chat-widget-proposal", "Fix the failing test")
     assert has_element?(view, ".chat-widget-proposal", "Uses the issue's remaining budget")

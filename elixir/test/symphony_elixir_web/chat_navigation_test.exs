@@ -37,6 +37,14 @@ defmodule SymphonyElixirWeb.ChatNavigationTest do
     assert Enum.map(sessions, & &1.phase) == Enum.map(phases, &elem(&1, 1))
     assert Enum.all?(sessions, &(&1.updated_at == "2026-09-23T10:00:00Z" and not &1.session_retained))
     assert List.last(sessions).phase != "Ready for review"
+    assert ChatNavigation.work_counts(issue) == %{total: 6, working: 2, queued: 1, review: 1, paused: 1}
+    assert ChatNavigation.work_counts(nil) == %{total: 0, working: 0, queued: 0, review: 0, paused: 0}
+    assert ChatNavigation.work_counts(%{issue | issue_id: "other"}).total == 0
+  end
+
+  test "PR resources and chat activity cannot create work-session counts" do
+    issue = task("11", "running", issue_id: "11", pull_requests: [%{number: 14, state: "merged"}], runtime: %{status: "running"})
+    assert ChatNavigation.work_counts(issue) == %{total: 0, working: 0, queued: 0, review: 0, paused: 0}
   end
 
   test "native DateTime activity preserves microsecond ordering alongside tracker timestamps" do

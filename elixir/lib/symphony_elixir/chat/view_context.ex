@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.Chat.ViewContext do
   @moduledoc "Validates a per-message board snapshot. Browser hints never grant authority or establish current task state."
 
+  alias SymphonyElixir.TaskKind
+
   @keys ~w(version project_id filters selected_task_id visible_task_ids viewport_task_ids hidden_columns captured_at board_checked_at truncated)
   # Retained version-1 messages may refer to the former Ready/Running columns.
   @columns ~w(backlog work ready running review done)
@@ -57,9 +59,8 @@ defmodule SymphonyElixir.Chat.ViewContext do
     normalized = Map.merge(defaults, value)
 
     valid =
-      Enum.all?(Map.keys(value), &(Map.has_key?(defaults, &1) or &1 in ~w(milestone label assignee))) and
-        selection?(normalized["project"], [project]) and selection?(normalized["status"], @statuses) and
-        selection?(normalized["priority"], @priorities) and text?(normalized["q"], 2_000) and
+      Enum.all?(Map.keys(value), &(Map.has_key?(defaults, &1) or &1 in ~w(kind milestone label assignee))) and
+        filter_selections?(normalized, project) and text?(normalized["q"], 2_000) and
         Enum.all?(~w(milestone label assignee), &metadata_selection?(Map.get(normalized, &1, []), &1, project)) and
         normalized["sort"] in ~w(manual updated priority title oldest)
 
@@ -67,6 +68,11 @@ defmodule SymphonyElixir.Chat.ViewContext do
   end
 
   defp filters(_, _), do: {:error, :invalid_view_context}
+
+  defp filter_selections?(filters, project) do
+    selection?(filters["project"], [project]) and selection?(filters["status"], @statuses) and
+      selection?(filters["priority"], @priorities) and selection?(Map.get(filters, "kind", []), TaskKind.values() ++ ["invalid"])
+  end
 
   defp metadata_selection?(values, key, project) when is_list(values) and length(values) <= 20 do
     Enum.uniq(values) == values and
