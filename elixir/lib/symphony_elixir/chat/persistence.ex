@@ -275,10 +275,27 @@ defmodule SymphonyElixir.Chat.Persistence do
   defp message_valid?(message) when is_map(message) do
     Enum.all?(~w(id text status), &is_binary(message[&1])) and
       message["role"] in ["user", "assistant"] and collection?(message["widgets"], &is_map/1) and report_message_valid?(message) and
-      agent_message_valid?(message)
+      agent_message_valid?(message) and runtime_valid?(message["runtime"]) and tool_receipts_valid?(Map.get(message, "tool_receipts", []))
   end
 
   defp message_valid?(_), do: false
+
+  defp runtime_valid?(nil), do: true
+
+  defp runtime_valid?(%{"provider" => provider, "model" => model, "run_id" => run, "instruction_version" => version} = runtime),
+    do: map_size(runtime) == 4 and provider in ~w(codex openrouter) and bounded_string?(model, 200) and valid_id?(run) and version == "project-task-work-v2"
+
+  defp runtime_valid?(_), do: false
+
+  defp tool_receipts_valid?(receipts) when is_list(receipts),
+    do: length(receipts) <= 24 and Enum.all?(receipts, &tool_receipt_valid?/1)
+
+  defp tool_receipts_valid?(_), do: false
+
+  defp tool_receipt_valid?(%{"tool" => name, "arguments" => args, "result" => result} = receipt),
+    do: map_size(receipt) == 3 and bounded_string?(name, 100) and is_map(args) and bounded_string?(result, 65_536) and byte_size(Jason.encode!(receipt)) <= 65_536
+
+  defp tool_receipt_valid?(_), do: false
 
   defp agent_message_valid?(%{"origin" => "agent_message"} = message) do
     message["role"] == "user" and Enum.all?(~w(source_agent agent_root agent_root_chat), &valid_id?(message[&1])) and

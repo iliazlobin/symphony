@@ -128,6 +128,15 @@ defmodule SymphonyElixir.Chat.StoreTest do
     end
   end
 
+  defmodule CheckpointRuntime do
+    @spec run(map(), function(), function()) :: term()
+    def run(opts, emit, _tool) do
+      send(opts.test_pid, {:checkpoint, opts.history, opts.model, opts.thread_id})
+      emit.({:delta, "Continued from saved context"})
+      {:ok, %{status: :completed}}
+    end
+  end
+
   defmodule TestTools do
     @spec specs() :: list()
     def specs, do: []
@@ -939,6 +948,32 @@ defmodule SymphonyElixir.Chat.StoreTest do
     refute_receive {:runtime, _, _, _}
   end
 
+  test "provider and model changes preserve identity, host receipts and native history across settled restarts", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "status", "checkpoint-original", c.auth, c.server)
+    assert_receive {:runtime, _, _, "status"}
+    initial = wait_chat(c, chat, &(&1["status"] == "idle"))
+    assert [%{"tool" => "symphony_project_status", "result" => result}] = List.last(initial["messages"])["tool_receipts"]
+    assert result =~ "No active tasks"
+    initial_native = disk_chat(c, chat)["codex_thread_id"]
+
+    for {model, sequence} <- [{"deepseek/model-a", "a"}, {"deepseek/model-b", "b"}] do
+      stop_supervised!(Store)
+      settings = Keyword.fetch!(c.opts, :settings) |> Map.merge(%{provider: "openrouter", model: model, api_key: "private-fixture-key"})
+      opts = c.opts |> Keyword.put(:settings, settings) |> Keyword.put(:runtime, CheckpointRuntime)
+      server = start_supervised!({Store, opts})
+      assert {:ok, _} = Store.send_message(c.project, chat["id"], "Continue " <> sequence, "checkpoint-" <> sequence, c.auth, server)
+      assert_receive {:checkpoint, history, ^model, ^initial_native}
+      assert hd(history) == %{"role" => "user", "content" => "status"}
+      assert Enum.any?(history, &String.contains?(&1["content"], "symphony_project_status"))
+      restored = wait_chat(%{c | server: server}, chat, &(&1["status"] == "idle"))
+      assert restored["id"] == chat["id"]
+      assert List.last(restored["messages"])["runtime"]["model"] == model
+      assert disk_chat(c, chat)["codex_thread_id"] == initial_native
+      refute Jason.encode!(restored) =~ "private-fixture-key"
+    end
+  end
+
   test "Stop cancels only chat execution and interrupted service restarts retain history", c do
     chat = create(c)
     assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "client", c.auth, c.server)
@@ -1663,6 +1698,8 @@ defmodule SymphonyElixir.Chat.StoreTest do
     final = wait_chat(c, chat, &(&1["status"] == "idle"))
     {final, hd(final["proposals"])}
   end
+
+  defp disk_chat(c, chat), do: c.root |> Path.join(chat["id"] <> ".json") |> File.read!() |> Jason.decode!()
 
   defp wait_chat(c, chat, predicate, attempts \\ 100) do
     {:ok, current} = Store.get(c.project, chat["id"], c.auth, c.server)

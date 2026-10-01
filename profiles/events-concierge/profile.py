@@ -330,6 +330,28 @@ def google_oauth_environment(config: dict) -> dict:
     return {"SYMPHONY_GOOGLE_CLIENT_ID": client_id, "SYMPHONY_GOOGLE_CLIENT_SECRET": secret}
 
 
+def openrouter_environment(config: dict) -> dict:
+    """Read only the explicitly configured OpenRouter key; never source an env file."""
+    if "openrouter_env_file" not in config:
+        return {}
+    try:
+        location = config["openrouter_env_file"]
+        if not isinstance(location, str) or not Path(location).is_absolute():
+            raise ValueError("Invalid credential path")
+        matches = re.findall(r"^\s*(?:export\s+)?OPENROUTER_API_KEY\s*=\s*(.*?)\s*$",
+                             read_private(Path(location)), re.MULTILINE)
+        if len(matches) != 1:
+            raise ValueError("Missing or duplicate key")
+        key = matches[0]
+        if len(key) >= 2 and key[0] in ('\"', "'") and key[-1] == key[0]:
+            key = key[1:-1]
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,4096}", key):
+            raise ValueError("Invalid key")
+    except (OSError, ValueError, TypeError, ControlError):
+        raise ControlError("OpenRouter env file must be an owned private regular file with one valid OPENROUTER_API_KEY") from None
+    return {"OPENROUTER_API_KEY": key}
+
+
 def start_service(config: dict) -> None:
     validate_workflow(read_private(Path(config["workflow_path"])), config.get("repository", REPOSITORY))
     binary = ROOT / "elixir/bin/symphony"
@@ -337,6 +359,7 @@ def start_service(config: dict) -> None:
         raise ControlError("Build Symphony first: cd elixir && mix build")
     env = dict(os.environ)
     env.update(google_oauth_environment(config))
+    env.update(openrouter_environment(config))
     # Host-owned auth is never serialized to workflow/config files.
     token = os.environ.get("GITHUB_TOKEN") or run("gh", "auth", "token")
     env.update({
