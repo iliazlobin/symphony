@@ -936,11 +936,11 @@ defmodule SymphonyElixir.Chat.StoreTest do
     second = create(c)
     snapshot = %{"version" => 1, "project_id" => c.project, "selected_task_id" => c.project <> ":2"}
     assert {:ok, _} = Store.send_message_with_context(c.project, chat["id"], "view", "shared", snapshot, c.auth, c.server)
-    assert_receive {:view_tool, %{"snapshot" => saved}}
+    assert_receive {:view_tool, %{"snapshot" => saved}}, 2_000
     assert saved["selected_task_id"] == c.project <> ":2"
     wait_chat(c, chat, &(&1["status"] == "idle"))
     assert {:ok, _} = Store.send_message(c.project, second["id"], "view", "separate", c.auth, c.server)
-    assert_receive {:view_tool, %{"snapshot" => nil}}
+    assert_receive {:view_tool, %{"snapshot" => nil}}, 2_000
     wait_chat(c, second, &(&1["status"] == "idle"))
   end
 

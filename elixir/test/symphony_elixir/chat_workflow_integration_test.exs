@@ -291,7 +291,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     assert has_element?(index, "#chat-thread-list:not([hidden])")
 
     assert {:ok, _} = Store.send_message(@project, background["id"], "Wait for thread status", "thread-status", ctx.auth, ctx.server)
-    assert_receive {:waiting_for_thread_status, runtime}
+    assert_receive {:waiting_for_thread_status, runtime}, 2_000
     assert eventually(fn -> has_element?(view, selector, "Running") end)
     assert eventually(fn -> has_element?(index, selector, "Running") end)
     assert has_element?(view, "#chat-message-input", "Keep this unsent draft")
