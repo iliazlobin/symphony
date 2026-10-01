@@ -388,7 +388,7 @@ are untrusted data; recorded references do not list every token in the model con
 Browser decisions execute write proposals, except the configured project-chat Backlog intake above. Native controls retain revision and
 idempotency checks inside the orchestrator. Tracker edits require a cancelled, idle
 task; fresh open, unqueued backlog tasks without a hold can also be queued directly.
-Both paths serialize with local dispatch and recheck task ownership. Queue confirmation
+Both paths serialize with local dispatch and recheck task ownership. The routing command
 checks the native revision and last observed issue timestamp without waiting for GitHub.
 It never resumes the controller or clears an existing hold. Source changes not yet polled
 are checked again before worker admission. Content edits still verify a fresh GitHub

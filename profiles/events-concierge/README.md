@@ -547,8 +547,10 @@ retains workflow decisions until an explicitly verified cloud ownership cutover.
 GitHub supplies issue content; Symphony owns local task routing. An open issue enters
 execution through Work (or `symphony:ready` before its first local decision). Include a
 bounded outcome, scope and acceptance criteria. Dispatch requires exactly one
-`Depends on: none` or `Depends on: #12, #34` declaration (at most 20 distinct same-repository issues). Missing/open/unreadable
-dependencies hold dispatch. Existing arbitrary Codex CLI sessions are not adopted.
+`Depends on: none` or `Depends on: #12, #34 (technical: required schema)` declaration
+(at most 20 distinct same-repository issues). Types are delivery, design, technical or process;
+reasons are bounded to 160 characters. Missing targets, cycles and prerequisites lacking
+local human acceptance hold dispatch. Priority orders eligible tasks and creates no dependency. Existing arbitrary Codex CLI sessions are not adopted.
 
 Managed task checkouts are standalone clones without submodules or nested repositories.
 Host validation and hooks reject Git worktree indirection, executable Git configuration,

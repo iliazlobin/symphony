@@ -2403,10 +2403,20 @@ Mirroring MUST NOT close issues, launch workers or change merge/deployment polic
 `issue_id`, the expected tracker state/update timestamp and nullable candidate SHA,
 plus the existing command ID and revision. The native owner revalidates tracker scope
 and those observations before atomically retaining acceptance. Accepted issues MUST
-not admit further work; this command does not close an issue, merge or deploy.
+not admit further work; this command does not close an issue, merge or deploy. Acceptance
+MUST retain stable project identity, independently of mutable routing/auth configuration.
+A repeated acceptance matching current source/evidence is an idempotent success. Legacy
+identity recovery MUST validate retained evidence and preserve the original decision.
 The explicit Accept action or a Review-to-Done drop MAY submit this command directly
 without a second confirmation dialog. An uncertain response MUST retain its command
 identity for a deliberate retry; stale evidence MUST NOT be refreshed and retried automatically.
+
+Controlled GitHub admission MUST evaluate typed same-project prerequisites from retained
+source observations. Delivery, design, technical and process edges carry optional bounded
+reasons. Missing targets and cycles block admission; local human acceptance satisfies a
+prerequisite. Priority orders eligible work and MUST NOT create dependency edges.
+The workflow graph exposes ownership and dependency edges separately; displaying or
+filtering that graph grants no scheduling or agent authority.
 
 PR work commands MUST share the native revision, authorization and idempotency boundary.
 The owner MUST derive branch and workspace names, verify fresh issue eligibility and
@@ -2533,19 +2543,24 @@ they do not constitute admission, completion or scheduler priority. Missing sour
 data preserves last-known tasks with explicit uncertainty. Tracker-terminal issues
 are not evidence of merge, acceptance or deployment.
 
-Controlled boards expose Backlog, Work, Review and Done. Human queueing moves Backlog
+Controlled boards expose Backlog, Work, In progress, Review and Done. In progress projects
+active execution from lifecycle Work; queued, paused, blocked and failed tasks remain in
+the Work lane. It MUST NOT be set by a routing command. Human queueing moves Backlog
 to Work; native completion moves Work to Review. Only explicit human acceptance moves
 Review to Done, even when GitHub reports merged PRs or a closed issue. Review may return
 to Work through a confirmed correction command. Upstream/control-disabled projection
 retains its tracker semantics. Columns remain visible; filters control which tasks are
 shown. Board data refreshes automatically.
 
-The task creation form requires a title; description and verification are optional and may be empty. Its Create action
-submits through the durable action store without a separate preview. Project-agent
-proposals accept the same fields and retain explicit confirmation before execution.
-Both paths MUST share validation and issue-body construction while preserving recovery
-of existing body-based actions. Recent submission history refreshes automatically
-without clearing an unsent draft or replaying a write.
+Project chat is the visible task-intake path. A title is required; description and
+verification are optional. With `chat.auto_create_backlog: true`, an authenticated human
+project turn MAY execute a `create_task` proposal within that delegated permission.
+The host MUST persist intent, recheck turn/scope authorization immediately before writes,
+retain the receipt, deduplicate same-turn proposals and reconcile an unknown creation
+before any later creation. Reports and task/work turns MUST NOT use this authority.
+Other proposals require their existing explicit decision. Historical form/body actions
+remain readable. Per-tab drafts MUST survive project/conversation navigation; successful
+send clears only the accepted draft, while failed sends preserve it.
 
 Optional GitHub enrichment reads explicit issue/PR relationships and reports draft
 state, GitHub review decisions and checks tied to the current PR head. Enrichment
@@ -2646,7 +2661,8 @@ exists. Domain labels such as `work:application` grant no execution capability.
 The host MUST enforce role and scope at proposal and confirmation: project agents may
 propose project controls, task agents may propose changes and coding work only for their
 issue, and work agents may continue/cancel/retry only their verified native session.
-Every mutation still requires the authenticated human decision. Coordination remains
+Mutations require authenticated human authority, including explicitly delegated project-chat
+Backlog creation above. Coordination remains
 adjacent; model instructions and task kinds never expand the tool allowlist.
 
 Native work has purpose `coding` and a positive instruction `goal_revision`, incremented
