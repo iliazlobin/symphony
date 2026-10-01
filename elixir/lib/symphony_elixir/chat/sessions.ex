@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.Chat.Sessions do
   @moduledoc "Issue-bound PR chat identities and reports projected from authoritative work and PR evidence."
 
+  alias SymphonyElixir.{AgentProtocol, TaskKind, WorkEvidence}
   alias SymphonyElixirWeb.ChatNavigation
 
   @spec valid_id?(term()) :: boolean()
@@ -36,7 +37,7 @@ defmodule SymphonyElixir.Chat.Sessions do
       |> Enum.reject(fn work -> Enum.any?(published, &(&1.work && &1.work.id == work.id)) end)
       |> Enum.map(&%{id: "work:" <> &1.id, title: &1.title, name: &1.name, discussion: false, label: &1.title, status: &1.phase, pr: nil, work: &1})
 
-    pending ++ published
+    Enum.map(pending ++ published, &enrich(&1, task))
   end
 
   @spec resolve(map(), String.t(), String.t()) :: {:ok, map()} | {:error, atom()}
@@ -53,11 +54,32 @@ defmodule SymphonyElixir.Chat.Sessions do
          "work_id" => option.work && option.work.id,
          "pr_number" => (option.pr && option.pr.number) || (option.work && option.work.pr_number),
          "title" => option.title,
-         "status" => option.status
+         "status" => option.status,
+         "purpose" => option.purpose,
+         "execution_state" => option.execution_state,
+         "goal" => option.goal,
+         "goal_revision" => option.goal_revision,
+         "result" => option.result,
+         "executable" => option.executable,
+         "task_kind" => TaskKind.from_labels(task[:labels])
        }}
     else
       _ -> {:error, :pr_session_unavailable}
     end
+  end
+
+  defp enrich(option, task) do
+    work = option.work && get_in(task, [:ledger, "pr_work", option.work.id])
+    purpose = if work, do: Map.get(work, "purpose", "coding"), else: "discussion"
+
+    Map.merge(option, %{
+      purpose: purpose,
+      execution_state: AgentProtocol.execution_state(work),
+      goal: work && work["instruction"],
+      goal_revision: work && Map.get(work, "goal_revision", 1),
+      result: WorkEvidence.for_task(work, task),
+      executable: not is_nil(work) and AgentProtocol.executable_purpose?(purpose)
+    })
   end
 
   defp valid_binding?(task, %{work: %{id: id}}, fingerprint) do
@@ -98,10 +120,11 @@ defmodule SymphonyElixir.Chat.Sessions do
     active_run = if active["work_id"] == option.work.id, do: active["run_id"]
 
     evidence =
-      Map.take(work, ~w(phase head_sha working_head_sha builder_thread_id instruction publication))
+      Map.take(work, ~w(phase head_sha working_head_sha builder_thread_id instruction goal_revision publication))
       |> Map.put("run_id", handoff["run_id"])
       |> Map.put("active_run_id", active_run)
       |> Map.put("review", handoff["review"])
+      |> Map.put("result", WorkEvidence.for_task(work, task))
 
     [report(option.id, "worker", text, evidence, work["updated_at"])]
   end

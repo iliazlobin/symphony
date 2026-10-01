@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Chat.Graph do
   @moduledoc """
-  A deterministic, read-only graph of retained project, task and feature agents.
+  A deterministic, read-only graph of retained project, task and work agents.
 
   Conversation records own identity; this projection never creates threads, adopts
   workers or grants execution authority. The `supervises` edges form a three-level
@@ -10,9 +10,8 @@ defmodule SymphonyElixir.Chat.Graph do
   parents remain missing.
   """
 
+  alias SymphonyElixir.AgentProtocol
   alias SymphonyElixir.Chat.{Persistence, Sessions}
-
-  @roles %{"main" => "project", "task" => "task", "pr" => "feature"}
 
   @type direction :: :supervises | :reports_to
 
@@ -40,7 +39,7 @@ defmodule SymphonyElixir.Chat.Graph do
       |> Kernel.++(Enum.flat_map(agents, fn {_id, chat} -> references(chat, agents) end))
       |> Enum.sort_by(& &1["id"])
 
-    %{"version" => 1, "nodes" => nodes, "edges" => edges}
+    %{"version" => 2, "nodes" => nodes, "edges" => edges}
   end
 
   @doc "Resolve an adjacent graph relationship using canonical conversation IDs, never historical aliases."
@@ -131,12 +130,17 @@ defmodule SymphonyElixir.Chat.Graph do
   defp references(_chat, _agents), do: []
 
   defp node(chat, parent, aliases, records) do
-    role = @roles[chat["conversation_role"]]
+    role = AgentProtocol.role(chat)
 
     %{
       "id" => node_id(chat["id"]),
       "type" => "agent",
       "role" => role,
+      "capabilities" => AgentProtocol.actions(role),
+      "task_kind" => chat["task_kind"],
+      "work_purpose" => if(role == "work", do: chat["work_purpose"] || if(work_id(chat), do: "coding", else: "discussion")),
+      "executable" => role == "work" and not is_nil(work_id(chat)) and AgentProtocol.executable_purpose?(chat["work_purpose"] || "coding"),
+      "artifacts" => artifacts(chat),
       "name" => name(chat, role),
       "conversation_id" => chat["id"],
       "project_id" => chat["project_id"],
@@ -184,6 +188,13 @@ defmodule SymphonyElixir.Chat.Graph do
   defp pr_number(%{"conversation_role" => "pr", "session_id" => "pr:" <> number}), do: String.to_integer(number)
   defp pr_number(%{"conversation_role" => "pr", "pr_number" => number}) when is_integer(number) and number > 0, do: number
   defp pr_number(_chat), do: nil
+
+  defp artifacts(chat) do
+    case {chat["project_id"], pr_number(chat)} do
+      {"github:" <> repo, number} when is_integer(number) -> [%{"type" => "pull_request", "number" => number, "url" => "https://github.com/#{repo}/pull/#{number}"}]
+      _ -> []
+    end
+  end
 
   defp edge(type, source, target) do
     %{"id" => type <> ":" <> source <> ":" <> target, "type" => type, "source" => node_id(source), "target" => node_id(target)}

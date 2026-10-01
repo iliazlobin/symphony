@@ -41,6 +41,12 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     end
   end
 
+  test "task intent is projected independently from stage and legacy domain labels" do
+    board = TaskBoard.project([issue("1", labels: ["kind:testing", "work:application"]), issue("2", labels: ["kind:bug"])], %{}, %{}, settings())
+    assert Enum.map(board.tasks, & &1.task_kind) == ["testing", "bug"]
+    assert Enum.all?(board.tasks, &(&1.stage == "backlog"))
+  end
+
   setup do
     previous = Application.get_env(:symphony_elixir, :github_client_module)
     previous_enrichment = Application.get_env(:symphony_elixir, :github_board_request)

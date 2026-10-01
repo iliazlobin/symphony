@@ -30,6 +30,23 @@ defmodule SymphonyElixir.Chat.SessionsTest do
     assert {:error, :pr_session_unavailable} = Sessions.resolve(%{external | project: "linear:team"}, "pr:7", "scope")
   end
 
+  test "resolved work exposes intent and lifecycle without changing stable identity" do
+    source = task() |> Map.put(:labels, ["kind:testing", "work:application"])
+    id = "work:" <> String.duplicate("a", 32)
+
+    assert {:ok, %{"task_kind" => "testing", "purpose" => "coding", "execution_state" => "running", "goal" => "Implement", "goal_revision" => 1, "executable" => true}} =
+             Sessions.resolve(source, id, "scope")
+
+    [first] = Sessions.reports(source, "scope")
+    next = put_in(source, [:ledger, "pr_work", String.duplicate("a", 32), "goal_revision"], 2)
+    [changed] = Sessions.reports(next, "scope")
+    # Native instruction revision without a handoff is still distinguishable.
+    assert Sessions.resolve(next, id, "scope") |> elem(1) |> Map.get("goal_revision") == 2
+    external = %{source | ledger: %{}, pull_requests: [pr()]}
+    assert {:ok, %{"purpose" => "discussion", "execution_state" => "discussion", "goal_revision" => nil, "executable" => false}} = Sessions.resolve(external, "pr:7", "scope")
+    refute changed["signature"] == first["signature"]
+  end
+
   test "worker report identity includes correction run and candidate; stale CI is never reported as successful" do
     task = task()
     [first] = Sessions.reports(task, "scope")

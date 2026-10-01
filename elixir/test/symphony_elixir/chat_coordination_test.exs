@@ -132,7 +132,7 @@ defmodule SymphonyElixir.Chat.CoordinationTest do
   test "real Store delegates down, reports up, retains goals and gives the model trusted provenance", c do
     {parent, _} = launch(c, c.parent, "Coordinate release")
     graph = tool(parent, "symphony_agent_graph", %{})
-    assert Enum.sort(Enum.map(graph["nodes"], & &1["role"])) == ["feature", "project", "task"]
+    assert Enum.sort(Enum.map(graph["nodes"], & &1["role"])) == ["project", "task", "work"]
     assert length(graph["edges"]) == 4
 
     goal = tool(parent, "symphony_set_goal", %{"conversation_id" => c.issue["id"], "text" => "Document the test command", "status" => "active"})
@@ -344,7 +344,7 @@ defmodule SymphonyElixir.Chat.CoordinationTest do
     texts = for entry <- canonical["messages"], entry["role"] == "user", do: entry["text"]
     assert texts == ["Discuss the existing PR", "Prepare the implementation", "Latest discussion before publication"]
     assert {:ok, graph} = Store.agent_graph(c.project, c.auth, c.server)
-    assert [feature] = Enum.filter(graph["nodes"], &(&1["role"] == "feature"))
+    assert [feature] = Enum.filter(graph["nodes"], &(&1["role"] == "work"))
     assert feature["aliases"] == [c.feature["id"]]
     assert feature["work_id"] == String.duplicate("b", 32)
 
@@ -678,7 +678,7 @@ defmodule SymphonyElixir.Chat.CoordinationTest do
     assert Enum.count(canonical["messages"], &(&1["text"] == "Retain the old discussion through a failed merge")) == 1
     assert disk(c, c.feature)["alias_of"] == native["id"]
     assert {:ok, graph} = Store.agent_graph(c.project, c.auth, c.server)
-    assert Enum.count(graph["nodes"], &(&1["role"] == "feature")) == 1
+    assert Enum.count(graph["nodes"], &(&1["role"] == "work")) == 1
   end
 
   test "failed verified metadata update preserves the last durable feature identity", c do
@@ -734,7 +734,7 @@ defmodule SymphonyElixir.Chat.CoordinationTest do
     assert read(c, record)["session_id"] == "pr:8"
     assert read(c, c.feature)["session_id"] == "pr:7"
     assert {:ok, graph} = Store.agent_graph(c.project, c.auth, c.server)
-    assert Enum.count(graph["nodes"], &(&1["role"] == "feature")) == 2
+    assert Enum.count(graph["nodes"], &(&1["role"] == "work")) == 2
     refute_receive {:coordination_runtime, _, _}, 30
   end
 
@@ -807,7 +807,7 @@ defmodule SymphonyElixir.Chat.CoordinationTest do
     assert shared["agent_task_refs"] == [task().id, linked.id]
 
     assert {:ok, graph} = Store.agent_graph(c.project, c.auth, c.server)
-    assert [feature] = Enum.filter(graph["nodes"], &(&1["role"] == "feature"))
+    assert [feature] = Enum.filter(graph["nodes"], &(&1["role"] == "work"))
     assert feature["conversation_id"] == c.feature["id"]
     assert reference_edge?(graph, second, shared)
     refute supervision_edge?(graph, second, shared)
@@ -865,7 +865,7 @@ defmodule SymphonyElixir.Chat.CoordinationTest do
     assert reopened["queue"] == [queued]
     assert reopened["agent_goal"] == goal
     assert {:ok, graph} = Store.agent_graph(c.project, c.auth, c.server)
-    assert Enum.count(graph["nodes"], &(&1["role"] == "feature")) == 1
+    assert Enum.count(graph["nodes"], &(&1["role"] == "work")) == 1
     assert supervision_edge?(graph, owner, canonical)
     assert reference_edge?(graph, c.issue, canonical)
     refute supervision_edge?(graph, c.issue, canonical)
@@ -883,7 +883,7 @@ defmodule SymphonyElixir.Chat.CoordinationTest do
     assert read(c, retained)["task_id"] == first.id
     assert read(c, retained)["agent_session_id"] == work_session()
     assert {:ok, graph} = Store.agent_graph(c.project, c.auth, c.server)
-    assert [feature] = Enum.filter(graph["nodes"], &(&1["role"] == "feature"))
+    assert [feature] = Enum.filter(graph["nodes"], &(&1["role"] == "work"))
     assert feature["conversation_id"] == retained["id"]
     assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
   end
@@ -941,7 +941,7 @@ defmodule SymphonyElixir.Chat.CoordinationTest do
     assert disk(c, c.feature)["alias_of"] == nil
     assert read(c, c.feature)["parent_id"] == c.issue["id"]
     assert {:ok, graph} = Store.agent_graph(c.project, c.auth, c.server)
-    assert Enum.count(graph["nodes"], &(&1["role"] == "feature")) == 1
+    assert Enum.count(graph["nodes"], &(&1["role"] == "work")) == 1
   end
 
   test "a later native owner flattens both older PR aliases and retains their links after restart", c do
@@ -991,7 +991,7 @@ defmodule SymphonyElixir.Chat.CoordinationTest do
     end
 
     assert {:ok, graph} = Store.agent_graph(c.project, c.auth, c.server)
-    assert [feature] = Enum.filter(graph["nodes"], &(&1["role"] == "feature"))
+    assert [feature] = Enum.filter(graph["nodes"], &(&1["role"] == "work"))
     assert Enum.sort(feature["aliases"]) == Enum.sort([c.feature["id"], second_id])
     assert reference_edge?(graph, c.issue, canonical)
     assert reference_edge?(graph, second_issue, canonical)

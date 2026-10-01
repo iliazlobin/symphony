@@ -1,5 +1,7 @@
 defmodule SymphonyElixir.Chat.Coordination do
   @moduledoc "Typed supervision messages and goal metadata; native execution remains owned by the orchestrator."
+  alias SymphonyElixir.AgentProtocol
+
   @names ~w(symphony_agent_graph symphony_delegate symphony_report symphony_set_goal)
 
   @spec tool?(String.t()) :: boolean()
@@ -10,7 +12,7 @@ defmodule SymphonyElixir.Chat.Coordination do
     [
       spec(
         "symphony_agent_graph",
-        "Read this project's agent graph, parent/child conversation IDs, goals and delivery status. Project supervises tasks; each task supervises its feature agents.",
+        "Read this project's agent graph, parent/child conversation IDs, goals and delivery status. Project supervises tasks; each task supervises its work agents.",
         %{},
         []
       ),
@@ -59,13 +61,7 @@ defmodule SymphonyElixir.Chat.Coordination do
 
   @spec label(map()) :: String.t()
   def label(chat) do
-    role =
-      case chat["conversation_role"] do
-        "main" -> "project"
-        "task" -> "task"
-        "pr" -> "feature"
-        _ -> "project"
-      end
+    role = AgentProtocol.role(chat)
 
     (chat["agent_name"] || chat["title"]) <> " " <> role <> " agent"
   end

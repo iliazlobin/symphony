@@ -119,6 +119,25 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     refute Jason.encode!(specs) =~ "github_api"
   end
 
+  test "task and work roles cannot escalate or change a sibling task at proposal or confirmation", ctx do
+    task = Map.put(ctx.context, :task_id, "github:example/repo:1")
+
+    for args <- [%{"action" => "pause"}, %{"action" => "create_task", "title" => "Escalate"}] do
+      assert {:error, :agent_role_forbidden} = Tools.call("symphony_propose_action", args, task)
+      proposal = propose(ctx.context, args)
+      assert {:error, :agent_role_forbidden} = Tools.confirm(proposal, task)
+      assert {:error, :agent_role_forbidden} = Tools.reconcile(proposal, task)
+    end
+
+    sibling = %{"action" => "feedback", "task_id" => "2", "body" => "Change sibling"}
+    assert {:error, :task_scope_mismatch} = Tools.call("symphony_propose_action", sibling, task)
+    proposal = propose(ctx.context, sibling)
+    assert {:error, :task_scope_mismatch} = Tools.confirm(proposal, task)
+    work = Map.put(task, :session_id, "pr:7")
+    assert {:error, :agent_role_forbidden} = Tools.confirm(proposal, work)
+    refute_receive {:native_command, _, _, _}
+  end
+
   test "PR chat resolves its immutable worker and sends only exact-session commands", ctx do
     id = String.duplicate("a", 32)
 
@@ -147,7 +166,8 @@ defmodule SymphonyElixir.Chat.ToolsTest do
           %{"action" => "pause"},
           %{"action" => "create_pr_work", "task_id" => "1", "body" => "Another PR"}
         ] do
-      assert {:error, :pr_session_scope_mismatch} = Tools.call("symphony_propose_action", args, context)
+      expected = if args["action"] in ~w(edit_task pause create_pr_work), do: :agent_role_forbidden, else: :pr_session_scope_mismatch
+      assert {:error, ^expected} = Tools.call("symphony_propose_action", args, context)
     end
 
     refute_receive {:native_command, _, _, _}
@@ -1137,8 +1157,8 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     end
 
     assert {:error, :invalid_proposal} = Tools.confirm(Map.delete(proposal, "expected_updated_at"), context)
-    assert {:error, :task_scope_mismatch} = Tools.confirm(proposal, Map.put(context, :task_id, "github:example/repo:2"))
-    assert {:error, :pr_session_scope_mismatch} = Tools.confirm(proposal, Map.put(context, :session_id, "work:other"))
+    assert {:error, :agent_role_forbidden} = Tools.confirm(proposal, Map.put(context, :task_id, "github:example/repo:2"))
+    assert {:error, :agent_role_forbidden} = Tools.confirm(proposal, Map.put(context, :session_id, "work:other"))
     assert {:error, :unauthorized} = Tools.confirm(proposal, %{context | auth: %{context.auth | marker: nil}})
     refute_receive {:native_command, _, _, _}
   end
@@ -1159,7 +1179,7 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     assert {:ok, %{"widgets" => [%{"result" => %{"replayed" => true}}]}} = Tools.reconcile(proposal, context)
     assert_receive {:receipt_read, ^command, ^fingerprint}
     refute_receive {:native_command, _, _, _}
-    assert {:error, :task_scope_mismatch} = Tools.reconcile(proposal, Map.put(context, :task_id, "github:example/repo:2"))
+    assert {:error, :agent_role_forbidden} = Tools.reconcile(proposal, Map.put(context, :task_id, "github:example/repo:2"))
   end
 
   test "unexpected native routing dispatch failures remain uncertain without a GitHub fallback", ctx do

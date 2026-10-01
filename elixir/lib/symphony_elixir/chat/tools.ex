@@ -1,8 +1,8 @@
 defmodule SymphonyElixir.Chat.Tools do
   @moduledoc "Project-bound management tools. Model calls can prepare writes; only an operator confirms them."
 
+  alias SymphonyElixir.{AgentProtocol, Config, Orchestrator, TaskDraft, WorkEvidence}
   alias SymphonyElixir.Chat.{Coordination, GitHub, Sessions, ViewContext}
-  alias SymphonyElixir.{Config, Orchestrator, TaskDraft}
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, TaskBoard}
 
   @controls ~w(pause drain resume cancel retry set_concurrency queue_task unqueue_task)
@@ -11,29 +11,31 @@ defmodule SymphonyElixir.Chat.Tools do
   @pr_work_actions ~w(create_pr_work continue_pr_work)
   @stages ~w(backlog ready running review done attention)
   @sorts ~w(updated priority title oldest)
-  @task_keys ~w(id issue_id identifier title project project_label stage attention priority updated_at created_at tracker_state completion_evidence source_missing hold github_status routing)a
+  @task_keys ~w(id issue_id identifier title project project_label task_kind stage attention priority updated_at created_at tracker_state completion_evidence source_missing hold github_status routing)a
   @pr_keys ~w(number title url state draft created_at updated_at review head_ref base_ref author additions deletions changed_files mergeable head_sha relation checks check_total check_details_status)a
   @check_keys ~w(kind name status conclusion url started_at completed_at duration_ms workflow_name run_url run_number run_event)a
   @proposal_keys ~w(id action args project_id tracker_fingerprint expected_revision expected_updated_at created_at queue_labels queue_unheld task_title task_description pr_work)
   @documents ~w(ARCHITECTURE.md WORKFLOW.md PROJECT.md README.md AGENTS.md)
   @errors %{
+    agent_role_forbidden: "This action belongs to a different agent role. Use the project or task agent to coordinate it.",
+    unsupported_work_purpose: "Only coding work can execute in this version. Other work adapters are not enabled.",
     agent_scope_mismatch: "Agents can communicate only with their direct parent or children in this project.",
     agent_chain_limit: "This supervision chain reached its limit. Send a new message to continue with a fresh goal.",
     agent_delivery_conflict: "This request ID was already used for a different agent message.",
     agent_unavailable: "The agent is unavailable or archived. Refresh the graph before continuing.",
-    pr_session_unavailable: "This feature agent is no longer available for this task. Refresh the task and select an agent.",
-    pr_session_scope_mismatch: "Use the task agent to coordinate another feature. This feature agent can control only its own PR session.",
-    pr_session_read_only: "This PR has no retained coding agent. Use the task agent to create new feature work.",
+    pr_session_unavailable: "This work agent is no longer available for this task. Refresh the task and select an agent.",
+    pr_session_scope_mismatch: "Use the task agent to coordinate another work session. This work agent can control only its own PR session.",
+    pr_session_read_only: "This PR has no retained coding agent. Use the task agent to create new coding work.",
     task_scope_mismatch: "Use this task's conversation or the project agent to prepare work for that issue.",
-    pr_work_exists: "This feature agent already exists. Refresh the task before continuing.",
-    pr_work_pending: "A feature agent is already queued or running for this task. Wait for it to stop before launching more work.",
-    pr_work_not_found: "This feature agent is unavailable. Refresh the task and select an existing agent.",
-    pr_work_limit: "This task has reached its feature agent limit.",
-    pr_work_continuation_required: "Continue an existing feature agent explicitly before resuming execution.",
+    pr_work_exists: "This work agent already exists. Refresh the task before continuing.",
+    pr_work_pending: "A work agent is already queued or running for this task. Wait for it to stop before launching more work.",
+    pr_work_not_found: "This work agent is unavailable. Refresh the task and select an existing agent.",
+    pr_work_limit: "This task has reached its work agent limit.",
+    pr_work_continuation_required: "Continue an existing work agent explicitly before resuming execution.",
     approved_baseline_changed: "The approved base revision changed or is unavailable. Refresh configuration before preparing work.",
     pr_head_changed: "This PR's candidate or remote head changed. Refresh the task and prepare a new continuation.",
     pr_identity_changed: "The PR no longer matches this work session's repository, branch or base. Resolve its identity before continuing.",
-    pr_already_merged: "This PR is already merged. Create a separate feature agent for further changes.",
+    pr_already_merged: "This PR is already merged. Create a separate work agent for further changes.",
     pr_evidence_unavailable: "Current PR evidence is unavailable. Restore repository access before continuing.",
     budget_exhausted: "This issue has exhausted its execution budget. Adjust the configured limit before preparing more work.",
     issue_running: "This issue still has active execution. Wait for it to stop before launching PR work.",
@@ -108,7 +110,7 @@ defmodule SymphonyElixir.Chat.Tools do
         }),
         spec(
           "symphony_pr_session",
-          "Read a feature agent's PR session, retained coding worker and latest results. In a feature agent chat omit both fields to use its immutable binding. In the task agent chat provide task_id and session_id from task details. A missing work_id means discussion-only PR context.",
+          "Read a work agent's PR session, retained coding worker and latest results. In a work agent chat omit both fields to use its immutable binding. In the task agent chat provide task_id and session_id from task details. A missing work_id means discussion-only PR context.",
           %{"task_id" => string(240), "session_id" => string(48)}
         ),
         spec("symphony_task_details", "Read one task in this chat's project, including its description and current execution evidence.", %{"task_id" => string(240)}, ["task_id"]),
@@ -378,7 +380,21 @@ defmodule SymphonyElixir.Chat.Tools do
         |> Map.put("description", truncate(task[:description], 32_000))
         |> Map.put("labels", task[:labels] || [])
         |> Map.put("pr_work", pr_work_details(task))
-        |> Map.put("pr_sessions", Enum.map(Sessions.options(task), &%{"session_id" => &1.id, "title" => &1.title, "status" => &1.status}))
+        |> Map.put(
+          "pr_sessions",
+          Enum.map(
+            Sessions.options(task),
+            &%{
+              "session_id" => &1.id,
+              "title" => &1.title,
+              "status" => &1.status,
+              "purpose" => &1.purpose,
+              "execution_state" => &1.execution_state,
+              "goal_revision" => &1.goal_revision,
+              "executable" => &1.executable
+            }
+          )
+        )
         |> Map.put("pull_requests", Enum.map(task[:pull_requests] || [], &pull_request_details/1))
         |> Map.put("links", Enum.map(task[:links] || [], &string_keys(Map.take(&1, [:label, :url, :kind]))))
         |> Map.put("checked_at", board[:generated_at])
@@ -406,6 +422,7 @@ defmodule SymphonyElixir.Chat.Tools do
     with :ok <- complete_board(board),
          {:ok, args} <- prepare_action_args(args),
          :ok <- action_args(args),
+         :ok <- AgentProtocol.authorize_action(AgentProtocol.context_role(context), args["action"]),
          :ok <- session_action_scope(args, context, board),
          {:ok, evidence} <- proposal_evidence(args, context, settings, board) do
       action_args = normalized_action_args(args, context, board)
@@ -440,6 +457,12 @@ defmodule SymphonyElixir.Chat.Tools do
       nil -> {:error, :pr_session_read_only}
       false -> {:error, :pr_session_scope_mismatch}
       error -> error
+    end
+  end
+
+  defp session_action_scope(%{"task_id" => id}, %{task_id: task_id} = context, board) when is_binary(task_id) do
+    with {:ok, task} <- find_task(id, context, board) do
+      if task.id == task_id, do: :ok, else: {:error, :task_scope_mismatch}
     end
   end
 
@@ -677,7 +700,8 @@ defmodule SymphonyElixir.Chat.Tools do
 
     with true <- valid or {:error, :invalid_proposal},
          :ok <- validate("symphony_propose_action", args),
-         :ok <- action_args(args) do
+         :ok <- action_args(args),
+         :ok <- AgentProtocol.authorize_action(AgentProtocol.context_role(context), proposal["action"]) do
       validate_pr_work_proposal(proposal, context)
     end
   end
@@ -799,6 +823,9 @@ defmodule SymphonyElixir.Chat.Tools do
     |> Enum.map(fn {id, work} ->
       %{
         "id" => id,
+        "purpose" => Map.get(work, "purpose", "coding"),
+        "goal_revision" => Map.get(work, "goal_revision", 1),
+        "evidence" => WorkEvidence.for_task(work, task),
         "phase" => if(work["phase"] in ~w(queued building reviewing owner_review paused), do: work["phase"], else: "unknown"),
         "summary" => truncate(work["instruction"], 500),
         "result" => truncate(get_in(work, ["handoff", "summary"]), 4_000),

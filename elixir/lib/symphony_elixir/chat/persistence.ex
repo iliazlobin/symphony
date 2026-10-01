@@ -1,8 +1,8 @@
 defmodule SymphonyElixir.Chat.Persistence do
   @moduledoc "Private conversation records with an OS ownership lock and atomic, synced writes."
 
+  alias SymphonyElixir.{AgentProtocol, PathSafety, TaskKind}
   alias SymphonyElixir.Chat.{Sessions, ViewContext}
-  alias SymphonyElixir.PathSafety
 
   @preferences_file "presentation.json"
 
@@ -164,11 +164,21 @@ defmodule SymphonyElixir.Chat.Persistence do
 
   defp hierarchy_valid?(chat) do
     optional_id?(chat["parent_id"]) and optional_id?(chat["alias_of"]) and
+      classification_valid?(chat) and
       valid_agent_session?(chat) and
-      (is_nil(chat["agent_name"]) or bounded_string?(chat["agent_name"], 16_000)) and goal_valid?(chat["agent_goal"]) and
+      agent_description_valid?(chat) and
       valid_chains?(Map.get(chat, "agent_chains", %{})) and
       valid_task_refs?(Map.get(chat, "agent_task_refs", []), chat["project_id"]) and
       valid_outbox?(Map.get(chat, "agent_outbox", []), chat)
+  end
+
+  defp agent_description_valid?(chat) do
+    (is_nil(chat["agent_name"]) or bounded_string?(chat["agent_name"], 16_000)) and goal_valid?(chat["agent_goal"])
+  end
+
+  defp classification_valid?(chat) do
+    (is_nil(chat["task_kind"]) or chat["task_kind"] in (TaskKind.values() ++ ["invalid"])) and
+      (is_nil(chat["work_purpose"]) or chat["work_purpose"] in (AgentProtocol.purposes() ++ ["discussion"]))
   end
 
   defp valid_outbox?(outbox, chat), do: is_list(outbox) and Enum.all?(outbox, &outbox_valid?(&1, chat))

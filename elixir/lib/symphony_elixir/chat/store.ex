@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Chat.Store do
   use GenServer
 
   alias SymphonyElixir.Chat.{Coordination, Graph, Persistence, Provider, Runtime, Sessions, Tools, ViewContext}
-  alias SymphonyElixir.{Config, Orchestrator}
+  alias SymphonyElixir.{Config, Orchestrator, TaskKind}
   alias SymphonyElixir.GitHub.Admission
   alias SymphonyElixirWeb.{BrowserAuth, Endpoint, TaskBoard}
 
@@ -551,7 +551,7 @@ defmodule SymphonyElixir.Chat.Store do
   defp sync_task_binding(task, state, project, auth) do
     case ensure_bound_chat(state, project, task.id, auth) do
       {:reply, {:ok, chat}, next} ->
-        {_, next} = put_metadata(next, Map.put(next.chats[chat["id"]], "agent_name", task[:title] || chat["agent_name"]))
+        {_, next} = put_metadata(next, Map.merge(next.chats[chat["id"]], %{"agent_name" => task[:title] || chat["agent_name"], "task_kind" => TaskKind.from_labels(task[:labels])}))
         next = Enum.reduce_while(Sessions.options(task), next, &sync_feature_binding(&1, &2, task, project, auth))
         if next.fault, do: {:halt, next}, else: {:cont, next}
 
@@ -564,7 +564,7 @@ defmodule SymphonyElixir.Chat.Store do
     with nil <- state.fault,
          {:ok, selection} <- Sessions.resolve(task, option.id, auth.tracker_fingerprint),
          {:reply, {:ok, feature}, next} <- ensure_pr_chat(state, project, task.id, option.id, selection, auth) do
-      metadata = %{"agent_name" => option.name, "pr_number" => selection["pr_number"]}
+      metadata = %{"agent_name" => option.name, "pr_number" => selection["pr_number"], "task_kind" => selection["task_kind"], "work_purpose" => selection["purpose"]}
       {_, next} = put_metadata(next, Map.merge(next.chats[feature["id"]], metadata))
       if next.fault, do: {:halt, next}, else: {:cont, next}
     else
@@ -1079,6 +1079,8 @@ defmodule SymphonyElixir.Chat.Store do
           "work_id" => selection["work_id"],
           "agent_name" => selection["agent_name"] || selection["title"],
           "agent_task_refs" => [task],
+          "task_kind" => selection["task_kind"],
+          "work_purpose" => selection["purpose"],
           "pr_number" => selection["pr_number"]
         })
 
@@ -1216,6 +1218,8 @@ defmodule SymphonyElixir.Chat.Store do
       "agent_name" => selection["agent_name"] || chat["agent_name"] || selection["title"],
       "pr_number" => selection["pr_number"] || chat["pr_number"],
       "agent_task_refs" => pr_task_refs(chat, selection),
+      "task_kind" => task_kind(selection, chat),
+      "work_purpose" => work_purpose(active),
       "parent_id" => canonical_id(chat["project_id"], chat["task_id"], chat["tracker_fingerprint"])
     }
 
@@ -1226,6 +1230,11 @@ defmodule SymphonyElixir.Chat.Store do
       {:error, next} -> {:reply, {:error, :chat_storage_unavailable}, next}
     end
   end
+
+  defp task_kind(selection, chat), do: selection["task_kind"] || chat["task_kind"]
+
+  defp work_purpose("work:" <> _id), do: "coding"
+  defp work_purpose(_id), do: "discussion"
 
   defp native_work_id("work:" <> id), do: id
   defp native_work_id(_), do: nil
