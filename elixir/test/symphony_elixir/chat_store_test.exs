@@ -955,10 +955,17 @@ defmodule SymphonyElixir.Chat.StoreTest do
     initial = wait_chat(c, chat, &(&1["status"] == "idle"))
     assert [%{"tool" => "symphony_project_status", "result" => result}] = List.last(initial["messages"])["tool_receipts"]
     assert result =~ "No active tasks"
-    initial_native = disk_chat(c, chat)["codex_thread_id"]
+    original = disk_chat(c, chat)
+    initial_native = original["codex_thread_id"]
+    stop_supervised!(Store)
+    receipt = %{"tool" => "symphony_project_status", "arguments" => %{}, "result" => String.duplicate("x", 65_080)}
+    oversized = List.last(original["messages"]) |> Map.put("text", String.duplicate("x", 600)) |> Map.put("tool_receipts", [receipt])
+    receipt_only = oversized |> Map.put("id", String.duplicate("f", 32)) |> Map.put("text", "")
+    saved = Map.put(original, "messages", [hd(original["messages"]), oversized, receipt_only])
+    File.write!(Path.join(c.root, chat["id"] <> ".json"), Jason.encode!(saved))
 
     for {model, sequence} <- [{"deepseek/model-a", "a"}, {"deepseek/model-b", "b"}] do
-      stop_supervised!(Store)
+      if sequence == "b", do: stop_supervised!(Store)
       settings = Keyword.fetch!(c.opts, :settings) |> Map.merge(%{provider: "openrouter", model: model, api_key: "private-fixture-key"})
       opts = c.opts |> Keyword.put(:settings, settings) |> Keyword.put(:runtime, CheckpointRuntime)
       server = start_supervised!({Store, opts})
@@ -966,12 +973,43 @@ defmodule SymphonyElixir.Chat.StoreTest do
       assert_receive {:checkpoint, history, ^model, ^initial_native}
       assert hd(history) == %{"role" => "user", "content" => "status"}
       assert Enum.any?(history, &String.contains?(&1["content"], "symphony_project_status"))
+      assert Enum.all?(history, &(String.valid?(&1["content"]) and byte_size(&1["content"]) <= 65_536))
+      assert Enum.at(history, 1)["content"] =~ "Context truncated"
+      assert Enum.at(history, 2)["content"] =~ "Host tool receipts"
       restored = wait_chat(%{c | server: server}, chat, &(&1["status"] == "idle"))
       assert restored["id"] == chat["id"]
       assert List.last(restored["messages"])["runtime"]["model"] == model
       assert disk_chat(c, chat)["codex_thread_id"] == initial_native
       refute Jason.encode!(restored) =~ "private-fixture-key"
     end
+  end
+
+  test "an unresolved OpenRouter model is a configuration error rather than a storage failure", c do
+    chat = create(c)
+    stop_supervised!(Store)
+    settings = Keyword.fetch!(c.opts, :settings) |> Map.merge(%{provider: "openrouter", model: nil, api_key: "private-fixture-key"})
+    opts = c.opts |> Keyword.put(:settings, settings) |> Keyword.put(:runtime, SymphonyElixir.Chat.Provider)
+    server = start_supervised!({Store, opts})
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "status", "invalid-model", c.auth, server)
+    failed = wait_chat(%{c | server: server}, chat, &(&1["status"] == "error"))
+    assert failed["error"] =~ "configured chat model"
+    assert List.last(failed["messages"])["runtime"]["model"] == "unconfigured"
+    assert :sys.get_state(server).fault == nil
+    assert {:ok, %{"id" => _}} = Store.create(c.project, "Another chat", c.auth, server)
+  end
+
+  test "Stop denies new tools and delegation while the current runtime settles", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "ignore stop", "stopping-tools", c.auth, c.server)
+    assert_receive {:runtime, pid, _, "ignore stop"}
+    assert_receive {:phase_ready, ^pid, "ignore stop"}
+    run = :sys.get_state(c.server).jobs[chat["id"]].run
+    assert {:ok, _} = Store.stop(c.project, chat["id"], c.auth, c.server)
+    assert_receive :interrupt_received
+    assert {:error, :stale_turn} = GenServer.call(c.server, {:tool_context, chat["id"], run, c.auth})
+    assert {:error, :stale_turn} = GenServer.call(c.server, {:coordinate, chat["id"], run, "symphony_delegate", %{}, c.auth})
+    send(pid, :finish)
+    assert wait_chat(c, chat, &(&1["status"] == "interrupted"))["queued_count"] == 0
   end
 
   test "Stop cancels only chat execution and interrupted service restarts retain history", c do

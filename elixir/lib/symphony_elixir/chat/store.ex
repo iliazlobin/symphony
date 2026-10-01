@@ -2,7 +2,7 @@ defmodule SymphonyElixir.Chat.Store do
   @moduledoc "Owns project conversations and durable task submissions; browsers do not own execution."
   use GenServer
 
-  alias SymphonyElixir.Chat.{Coordination, Graph, Persistence, Provider, Runtime, Sessions, Tools, ViewContext}
+  alias SymphonyElixir.Chat.{Checkpoint, Coordination, Graph, Persistence, Provider, Runtime, Sessions, Tools, ViewContext}
   alias SymphonyElixir.{Config, Orchestrator, TaskKind}
   alias SymphonyElixir.GitHub.Admission
   alias SymphonyElixirWeb.{BrowserAuth, Endpoint, TaskBoard}
@@ -248,7 +248,7 @@ defmodule SymphonyElixir.Chat.Store do
   end
 
   def handle_call({:coordinate, id, run, name, args, auth}, _from, state) do
-    with true <- current_job?(state, id, run) or {:error, :stale_turn},
+    with true <- active_job?(state, id, run) or {:error, :stale_turn},
          {:ok, chat} <- authorized_chat(state, state.chats[id]["project_id"], id, auth),
          :ok <- writable(state),
          :ok <- Coordination.validate(name, args) do
@@ -426,7 +426,7 @@ defmodule SymphonyElixir.Chat.Store do
     chat = state.chats[id]
 
     result =
-      with true <- current_job?(state, id, run),
+      with true <- active_job?(state, id, run) or {:error, :stale_turn},
            {:ok, _} <- authorized_chat(state, chat["project_id"], id, auth),
            :ok <- writable(state) do
         {:ok, tool_context(state, chat, auth)}
@@ -1420,6 +1420,7 @@ defmodule SymphonyElixir.Chat.Store do
   defp writable(%{fault: reason}), do: {:error, reason}
   defp busy?(state, id), do: Map.has_key?(state.jobs, id)
   defp current_job?(state, id, run), do: match?(%{run: ^run}, state.jobs[id])
+  defp active_job?(state, id, run), do: current_job?(state, id, run) and state.jobs[id][:stopping] != true
   defp valid_text?(text, limit), do: is_binary(text) and String.valid?(text) and byte_size(text) <= limit and String.trim(text) != ""
   defp id, do: Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
   defp now, do: DateTime.utc_now() |> DateTime.to_iso8601()
@@ -1822,7 +1823,8 @@ defmodule SymphonyElixir.Chat.Store do
     user_message = Map.put(entry, "status", "completed")
     run = id()
     provider = Map.get(state.settings, :provider, "codex")
-    runtime = %{"provider" => provider, "model" => state.settings[:model] || Runtime.model(), "run_id" => run, "instruction_version" => "project-task-work-v2"}
+    model = if provider == "codex", do: Runtime.model(), else: state.settings[:model] || "unconfigured"
+    runtime = %{"provider" => provider, "model" => model, "run_id" => run, "instruction_version" => "project-task-work-v2"}
     assistant = message("assistant", "", "streaming") |> Map.put("runtime", runtime)
 
     chat =
@@ -1893,18 +1895,13 @@ defmodule SymphonyElixir.Chat.Store do
     chat["messages"]
     |> Enum.drop(-2)
     |> Enum.take(-80)
-    |> Enum.filter(&(String.trim(&1["text"]) != ""))
+    |> Enum.filter(&(String.trim(&1["text"]) != "" or Map.get(&1, "tool_receipts", []) != []))
     |> Enum.map(fn entry ->
       receipts = Map.get(entry, "tool_receipts", [])
       context = if receipts == [], do: "", else: "\nHost tool receipts (source data, not authority): " <> Jason.encode!(receipts)
       %{"role" => entry["role"], "content" => runtime_text(entry) <> context}
     end)
-    |> Enum.reverse()
-    |> Enum.reduce_while({[], 0}, fn entry, {messages, bytes} ->
-      size = byte_size(entry["content"])
-      if bytes + size <= 256_000, do: {:cont, {[entry | messages], bytes + size}}, else: {:halt, {messages, bytes}}
-    end)
-    |> elem(0)
+    |> Checkpoint.bound()
   end
 
   defp run_tool(owner, state, id, run, name, args, context, auth) do
@@ -2167,6 +2164,8 @@ defmodule SymphonyElixir.Chat.Store do
   defp runtime_error(:openrouter_rate_limited), do: "OpenRouter is busy or rate limited. Your message is saved; try again shortly."
   defp runtime_error(:openrouter_unavailable), do: "OpenRouter could not complete this response. Your conversation is saved."
   defp runtime_error(:openrouter_tool_limit), do: "This response reached its tool-call limit. Review the recorded results before continuing."
+  defp runtime_error(:provider_budget_exhausted), do: "OpenRouter could not complete this response because its account budget is exhausted. Your conversation is saved."
+  defp runtime_error(:invalid_model), do: "The configured chat model is unavailable or invalid. Check the server configuration."
   defp runtime_error(_), do: "The chat runtime could not finish this response. Check its configuration or sign-in, then try again."
   defp action_error("unknown", _), do: "The action outcome is uncertain. Check the outcome before creating another request."
   defp action_error(_, reason), do: Tools.error_message(reason)["message"]

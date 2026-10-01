@@ -275,8 +275,20 @@ is not proof of worker cleanup. Google browser configuration does not deploy a c
 controller or change task ownership. Additional project services, delivery of answers
 into running workers, automatic repairs and web publication remain separate work.
 
+**OpenRouter management chat.** In the private workflow, set `chat.provider: openrouter`,
+`chat.model` to the selected provider model, and `chat.api_key: $OPENROUTER_API_KEY`.
+In the existing private operator configuration, set `openrouter_env_file` to an absolute,
+owned private `.env` file containing exactly one `OPENROUTER_API_KEY` assignment.
+The launcher reads only this key; it does not source the file or load other credentials.
+The key is controller-only and is excluded from coding-worker and hook environments.
+Keep existing `codex_home` and `executable` settings to preserve saved runtime identity.
+Follow the drain/restart procedure before changing provider/model. Conversations and
+bounded host tool receipts survive the change; native provider caches are not portable.
+OpenRouter returns reply chunks after each bounded request, rather than token streaming.
+Additional test/security/deployment executors are not enabled by changing the chat provider.
+
 **Web chat.** After [dedicated runtime setup](../../elixir/README.md#web-board-and-chat),
-select a project beside **Projects** in the top header and sign in through the configured
+select the project in the top header and sign in through the configured
 browser provider. Chat stays open beside the board. Each card has one durable conversation;
 selecting a card switches to it, and closing its details keeps that chat selected.
 **Project name · Project agent** in the issue picker opens the project's orchestration conversation for reports, task creation,
@@ -292,7 +304,7 @@ Switching cards preserves each conversation's draft. Board chat shows messages a
 actions directly, while task details and PR work stay on the card. Prior conversations remain
 available through the full-page `/chat` history with search, pins and ordering.
 
-Responses stream as they arrive. Send follow-ups while a response is running to queue
+Responses appear as they arrive. Send follow-ups while a response is running to queue
 up to 20 messages. The queue above the composer shows what will run next; **Send next**
 changes that order and **Remove** cancels a waiting message. Each conversation runs one
 message at a time, within the service-wide concurrency limit. Cards show **Chat processing**
@@ -301,7 +313,8 @@ and the number queued, separately from the coding task's execution state.
 Failure or service restart also pauses the queue; **Resume queue** checks current access
 before continuing. Closing the browser leaves accepted turns running.
 
-Codex handles native compaction while the app retains visible messages and receipts.
+Codex handles its native compaction; OpenRouter receives bounded saved source context.
+The app retains visible messages, tool receipts and per-turn provider/model metadata.
 In the full-page chat, **Sources** shows retrieved references; **Outputs** shows up to 100 distinct issue/PR
 artifacts and action results, with earlier tool results retained in history. Task and
 main conversations keep the same identity across reconnects and restarts. The current
