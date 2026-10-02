@@ -468,6 +468,7 @@ browsers; durable project conversations remain.
 
 For legacy acceptance bound to an old runtime fingerprint, stop all ledger owners and
 use `mix acceptance.recover_legacy --help` from the reviewed release's `elixir/` directory.
+Recovery needs no live workflow or API credentials; its isolated Python lock removes the inherited environment.
 Select explicit issue IDs, the original fingerprint and the stopped ledger revision.
 Run the default dry run first, then `--apply --backup /absolute/new-private-backup.json`,
 and repeat the dry run. Recovery validates retained evidence and adds only stable project
