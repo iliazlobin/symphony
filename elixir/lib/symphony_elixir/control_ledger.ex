@@ -658,6 +658,7 @@ defmodule SymphonyElixir.ControlLedger do
 
       python ->
         environment = Enum.map(System.get_env(), fn {name, _value} -> {String.to_charlist(name), false} end)
+
         options = [
           :binary,
           :exit_status,
@@ -666,6 +667,7 @@ defmodule SymphonyElixir.ControlLedger do
           env: environment,
           line: 128
         ]
+
         port = Port.open({:spawn_executable, python}, options)
 
         receive do
