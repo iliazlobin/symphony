@@ -1085,7 +1085,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     ~H"""
     <div :if={@counts["total"] > 0} class="card-feedback-summary" aria-label="Comment progress">
-      <span>{@counts["total"]} comments{if @status == "partial", do: "+"}</span>
+      <span>{@counts["total"]} {if @counts["total"] == 1, do: "comment", else: "comments"}{if @status == "partial", do: "+"}</span>
       <span :if={@counts["working"] > 0}>👀 {@counts["working"]} working</span>
       <span :if={@left > 0}>{@left} left</span>
       <span :if={@counts["addressed"] > 0}>{@counts["addressed"]} addressed</span>
