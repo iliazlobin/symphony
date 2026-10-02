@@ -155,7 +155,8 @@ defmodule SymphonyElixir.BrowserSecretIsolationTest do
       assert {:ok, storage, %{}} = Persistence.open(Path.join(ctx.root, "chat-state"))
 
       try do
-        assert File.read!(trace) == "unset:unset:visible\nunset:unset:visible\n"
+        # The ledger lock needs no inherited environment; conversation locks retain ordinary variables.
+        assert File.read!(trace) == "unset:unset:\nunset:unset:visible\n"
       after
         Persistence.close(storage)
       end
