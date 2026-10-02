@@ -767,7 +767,6 @@ h2, h3, strong { font-weight: 500; }
 .dialog-heading { margin-bottom: 16px; }
 .dialog-heading h2 { font-size: 18px; font-weight: 500; }
 .board-dialog[data-kind=graph] { width: min(1120px, calc(100vw - 32px)); }
-.board-dialog[data-kind=task] { max-height: calc(100dvh - 48px); }
 .field, .dialog-actions, .dialog-section { margin-top: 16px; }
 .markdown-content { line-height: 1.55; }
 .markdown-content :is(h1,h2,h3,h4,h5,h6) { font-size: 14px; font-weight: 500; margin: 16px 0 8px; }
