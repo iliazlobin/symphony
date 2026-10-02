@@ -408,7 +408,7 @@ class Workspace:
         project = self.config["projects"][slug]
         while time.monotonic() < until:
             try:
-                async with self.clients[slug].get("http://localhost/api/v1/control", headers={"Host": "127.0.0.1:" + str(self.config["listen_port"]), "Authorization": "Bearer " + project["_token"]}) as response:
+                async with self.clients[slug].get("http://localhost/api/v1/control", auto_decompress=True, headers={"Host": "127.0.0.1:" + str(self.config["listen_port"]), "Authorization": "Bearer " + project["_token"]}) as response:
                     if response.status == 200 and isinstance(await response.json(), dict):
                         return
             except (ClientError, OSError, asyncio.TimeoutError, ValueError):

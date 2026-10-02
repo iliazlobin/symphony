@@ -118,7 +118,9 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
                     async for message in ws:
                         await ws.send_str(project + ":" + message.data)
                     return ws
-                return web.json_response({"project": project, "path": request.path, "auth": request.headers.get("Authorization"), "cookie": request.headers.get("Cookie")})
+                response = web.json_response({"project": project, "path": request.path, "auth": request.headers.get("Authorization"), "cookie": request.headers.get("Cookie")})
+                response.enable_compression(force=web.ContentCoding.gzip)
+                return response
             app.router.add_route("*", "/{path:.*}", endpoint)
             runner = web.AppRunner(app)
             await runner.setup()
@@ -126,7 +128,7 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
             await web.UnixSite(runner, socket).start()
             self.runners.append(runner)
             from aiohttp import UnixConnector
-            client = ClientSession(connector=UnixConnector(path=socket))
+            client = ClientSession(connector=UnixConnector(path=socket), auto_decompress=False)
             self.workspace.clients[slug] = client
             self.clients.append(client)
         gateway = web.Application(client_max_size=1048576)
@@ -162,6 +164,16 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await symphony.receive()).data, "symphony:two")
                 await events.send_str("three")
                 self.assertEqual((await events.receive()).data, "events:three")
+
+    async def test_readiness_decodes_gzip_without_decompressing_proxy_responses(self):
+        self.workspace.config["listen_port"] = 8778
+        for slug, project in self.workspace.config["projects"].items():
+            project["_token"] = "fixture"
+            await self.workspace.wait_ready(slug)
+            async with self.client.get(self.url + "/projects/" + slug + "/api/v1/control", headers={"Host": "localhost:8778"}, auto_decompress=False) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.headers["Content-Encoding"], "gzip")
+                self.assertTrue((await response.read()).startswith(b"\x1f\x8b"))
 
     async def test_unrecognized_scope_and_root_api_fail_closed_and_legacy_links_redirect(self):
         headers = {"Host": "localhost:8778"}
