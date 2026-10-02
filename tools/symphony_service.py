@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install and inspect the two local Symphony launch agents; no task scheduler."""
+"""Install and inspect project or unified workspace launch agents; no task scheduler."""
 from __future__ import annotations
 
 import argparse
@@ -41,6 +41,23 @@ def definitions(config):
     } for label, command in commands.items()}
 
 
+def workspace_definitions(path):
+    from symphony_workspace import load_workspace
+    config = load_workspace(path)
+    for slug, project in config["projects"].items():
+        expected = ROOT / "profiles" / slug / "profile.py"
+        if Path(project["profile_bin"]).resolve() != expected.resolve():
+            raise ControlError("Workspace project must use this release profile")
+    label = "com.iliazlobin.symphony.workspace"
+    state = Path(config["state_dir"])
+    return {label: {
+        "Label": label, "ProgramArguments": [sys.executable, str(ROOT / "tools/symphony_workspace.py"), "--config", str(Path(path).resolve()), "run"],
+        "WorkingDirectory": str(ROOT), "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 30, "Umask": 0o077,
+        "EnvironmentVariables": {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"},
+        "StandardOutPath": str(state / "workspace.out.log"), "StandardErrorPath": str(state / "workspace.err.log"),
+    }}
+
+
 def launchctl(*args, check=True):
     result = subprocess.run(["launchctl", *args], capture_output=True, text=True, timeout=15)
     if check and result.returncode:
@@ -61,16 +78,27 @@ def wait_unloaded(domain, label):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config")
+    parser.add_argument("--workspace-config")
     parser.add_argument("command", choices=("install", "start", "stop", "status"))
     args = parser.parse_args()
-    config = load_config(args.config)
+    if args.config and args.workspace_config:
+        raise ControlError("Select one project or workspace service")
+    service_definitions = workspace_definitions(args.workspace_config) if args.workspace_config else definitions(load_config(args.config))
     if sys.platform != "darwin":
         raise ControlError("Launch agents are available only on macOS")
     directory = Path.home() / "Library/LaunchAgents"
     domain = "gui/" + str(os.getuid())
     if args.command == "stop":
+        if args.workspace_config:
+            from symphony_workspace import load_workspace
+            from symphony_control import request_json
+            workspace = load_workspace(args.workspace_config)
+            for project in workspace["projects"].values():
+                snapshot = request_json(project, "/api/v1/state")
+                if snapshot.get("running") != [] or snapshot.get("retrying") != []:
+                    raise ControlError("Drain and settle active work before stopping the workspace")
         errors = []
-        for label in reversed(list(definitions(config))):
+        for label in reversed(list(service_definitions)):
             existing = launchctl("print", domain + "/" + label, check=False)
             if not existing.returncode:
                 result = launchctl("bootout", domain + "/" + label, check=False)
@@ -86,7 +114,7 @@ def main():
         if errors:
             raise ControlError("Some services could not be stopped: " + "; ".join(errors))
         return
-    for label, definition in definitions(config).items():
+    for label, definition in service_definitions.items():
         path = directory / (label + ".plist")
         if args.command == "install":
             directory.mkdir(exist_ok=True, parents=True)

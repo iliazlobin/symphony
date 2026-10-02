@@ -55,6 +55,7 @@ chat:
   state_path: $SYMPHONY_CHAT_STATE
   codex_home: $SYMPHONY_CHAT_CODEX_HOME
   executable: $SYMPHONY_CHAT_CODEX_EXECUTABLE
+  auto_create_backlog: false
 ---
 
 # Symphony coding task

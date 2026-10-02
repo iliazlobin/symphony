@@ -51,7 +51,9 @@ commands to the native API and owns no scheduling state.
   not source documentation.
 - [`Tracker`](elixir/lib/symphony_elixir/tracker.ex) selects the provider adapter.
   [`GitHub.Admission`](elixir/lib/symphony_elixir/github/admission.ex) requires an
-  explicit dependency declaration and verifies referenced issues directly.
+  explicit dependency declaration. `TaskDependencies` evaluates normalized delivery,
+  design, technical and process prerequisites against local human acceptance. Priority
+  orders eligible tasks; it never creates a prerequisite. Missing targets and cycles block admission.
 - [`Orchestrator`](elixir/lib/symphony_elixir/orchestrator.ex) is the single
   scheduling authority. It polls, reconciles eligibility, reserves attempts,
   starts supervised workers and handles completion, deadlines and retries.
@@ -70,7 +72,9 @@ commands to the native API and owns no scheduling state.
 - [`Workspace`](elixir/lib/symphony_elixir/workspace.ex) creates and validates
   execution directories. Controlled mode retains workspaces for recovery.
 - [`TaskBoard`](elixir/lib/symphony_elixir_web/task_board.ex) combines tracker issues,
-  runtime, durable holds and explicit human acceptance for the four-column LiveView board. Sorting and manual order
+  runtime, durable holds and explicit human acceptance for five visual lanes. The four
+  task lifecycle stages remain Backlog, Work, Review and Done; active Work projects into
+  In progress. Failed attempts remain in Work, and only human acceptance produces Done. Sorting and manual order
   are browser preferences. Card and Settings dialogs preserve the board underneath.
   A supervised in-memory cache retains one complete board for up to 90 seconds.
   Reloads render that snapshot immediately, including its checked time, while a
@@ -83,10 +87,10 @@ commands to the native API and owns no scheduling state.
   project data is returned; an explicit allowlist controls operator access.
   `BoardActions` forwards only existing commands with native project,
   revision and idempotency checks. The same checks apply to chat control actions.
-  `TaskIntakePanel` creates backlog issues from a single explicit form submission;
-  queue actions retain their exact preview and confirmation. `TaskIntake` reuses the conversation store's durable action
-  lifecycle without invoking a model. Action records are separate from chat history;
-  reconnects recover pending actions and uncertain outcomes through the same owner.
+  Backlog → Work and Review → Done execute directly from the authenticated board with
+  exact-revision and replay checks. Local state appears immediately while GitHub routing
+  labels synchronize asynchronously. `TaskIntake` retains historical form receipts;
+  project chat is the visible task-intake path. Unknown outcomes require reconciliation.
   Concurrency changes persist in the ledger and affect admission only: they never
   interrupt existing work or reset budgets. The workflow's configured concurrency
   remains the ceiling and default, including after reload or restart; restoring the
@@ -129,6 +133,17 @@ commands to the native API and owns no scheduling state.
 - Initial state is paused with launch and automatic merge disabled. Worker toolchain,
   authentication, policy installation and combined host capacity need verification
   before activation; no shared scheduler coordinates capacity across controllers.
+
+## Workspace transport
+
+[`symphony_workspace.py`](tools/symphony_workspace.py) owns one public HTTP/WebSocket
+listener and a shared revocable Google session broker. Registered `/projects/<slug>`
+routes proxy only to private owner-only Unix sockets. Project engines retain distinct
+ledger/chat owners, scheduler limits and launch gates; the workspace adds no scheduling queue.
+Static assets, navigation, CSRF and LiveView reconnects use the same public origin.
+The [workspace service guide](profiles/events-concierge/README.md#workspace-service) owns
+configuration, installation, recovery and single-listener checks. Shared database leases
+and the multi-project cloud package remain separate work.
 
 ## Execution and ownership
 
@@ -311,9 +326,14 @@ Other issue associations become graph references, not extra supervisors. Ownersh
 reconciliation waits for active turns and pending reports; conflicting native owners
 are rejected. Historical conversation links continue to resolve after reconciliation.
 The project agent coordinates the project. Task creation requires a title and accepts optional description
-and verification through a shared normalizer. Empty optional fields are omitted from the issue body. The form's **Create task** click authorizes
-submission through the durable action store without a second preview; model-created
-proposals retain their explicit confirmation step. Older body-based proposals remain readable.
+and verification through a shared normalizer. Empty optional fields are omitted from the issue body. With `chat.auto_create_backlog: true`,
+only an authenticated human turn in the project conversation may execute `create_task`
+without another form. It persists intent, rechecks turn authorization immediately before
+GitHub writes, retains the exact receipt and deduplicates repeated tool calls in that turn.
+Agent reports, task/work conversations and other writes retain explicit confirmation.
+The host fences turn origin and role; the model interprets creation intent within that
+bounded permission. Status requests alone should not create tasks.
+Uncertain creation outcomes are reconciled before retrying; historical proposals remain readable.
 Creating or continuing PR work uses the same durable preview, browser confirmation and
 native receipt recovery as other controls. Task agents cannot act on another issue's
 PR work. Continuation is explicit; failed CI does not automatically authorize repairs,
@@ -365,10 +385,10 @@ automatic compaction. Committed documents are retrieved on demand. Compaction do
 erase the visible conversation or create shared project memory. Documents and task text
 are untrusted data; recorded references do not list every token in the model context.
 
-Only browser decisions execute write proposals. Native controls retain revision and
+Browser decisions execute write proposals, except the configured project-chat Backlog intake above. Native controls retain revision and
 idempotency checks inside the orchestrator. Tracker edits require a cancelled, idle
 task; fresh open, unqueued backlog tasks without a hold can also be queued directly.
-Both paths serialize with local dispatch and recheck task ownership. Queue confirmation
+Both paths serialize with local dispatch and recheck task ownership. The routing command
 checks the native revision and last observed issue timestamp without waiting for GitHub.
 It never resumes the controller or clears an existing hold. Source changes not yet polled
 are checked again before worker admission. Content edits still verify a fresh GitHub

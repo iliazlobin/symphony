@@ -27,7 +27,7 @@ defmodule SymphonyElixirWeb.BrowserLoginHTML do
             <p>{if @continue, do: "Continuing with your Google session.", else: "Use your authorized Google account to view projects and manage work."}</p>
             <p :if={@error} class="board-warning" role="alert">{@error}</p>
             <a :if={@login_url} href={@login_url} class="button button-primary">Continue to Symphony</a>
-            <form :if={is_nil(@login_url)} action="/auth/google" method="post" class="chat-login-form" data-continue={@continue && "true"}>
+            <form :if={is_nil(@login_url)} action={SymphonyElixirWeb.WorkspacePath.path("/auth/google")} method="post" class="chat-login-form" data-continue={@continue && "true"}>
               <input type="hidden" name="_csrf_token" value={@csrf_token} />
               <input type="hidden" name="return_to" value="/" />
               <input :if={@continue} type="hidden" name="continue" value="1" />

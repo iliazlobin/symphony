@@ -154,15 +154,13 @@ Use `--config /absolute/path/to/config.json` for another configured profile.
 The profile binds the repository to the controller address; the current controller
 API does not attest repository identity in its response.
 
-**New task** opens a compact form with a required **Title** and optional **Description** and **Test (verification)**.
-Description and verification can be left empty.
-Choose **Create task** to submit those fields directly. It appears in GitHub as an unqueued
-backlog issue; creating it does not start a worker. The form's recent submissions
-retain completed receipts and unfinished actions and refresh automatically. If the result is uncertain, use
-**Check outcome** rather than creating another request. Model access is not required,
-but the service's durable action store must be configured and healthy. The description
-can include a `Depends on: #12, #34` declaration; otherwise dependencies default to none.
-The project agent accepts the same three fields and presents its exact creation proposal for confirmation.
+Describe tasks to the project agent. A title is required; description and verification
+may be empty. `chat.auto_create_backlog: true` enables creation directly from an authenticated
+human project-chat turn. The receipt survives reconnects; uncertain outcomes require
+reconciliation before retrying. Agent reports cannot use this authority, and creation never
+queues a worker. Other writes still require their scoped action confirmation.
+Declare prerequisites in the description, for example
+`Depends on: #19 (technical: approved baseline)`; omitted dependencies default to none.
 
 The single project selector shows the selected project's name. Chats form three levels:
 `<project name> project agent` coordinates the project, `<task name> task agent`
@@ -177,12 +175,14 @@ valid authorization is available. See [agent graph and delivery](../../ARCHITECT
 
 | Stage | What you do | What Symphony does |
 | --- | --- | --- |
-| Backlog | Enter a title, optionally add description and verification, then choose **Create task**. | Creates an unqueued GitHub issue and keeps the receipt. |
-| Work | Drag from Backlog or choose **Move to Work**, then confirm **Queue task**. | Queues the issue; starts eligible work by priority, dependencies, budgets and concurrency; runs a builder and independent reviewer. |
+| Backlog | Describe the requested task to the project agent. | Creates an unqueued GitHub issue and keeps the receipt. |
+| Work | Drag from Backlog or choose **Move to Work**. | Saves routing immediately, then queues eligible work by priority, dependencies, budgets and concurrency. |
+| In progress | Inspect active sessions; stop through execution controls when needed. | Shows active Work automatically; runs a builder and independent reviewer. |
 | Review | Inspect the candidate, PRs and checks; merge code when needed. Choose **Return to Work** for corrections. | Retains the candidate and review evidence. A confirmed correction starts or continues a PR session and returns the issue to Work. |
 | Done | Drag from Review or choose **Accept · Done**. This directly records acceptance, without another popup. | Checks the current issue and candidate, records acceptance, and retains usage and evidence. It does not close the GitHub issue, merge or deploy. |
 
-Work includes queued and running tasks. The agent moves completed work to Review.
+Work retains queued, paused, blocked and failed tasks. In progress is a view of active
+Work, not another human-controlled lifecycle state. The agent moves completed work to Review.
 A merged PR or closed issue is not acceptance; existing closed issues without an
 acceptance record also appear in Review. Accepted tasks cannot be retried or requeued.
 Reopen a closed GitHub issue before returning it to Work for further corrections.
@@ -211,10 +211,10 @@ does not change scheduler priority. **Work → Backlog** offers confirmed cancel
 Cancel can stop work claimed since the card was displayed. Retry clears a hold and
 saves Work routing without resetting budgets or supplying a missing answer.
 
-Queueing opens an exact preview and saves the routing decision in the local control
-ledger. The card updates immediately; GitHub routing labels synchronize automatically.
-Closing the preview does not queue it. Pending actions and receipts reopen
-from **New task → Recent submissions**; use **Check outcome** after an uncertain result.
+Moving Backlog to Work saves the routing decision directly in the local control ledger.
+The card updates immediately; GitHub routing labels synchronize automatically.
+Repeated uncertain moves reuse the same command. Chat proposals retain their receipts;
+use **Check outcome** to reconcile uncertain creation before requesting another task.
 The native scheduler remains the only execution queue; queueing does not resume a paused controller.
 “Syncing GitHub” or “GitHub sync retrying” means the local decision is saved and its
 label update is pending. Retries survive restart and preserve unrelated labels. Inspect
@@ -413,18 +413,77 @@ The last two commands are examples for issue #6: runtime details require a track
 session, and publisher inspection requires a settled, independently approved
 candidate. An unavailable API means worker state is unknown, not that workers stopped.
 
-For an initialized host, install and start both persistent user services:
+## Workspace service
 
-```sh
-python3 tools/symphony_service.py install
-python3 tools/symphony_service.py start
+The workspace owns one public listener, browser session broker and supervised private
+project engines. Engines use owner-only Unix sockets, retain their existing state and
+keep their own native schedulers. The publication watcher remains a separate child
+only for a project with an explicitly enabled existing watcher.
+
+Prepare an owned mode-0600 workspace configuration after all projects are initialized:
+
+```json
+{
+  "public_origin": "http://localhost:8778",
+  "bind_host": "127.0.0.1",
+  "state_dir": "/absolute/private/workspace-state",
+  "projects": [
+    {"config": "/absolute/events-concierge/config.json", "publication": true},
+    {"config": "/absolute/symphony/config.json", "publication": false}
+  ]
+}
 ```
 
-`python3 tools/symphony_service.py stop` unloads the scheduler and publication service.
-For foreground scheduler diagnosis, use `python3 profiles/events-concierge/profile.py run`
-only when the persistent scheduler is stopped. The publication service watches
-completed handoffs; it does not schedule coding tasks. Keep the Mac awake and
-Colima/Docker running. Service process status alone does not prove task progress.
+Project `api_url` values become `http://127.0.0.1:8778/projects/<slug>`. Existing project
+workflow identity policies must match; the workspace supplies the shared public origin.
+Register one Google callback: `http://localhost:8778/auth/google/callback`. Keep each
+project's token, ledger, chat store, baseline and launch/merge gates unchanged.
+
+**Activate a tested release:** install `tools/requirements.txt`; drain and settle all
+native work, retries, chat responses, queued reports and unknown action outcomes.
+Back up configuration/state, stop the old project launch agents and archive their
+plist files outside `~/Library/LaunchAgents` so they cannot return at login. Then start
+one service:
+
+```sh
+python3 tools/symphony_workspace.py --config /absolute/workspace.json check
+python3 tools/symphony_service.py --workspace-config /absolute/workspace.json install
+python3 tools/symphony_service.py --workspace-config /absolute/workspace.json start
+python3 tools/symphony_service.py --workspace-config /absolute/workspace.json status
+```
+
+Check both project-scoped control snapshots and switch between project tabs after one
+sign-in. No listener should remain on 8779. The workspace has an exclusive owner lock;
+another launch cannot replace live sockets. Each guard monitors a private parent pipe;
+the native engine inherits only the ownership lock, never that pipe. Abrupt gateway
+death stops its exact process group before a replacement can take ownership. Guard-only failure is
+cleaned before engine restart, keeping the group leader unreaped until cleanup.
+If both supervisors die together, a surviving engine retains the lock and replacement
+fails closed. Settle its ownership manually before restarting; never delete the lock
+or unlink its socket to force a replacement.
+An engine failure returns an unavailable
+response until its supervised restart. Broker failure denies authorization. Logout
+revokes the shared grant; each active view rechecks it. Workspace restart signs out
+browsers; durable project conversations remain.
+
+For legacy acceptance bound to an old runtime fingerprint, stop all ledger owners and
+use `mix acceptance.recover_legacy --help` from the reviewed release's `elixir/` directory.
+Recovery needs no live workflow or API credentials; its isolated Python lock removes the inherited environment.
+Select explicit issue IDs, the original fingerprint and the stopped ledger revision.
+Run the default dry run first, then `--apply --backup /absolute/new-private-backup.json`,
+and repeat the dry run. Recovery validates retained evidence and adds only stable project
+identity; it preserves decisions, commands, revisions and budgets. Keep the exact-byte
+backup. An older build cannot read the new field; never restore a stale backup over
+subsequent operator changes. An uncertain persistence result requires inspection before restart.
+
+Use the same service command with `stop` only after settling all work. The command
+refuses active native work or retries; unavailable snapshots require investigation.
+A direct OS kill can interrupt work and leaves retained state for reconciliation.
+Do not start standalone project services alongside the workspace. Preserve the previous
+configuration/release for rollback; restore its services only after stopping the workspace.
+
+Keep the Mac awake and Colima/Docker running. A service PID alone does not prove task
+progress. The [cloud package](../../deploy/gke/README.md) has separate release acceptance.
 
 Read `status` immediately before a control change and use its **`control.revision`**:
 
@@ -493,8 +552,10 @@ retains workflow decisions until an explicitly verified cloud ownership cutover.
 GitHub supplies issue content; Symphony owns local task routing. An open issue enters
 execution through Work (or `symphony:ready` before its first local decision). Include a
 bounded outcome, scope and acceptance criteria. Dispatch requires exactly one
-`Depends on: none` or `Depends on: #12, #34` declaration (at most 20 distinct same-repository issues). Missing/open/unreadable
-dependencies hold dispatch. Existing arbitrary Codex CLI sessions are not adopted.
+`Depends on: none` or `Depends on: #12, #34 (technical: required schema)` declaration
+(at most 20 distinct same-repository issues). Types are delivery, design, technical or process;
+reasons are bounded to 160 characters. Missing targets, cycles and prerequisites lacking
+local human acceptance hold dispatch. Priority orders eligible tasks and creates no dependency. Existing arbitrary Codex CLI sessions are not adopted.
 
 Managed task checkouts are standalone clones without submodules or nested repositories.
 Host validation and hooks reject Git worktree indirection, executable Git configuration,

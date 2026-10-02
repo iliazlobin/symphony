@@ -164,7 +164,7 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     assert task(tasks, "2").stage == "ready"
     assert task(tasks, "3").stage == "ready"
     assert task(tasks, "3").lane == "work"
-    assert task(tasks, "3").attention =~ "Dependencies must be visible"
+    assert task(tasks, "3").attention =~ "human-accepted Done"
     assert task(tasks, "4").attention =~ "Depends on:"
 
     tasks = TaskBoard.project([%{backlog | state: "closed"}, waiting], %{}, %{}, settings()).tasks
@@ -257,6 +257,13 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     assert card.attention == nil
     assert card.acceptance == acceptance
 
+    stable = put_in(ledger, ["acceptance", "project_id"], "github:example/repo")
+    stable = put_in(stable, ["acceptance", "tracker_fingerprint"], "previous-credentials")
+    [converged] = TaskBoard.project([issue("1")], %{running: [activity("1")]}, %{"issues" => %{"1" => stable}}, settings()).tasks
+    assert converged.lane == "done"
+    assert converged.execution_status == "idle"
+    assert converged.attention == nil
+
     remote_settings = put_in(settings(), [:control, :enabled], false)
     remote_control = %{"enabled" => true, "tracker_fingerprint" => fingerprint, "issues" => %{"1" => ledger}}
     [remote_card] = TaskBoard.project([issue("1", state: "closed")], %{}, remote_control, remote_settings).tasks
@@ -274,7 +281,7 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
 
     [card] = TaskBoard.project([issue("1")], %{running: [activity("1")]}, %{}, settings()).tasks
     assert card.stage == "running"
-    assert card.lane == "work"
+    assert card.lane == "in_progress"
   end
 
   test "a durable reservation without a running worker is explicitly uncertain" do

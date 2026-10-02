@@ -16,7 +16,7 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
 
   defp login_page(conn, params) do
     if params["continue"] == "1" and BrowserAuth.authorized?(BrowserAuth.conn_context(conn)) do
-      conn |> no_store() |> redirect(to: "/")
+      conn |> no_store() |> redirect(to: SymphonyElixirWeb.WorkspacePath.path("/"))
     else
       sign_in_page(conn, params)
     end
@@ -39,7 +39,7 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
       |> put_resp_header("referrer-policy", "same-origin")
       |> html(BrowserLoginHTML.render(assigns) |> Safe.to_iodata() |> IO.iodata_to_binary())
     else
-      redirect(conn, to: if(params["continue"] == "1", do: "/", else: "/?panel=settings"))
+      redirect(conn, to: if(params["continue"] == "1", do: SymphonyElixirWeb.WorkspacePath.path("/"), else: SymphonyElixirWeb.WorkspacePath.path("/?panel=settings")))
     end
   end
 
@@ -59,10 +59,10 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
 
     cond do
       continuation and BrowserAuth.authorized?(BrowserAuth.conn_context(conn)) ->
-        conn |> no_store() |> redirect(to: "/")
+        conn |> no_store() |> redirect(to: SymphonyElixirWeb.WorkspacePath.path("/"))
 
       continuation and not permitted ->
-        conn |> no_store() |> redirect(to: "/login")
+        conn |> no_store() |> redirect(to: SymphonyElixirWeb.WorkspacePath.path("/login"))
 
       true ->
         start_google(conn, params, if(continuation, do: :continuation, else: :interactive))
@@ -111,7 +111,7 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
       BrowserAuth.authorized?(BrowserAuth.conn_context(conn)) ->
         # A cross-site callback GET carries the Lax cookie. Only a CSRF-protected
         # login start may replace an existing grant, never an unsolicited callback.
-        redirect(conn, to: "/")
+        redirect(conn, to: SymphonyElixirWeb.WorkspacePath.path("/"))
 
       true ->
         complete_callback(conn, flow, params)
@@ -145,7 +145,7 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
     |> delete_session("google_continue")
     |> put_flash(:error, message)
     |> no_store()
-    |> redirect(to: "/login")
+    |> redirect(to: SymphonyElixirWeb.WorkspacePath.path("/login"))
   end
 
   defp no_store(conn), do: conn |> put_resp_header("cache-control", "no-store") |> put_resp_header("referrer-policy", "no-referrer")
@@ -163,7 +163,7 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
         |> redirect(to: return_to(params))
 
       {:error, :google_required} ->
-        conn |> no_store() |> redirect(to: "/login")
+        conn |> no_store() |> redirect(to: SymphonyElixirWeb.WorkspacePath.path("/login"))
 
       {:error, :local_browser_required} ->
         conn |> send_resp(403, "Operator controls require a same-origin loopback browser.") |> halt()
@@ -181,10 +181,12 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
   end
 
   # Only known app entrypoints can receive an authentication redirect.
-  defp return_to(%{"return_to" => "/chat"}), do: "/chat"
-  defp return_to(%{"return_to" => "/?assistant=1"}), do: "/?assistant=1"
-  defp return_to(%{"return_to" => "/"}), do: "/"
-  defp return_to(_params), do: "/?panel=settings"
+  defp return_to(params) do
+    requested = params["return_to"]
+    relative = if is_binary(requested), do: SymphonyElixirWeb.WorkspacePath.relative(requested)
+    destination = if relative in ["/chat", "/?assistant=1", "/"], do: relative, else: "/?panel=settings"
+    SymphonyElixirWeb.WorkspacePath.path(destination)
+  end
 
   @spec delete(Conn.t(), map()) :: Conn.t()
   def delete(conn, _params) do
@@ -199,7 +201,7 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
       |> put_session("google_signed_out", true)
       |> no_store()
       |> put_flash(:info, "Signed out.")
-      |> redirect(to: if(BrowserAuth.google_enabled?(), do: "/login", else: "/?panel=settings"))
+      |> redirect(to: if(BrowserAuth.google_enabled?(), do: SymphonyElixirWeb.WorkspacePath.path("/login"), else: SymphonyElixirWeb.WorkspacePath.path("/?panel=settings")))
     else
       conn |> send_resp(403, "Operator controls require a same-origin loopback browser.") |> halt()
     end

@@ -92,6 +92,55 @@ defmodule SymphonyElixir.ControlOrchestratorTest do
     assert {:error, :control_unavailable} = Orchestrator.control_command(set, ctx.pid)
   end
 
+  test "native dispatch revalidation uses local human acceptance and rejects fresh dependency changes", ctx do
+    tracker = %{
+      kind: "github",
+      provider: %{repo: "owner/repo", token: "fixture-token"},
+      active_states: ["open"],
+      terminal_states: ["closed"],
+      required_labels: ["ready"]
+    }
+
+    config = Map.put(ctx.config, :tracker, tracker)
+    File.write!(ctx.workflow, "---\n" <> Jason.encode!(config) <> "\n---\nTask")
+    Workflow.set_workflow_file_path(ctx.workflow)
+    candidate = %{ctx.issue | description: "Depends on: #8 (technical: schema)", native_ref: %{"repo" => "owner/repo"}, updated_at: ~U[2026-10-01 10:00:00Z]}
+    read = fn ["7"] -> {:ok, [candidate]} end
+    state = :sys.get_state(ctx.pid)
+    assert {:skip, _} = Orchestrator.revalidate_issue_for_dispatch_for_test(candidate, read, state)
+
+    acceptance = %{
+      "command_id" => "human-accept-8",
+      "tracker_fingerprint" => "previous-config",
+      "project_id" => "github:owner/repo",
+      "candidate_sha" => nil,
+      "tracker_state" => "closed",
+      "issue_updated_at" => "2026-10-01T09:00:00Z",
+      "accepted_at" => "2026-10-01T09:10:00Z"
+    }
+
+    item = %{"attempts" => 0, "runtime_ms" => 0, "tokens" => 0, "hold" => "accepted", "active" => nil, "acceptance" => acceptance}
+
+    :sys.replace_state(ctx.pid, fn state ->
+      data = put_in(state.control.data, ["issues", "8"], item)
+      %{state | control: %{state.control | data: data}}
+    end)
+
+    state = :sys.get_state(ctx.pid)
+
+    assert {:ok, %Issue{dispatchable: true, dependencies: [%{"issue_id" => "8"}]}} =
+             Orchestrator.revalidate_issue_for_dispatch_for_test(candidate, read, state)
+
+    changed = %{candidate | description: "Depends on: #9"}
+    changed_read = fn ["7"] -> {:ok, [changed]} end
+    assert {:skip, _} = Orchestrator.revalidate_issue_for_dispatch_for_test(candidate, changed_read, state)
+    acceptance_path = [Access.key(:control), Access.key(:data), "issues", "8", "acceptance", "project_id"]
+    foreign = put_in(state, acceptance_path, "github:other/repo")
+    assert {:skip, _} = Orchestrator.revalidate_issue_for_dispatch_for_test(candidate, read, foreign)
+    assert Orchestrator.control_snapshot(ctx.pid)["issues"]["8"]["attempts"] == 0
+    assert :sys.get_state(ctx.pid).running == %{}
+  end
+
   test "routed settings API validates limits and retains idempotent receipts", ctx do
     token = start_control_endpoint(ctx.pid)
     set = %{"command_id" => "api-settings", "expected_revision" => 0, "action" => "set_concurrency", "limit" => 4}

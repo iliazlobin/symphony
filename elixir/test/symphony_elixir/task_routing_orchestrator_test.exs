@@ -152,17 +152,84 @@ defmodule SymphonyElixir.TaskRoutingOrchestratorTest do
     assert {:skip, ^labeled} = revalidate(issue(), {:ok, [labeled]}, :sys.get_state(c.pid))
   end
 
-  test "fresh GitHub dependency admission still blocks local queue until dependencies close", c do
+  test "one polling pass evaluates the dependency graph once for a large unqueued catalog", c do
+    rows = for id <- 2..501, do: issue(id: to_string(id), identifier: "GH-#{id}", description: "Depends on: #1")
+    Agent.update(c.fixture, &%{&1 | issues: rows})
+
+    acceptance = %{
+      "command_id" => "human-accept-1",
+      "tracker_fingerprint" => c.scope,
+      "project_id" => "github:example/tasks",
+      "candidate_sha" => nil,
+      "tracker_state" => "closed",
+      "issue_updated_at" => DateTime.to_iso8601(@updated),
+      "accepted_at" => "2026-09-24T11:00:00Z"
+    }
+
+    item = %{"attempts" => 0, "runtime_ms" => 0, "tokens" => 0, "hold" => "accepted", "active" => nil, "acceptance" => acceptance}
+    :sys.replace_state(c.pid, fn state -> %{state | control: %{state.control | data: put_in(state.control.data, ["issues", "1"], item)}} end)
+    pattern = {SymphonyElixir.TaskDependencies, :cycle_groups, 1}
+    :erlang.trace_pattern(pattern, true, [:local])
+    :erlang.trace(c.pid, true, [:call, {:tracer, self()}])
+
+    try do
+      resume = %{"action" => "resume", "command_id" => "resume-fixture", "expected_revision" => 0}
+      assert {:ok, _} = Orchestrator.control_command(resume, c.pid)
+      pid = c.pid
+      assert_receive {:trace, ^pid, :call, {SymphonyElixir.TaskDependencies, :cycle_groups, [records]}}, 1_000
+      assert map_size(records) == 500
+      state = :sys.get_state(c.pid)
+      assert state.running == %{}
+      assert map_size(state.control.data["tracker_issues"]) == 500
+      delivered = :erlang.trace_delivered(pid)
+      assert_receive {:trace_delivered, ^pid, ^delivered}
+      passes = Enum.count(calls(c), &(&1 == {:states, ["open"]}))
+      assert dependency_trace_count(pid, 1) == passes
+      refute Enum.any?(calls(c), &match?({:ids, _}, &1))
+    after
+      :erlang.trace(c.pid, false, [:call])
+      :erlang.trace_pattern(pattern, false, [:local])
+    end
+  end
+
+  test "manual create and continue work commands retain fresh hard dependency admission", c do
+    queue_state(c)
+    Agent.update(c.fixture, &%{&1 | issues: [issue(description: "Depends on: #8 (technical: schema)")]})
+    common = %{"work_id" => String.duplicate("a", 32), "instruction" => "Implement scoped work"}
+    create = command("create_pr_work", 1) |> Map.merge(common) |> Map.put("base_sha", String.duplicate("b", 40))
+    continue = command("continue_pr_work", 1) |> Map.merge(common) |> Map.put("expected_head_sha", nil)
+    assert {:error, :task_not_queueable} = Orchestrator.control_command(create, c.pid)
+    assert {:error, :task_not_queueable} = Orchestrator.control_command(continue, c.pid)
+    assert Orchestrator.control_snapshot(c.pid)["revision"] == 1
+    assert is_nil(Orchestrator.control_snapshot(c.pid)["issues"]["7"]["pr_work"])
+    refute {:ids, ["8"]} in calls(c)
+    assert :sys.get_state(c.pid).running == %{}
+  end
+
+  test "fresh dependency admission uses local human acceptance rather than GitHub closure", c do
     state = queue_state(c)
     dependent = issue(description: "Depends on: #8")
-    dependency = issue(id: "8", identifier: "GH-8")
+    dependency = issue(id: "8", identifier: "GH-8", state: "closed")
     Agent.update(c.fixture, &%{&1 | issues: [dependent, dependency]})
     blocked = Orchestrator.revalidate_issue_for_dispatch_for_test(issue(), &Tracker.fetch_issues_by_ids/1, state)
     assert {:skip, %Issue{dispatchable: false, blocked_by: [%{id: "8"}]}} = blocked
-    Agent.update(c.fixture, &%{&1 | issues: [dependent, %{dependency | state: "closed"}]})
+    refute {:ids, ["8"]} in calls(c)
+
+    acceptance = %{
+      "command_id" => "human-accept-8",
+      "tracker_fingerprint" => c.scope,
+      "project_id" => "github:example/tasks",
+      "candidate_sha" => nil,
+      "tracker_state" => "closed",
+      "issue_updated_at" => DateTime.to_iso8601(@updated),
+      "accepted_at" => "2026-09-24T11:00:00Z"
+    }
+
+    item = %{"attempts" => 0, "runtime_ms" => 0, "tokens" => 0, "hold" => "accepted", "active" => nil, "acceptance" => acceptance}
+    state = %{state | control: %{state.control | data: put_in(state.control.data, ["issues", "8"], item)}}
     admitted = Orchestrator.revalidate_issue_for_dispatch_for_test(issue(), &Tracker.fetch_issues_by_ids/1, state)
     assert {:ok, %Issue{dispatchable: true, labels: []}} = admitted
-    assert {:ids, ["8"]} in calls(c)
+    refute {:ids, ["8"]} in calls(c)
   end
 
   test "running and blocked reconciliation retain local queue while mirrored labels lag", c do
@@ -187,6 +254,15 @@ defmodule SymphonyElixir.TaskRoutingOrchestratorTest do
     released = Orchestrator.reconcile_blocked_issue_states_for_test([labeled], %{blocked | control: cancelled})
     assert released.blocked == %{}
     assert released.claimed == MapSet.new()
+  end
+
+  defp dependency_trace_count(pid, count) do
+    receive do
+      {:trace, ^pid, :call, {SymphonyElixir.TaskDependencies, :cycle_groups, _}} ->
+        dependency_trace_count(pid, count + 1)
+    after
+      0 -> count
+    end
   end
 
   defp queue_state(c) do

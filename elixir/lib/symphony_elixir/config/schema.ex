@@ -245,6 +245,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:timeout_ms, :integer, default: 300_000)
       field(:max_concurrent, :integer, default: 2)
       field(:max_tool_calls, :integer, default: 8)
+      field(:auto_create_backlog, :boolean, default: false)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -263,7 +264,8 @@ defmodule SymphonyElixir.Config.Schema do
             :executable,
             :timeout_ms,
             :max_concurrent,
-            :max_tool_calls
+            :max_tool_calls,
+            :auto_create_backlog
           ],
           empty_values: []
         )

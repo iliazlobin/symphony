@@ -11,18 +11,18 @@ review and publication path as an application project. The repository is
 | --- | --- |
 | Versioned execution policy | [Root WORKFLOW.md](../../WORKFLOW.md) |
 | Source and PR base | Explicit reviewed commit on `main` |
-| Browser origin | `http://localhost:8779` |
+| Browser address | `http://localhost:8778/projects/symphony/` |
 | Private configuration | `~/Library/Application Support/Symphony/symphony/config.json` |
-| Launch agents | `com.iliazlobin.symphony.symphony` and `.publication` |
+| Workspace service | `com.iliazlobin.symphony.workspace` |
 | Worker policy | `symphony-self-codex`, scoped to this project's workspaces |
 | Initial state | Paused; worker launch and automatic merge disabled |
 
 - Each controller owns one repository, token, ledger, workspace root, worker home,
   receipts and chat store. Issue numbers are repository-scoped.
-- **Projects** opens the configured project's board. Navigation does not combine
-  controller state or carry authentication, task selection or chat authority across projects.
-- The distinct session cookie keeps project sign-ins from replacing each other on
-  `localhost`. Each Google origin still requires its own valid callback configuration.
+- The workspace owns one public origin and browser grant. Project selection changes
+  the explicit `/projects/<slug>/` scope; two tabs remain independent.
+- Private project engines retain separate ledgers, stores and native schedulers.
+  Engine restart preserves the workspace grant; workspace restart requires sign-in.
 - Existing PR enrichment associates GitHub issues with their linked PRs, current-head
   checks and review evidence. An unlinked PR is not inferred to belong to a task.
 - Shared Docker resources and account limits have no global admission coordinator.
@@ -46,31 +46,14 @@ is empty and therefore denies sign-in until the operator configures access.
 
 ## Activate the board
 
-- Configure the private workflow's Google allowlist and set `google_oauth_client_file`
-  in its private `config.json`. Register `http://localhost:8779/auth/google/callback`
-  on the approved Google web client. Do not copy owner credentials into a worker home.
-- The launcher supplies private `chat` and `management-codex` directories for this
-  project. Native task intake uses that store without a model login. For chat turns,
-  set `management_codex_binary` to the pinned management executable and authenticate
-  this fresh home using the [chat setup](../../elixir/README.md#web-board-and-chat).
-  Browser identity and model authentication are separate.
-- After approval to start this controller, install and start its launch agents with
-  the explicit new configuration:
+Use the [shared workspace service](../events-concierge/README.md#workspace-service).
+Register only `http://localhost:8778/auth/google/callback` on the reviewed Google web
+client. Every project must use the same admitted browser identity policy. Browser
+identity and OpenRouter credentials remain separate from native worker authentication.
 
-```sh
-python3 tools/symphony_service.py --config "/path/to/symphony/config.json" install
-python3 tools/symphony_service.py --config "/path/to/symphony/config.json" start
-python3 tools/symphony_control.py --config "/path/to/symphony/config.json" status
-```
-
-Verify repository identity, paused mode and disabled launch/merge gates. Check Google
-sign-in, the settings issue, its card links and linked PR evidence on the new board.
-
-For navigation from Events Concierge, add the root workflow's `server.project_links`
-list to that project's private workflow during its approved configuration update.
-Keep its existing `server.session_cookie` default. These are browser links, not remote
-control endpoints; destination auth is checked independently. Replacing a controller
-binary or changing authentication still requires its normal approved restart.
+Keep private state paths, paused mode, baseline and disabled launch/merge gates
+unchanged when adding this project. Its control client uses
+`http://127.0.0.1:8778/projects/symphony`. Switching projects does not authorize execution.
 
 ## Enable implementation work
 

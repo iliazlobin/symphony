@@ -706,13 +706,9 @@ summary { cursor: pointer; color: var(--accent); }
 .issue-pr-select:hover, .issue-pr-select[aria-pressed="true"] { background: var(--soft); }
 .issue-pr-select[aria-pressed="true"] > :first-child { color: var(--accent); }
 .issue-pr-main { flex-direction: column; gap: 4px; margin-bottom: 6px; }
-.issue-pr-main > .agent-description { color: var(--muted); font-size: 11px; }
 .agent-label { display: flex; align-items: baseline; gap: 4px; min-width: 0; max-width: 100%; font-weight: 400; }
 .agent-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-role { flex-shrink: 0; white-space: nowrap; color: var(--muted); font-size: 11px; }
-.issue-pr-selected { grid-column: 1; }
-.issue-pr-selection-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; grid-column: 1; color: var(--muted); font-size: 10px; }
-.issue-pr-selection-meta .pr-state, .issue-pr-selection-meta .issue-chat-activity { font-size: 10px; }
 .issue-pr-select > .agent-label { flex: 1 1 180px; }
 .issue-pr-main { align-items: stretch; }
 .issue-pr-main > .agent-label { flex: 0 1 auto; }
@@ -724,12 +720,6 @@ summary { cursor: pointer; color: var(--accent); }
 
 /* Agent coordination stays visible beside the conversation without another panel. */
 .agent-progress { flex-shrink: 0; padding: 8px 14px; border-bottom: 1px solid var(--line); font-size: 11px; min-width: 0; }
-.operator-scope { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding: 7px 14px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; font-weight: 400; }
-.agent-scope-trail { display: inline-flex; align-items: center; gap: 5px; }
-.agent-scope-trail button { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
-.agent-scope-trail button:hover { text-decoration: underline; text-underline-offset: 2px; }
-.agent-scope-trail [aria-current=location] { color: var(--fg); }
-.operator-work-goal { width: 100%; margin: 1px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-work-status { display: flex; flex-wrap: wrap; gap: 3px 8px; margin-top: 8px; color: var(--muted); font-size: 11px; }
 .card-work-status a, .work-resource-link { font-size: 11px; text-decoration: none; }
 .card-work-status a:hover, .work-resource-link:hover { text-decoration: underline; text-underline-offset: 2px; }
@@ -749,3 +739,137 @@ summary { cursor: pointer; color: var(--accent); }
 .chat-queued-source { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 10px; color: var(--muted); }
 .chat-queued-source > .agent-label { flex: 0 1 auto; }
 .chat-queued-source .agent-role { font-size: inherit; }
+
+/* Operator workspace: one spacing scale and restrained type hierarchy. */
+:root { --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-6: 24px; --radius: 8px; font-size: 14px; }
+h2, h3, strong { font-weight: 500; }
+.board-header { min-height: 56px; padding: 12px 16px; gap: 12px; flex-shrink: 0; }
+.board-toolbar { padding: 8px 16px; flex-shrink: 0; }
+.board-content { padding: 12px 16px 0; }
+.board-footer, .board-context { padding-left: 16px; padding-right: 16px; }
+.kanban-board { grid-template-columns: repeat(5, minmax(220px, 1fr)); gap: 12px; }
+.kanban-lane { border-radius: var(--radius); padding: 0 8px 12px; }
+.lane-heading { padding: 12px 4px; }
+.lane-dot-in_progress { border-color: var(--accent); background: conic-gradient(var(--accent) 0 75%, transparent 75%); }
+.task-card { padding: 12px; border-radius: var(--radius); box-shadow: 0 1px 2px #00000005; }
+.card-title { font-size: 14px; line-height: 1.5; font-weight: 400; text-decoration: none; }
+.card-title:hover { text-decoration: underline; }
+.card-top { margin-bottom: 8px; }
+.card-bottom { margin-top: 12px; }
+.card-task-kind[data-task-kind=general] { display: none; }
+.execution-state { font-weight: 400; font-size: 12px; }
+.execution-summary.compact { margin-top: 8px; }
+.execution-summary.compact .execution-note { margin-top: 4px; font-size: 11px; }
+.card-pr-summary { gap: 4px 8px; margin-top: 8px; }
+.board-notice, .board-warning { margin: 0 0 12px; }
+.board-dispatch-guidance p { margin: 0; }
+.dialog-inner { padding: 24px; }
+.dialog-heading { margin-bottom: 16px; }
+.dialog-heading h2 { font-size: 18px; font-weight: 500; }
+.board-dialog[data-kind=graph] { width: min(1120px, calc(100vw - 32px)); }
+.field, .dialog-actions, .dialog-section { margin-top: 16px; }
+.markdown-content { line-height: 1.55; }
+.markdown-content :is(h1,h2,h3,h4,h5,h6) { font-size: 14px; font-weight: 500; margin: 16px 0 8px; }
+.markdown-content > * { margin-bottom: 8px; }
+.message-markdown { font-size: 14px; }
+.message-markdown strong { font-weight: 500; }
+.chat-messages { gap: 24px; font-size: 14px; }
+.chat-scroll { padding: 20px 16px; }
+.chat-composer-wrap { padding: 12px 16px; }
+.chat-composer { padding: 12px; border-radius: 12px; box-shadow: none; }
+.chat-composer textarea { min-height: 44px; font-size: 14px; }
+.chat-message-user { border-radius: 10px; padding: 12px; }
+.message-meta { font-size: 10px; gap: 4px 8px; }
+.message-meta .agent-name { max-width: 210px; }
+.chat-empty { gap: 12px; padding: 24px 16px; min-height: 38dvh; }
+.chat-empty h1 { font-size: 20px; font-weight: 500; letter-spacing: -.2px; }
+.chat-orbit { width: 36px; height: 36px; border-radius: 10px; font-size: 24px; }
+.chat-starters { margin-top: 8px; }
+.chat-starters button { padding: 10px 12px; font-size: 12px; }
+.operator-breadcrumbs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 56px; padding: 12px 16px; border-bottom: 1px solid var(--line); flex-shrink: 0; background: var(--panel); position: relative; z-index: 21; }
+.breadcrumb-project { max-width: 180px; padding: 0; border: 0; background: transparent; color: var(--fg); white-space: nowrap; text-overflow: ellipsis; overflow: hidden; font-size: 13px; }
+.breadcrumb-project:hover { color: var(--accent); }
+.breadcrumb-separator { color: var(--muted); font-size: 12px; }
+.breadcrumb-category { color: var(--muted); font-size: 11px; }
+.operator-breadcrumbs .issue-switcher, .operator-breadcrumbs .issue-pr-menu { position: relative; flex: 0 1 auto; width: auto; min-width: 0; margin: 0; }
+.operator-breadcrumbs .issue-chat-identity { display: contents; }
+.operator-breadcrumbs .issue-switcher > summary, .operator-breadcrumbs .issue-pr-menu > summary { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 6px; width: auto; max-width: 160px; border: 0; border-radius: 6px; background: transparent; color: var(--fg); font-size: 12px; }
+.operator-breadcrumbs details > summary:hover, .operator-breadcrumbs details[open] > summary { background: var(--soft); }
+.operator-breadcrumbs .issue-switcher > summary > span:not(.breadcrumb-category) { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.operator-breadcrumbs .issue-switcher-menu, .operator-breadcrumbs .issue-pr-list { width: min(360px, calc(100vw - 48px)); max-width: var(--chat-menu-width, 100vw); transform: translateX(var(--chat-menu-offset, 0px)); left: 0; right: auto; padding: 8px; box-shadow: 0 8px 32px #0002; border-radius: 10px; }
+.operator-breadcrumbs .issue-pr-list { left: auto; right: 0; }
+.operator-breadcrumbs .issue-switcher-menu input, .operator-breadcrumbs .issue-pr-search input { padding: 8px 10px; font-size: 13px; }
+.operator-breadcrumbs .issue-option { padding: 10px 8px; }
+.operator-breadcrumbs .issue-option-meta { gap: 6px; }
+.operator-breadcrumbs .issue-option-updated, .operator-breadcrumbs .issue-option-preview, .operator-breadcrumbs .issue-option time { display: none; }
+.operator-breadcrumbs .issue-option-main { gap: 2px; }
+.operator-task-state, .operator-working-count { font-size: 10px; color: var(--muted); }
+.operator-task-state { margin-left: auto; }
+.agent-progress { padding: 8px 16px; margin: 0; font-size: 11px; }
+.agent-progress > summary { color: var(--muted); font-size: 11px; }
+.agent-progress[open] > summary { margin-bottom: 8px; }
+.chat-widget { border: 0; border-radius: 0; padding: 0; background: transparent; font-size: 12px; }
+.chat-widget-proposal { padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.chat-widget :is(.widget-heading,.widget-checked,.widget-footnote) { font-size: 11px; }
+.tool-observation { margin: 0; padding: 8px 0; border-top: 1px solid var(--line); }
+.tool-observation > summary { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--muted); font-size: 11px; }
+.tool-observation > summary::before { content: '›'; }
+.tool-observation[open] > summary::before { content: '⌄'; }
+.tool-observation > summary::-webkit-details-marker { display: none; }
+.tool-observation[open] > summary { margin-bottom: 12px; }
+.observation-counts { margin-left: auto; }
+.status-counts { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0; }
+.status-counts > div { display: flex; gap: 4px; background: transparent; padding: 0; }
+.status-counts dd { font-size: 12px; margin: 0; font-weight: 400; }
+.widget-blockers { gap: 4px; margin-top: 8px; }
+.widget-task { padding: 8px 0; font-size: 12px; }
+.chat-queue { border-radius: 8px; }
+.chat-queue ol { max-height: 120px; }
+@media (max-width: 860px) {
+  .board-dialog[data-kind=task] { max-height: calc(42dvh - 24px); }
+}
+@media (max-width: 540px) {
+  .dialog-inner { padding: 16px; }
+  .operator-breadcrumbs { gap: 4px; padding: 8px 12px; }
+  .breadcrumb-project { max-width: 115px; }
+  .operator-breadcrumbs .issue-switcher > summary, .operator-breadcrumbs .issue-pr-menu > summary { padding: 4px; max-width: 100px; }
+  .operator-breadcrumbs .breadcrumb-category { display: none; }
+  .operator-task-state { flex-basis: auto; }
+  .kanban-board { display: block; }
+  .chat-scroll, .chat-composer-wrap { padding: 12px; }
+}
+.workflow-graph { font-size: 13px; }
+.graph-description { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+.graph-status { color: var(--muted); background: var(--soft); padding: 8px 10px; border-radius: 6px; margin-bottom: 12px; font-size: 12px; }
+.graph-flow-caption { color: var(--muted); font-size: 11px; margin: 0 0 8px; }
+.graph-view-picker { border: 0; display: inline-flex; gap: 4px; padding: 4px; margin: 0 0 16px; background: var(--soft); border-radius: 8px; }
+.graph-view-picker label { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 5px; cursor: pointer; font-size: 12px; }
+.graph-view-picker label:has(input:checked) { background: var(--panel); color: var(--accent); }
+.graph-view-picker input { margin: 0; accent-color: var(--accent); min-height: 0; }
+.graph-hierarchy-view { display: none; }
+.workflow-graph:has(input[value=hierarchy]:checked) .graph-hierarchy-view { display: block; }
+.workflow-graph:has(input[value=hierarchy]:checked) .graph-dependencies-view { display: none; }
+.graph-legend { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; color: var(--muted); font-size: 11px; }
+.graph-legend > span { display: flex; align-items: center; gap: 6px; }
+.graph-canvas { max-height: 48dvh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); margin-bottom: 16px; overscroll-behavior: contain; }
+.graph-canvas svg { display: block; }
+.graph-dependency-canvas svg { margin-inline: auto; }
+.graph-edge { stroke: var(--muted); stroke-width: 1.3; fill: none; opacity: .6; }
+.graph-edge[data-status=satisfied] { stroke: var(--good); }
+.graph-edge[data-status=missing], .graph-edge[data-status=cycle] { stroke: var(--warn); stroke-dasharray: 4 3; }
+.graph-canvas marker path { fill: var(--muted); }
+.graph-node rect { fill: var(--panel); stroke: var(--line); }
+.graph-node text { fill: var(--fg); font-size: 11px; }
+.graph-node .graph-node-id, .graph-node .graph-node-status { fill: var(--muted); font-size: 10px; }
+.graph-node[data-lane=in_progress] rect { stroke: var(--accent); }
+.graph-node[data-lane=work] rect { stroke: #d6ad26; }
+.graph-node[data-lane=review] rect { stroke: #d97782; }
+.graph-node[data-lane=done] rect { stroke: var(--good); }
+.graph-node[data-missing=true] rect, .graph-node[data-cycle=true] rect { stroke: var(--warn); stroke-dasharray: 4 3; }
+.graph-empty { color: var(--muted); font-size: 12px; }
+.graph-relationship-list { overflow-x: auto; }
+.graph-relationship-list h3 { font-size: 13px; margin-bottom: 8px; }
+.graph-relationship-list table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.graph-relationship-list :is(th,td) { padding: 8px; border-bottom: 1px solid var(--line); text-align: left; font-weight: 400; overflow-wrap: anywhere; min-width: 100px; }
+.graph-relationship-list th { color: var(--muted); }
+.graph-ownership-list { padding-left: 20px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }

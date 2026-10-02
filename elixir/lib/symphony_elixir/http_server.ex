@@ -27,7 +27,7 @@ defmodule SymphonyElixir.HttpServer do
         with {:ok, ip} <- parse_host(host) do
           endpoint_opts = [
             server: true,
-            http: [ip: ip, port: port],
+            http: listener(ip, port),
             url: browser_url(host),
             check_origin: browser_origins(),
             orchestrator: orchestrator,
@@ -41,7 +41,7 @@ defmodule SymphonyElixir.HttpServer do
             |> Keyword.merge(endpoint_opts)
 
           Application.put_env(:symphony_elixir, Endpoint, endpoint_config)
-          Endpoint.start_link()
+          configure_socket_mode(Endpoint.start_link())
         end
 
       _ ->
@@ -101,7 +101,28 @@ defmodule SymphonyElixir.HttpServer do
     end
   end
 
+  defp configure_socket_mode({:ok, _} = started) do
+    case System.get_env("SYMPHONY_WORKSPACE_ENGINE_SOCKET") do
+      path when is_binary(path) -> :ok = File.chmod(path, 0o600)
+      _ -> :ok
+    end
+
+    started
+  end
+
+  defp configure_socket_mode(started), do: started
+
+  defp listener(ip, port) do
+    case System.get_env("SYMPHONY_WORKSPACE_ENGINE_SOCKET") do
+      path when is_binary(path) -> [ip: {:local, path}, port: 0]
+      _ -> [ip: ip, port: port]
+    end
+  end
+
   defp secret_key_base do
-    Base.encode64(:crypto.strong_rand_bytes(@secret_key_bytes), padding: false)
+    case System.get_env("SYMPHONY_WORKSPACE_SECRET") do
+      secret when is_binary(secret) and byte_size(secret) >= 64 -> secret
+      _ -> Base.encode64(:crypto.strong_rand_bytes(@secret_key_bytes), padding: false)
+    end
   end
 end

@@ -1,5 +1,5 @@
 defmodule SymphonyElixir.ProjectDirectory do
-  @moduledoc "Trusted links between project controllers; each destination owns its auth and state."
+  @moduledoc "Trusted project destinations; workspace links select isolated engines on one origin."
 
   alias SymphonyElixir.Config
 
@@ -15,8 +15,24 @@ defmodule SymphonyElixir.ProjectDirectory do
   @spec links() :: [map()]
   def links do
     case Config.settings() do
-      {:ok, %{server: %{project_links: links}}} when is_list(links) -> if valid?(links), do: links, else: []
-      _ -> []
+      {:ok, %{server: %{project_links: links}}} when is_list(links) ->
+        if valid?(links), do: workspace_links(links), else: []
+
+      _ ->
+        []
+    end
+  end
+
+  defp workspace_links(links) do
+    if SymphonyElixirWeb.WorkspacePath.enabled?() do
+      origin = System.fetch_env!("SYMPHONY_WORKSPACE_ORIGIN")
+
+      Enum.map(links, fn link ->
+        slug = link["id"] |> String.split("/") |> List.last()
+        Map.put(link, "url", origin <> "/projects/" <> slug <> "/")
+      end)
+    else
+      links
     end
   end
 

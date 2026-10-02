@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 import urllib.error
@@ -45,7 +46,7 @@ def load_config(path: str | Path | None = None) -> dict:
     parsed = urllib.parse.urlsplit(config["api_url"])
     if (parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "::1")
             or parsed.username or parsed.password or parsed.query or parsed.fragment
-            or parsed.path not in ("", "/")):
+            or not valid_api_prefix(parsed.path, config.get("repository"))):
         raise ControlError("The Mac control client only connects to an explicit loopback HTTP address")
     if parsed.port is None:
         raise ControlError("An explicit control API port is required")
@@ -57,6 +58,15 @@ def load_config(path: str | Path | None = None) -> dict:
         raise ControlError("Control token is missing or too short")
     config["_config_path"] = str(target)
     return config
+
+
+def valid_api_prefix(path: str, repository: str | None) -> bool:
+    if path in ("", "/"):
+        return True
+    if not isinstance(repository, str):
+        return False
+    slug = repository.split("/")[-1]
+    return path in ("/projects/" + slug, "/projects/" + slug + "/") and bool(re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", slug))
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

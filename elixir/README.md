@@ -1,8 +1,8 @@
 # Symphony Elixir
 
 The controlled GitHub board supports queueing from **Backlog → Work** by drag-and-drop
-or the task's **Move to Work** button. Both open a durable preview requiring **Queue task**
-confirmation. See the [profile workflow](../profiles/events-concierge/README.md#operate)
+or the task's **Move to Work** button. These save the move directly, without another
+confirmation form. See the [profile workflow](../profiles/events-concierge/README.md#operate)
 for task creation, holds, review and completion. Transitions commit to the local control
 ledger and update the board immediately. GitHub routing labels synchronize in the background
 with durable retry; queueing does not resume a paused controller.
@@ -13,6 +13,15 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 > [!WARNING]
 > Symphony Elixir is prototype software intended for evaluation only and is presented as-is.
 > We recommend implementing your own hardened version based on `SPEC.md`.
+
+## Multi-project workspace
+
+Use the [workspace service](../profiles/events-concierge/README.md#workspace-service)
+for one browser origin and project-scoped board, chat and control API. The workspace
+supervises isolated engines on private Unix sockets and owns the shared revocable
+browser grant. Internal navigation uses `WorkspacePath`; LiveView aliases preserve
+explicit project scope. Standalone workflows retain their existing endpoint behavior.
+
 
 ## Controlled local execution
 
@@ -345,15 +354,12 @@ Work names use the PR title or the first line of the work instruction before pub
 Long names truncate while the role stays visible; hover reveals the full label. Search
 matches names, PR numbers, status, review or CI. Incomplete GitHub evidence stays labeled.
 Named agent links in task details focus the corresponding conversation.
-Filter **Kind** separates features, bugs, testing, security, releases, operations and other task intents. Classification grants no execution tools. The selected session is retained in the board URL across reloads. Project → Task → Work breadcrumbs return to the supervising conversation. Work cards and chat show retained session counts, recorded execution phases and the selected working goal, separately from chat activity.
-Use **New task** to enter a required **Title** and optional **Description** and **Test (verification)**.
-Description and verification can be left empty.
-**Create task** submits once without a separate preview. The project agent accepts the
-same fields and still presents its exact proposal for human confirmation.
-Created tasks enter the backlog without execution routing labels. Recent submissions
-refresh automatically and retain receipts and unfinished actions across reconnects. If the result is uncertain,
-use **Check outcome** to reconcile it before creating another request. This form uses
-the durable action store and works without a model turn or subscription login.
+Filter **Kind** separates features, bugs, testing, security, releases, operations and other task intents. Classification grants no execution tools. The selected session is retained in the board URL across reloads. Project → Task → Work breadcrumbs return to the supervising conversation. Work cards and chat show retained session counts, recorded execution phases separately from chat activity.
+Describe a new task in project chat. Only a title is required; description and verification
+may be empty. Enable `chat.auto_create_backlog: true` to let the authenticated project
+conversation create requested Backlog tasks without another form. Creation never queues
+coding work. The durable action receipt survives reconnects; unknown outcomes require
+reconciliation rather than another creation request. Other writes retain their action preview.
 The board and full-page chat share `ChatPanel`. The dock retains board filters and
 selected task links. Each message automatically attaches a validated project-bound
 snapshot of bounded task IDs and filters, not raw browser contents. Each task has
@@ -490,6 +496,7 @@ chat:
   timeout_ms: 300000
   max_concurrent: 2
   max_tool_calls: 8
+  auto_create_backlog: true
 ```
 
 - `model` accepts a provider/model ID or an environment reference; `api_key` must
@@ -514,8 +521,10 @@ chat:
   subprocess environments. Provider failures show sanitized diagnostics; raw HTTP
   bodies, keys and model reasoning are not stored in the transcript.
 
-The current backend serves one configured project; the picker and immutable chat
-scope prepare the interface for additional controllers without mixing their data.
+The workspace service exposes one public port for registered projects and supervises
+private project engines over Unix sockets. Browser identity is shared; project ledgers,
+conversations, tokens and admission gates remain scoped. See the
+[workspace service guide](../profiles/events-concierge/README.md#workspace-service).
 The default listener remains local. Google browser identity is available through the
 configuration below; remote ingress, multi-replica storage and cloud model sign-in
 remain separate deployment work.
@@ -719,11 +728,12 @@ status, priority, milestone, tag and assignee filters, per-lane sorting, and bro
 The compact board follows the Linear board shown in OpenAI's Symphony demo while
 retaining this fork's GitHub workflow. Project selection stays in the top bar;
 The task filters stay visible on the left of the toolbar. **Display**,
-on the right, controls sorting, card detail and light/dark appearance. All four columns
+on the right, controls sorting, card detail and light/dark appearance. All five columns
 stay visible; use filters to narrow the tasks. Display preferences are saved only in this
 browser and do not change scheduling or issue state.
 Milestones, tags and assignees come from GitHub issue metadata; tags include ordinary
-categories and `work:*` labels. Select multiple values to match any of them within a
+topic labels such as performance or authentication. Internal `kind:*`, `priority:*` and
+`symphony:*` labels are excluded; **Kind** is one task intent, while **Tags** can include several topics. Select multiple values to match any of them within a
 filter; different filters combine to narrow the result. Use **No milestone**, **No tags**
 or **Unassigned** to find missing metadata. Options reflect all loaded tasks. Filters survive reload and are retained in board links and chat view
 context; a saved selection with no matching tasks stays selected until cleared.
@@ -764,13 +774,14 @@ embedded HTML and interactive attributes are omitted, and images show their alt 
 Relative links remain text; open the source issue for repository-relative navigation.
 Controlled boards use **Backlog → Work → Review → Done**:
 
-- **Backlog → Work:** drag a task and confirm queueing. The agent starts it when
-  routing, dependencies, priority, concurrency, launch gates and budgets allow.
-  Work includes queued, running and held execution; status explains the difference.
+- **Backlog → Work:** drag directly or choose **Move to Work**. Local routing commits
+  immediately; GitHub label updates run in the background. Queued, paused, blocked and
+  failed tasks stay in Work. Active execution appears automatically in **In progress**
+  when dependencies, priority, concurrency, launch gates and budgets allow.
 - **Work → Review:** the agent automatically hands off its committed candidate and
   independent review evidence after worker cleanup.
 - **Review → Done:** drag to Done or choose **Accept · Done**. Confirming records your
-  acceptance in the durable control ledger. Merging a PR or closing its GitHub issue
+  acceptance in the durable control ledger, without a second popup. Merging a PR or closing its GitHub issue
   alone does not accept it; closed issues without acceptance remain in Review.
   Acceptance does not merge, deploy, or change the GitHub issue's state.
 - **Review → Work:** select **Return to Work**, enter corrections and/or select GitHub
@@ -823,13 +834,18 @@ for commands, limitations and the existing GitHub task workflow.
 
 ## Multiple project boards
 
-Run one configured controller per repository. The [Symphony project guide](../profiles/symphony/README.md)
-provides the self-management profile and activation requirements. In workflow front matter,
-`server.project_links` accepts up to 20 unique `{id, label, url}` maps: GitHub project ID,
-display label and HTTPS or loopback HTTP browser origin. The Projects menu follows ordinary
-links; each destination retains its own Google sign-in, chat and control state.
-`server.session_cookie` selects a distinct cookie key for controllers on the same host;
-its default preserves existing installations. Use the same key for HTTP and LiveView.
+Use the [workspace service](../profiles/events-concierge/README.md#workspace-service)
+for one public listener and shared sign-in. Project → Task → Work selectors navigate
+within that origin. **Graph** opens typed task dependencies or the agent hierarchy, with
+a complete text equivalent, keyboard focus containment, Escape and focus restoration.
+Dependencies declare delivery, design, technical or process prerequisites and optional reasons:
+`Depends on: #19 (technical: approved baseline)`. Source ingestion retains these edges
+locally; missing targets and cycles block admission. Editing declarations uses the
+existing confirmed, scope-checked task-content path; arbitrary graph edits are not exposed.
+
+Standalone engines remain available for development. `server.project_links` accepts up to
+20 `{id, label, url}` entries; the workspace supplies scoped URLs automatically. Distinct
+`server.session_cookie` values apply only to standalone controllers sharing a hostname.
 
 ## License
 

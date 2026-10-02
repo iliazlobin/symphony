@@ -18,12 +18,51 @@ defmodule SymphonyElixir.IssueAcceptance do
   @spec accepted?(map()) :: boolean()
   def accepted?(issue), do: is_map(issue["acceptance"]) and valid_record?(issue["acceptance"])
 
+  @doc "Acceptance survives credential and routing configuration changes, while legacy records retain their exact scope fence."
+  @spec accepted_in_scope?(map(), String.t() | nil, String.t()) :: boolean()
+  def accepted_in_scope?(issue, project_id, fingerprint) do
+    accepted?(issue) and is_nil(issue["active"]) and not pending_work?(issue) and
+      get_in(issue, ["acceptance", "candidate_sha"]) == get_in(issue, ["handoff", "candidate_sha"]) and
+      case issue["acceptance"] do
+        %{"project_id" => recorded} -> recorded == project_id
+        %{"tracker_fingerprint" => recorded} -> recorded == fingerprint
+      end
+  end
+
+  @doc "Add stable project identity to one verified legacy acceptance without changing its original decision or evidence."
+  @spec upgrade_legacy(map(), map(), String.t(), String.t()) :: {:ok, map()} | {:error, :acceptance_migration_mismatch}
+  def upgrade_legacy(issue, observed, "github:" <> repo = project_id, old_fingerprint) do
+    record = issue["acceptance"] || %{}
+    candidate = get_in(issue, ["handoff", "candidate_sha"])
+
+    if legacy_idle_acceptance?(issue, record, old_fingerprint) and
+         reviewed_candidate?(issue, record, candidate) and legacy_source?(observed, record, repo) do
+      {:ok, Map.put(issue, "acceptance", Map.put(record, "project_id", project_id))}
+    else
+      {:error, :acceptance_migration_mismatch}
+    end
+  end
+
+  def upgrade_legacy(_issue, _observed, _project_id, _old_fingerprint), do: {:error, :acceptance_migration_mismatch}
+
+  defp legacy_idle_acceptance?(issue, record, old_fingerprint) do
+    accepted?(issue) and is_nil(record["project_id"]) and record["tracker_fingerprint"] == old_fingerprint and
+      issue["hold"] == "accepted" and is_nil(issue["active"]) and not pending_work?(issue)
+  end
+
+  defp reviewed_candidate?(issue, record, candidate) do
+    review_sha = get_in(issue, ["handoff", "review", "candidate_sha"])
+    sha?(candidate) and record["candidate_sha"] == candidate and review_sha == candidate
+  end
+
+  defp legacy_source?(observed, record, repo) do
+    observed["repository"] == repo and observed["state"] == record["tracker_state"] and
+      observed["updated_at"] == record["issue_updated_at"]
+  end
+
   @spec accept(map(), map(), map()) :: {:ok, map()} | {:error, atom()}
   def accept(issue, params, context) do
     cond do
-      accepted?(issue) ->
-        {:error, :task_already_accepted}
-
       not is_nil(issue["active"]) ->
         {:error, :issue_running}
 
@@ -39,6 +78,14 @@ defmodule SymphonyElixir.IssueAcceptance do
     candidate = get_in(issue, ["handoff", "candidate_sha"])
     verified = context[:acceptance_issue] || %{}
 
+    with :ok <- verify_request(params, context, verified),
+         :ok <- verify_candidate(issue, params, context, candidate, verified) do
+      record = acceptance_record(issue, candidate, params, context, verified)
+      {:ok, issue |> Map.put("acceptance", record) |> Map.put("hold", "accepted")}
+    end
+  end
+
+  defp verify_request(params, context, verified) do
     cond do
       not valid_command?(params) ->
         {:error, :invalid_command}
@@ -49,23 +96,58 @@ defmodule SymphonyElixir.IssueAcceptance do
       not matches_issue?(verified, params) ->
         {:error, :task_changed}
 
+      true ->
+        :ok
+    end
+  end
+
+  defp verify_candidate(issue, params, context, candidate, verified) do
+    cond do
+      not acceptance_scope_matches?(issue, context) ->
+        {:error, :tracker_changed}
+
       candidate != params["expected_candidate_sha"] ->
         {:error, :candidate_changed}
 
-      not reviewable?(issue, verified[:terminal] == true) ->
+      not accepted_candidate_matches?(issue, candidate) ->
+        {:error, :candidate_changed}
+
+      not reviewable_or_accepted?(issue, verified[:terminal] == true) ->
         {:error, :task_not_reviewable}
 
       true ->
-        record = %{
-          "command_id" => params["command_id"],
-          "tracker_fingerprint" => context.tracker_fingerprint,
-          "candidate_sha" => candidate,
-          "tracker_state" => verified.state,
-          "issue_updated_at" => verified.updated_at,
-          "accepted_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
-        }
+        :ok
+    end
+  end
 
-        {:ok, issue |> Map.put("acceptance", record) |> Map.put("hold", "accepted")}
+  defp accepted_candidate_matches?(issue, candidate) do
+    not accepted?(issue) or get_in(issue, ["acceptance", "candidate_sha"]) == candidate
+  end
+
+  defp acceptance_scope_matches?(issue, context) do
+    case issue["acceptance"] do
+      %{"project_id" => project} -> project == context[:project_id]
+      %{"tracker_fingerprint" => scope} -> scope == context[:tracker_fingerprint]
+      _ -> true
+    end
+  end
+
+  defp reviewable_or_accepted?(issue, terminal), do: accepted?(issue) or reviewable?(issue, terminal)
+
+  defp acceptance_record(issue, candidate, params, context, verified) do
+    if accepted_in_scope?(issue, context[:project_id], context.tracker_fingerprint) do
+      issue["acceptance"]
+    else
+      record = %{
+        "command_id" => params["command_id"],
+        "tracker_fingerprint" => context.tracker_fingerprint,
+        "candidate_sha" => candidate,
+        "tracker_state" => verified.state,
+        "issue_updated_at" => verified.updated_at,
+        "accepted_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+      }
+
+      if is_binary(context[:project_id]), do: Map.put(record, "project_id", context.project_id), else: record
     end
   end
 
@@ -84,7 +166,10 @@ defmodule SymphonyElixir.IssueAcceptance do
   def valid_record?(nil), do: true
 
   def valid_record?(record) when is_map(record) do
-    Enum.sort(Map.keys(record)) == Enum.sort(~w(command_id tracker_fingerprint candidate_sha tracker_state issue_updated_at accepted_at)) and
+    fields = ~w(command_id tracker_fingerprint candidate_sha tracker_state issue_updated_at accepted_at)
+    valid_keys = Enum.sort(Map.keys(record)) in [Enum.sort(fields), Enum.sort(["project_id" | fields])]
+
+    valid_keys and (is_nil(record["project_id"]) or text?(record["project_id"], 512)) and
       text?(record["command_id"], 128) and text?(record["tracker_fingerprint"], 256) and text?(record["tracker_state"], 128) and
       optional_sha?(record["candidate_sha"]) and timestamp?(record["issue_updated_at"]) and timestamp?(record["accepted_at"])
   end

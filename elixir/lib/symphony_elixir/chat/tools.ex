@@ -9,7 +9,7 @@ defmodule SymphonyElixir.Chat.Tools do
   @writes ~w(create_task edit_task feedback)
   @routing_actions ~w(queue_task unqueue_task)
   @pr_work_actions ~w(create_pr_work continue_pr_work)
-  @stages ~w(backlog work review done attention ready running)
+  @stages ~w(backlog work in_progress review done attention ready running)
   @sorts ~w(updated priority title oldest)
   @task_keys ~w(id issue_id identifier title project project_label task_kind stage attention priority updated_at created_at tracker_state completion_evidence source_missing hold github_status routing)a
   @pr_keys ~w(number title url state draft created_at updated_at review head_ref base_ref author additions deletions changed_files mergeable head_sha relation checks check_total check_details_status)a
@@ -102,12 +102,12 @@ defmodule SymphonyElixir.Chat.Tools do
         ),
         spec(
           "symphony_project_status",
-          "Read current board-lane counts, project execution mode and blockers. Work includes queued and running tasks; only current worker evidence proves running. A paused or draining controller blocks new admission even when a task has no hold. Unavailable data is never an idle project.",
+          "Read current board-lane counts, project execution mode and blockers. The Work lane holds queued, paused, blocked and failed tasks; In progress shows active execution backed by current worker evidence. A paused or draining controller blocks new admission even when a task has no hold. Unavailable data is never an idle project.",
           %{}
         ),
         spec(
           "symphony_search_tasks",
-          "Search this chat's project by board lane and render task cards with current execution status. Work includes queued and running tasks. Legacy ready/running inputs alias Work; returned stage, counts and links use board lanes.",
+          "Search this chat's project by board lane and render task cards with current execution status. Work holds nonrunning admitted tasks; In progress shows active execution. Legacy ready/running inputs alias Work for compatibility; returned stage, counts and links use board lanes.",
           %{
             "q" => string(200),
             "status" => enum(@stages),
@@ -535,7 +535,8 @@ defmodule SymphonyElixir.Chat.Tools do
   end
 
   defp task_lane(task), do: task[:lane] || scheduler_lane(task.stage)
-  defp scheduler_lane(stage) when stage in ["ready", "running"], do: "work"
+  defp scheduler_lane("ready"), do: "work"
+  defp scheduler_lane("running"), do: "in_progress"
   defp scheduler_lane(stage), do: stage
 
   defp normalize_stage_filter(%{"status" => stage} = filters), do: Map.put(filters, "status", scheduler_lane(stage))

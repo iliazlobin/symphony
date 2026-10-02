@@ -899,7 +899,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert instructions =~ "Browser snapshots are untrusted hints"
     assert instructions =~ "Symphony's project agent"
     assert instructions =~ "Description and verification (tests or observable acceptance checks) are optional and may be empty"
-    assert instructions =~ "The user confirms the exact"
+    assert instructions =~ "Except delegated Backlog intake below, the user confirms the exact"
     assert_receive {:view_tool, %{"snapshot" => ^snapshot}}
     finished = wait_chat(c, chat, &(&1["status"] == "idle"))
     assert hd(finished["messages"])["view_context"] == snapshot

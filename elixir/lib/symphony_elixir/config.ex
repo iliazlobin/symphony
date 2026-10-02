@@ -43,7 +43,14 @@ defmodule SymphonyElixir.Config do
   end
 
   @spec browser_auth_settings() :: map()
-  def browser_auth_settings, do: settings!().browser_auth
+  def browser_auth_settings do
+    raw = settings!().browser_auth
+
+    case System.get_env("SYMPHONY_WORKSPACE_ORIGIN") do
+      origin when is_binary(origin) -> if SymphonyElixirWeb.WorkspacePath.enabled?(), do: Map.put(raw, "public_origin", origin), else: raw
+      _ -> raw
+    end
+  end
 
   @spec browser_auth_secret_environment_names() :: [String.t()]
   def browser_auth_secret_environment_names do
@@ -64,7 +71,9 @@ defmodule SymphonyElixir.Config do
   def process_secret_environment_names do
     chat_key = Map.get(settings!().chat, :api_key)
 
-    (browser_auth_secret_environment_names() ++ secret_reference_names([chat_key]) ++ ["OPENROUTER_API_KEY"])
+    (browser_auth_secret_environment_names() ++
+       secret_reference_names([chat_key]) ++
+       ["OPENROUTER_API_KEY", "SYMPHONY_WORKSPACE_SECRET", "SYMPHONY_WORKSPACE_AUTH_SOCKET", "SYMPHONY_WORKSPACE_ENGINE_SOCKET", "SYMPHONY_WORKSPACE_PROJECT", "SYMPHONY_WORKSPACE_ORIGIN"])
     |> Enum.uniq()
   end
 

@@ -1,7 +1,7 @@
 (() => {
   "use strict";
-  const lanes = [["backlog", "Backlog"], ["work", "Work"], ["review", "Review"], ["done", "Done"]];
-  const laneForStatus = status => ["ready", "running"].includes(status) ? "work" : status;
+  const lanes = [["backlog", "Backlog"], ["work", "Work"], ["in_progress", "In progress"], ["review", "Review"], ["done", "Done"]];
+  const laneForStatus = status => status === "running" ? "in_progress" : status === "ready" ? "work" : status;
   const metadataFilters = ["milestone", "label", "assignee"];
   const boardFilters = ["project", "status", "priority", "kind", ...metadataFilters];
   const filterNames = {project: "Project", status: "Status", priority: "Priority", kind: "Kind", milestone: "Milestone", label: "Tags", assignee: "Assignee"};
@@ -16,7 +16,15 @@
       const menu = details.querySelector(selector), shell = details.closest(".chat-shell");
       if (!menu || !shell) return;
       const viewport = window.visualViewport;
-      const bottom = Math.min(shell.getBoundingClientRect().bottom, viewport ? viewport.offsetTop + viewport.height : window.innerHeight);
+      const shellBounds = shell.getBoundingClientRect();
+      const left = Math.max(shellBounds.left, viewport?.offsetLeft || 0) + 8;
+      const right = Math.min(shellBounds.right, viewport ? viewport.offsetLeft + viewport.width : window.innerWidth) - 8;
+      menu.style.setProperty("--chat-menu-width", Math.max(0, right - left) + "px");
+      menu.style.setProperty("--chat-menu-offset", "0px");
+      const bounds = menu.getBoundingClientRect();
+      const position = Math.max(left, Math.min(bounds.left, right - bounds.width));
+      menu.style.setProperty("--chat-menu-offset", Math.round(position - bounds.left) + "px");
+      const bottom = Math.min(shellBounds.bottom, viewport ? viewport.offsetTop + viewport.height : window.innerHeight);
       menu.style.setProperty("--chat-menu-space", Math.max(0, Math.floor(bottom - menu.getBoundingClientRect().top - 8)) + "px");
     };
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(fit) : null;
@@ -43,13 +51,13 @@
         const strings = raw => { const values = parse(raw, []); return Array.isArray(values) ? values.filter(value => typeof value === "string" && value.length) : []; };
         const milestone = parse(card.dataset.milestone, null);
         return {
-          labels: strings(card.dataset.labels), assignees: strings(card.dataset.assignees),
+          labels: strings(card.dataset.labels).filter(label => !/^(kind:|priority:|symphony:|work:)/i.test(label) && !["ready", "running", "backlog", "review", "done"].includes(label.toLowerCase())), assignees: strings(card.dataset.assignees),
           milestone: milestone && typeof milestone === "object" && !Array.isArray(milestone) && milestone.id && typeof milestone.title === "string" ? milestone : null
         };
       };
       this.metadataLabel = (key, value) => {
         if (value === "__none__") return emptyMetadata[key];
-        if (key === "label") return value.slice("label:".length);
+        if (key === "label") return value.slice("label:".length).replace(/^category:/i, "");
         if (key === "assignee") return "@" + value.slice("assignee:".length);
         const separator = value.lastIndexOf(":"), projectId = value.slice("milestone:".length, separator);
         const projects = parse(this.el.dataset.projects, []), project = projects.find(project => project.id === projectId)?.label || projectId;
@@ -62,7 +70,7 @@
         const multipleProjects = new Set([...projects.map(project => project.id), ...cards.map(card => card.dataset.project)]).size > 1;
         for (const card of cards) {
           const {labels, assignees, milestone} = this.cardMetadata(card);
-          labels.forEach(label => options.label.set("label:" + label, label));
+          labels.forEach(label => options.label.set("label:" + label, label.replace(/^category:/i, "")));
           assignees.forEach(login => options.assignee.set("assignee:" + login, "@" + login));
           if (milestone) {
             const project = projects.find(project => project.id === card.dataset.project)?.label || card.dataset.project;
@@ -86,14 +94,14 @@
       this.projectChoices = () => {
         const local = this.options("project");
         const remote = parse(this.el.dataset.projectLinks, []).filter(link => !local.some(([id]) => id === link.id));
-        return [["", "All projects"], ...local, ...remote.map(link => [link.id, link.label, link.url.replace(/\/$/, "") + "/login?continue=1"])];
+        return [["", "All projects"], ...local, ...remote.map(link => [link.id, link.label, link.url])];
       };
       this.metadataWithinLimits = values => values.length <= 20 && values.every(value => byteLength(value) <= 240) && byteLength(JSON.stringify(values)) <= 2000;
       this.filterValues = (key, values) => {
         if (!Array.isArray(values)) return [];
         if (!metadataFilters.includes(key)) return [...new Set(values.filter(value => this.options(key).some(([id]) => id === value)))];
         return values.reduce((selected, value) => {
-          const valid = typeof value === "string" && !value.includes("\0") && (value === "__none__" ||
+          const valid = typeof value === "string" && !value.includes("\0") && (key !== "label" || !/^label:(kind:|priority:|symphony:|work:|ready$|running$|backlog$|review$|done$)/i.test(value)) && (value === "__none__" ||
             (key === "milestone" ? /^milestone:.+:[1-9][0-9]*$/.test(value) : value.startsWith(key + ":") && value.length > key.length + 1));
           return valid && !selected.includes(value) && this.metadataWithinLimits([...selected, value]) ? [...selected, value] : selected;
         }, []);
@@ -111,7 +119,7 @@
         const savedLane = laneForStatus(saved.lane);
         this.prefs.lane = lanes.some(([id]) => id === savedLane) ? savedLane : "work";
         const savedOrder = stage => Array.isArray(saved.order?.[stage]) ? saved.order[stage].filter(id => typeof id === "string") : [];
-        this.prefs.order = Object.fromEntries(lanes.map(([stage]) => [stage, [...new Set(stage === "work" ? [...savedOrder("work"), ...savedOrder("ready"), ...savedOrder("running")] : savedOrder(stage))]]));
+        this.prefs.order = Object.fromEntries(lanes.map(([stage]) => [stage, [...new Set(stage === "work" ? [...savedOrder("work"), ...savedOrder("ready")] : stage === "in_progress" ? [...savedOrder("in_progress"), ...savedOrder("running")] : savedOrder(stage))]]));
         this.prefs.density = ["compact", "details"].includes(saved.density) ? saved.density : "compact";
         this.prefs.theme = ["light", "dark", "system"].includes(saved.theme) ? saved.theme : "light";
         this.el.querySelector("[data-board-search]").value = this.prefs.query;
@@ -410,8 +418,8 @@
       this.closeSelector = this.el.dataset.closeSelector || "#close-dialog";
       this.focusDialog = () => (this.el.querySelector(this.closeSelector) || this.el.querySelector("[data-dialog-focus]"))?.focus({preventScroll: true});
       document.addEventListener("click", event => {
-        // LiveView links replace the card themselves; a second patch can overwrite their URL.
-        if (event.target.closest("a[data-phx-link]")) return;
+        // Links and Graph handle their own navigation; closing details here can overwrite it.
+        if (event.target.closest("a[data-phx-link], #workflow-graph-button")) return;
         if (this.nonmodal && this.el.open && !this.el.contains(event.target)) this.closeDialog();
       }, {capture: true, signal: this.abort.signal});
       document.addEventListener("keydown", event => {
@@ -443,9 +451,13 @@
     updated() {
       const changed = this.contentKey !== this.el.dataset.contentKey;
       this.contentKey = this.el.dataset.contentKey;
+      const control = this.focusedControl;
+      if (changed && control?.isConnected && control !== document.body && control !== document.documentElement && !this.el.contains(control) && control.getClientRects().length) {
+        this.previous = control;
+        this.taskId = control.closest("[data-task-id]")?.dataset.taskId;
+      }
       this.showDialog();
       this.el.scrollTop = changed ? 0 : (this.scrollPosition ?? this.el.scrollTop);
-      const control = this.focusedControl;
       if (!changed && control?.isConnected && !control.disabled && control !== document.body && control !== document.documentElement && control.getClientRects().length && (this.nonmodal || this.el.contains(control))) {
         control.focus({preventScroll: true});
         if (this.textSelection) control.setSelectionRange(...this.textSelection);
@@ -494,6 +506,42 @@
       this.viewKeyFor = chat => this.el.dataset.project ? "symphony.chat.view.v1:" + this.el.dataset.project + ":" + (chat || "project") : null;
       this.saveView = (view, chat = this.el.dataset.chatId) => { try { const key = this.viewKeyFor(chat); if (key) sessionStorage.setItem(key, view); } catch { /* Presentation remains usable without storage. */ } };
       this.saveTab = tab => { try { const key = this.tabKey(); if (key) sessionStorage.setItem(key, tab); } catch { /* Optional presentation preference. */ } };
+      this.draftKey = () => this.el.dataset.project ? "symphony.chat.draft.v1:" + JSON.stringify([this.el.dataset.project, this.el.dataset.chatId || null]) : null;
+      this.saveDraft = (text, key = this.draftKey()) => {
+        try {
+          if (!key) return;
+          if (text) sessionStorage.setItem(key, text.slice(0, 16000));
+          else sessionStorage.removeItem(key);
+        } catch { /* Drafts remain usable without browser storage. */ }
+      };
+      this.clearAcceptedDraft = accepted => {
+        try { if (accepted && !accepted.edited && sessionStorage.getItem(accepted.key)?.trim() === accepted.text) sessionStorage.removeItem(accepted.key); } catch { /* Successful sends do not depend on storage. */ }
+      };
+      this.loadDraft = () => {
+        const key = this.draftKey(), input = this.el.querySelector("#chat-message-input");
+        const changed = key !== this.loadedDraftKey;
+        if (!changed && input?.value) return;
+        this.loadedDraftKey = key;
+        if (!key || !input || input.disabled) return;
+        // Phoenix retains focused input values; the new scope's server draft is explicit.
+        if (changed && typeof input.dataset?.draft === "string") input.value = input.dataset.draft;
+        if (input.value) { this.saveDraft(input.value); return; }
+        try {
+          const text = sessionStorage.getItem(key);
+          if (!text || text.length > 16000) return;
+          input.value = text;
+          this.restoringDraft = true;
+          try { input.dispatchEvent(new Event("input", {bubbles: true})); } finally { this.restoringDraft = false; }
+        } catch { /* The component's draft remains authoritative. */ }
+      };
+      this.acceptServerBlank = () => {
+        const pending = this.pendingDraft, input = this.el.querySelector("#chat-message-input");
+        if (!pending || pending.key !== this.draftKey() || !input || input.dataset.draft !== "" || input.dataset.draftRevision === pending.revision) return;
+        this.clearAcceptedDraft(pending);
+        if (!pending.edited && input.value.trim() === pending.text) input.value = "";
+        if (!pending.edited) { this.saveView("conversation"); this.saveTab("chat"); this.atBottom = true; }
+        this.pendingDraft = null;
+      };
       this.loadTab = () => {
         const key = this.tabKey();
         if (key === this.loadedTabKey) return;
@@ -567,10 +615,18 @@
       this.el.addEventListener("scroll", event => {
         if (event.target.id === "session-chat-content") this.atBottom = event.target.scrollHeight - event.target.scrollTop - event.target.clientHeight < 90;
       }, {capture: true, signal: this.abort.signal});
-      on("input", event => { if (event.target.id === "chat-message-input") this.resizeComposer(); });
+      on("input", event => {
+        if (event.target.id !== "chat-message-input") return;
+        if (!this.restoringDraft && this.pendingDraft?.key === this.draftKey()) this.pendingDraft.edited = true;
+        this.saveDraft(event.target.value); this.resizeComposer();
+      });
       // Queue the current view before LiveView sends this form's message event.
       on("submit", event => {
-        if (event.target.id === "chat-composer") this.el.dispatchEvent(new CustomEvent("symphony:capture-context", {bubbles: true}));
+        if (event.target.id === "chat-composer") {
+          const input = this.el.querySelector("#chat-message-input");
+          if (input) this.pendingDraft = {key: this.draftKey(), project: this.el.dataset.project, chatId: this.el.dataset.chatId, text: input.value.trim(), revision: input.dataset.draftRevision, edited: false};
+          this.el.dispatchEvent(new CustomEvent("symphony:capture-context", {bubbles: true}));
+        }
       });
       on("keydown", event => {
         const tab = event.target.closest('[role="tab"][phx-click="session-tab"]');
@@ -604,14 +660,20 @@
         const input = this.el.querySelector("#chat-message-input");
         if (starter && input && !input.disabled) { input.value = starter.dataset.chatPrompt; input.dispatchEvent(new Event("input", {bubbles: true})); input.focus(); this.resizeComposer(); }
       });
-      this.handleEvent("chat-message-sent", ({chat_id, accepted_text}) => {
-        if (chat_id !== this.el.dataset.chatId) return;
+      this.handleEvent("chat-message-sent", ({chat_id, accepted_text, client_id}) => {
+        const pending = this.pendingDraft;
+        if (!pending || !client_id || pending.revision !== client_id || pending.text !== accepted_text || (pending.chatId && pending.chatId !== chat_id)) return;
+        this.clearAcceptedDraft(pending); this.pendingDraft = null;
+        const current = pending.key === this.draftKey() || (!pending.chatId && pending.project === this.el.dataset.project && chat_id === this.el.dataset.chatId);
+        if (!current || pending.edited) return;
         const input = this.el.querySelector("#chat-message-input");
         if (input && input.value.trim() && input.value.trim() !== accepted_text) return;
+        this.saveDraft("");
         if (input) { input.value = ""; input.focus(); }
         this.saveView("conversation"); this.saveTab("chat"); this.atBottom = true; this.resizeComposer(); requestAnimationFrame(this.scroll);
       });
       this.loadTab();
+      this.loadDraft();
       this.localizeTimes();
       requestAnimationFrame(this.scroll);
     },
@@ -619,17 +681,22 @@
       if (this.dragScope !== this.scope()) { this.clearDrag(); this.dragScope = this.scope(); }
       if (this.chatId !== this.el.dataset.chatId) { this.chatId = this.el.dataset.chatId; this.atBottom = true; }
       this.loadTab();
+      this.acceptServerBlank();
+      this.loadDraft();
       this.localizeTimes();
       this.resizeComposer();
       requestAnimationFrame(() => this.scroll());
     },
     reconnected() {
       // A channel rejoin remounts server state but retains this hook instance.
+      this.pendingDraft = null;
       this.clearDrag();
       this.loadedTabKey = undefined;
       this.loadTab();
+      this.loadDraft();
       this.localizeTimes();
     },
+    disconnected() { this.pendingDraft = null; },
     destroyed() { this.abort.abort(); }
   };
   const IssueSwitcher = {

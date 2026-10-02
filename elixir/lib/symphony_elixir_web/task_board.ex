@@ -6,16 +6,18 @@ defmodule SymphonyElixirWeb.TaskBoard do
   `runtime_error` means the caller must retain its previous complete task list.
   Reads never admit, retry, close or otherwise mutate a tracker issue.
 
-  Work includes queued and running tasks. With native controls, Done requires
+  Work retains nonrunning admitted tasks; In progress derives from active execution. With native controls, Done requires
   explicit human acceptance; tracker closure remains Review until accepted.
+  In progress projects active native execution separately from waiting Work.
   Uncontrolled trackers retain their terminal-state behavior. Each task retains the distinction in
   `completion_evidence`, `tracker_state`, `hold` and `attention`.
   """
 
-  alias SymphonyElixir.{Config, IssueAcceptance, Orchestrator, TaskKind, TaskRouting, Tracker}
-  alias SymphonyElixir.GitHub.{Admission, Board, Client}
+  alias SymphonyElixir.Config
+  alias SymphonyElixir.GitHub.{Board, Client}
+  alias SymphonyElixir.{IssueAcceptance, Orchestrator, TaskDependencies, TaskIdentity, TaskKind, TaskRouting, Tracker}
   alias SymphonyElixir.Tracker.Issue
-  alias SymphonyElixirWeb.{BoardCache, Presenter}
+  alias SymphonyElixirWeb.{BoardCache, Presenter, WorkflowGraph}
 
   @spec load(GenServer.name(), pos_integer()) :: map()
   def load(orchestrator, timeout) when is_integer(timeout) and timeout > 0 do
@@ -47,7 +49,12 @@ defmodule SymphonyElixirWeb.TaskBoard do
       runtime = runtime || board[:runtime] || %{}
       refreshed = project(issues, runtime, control, settings)
       tasks = refreshed_tasks(board.tasks, refreshed.tasks)
-      board |> Map.put(:tasks, tasks) |> Map.put(:control, control) |> Map.put(:runtime, runtime)
+
+      board
+      |> Map.put(:tasks, tasks)
+      |> Map.put(:control, control)
+      |> Map.put(:runtime, runtime)
+      |> Map.put(:workflow_graph, WorkflowGraph.export(tasks, Map.put(control, "enabled", settings.control.enabled), settings.tracker))
     else
       _ -> Map.put(board, :runtime_error, "Local task state is unavailable or changed. Waiting for a complete board.")
     end
@@ -88,10 +95,11 @@ defmodule SymphonyElixirWeb.TaskBoard do
     settings = projection_settings(settings, control)
     project = project_identity(settings.tracker)
     issues = visible_issues(issues, settings.tracker.kind)
-    admitted = admission_index(issues, settings)
+    admitted = admission_index(issues, settings, control)
     runtime_index = runtime_index(runtime)
     ledger = Map.get(control, "issues", %{})
     known_ids = MapSet.new(issues, & &1.id)
+    retained = TaskDependencies.records(control, [], settings.tracker)
 
     tasks =
       Enum.map(issues, fn issue ->
@@ -105,7 +113,8 @@ defmodule SymphonyElixirWeb.TaskBoard do
       |> Enum.map(fn id ->
         entry = runtime_index[id]
         identifier = (entry && entry.issue_identifier) || fallback_identifier(settings.tracker.kind, id)
-        issue = %Issue{id: id, identifier: identifier, title: identifier}
+        dependencies = (retained[id] || %{})["dependencies"] || []
+        issue = %Issue{id: id, identifier: identifier, title: identifier, dependencies: dependencies}
 
         issue
         |> task(issue, entry, ledger[id], project, settings)
@@ -116,6 +125,7 @@ defmodule SymphonyElixirWeb.TaskBoard do
 
     %{
       tasks: Enum.sort_by(tasks ++ missing, & &1.id),
+      workflow_graph: WorkflowGraph.export(tasks ++ missing, Map.put(control, "enabled", settings.control.enabled), settings.tracker),
       tracker_issues: issues,
       tracker_fingerprint: settings.tracker_fingerprint,
       projects: [project],
@@ -267,13 +277,12 @@ defmodule SymphonyElixirWeb.TaskBoard do
     |> Enum.uniq_by(& &1.id)
   end
 
-  defp admission_index(issues, %{tracker: %{kind: "github"}, control: %{enabled: true}}) do
-    by_id = Map.new(issues, &{&1.id, &1})
-    evaluated = Admission.evaluate(issues, fn ids -> {:ok, Enum.flat_map(ids, &List.wrap(by_id[&1]))} end)
+  defp admission_index(issues, %{tracker: %{kind: "github"} = tracker, control: %{enabled: true}}, control) do
+    evaluated = TaskDependencies.evaluate(issues, control, tracker)
     Map.new(evaluated, &{&1.id, &1})
   end
 
-  defp admission_index(issues, _settings), do: Map.new(issues, &{&1.id, &1})
+  defp admission_index(issues, _settings, _control), do: Map.new(issues, &{&1.id, &1})
 
   defp runtime_index(runtime) do
     # The final running entry wins if an in-flight snapshot includes a retry too.
@@ -307,15 +316,17 @@ defmodule SymphonyElixirWeb.TaskBoard do
       pull_requests: [],
       github_status: if(settings.tracker.kind == "github", do: "not_loaded", else: "not_applicable"),
       stage: stage,
-      lane: if(stage in ["ready", "running"], do: "work", else: stage),
+      lane: board_lane(stage),
       attention: attention,
       blocker_reason: blocker_reason(runtime, hold, attention),
-      execution_status: execution_status(runtime, hold, ledger),
+      execution_status: if(accepted, do: "idle", else: execution_status(runtime, hold, ledger)),
       priority: issue.priority,
       created_at: iso8601(issue.created_at),
       updated_at: iso8601(issue.updated_at),
       description: issue.description,
       labels: issue.labels,
+      dependencies: declared_dependencies(issue, admitted),
+      dependency_error: (admitted.native_ref || %{})["admission_reason"],
       task_kind: TaskKind.from_labels(issue.labels),
       milestone: issue.milestone,
       assignees: issue.assignees,
@@ -332,10 +343,21 @@ defmodule SymphonyElixirWeb.TaskBoard do
     }
   end
 
-  defp accepted?(ledger, settings) do
-    settings.control.enabled and IssueAcceptance.accepted?(ledger) and
-      get_in(ledger, ["acceptance", "tracker_fingerprint"]) == settings.tracker_fingerprint
+  defp declared_dependencies(issue, admitted) do
+    case TaskDependencies.parse(issue.description, issue.id) do
+      {:ok, dependencies} -> dependencies
+      _ -> admitted.dependencies
+    end
   end
+
+  defp accepted?(ledger, settings) do
+    project_id = TaskIdentity.project_id(settings.tracker)
+    settings.control.enabled and IssueAcceptance.accepted_in_scope?(ledger, project_id, settings.tracker_fingerprint)
+  end
+
+  defp board_lane("running"), do: "in_progress"
+  defp board_lane("ready"), do: "work"
+  defp board_lane(stage), do: stage
 
   defp tracker_fingerprint(tracker), do: :crypto.hash(:sha256, :erlang.term_to_binary(tracker)) |> Base.url_encode64(padding: false)
 
@@ -365,8 +387,8 @@ defmodule SymphonyElixirWeb.TaskBoard do
   defp completion_evidence(false, false, true, state), do: "Tracker marked this issue #{state}; merge and deployment are not verified."
   defp completion_evidence(_, _, _, _), do: nil
 
-  defp controlled_stage(%{status: "running"}, _hold, _handoff, _terminal, _queued, _accepted), do: "running"
   defp controlled_stage(_runtime, _hold, _handoff, _terminal, _queued, true), do: "done"
+  defp controlled_stage(%{status: "running"}, _hold, _handoff, _terminal, _queued, false), do: "running"
   defp controlled_stage(_runtime, _hold, _handoff, true, _queued, false), do: "review"
   defp controlled_stage(_runtime, hold, handoff, _terminal, queued, false), do: stage(nil, hold, handoff, false, queued)
 
