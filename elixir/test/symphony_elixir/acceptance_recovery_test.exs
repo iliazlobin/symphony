@@ -198,6 +198,54 @@ defmodule SymphonyElixir.AcceptanceRecoveryTest do
     refute Exception.message(error) =~ "private-detail"
   end
 
+  test "bare subprocess CLI ignores invalid live configuration and scrubs every inherited lock environment variable", c do
+    binary_dir = c.root <> "/bin"
+    File.mkdir_p!(binary_dir)
+    real_python = System.find_executable("python3")
+    report = c.root <> "/lock-environment.json"
+    python = binary_dir <> "/python3"
+
+    File.write!(python, """
+    #!#{real_python}
+    import json, os, sys
+    with open(#{Jason.encode!(report)}, 'w') as output:
+        json.dump(sorted(os.environ), output)
+    os.execv(#{Jason.encode!(real_python)}, [#{Jason.encode!(real_python)}] + sys.argv[1:])
+    """)
+
+    File.chmod!(python, 0o700)
+    source = Path.expand("../..", __DIR__)
+    workflow = Path.join(source, "WORKFLOW.md")
+
+    script = """
+    SymphonyElixir.Workflow.set_workflow_file_path(#{inspect(workflow)})
+    {:error, :missing_linear_api_token} = SymphonyElixir.Config.settings()
+    Mix.Tasks.Acceptance.RecoverLegacy.run(System.argv())
+    nil = Process.whereis(SymphonyElixir.Orchestrator)
+    nil = Process.whereis(SymphonyElixir.WorkflowStore)
+    """
+
+    environment = [
+      "-i",
+      "PATH=#{binary_dir}:#{System.get_env("PATH")}",
+      "HOME=#{System.user_home!()}",
+      "MIX_HOME=#{System.get_env("MIX_HOME")}",
+      "MIX_ENV=test",
+      "TMPDIR=#{System.tmp_dir!()}",
+      "ERL_FLAGS=+S 2:2",
+      "PRIVATE_LOCK_TEST_TOKEN=must-not-reach-lock",
+      "PYTHONPATH=#{c.root}/untrusted-modules"
+    ]
+
+    mix = System.find_executable("mix")
+    {output, status} = System.cmd("env", environment ++ [mix, "run", "--no-start", "-e", script, "--" | args(c)], cd: source, stderr_to_stdout: true)
+    assert status == 0, output
+    assert output =~ "Dry run: changed issue IDs [6, 11]"
+    assert File.read!(c.path) == c.bytes
+    refute File.exists?(c.backup)
+    assert Jason.decode!(File.read!(report)) -- ["LC_CTYPE", "__CF_USER_TEXT_ENCODING"] == []
+  end
+
   defp recover(c, opts \\ []), do: ControlLedger.recover_legacy_acceptance(c.path, c.workspace, c.request, opts)
 
   defp settings(c) do

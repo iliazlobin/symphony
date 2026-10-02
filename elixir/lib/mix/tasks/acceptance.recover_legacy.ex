@@ -6,6 +6,8 @@ defmodule Mix.Tasks.Acceptance.RecoverLegacy do
   @shortdoc "Validate or recover explicitly selected legacy acceptance identities offline"
   @moduledoc """
   Stop all project engines before running. No application or workers are started.
+  No live workflow configuration or API credentials are needed. The ledger-only
+  lock helper runs isolated Python with its inherited environment removed.
   The default dry run validates the complete ledger and retained review evidence;
   it reports only selected issue IDs and never writes control state.
 

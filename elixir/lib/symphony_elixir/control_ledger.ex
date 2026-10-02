@@ -657,7 +657,16 @@ defmodule SymphonyElixir.ControlLedger do
         {:error, :python3_required_for_control_lock}
 
       python ->
-        port = Port.open({:spawn_executable, python}, [:binary, :exit_status, :use_stdio, args: ["-u", "-c", @lock_script, path], env: SymphonyElixir.ProcessGroup.port_environment(), line: 128])
+        environment = Enum.map(System.get_env(), fn {name, _value} -> {String.to_charlist(name), false} end)
+        options = [
+          :binary,
+          :exit_status,
+          :use_stdio,
+          args: ["-I", "-u", "-c", @lock_script, path],
+          env: environment,
+          line: 128
+        ]
+        port = Port.open({:spawn_executable, python}, options)
 
         receive do
           {^port, {:data, {:eol, "READY"}}} ->
