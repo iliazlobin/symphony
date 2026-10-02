@@ -17,6 +17,7 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 from aiohttp import ClientSession, web
+from yarl import URL
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from symphony_workspace import ROOT, OwnedProcess, SessionBroker, Workspace, clean_headers, valid_value, load_workspace
@@ -118,7 +119,11 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
                     async for message in ws:
                         await ws.send_str(project + ":" + message.data)
                     return ws
-                response = web.json_response({"project": project, "path": request.path, "auth": request.headers.get("Authorization"), "cookie": request.headers.get("Cookie")})
+                payload = {"project": project, "path": request.path, "auth": request.headers.get("Authorization"), "cookie": request.headers.get("Cookie")}
+                if request.path == "/auth/google/callback":
+                    payload["raw_query"] = request.rel_url.raw_query_string
+                    payload["query"] = dict(request.query)
+                response = web.json_response(payload)
                 response.enable_compression(force=web.ContentCoding.gzip)
                 return response
             app.router.add_route("*", "/{path:.*}", endpoint)
@@ -174,6 +179,25 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.headers["Content-Encoding"], "gzip")
                 self.assertTrue((await response.read()).startswith(b"\x1f\x8b"))
+
+    async def test_callback_forwards_raw_encoded_query_and_parses_project_selection(self):
+        query = "project=github%3Aowner%2Fsymphony&scope=email%20https%3A%2F%2Fexample.test%2Fauth%2Fprofile+openid&state=fixture%2B%2F%3D&escaped=%2520%26%3D%23&repeat=one&repeat=two"
+        for prefix in ("", "/projects/symphony"):
+            url = URL(self.url + prefix + "/auth/google/callback?" + query, encoded=True)
+            async with self.client.get(url, headers={"Host": "localhost:8778"}) as response:
+                self.assertEqual(response.status, 200)
+                payload = await response.json()
+                self.assertEqual(payload["project"], "symphony")
+                self.assertEqual(payload["raw_query"], query)
+                self.assertEqual(payload["query"]["scope"], "email https://example.test/auth/profile openid")
+                self.assertEqual(payload["query"]["state"], "fixture+/=")
+
+    async def test_scope_redirects_preserve_raw_encoded_queries(self):
+        query = "project=github%3Aowner%2Fsymphony&scope=email%20openid+profile&escaped=%2520%2B%2F%3D%26%23"
+        for path, target in (("/", "/projects/symphony/"), ("/login", "/projects/symphony/login"), ("/chat", "/projects/symphony/chat"), ("/projects/events", "/projects/events/")):
+            async with self.client.get(URL(self.url + path + "?" + query, encoded=True), headers={"Host": "localhost:8778"}, allow_redirects=False) as response:
+                self.assertEqual(response.status, 303)
+                self.assertEqual(response.headers["Location"], target + "?" + query)
 
     async def test_unrecognized_scope_and_root_api_fail_closed_and_legacy_links_redirect(self):
         headers = {"Host": "localhost:8778"}

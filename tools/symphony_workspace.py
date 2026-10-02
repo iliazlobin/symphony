@@ -250,11 +250,12 @@ class Workspace:
                     and ipaddress.ip_address(request.remote).is_loopback):
                 raise web.HTTPBadRequest(text="Invalid workspace host")
         slug, path, scoped = self.select(request)
+        query = "?" + request.rel_url.raw_query_string if request.rel_url.raw_query_string else ""
         if not scoped and path in ("/", "/chat", "/login"):
-            raise web.HTTPSeeOther(location="/projects/" + slug + path + ("?" + request.query_string if request.query_string else ""))
+            raise web.HTTPSeeOther(location=URL("/projects/" + slug + path + query, encoded=True))
         if scoped and not request.path.endswith("/") and len(request.path.split("/")) == 3:
-            raise web.HTTPSeeOther(location=request.path + "/" + ("?" + request.query_string if request.query_string else ""))
-        target = URL("http://localhost" + path + ("?" + request.query_string if request.query_string else ""), encoded=True)
+            raise web.HTTPSeeOther(location=URL(request.path + "/" + query, encoded=True))
+        target = URL("http://localhost" + path + query, encoded=True)
         client = self.clients[slug]
         headers = clean_headers(request.headers)
         try:
