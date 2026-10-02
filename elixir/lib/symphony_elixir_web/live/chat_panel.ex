@@ -300,7 +300,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
              |> assign(session_tab: "chat", workspace_view: "conversation")
              |> assign(:client_id, nonce())
              |> assign(:notice, nil)
-             |> push_event("chat-message-sent", %{chat_id: chat["id"], accepted_text: text})
+             |> push_event("chat-message-sent", %{chat_id: chat["id"], accepted_text: text, client_id: socket.assigns.client_id})
              |> navigate(project_id(socket), chat["id"])}
 
           {:error, reason} ->
@@ -1079,7 +1079,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
             <form id="chat-composer" phx-target={@myself} phx-submit="send-message" phx-change="draft" class="chat-composer">
               <input type="hidden" name="chat_id" value={@chat && @chat["id"] || ""} />
               <label for="chat-message-input" class="visually-hidden">Message {if @issue, do: if(@selected_session, do: @selected_session.name <> " work agent", else: @task_agent_name <> " task agent"), else: project_label(@project)}</label>
-              <textarea id="chat-message-input" name="message" placeholder={if @issue, do: if(@selected_session, do: "Message work agent…", else: "Message task agent…"), else: "Describe a task or ask #{project_label(@project)}…"} rows="2" maxlength="16000" disabled={is_nil(@project)}>{@draft}</textarea>
+              <textarea id="chat-message-input" name="message" data-draft={@draft} data-draft-revision={@client_id} placeholder={if @issue, do: if(@selected_session, do: "Message work agent…", else: "Message task agent…"), else: "Describe a task or ask #{project_label(@project)}…"} rows="2" maxlength="16000" disabled={is_nil(@project)}>{@draft}</textarea>
               <div class="composer-bottom"><span class="composer-project">{project_label(@project)}</span>
                 <button :if={@running} id="stop-response-button" type="button" class="button" phx-target={@myself} phx-click="stop-response" phx-value-chat_id={@chat["id"]} title="Stop this response; coding tasks keep running">■ Stop</button>
                 <button id="send-message-button" class="button button-primary" disabled={is_nil(@project)} phx-disable-with="Sending…" aria-label={if @queueing, do: "Queue message", else: "Send message"}>{if @queueing, do: "Queue ↑", else: "Send ↑"}</button>

@@ -6,6 +6,7 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
   test "dependencies display lifecycle, reasons and exact missing or cyclic relationships" do
     graph = %{
       "version" => 1,
+      "policy" => "human_acceptance",
       "nodes" => [project(), task("1", "backlog"), task("2", "in_progress"), task("3", "unknown", %{"missing" => true, "cycle" => true})],
       "edges" => [dependency("2", "1", "waiting"), dependency("3", "2", "cycle")],
       "warnings" => ["Cycle requires review"]
@@ -22,6 +23,14 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert html =~ "Arrows go from prerequisite to dependent"
     assert html =~ "human acceptance"
     refute html =~ "priority dependency"
+  end
+
+  test "completion explanation follows the exported policy" do
+    for {policy, explanation} <- [{"human_acceptance", "Done records human acceptance."}, {"tracker_completion", "Done follows tracker completion."}, {nil, "Completion policy unavailable."}] do
+      html = render_component(&WorkflowGraphView.content/1, board: %{workflow_graph: %{"version" => 1, "policy" => policy}})
+      assert html =~ explanation
+      if policy != "human_acceptance", do: refute(html =~ "Done records human acceptance.")
+    end
   end
 
   test "hierarchy is ownership and every dependency has a text equivalent" do

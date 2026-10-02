@@ -22,6 +22,7 @@ defmodule SymphonyElixirWeb.WorkflowGraphView do
     assigns =
       assign(assigns,
         available: graph["version"] == 1,
+        completion_description: completion_description(graph["policy"]),
         graph: graph,
         tasks: tasks,
         dependencies: dependencies,
@@ -39,7 +40,7 @@ defmodule SymphonyElixirWeb.WorkflowGraphView do
 
     ~H"""
     <section id="workflow-graph" class="workflow-graph" aria-label="Task dependencies and agent ownership">
-      <p class="graph-description">Dependencies control admission. Priority orders eligible tasks. Done records human acceptance.</p>
+      <p class="graph-description">Dependencies control admission. Priority orders eligible tasks. {@completion_description}</p>
       <p :if={!@available} class="board-warning" role="status">Graph unavailable. The board keeps its last-known tasks.</p>
       <p :if={@truncated} class="board-notice" role="status">Diagram shows the first {@max_nodes} nodes. The dependency list remains available below.</p>
       <p :for={warning <- @graph["warnings"] || []} class="board-warning" role="status">{warning}</p>
@@ -126,6 +127,9 @@ defmodule SymphonyElixirWeb.WorkflowGraphView do
     end
   end
 
+  defp completion_description("human_acceptance"), do: "Done records human acceptance."
+  defp completion_description("tracker_completion"), do: "Done follows tracker completion."
+  defp completion_description(_), do: "Completion policy unavailable."
   defp lane_name("in_progress"), do: "In progress"
   defp lane_name(lane) when lane in @lanes, do: String.capitalize(lane)
   defp lane_name(_), do: "Unknown"

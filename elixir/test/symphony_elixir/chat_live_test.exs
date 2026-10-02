@@ -263,7 +263,11 @@ defmodule SymphonyElixir.ChatLiveTest do
 
   test "new chats stream owner updates and resume after browser reconnect", ctx do
     {view, _} = chat_view(ctx, "/chat?project=alpha")
+    accepted_client = view |> render() |> Floki.parse_fragment!() |> Floki.find("#chat-message-input") |> Floki.attribute("data-draft-revision") |> List.first()
     render_submit(view, "send-message", %{"message" => "What is blocked?"})
+    assert_push_event(view, "chat-message-sent", %{client_id: ^accepted_client, accepted_text: "What is blocked?"})
+    refute has_element?(view, "#chat-message-input[data-draft-revision='#{accepted_client}']")
+    assert has_element?(view, "#chat-message-input[data-draft='']")
     assert has_element?(view, "#stop-response-button")
     assert has_element?(view, "#chat-app[data-running=true]")
     assert render(view) =~ "What is blocked?"

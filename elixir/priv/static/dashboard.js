@@ -506,6 +506,42 @@
       this.viewKeyFor = chat => this.el.dataset.project ? "symphony.chat.view.v1:" + this.el.dataset.project + ":" + (chat || "project") : null;
       this.saveView = (view, chat = this.el.dataset.chatId) => { try { const key = this.viewKeyFor(chat); if (key) sessionStorage.setItem(key, view); } catch { /* Presentation remains usable without storage. */ } };
       this.saveTab = tab => { try { const key = this.tabKey(); if (key) sessionStorage.setItem(key, tab); } catch { /* Optional presentation preference. */ } };
+      this.draftKey = () => this.el.dataset.project ? "symphony.chat.draft.v1:" + JSON.stringify([this.el.dataset.project, this.el.dataset.chatId || null]) : null;
+      this.saveDraft = (text, key = this.draftKey()) => {
+        try {
+          if (!key) return;
+          if (text) sessionStorage.setItem(key, text.slice(0, 16000));
+          else sessionStorage.removeItem(key);
+        } catch { /* Drafts remain usable without browser storage. */ }
+      };
+      this.clearAcceptedDraft = accepted => {
+        try { if (accepted && !accepted.edited && sessionStorage.getItem(accepted.key)?.trim() === accepted.text) sessionStorage.removeItem(accepted.key); } catch { /* Successful sends do not depend on storage. */ }
+      };
+      this.loadDraft = () => {
+        const key = this.draftKey(), input = this.el.querySelector("#chat-message-input");
+        const changed = key !== this.loadedDraftKey;
+        if (!changed && input?.value) return;
+        this.loadedDraftKey = key;
+        if (!key || !input || input.disabled) return;
+        // Phoenix retains focused input values; the new scope's server draft is explicit.
+        if (changed && typeof input.dataset?.draft === "string") input.value = input.dataset.draft;
+        if (input.value) { this.saveDraft(input.value); return; }
+        try {
+          const text = sessionStorage.getItem(key);
+          if (!text || text.length > 16000) return;
+          input.value = text;
+          this.restoringDraft = true;
+          try { input.dispatchEvent(new Event("input", {bubbles: true})); } finally { this.restoringDraft = false; }
+        } catch { /* The component's draft remains authoritative. */ }
+      };
+      this.acceptServerBlank = () => {
+        const pending = this.pendingDraft, input = this.el.querySelector("#chat-message-input");
+        if (!pending || pending.key !== this.draftKey() || !input || input.dataset.draft !== "" || input.dataset.draftRevision === pending.revision) return;
+        this.clearAcceptedDraft(pending);
+        if (!pending.edited && input.value.trim() === pending.text) input.value = "";
+        if (!pending.edited) { this.saveView("conversation"); this.saveTab("chat"); this.atBottom = true; }
+        this.pendingDraft = null;
+      };
       this.loadTab = () => {
         const key = this.tabKey();
         if (key === this.loadedTabKey) return;
@@ -579,10 +615,18 @@
       this.el.addEventListener("scroll", event => {
         if (event.target.id === "session-chat-content") this.atBottom = event.target.scrollHeight - event.target.scrollTop - event.target.clientHeight < 90;
       }, {capture: true, signal: this.abort.signal});
-      on("input", event => { if (event.target.id === "chat-message-input") this.resizeComposer(); });
+      on("input", event => {
+        if (event.target.id !== "chat-message-input") return;
+        if (!this.restoringDraft && this.pendingDraft?.key === this.draftKey()) this.pendingDraft.edited = true;
+        this.saveDraft(event.target.value); this.resizeComposer();
+      });
       // Queue the current view before LiveView sends this form's message event.
       on("submit", event => {
-        if (event.target.id === "chat-composer") this.el.dispatchEvent(new CustomEvent("symphony:capture-context", {bubbles: true}));
+        if (event.target.id === "chat-composer") {
+          const input = this.el.querySelector("#chat-message-input");
+          if (input) this.pendingDraft = {key: this.draftKey(), project: this.el.dataset.project, chatId: this.el.dataset.chatId, text: input.value.trim(), revision: input.dataset.draftRevision, edited: false};
+          this.el.dispatchEvent(new CustomEvent("symphony:capture-context", {bubbles: true}));
+        }
       });
       on("keydown", event => {
         const tab = event.target.closest('[role="tab"][phx-click="session-tab"]');
@@ -616,14 +660,20 @@
         const input = this.el.querySelector("#chat-message-input");
         if (starter && input && !input.disabled) { input.value = starter.dataset.chatPrompt; input.dispatchEvent(new Event("input", {bubbles: true})); input.focus(); this.resizeComposer(); }
       });
-      this.handleEvent("chat-message-sent", ({chat_id, accepted_text}) => {
-        if (chat_id !== this.el.dataset.chatId) return;
+      this.handleEvent("chat-message-sent", ({chat_id, accepted_text, client_id}) => {
+        const pending = this.pendingDraft;
+        if (!pending || !client_id || pending.revision !== client_id || pending.text !== accepted_text || (pending.chatId && pending.chatId !== chat_id)) return;
+        this.clearAcceptedDraft(pending); this.pendingDraft = null;
+        const current = pending.key === this.draftKey() || (!pending.chatId && pending.project === this.el.dataset.project && chat_id === this.el.dataset.chatId);
+        if (!current || pending.edited) return;
         const input = this.el.querySelector("#chat-message-input");
         if (input && input.value.trim() && input.value.trim() !== accepted_text) return;
+        this.saveDraft("");
         if (input) { input.value = ""; input.focus(); }
         this.saveView("conversation"); this.saveTab("chat"); this.atBottom = true; this.resizeComposer(); requestAnimationFrame(this.scroll);
       });
       this.loadTab();
+      this.loadDraft();
       this.localizeTimes();
       requestAnimationFrame(this.scroll);
     },
@@ -631,17 +681,22 @@
       if (this.dragScope !== this.scope()) { this.clearDrag(); this.dragScope = this.scope(); }
       if (this.chatId !== this.el.dataset.chatId) { this.chatId = this.el.dataset.chatId; this.atBottom = true; }
       this.loadTab();
+      this.acceptServerBlank();
+      this.loadDraft();
       this.localizeTimes();
       this.resizeComposer();
       requestAnimationFrame(() => this.scroll());
     },
     reconnected() {
       // A channel rejoin remounts server state but retains this hook instance.
+      this.pendingDraft = null;
       this.clearDrag();
       this.loadedTabKey = undefined;
       this.loadTab();
+      this.loadDraft();
       this.localizeTimes();
     },
+    disconnected() { this.pendingDraft = null; },
     destroyed() { this.abort.abort(); }
   };
   const IssueSwitcher = {
