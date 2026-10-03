@@ -87,6 +87,25 @@ defmodule SymphonyElixir.Chat.BacklogIntakeTest do
     assert restored["proposals"] == settled["proposals"]
   end
 
+  test "Design mode cannot use automatic backlog intake even when the runtime asks to create", c do
+    chat = conversation(c, nil)
+    snapshot = %{"version" => 1, "project_id" => c.project, "mode" => "design"}
+    assert {:ok, _} = Store.send_message_with_context(c.project, chat["id"], "proposal", "design-intake", snapshot, c.auth, c.server)
+    assert_receive {:tool_result, %{"error" => %{"code" => "design_read_only"}}}, 2_000
+    settled = settle(c, chat)
+    assert settled["proposals"] == []
+    refute_receive {:confirmed, _}
+
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    assert {:ok, restored} = Store.get(c.project, chat["id"], c.auth, server)
+    assert hd(restored["messages"])["view_context"]["mode"] == "design"
+    assert restored["proposals"] == []
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "proposal", "ordinary-intake", c.auth, server)
+    assert_receive {:confirmed, _}, 2_000
+    settle(%{c | server: server}, chat)
+  end
+
   test "duplicate create calls in one turn reuse the completed proposal", c do
     chat = conversation(c, nil)
     assert {:ok, _} = Store.send_message(c.project, chat["id"], "repeat", "request", c.auth, c.server)

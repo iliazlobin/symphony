@@ -157,6 +157,7 @@ defmodule SymphonyElixir.ChatLiveTest do
          task_title: nil,
          view_context: session["view_context"],
          read_only: session["read_only"] || false,
+         design_mode: false,
          board_link: nil,
          closed: false
        )}
@@ -166,6 +167,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     def handle_info({:chat_panel, :main}, socket), do: {:noreply, assign(socket, task_id: nil, task_title: nil)}
     def handle_info({:view_context, context}, socket), do: {:noreply, assign(socket, :view_context, context)}
     def handle_info({:project, project}, socket), do: {:noreply, assign(socket, project_id: project, chat_id: nil)}
+    def handle_info({:design_mode, value}, socket), do: {:noreply, assign(socket, :design_mode, value)}
     def handle_info({:read_only, value}, socket), do: {:noreply, assign(socket, :read_only, value)}
 
     def handle_info({:chat_updated, id}, socket) do
@@ -188,7 +190,7 @@ defmodule SymphonyElixir.ChatLiveTest do
       ~H"""
       <main id="board-host" data-board-link={@board_link} data-closed={to_string(@closed)}>
         <.live_component module={ChatPanel} id="management-chat" auth={@auth} csrf_token="fixture-only"
-          embedded={true} project_id={@project_id} chat_id={@chat_id} task_id={@task_id} task_title={@task_title} view_context={@view_context} read_only={@read_only} />
+          embedded={true} project_id={@project_id} chat_id={@chat_id} task_id={@task_id} task_title={@task_title} view_context={@view_context} read_only={@read_only} design_mode={@design_mode} />
       </main>
       """
     end
@@ -1084,6 +1086,26 @@ defmodule SymphonyElixir.ChatLiveTest do
 
   defp draft_message(view, message), do: view |> element("#chat-composer") |> render_change(%{"message" => message})
   defp send_message(view, message), do: view |> element("#chat-composer") |> render_submit(%{"message" => message})
+
+  test "Design mode is stamped by the host even without browser context and cannot confirm old proposals", ctx do
+    view = embedded_view(ctx, nil)
+    send(view.pid, {:design_mode, true})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-design-mode=true]") end)
+    view |> element("#chat-composer") |> render_submit(%{"message" => "Explore an idea", "chat_id" => "a1"})
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    message = chat["messages"] |> Enum.filter(&(&1["role"] == "user")) |> List.last()
+    assert message["view_context"] == %{"version" => 1, "project_id" => "alpha", "mode" => "design"}
+    render_click(view, "decide", %{"id" => "existing-proposal", "decision" => "confirm", "chat_id" => "a1"})
+    assert render(view) =~ "Design is discussion only"
+    send(view.pid, {:design_mode, false})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-design-mode=false]") end)
+    send(view.pid, {:view_context, %{"version" => 1, "project_id" => "alpha", "mode" => "design"}})
+    view |> element("#chat-composer") |> render_submit(%{"message" => "Ordinary discussion", "chat_id" => "a1"})
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    last = List.last(chat["queue"])
+    assert last["text"] == "Ordinary discussion"
+    refute Map.has_key?(last["view_context"], "mode")
+  end
 
   defp embedded_view(ctx, context, read_only \\ false) do
     session = %{BrowserAuth.session_key() => ctx.marker, "view_context" => context, "read_only" => read_only}

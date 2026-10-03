@@ -119,6 +119,26 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     refute Jason.encode!(specs) =~ "github_api"
   end
 
+  test "Design turns can read project facts but cannot propose, coordinate or confirm writes", ctx do
+    design = Map.put(ctx.context, :view_context, %{"version" => 1, "project_id" => ctx.context.project_id, "mode" => "design"})
+    assert {:ok, %{"widgets" => [%{"type" => "status"}]}} = Tools.call("symphony_project_status", %{}, design)
+
+    for name <- ~w(symphony_propose_action symphony_delegate symphony_report symphony_set_goal) do
+      assert {:error, :design_read_only} = Tools.call(name, %{}, design)
+    end
+
+    proposal = propose(ctx.context, %{"action" => "create_task", "title" => "New", "body" => "Body"})
+
+    for proposal <- [proposal, %{"action" => "queue_task"}] do
+      assert {:error, :design_read_only} = Tools.confirm(proposal, design)
+    end
+
+    refute_receive {:native_command, _, _, _}
+    assert Tools.error_message(:design_read_only)["message"] =~ "Switch to a task view"
+    malformed = put_in(design, [:view_context, "mode"], "write")
+    assert {:error, :invalid_view_context} = Tools.call("symphony_propose_action", %{}, malformed)
+  end
+
   test "automatic intake rechecks active human authorization immediately before creating", ctx do
     proposal = propose(ctx.context, %{"action" => "create_task", "title" => "New", "body" => "Body"})
     reader = fn "GET", _, _, _, _ -> {:ok, %{status: 200, body: []}} end

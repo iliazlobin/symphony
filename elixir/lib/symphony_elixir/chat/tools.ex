@@ -42,6 +42,7 @@ defmodule SymphonyElixir.Chat.Tools do
     budget_exhausted: "This issue has exhausted its execution budget. Adjust the configured limit before preparing more work.",
     issue_running: "This issue still has active execution. Wait for it to stop before launching PR work.",
     invalid_view_context: "This view snapshot is invalid or belongs to another project. Send a fresh message from the board.",
+    design_read_only: "Design chat can discuss and read project information. Switch to a task view to create tasks or change execution.",
     concurrency_limit_exceeded: "Choose a concurrency limit within the configured project ceiling, or restore its default.",
     invalid_arguments: "Use only the documented fields and allowed values for this tool.",
     unknown_tool: "This management tool is not available.",
@@ -235,6 +236,8 @@ defmodule SymphonyElixir.Chat.Tools do
   @spec call(String.t(), term(), map()) :: {:ok, map()} | {:error, term()}
   def call(name, args, context) do
     with {:ok, settings} <- scope(context),
+         {:ok, snapshot} <- ViewContext.validate(context[:view_context], context.project_id),
+         true <- ViewContext.allowed_tool?(snapshot, name) or {:error, :design_read_only},
          :ok <- validate(name, args) do
       dispatch_call(name, args, context, settings)
     end
@@ -314,6 +317,8 @@ defmodule SymphonyElixir.Chat.Tools do
   @spec confirm(map(), map()) :: {:ok, map()} | {:error, term()}
   def confirm(%{"action" => action} = proposal, context) when action in @routing_actions do
     with {:ok, _settings} <- scope(context),
+         {:ok, snapshot} <- ViewContext.validate(context[:view_context], context.project_id),
+         true <- not ViewContext.design?(snapshot) or {:error, :design_read_only},
          :ok <- validate_proposal(proposal, context),
          {:ok, result} <- native_command(proposal, context, %{issue_id: proposal["args"]["task_id"]}) do
       native_receipt(proposal, context, result)
@@ -326,6 +331,8 @@ defmodule SymphonyElixir.Chat.Tools do
 
   def confirm(proposal, context) do
     with {:ok, settings} <- scope(context),
+         {:ok, snapshot} <- ViewContext.validate(context[:view_context], context.project_id),
+         true <- not ViewContext.design?(snapshot) or {:error, :design_read_only},
          :ok <- validate_proposal(proposal, context),
          {:ok, board} <- read_board(context),
          :ok <- session_action_scope(Map.put(proposal["args"], "action", proposal["action"]), context, board) do

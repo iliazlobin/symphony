@@ -1639,6 +1639,23 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#lane-review [data-task-id='github:example/fixture:4']")
   end
 
+  test "Design precedes planning views, keeps board focus and never dispatches", ctx do
+    view = authorized_board_view()
+    task = "github:example/fixture:2"
+    render_patch(view, "/?" <> URI.encode_query(%{"chat_task" => task, "priority" => "P1"}))
+    view |> element("#view-design") |> render_click()
+    assert has_element?(view, "#board-view-picker #view-design:first-child[aria-current=page]")
+    assert has_element?(view, "#design-view [data-design-project='github:example/fixture']")
+    assert has_element?(view, "#chat-app[data-design-mode=true]")
+    assert :sys.get_state(view.pid).socket.assigns.chat_task_id == task
+    render_click(view, "switch-view", %{"view" => "kanban"})
+    assert has_element?(view, "#chat-app[data-design-mode=false]")
+    assert has_element?(view, "#lane-work [data-task-id='#{task}'][data-selected=true]")
+    assert :sys.get_state(view.pid).socket.assigns.url_filters == %{"priority" => "P1"}
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:settings_command, _}
+  end
+
   test "planning views share task focus, filters and links without dispatch", ctx do
     view = authorized_board_view()
     filters = %{"project" => "github:example/fixture", "priority" => "P1"}

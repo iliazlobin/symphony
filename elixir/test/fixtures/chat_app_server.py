@@ -78,9 +78,12 @@ for line in sys.stdin:
             assert params['environments'] == []
             assert params['allowProviderModelFallback'] is False
             assert params['dynamicTools'][0]['name'] == 'symphony_status'
+            (home / 'native-tools.json').write_text(json.dumps([tool['name'] for tool in params['dynamicTools']]))
         else:
             assert params['threadId'] == ('previous-thread' if mode == 'resume-mismatch' else 'thread-1')
             assert (home / 'native-thread').exists()
+            if mode == 'retained-write':
+                assert 'symphony_propose_action' in json.loads((home / 'native-tools.json').read_text())
         (home / 'native-thread').write_text('thread-1')
         result = {'thread': {'id': 'thread-1'}, 'model': 'gpt-6-astra', 'approvalPolicy': 'never', 'sandbox': {'type': 'readOnly'}}
         if mode == 'thread-empty': result['thread']['id'] = ''
@@ -127,7 +130,7 @@ for line in sys.stdin:
         notification('thread/tokenUsage/updated', threadId='thread-1', turnId='turn-1', tokenUsage={'last': {'totalTokens': 10}})
         write({'id': 'tool-1', 'method': 'item/tool/call', 'params': {
             'threadId': 'thread-1', 'turnId': 'turn-1', 'callId': 'call-1',
-            'tool': 'exec_command' if mode == 'forbidden' else 'symphony_status', 'arguments': {}}})
+            'tool': 'exec_command' if mode == 'forbidden' else 'symphony_propose_action' if mode == 'retained-write' else 'symphony_status', 'arguments': {}}})
         continue
     elif rid == 'tool-1':
         assert request['result']['contentItems'][0]['type'] == 'inputText'

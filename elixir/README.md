@@ -836,7 +836,15 @@ for commands, limitations and the existing GitHub task workflow.
 
 Use the [workspace service](../profiles/events-concierge/README.md#workspace-service)
 for one public listener and shared sign-in. Project → Task → Work selectors navigate
-within that origin. **Kanban / Graph / Gantt** beside the project selector share filters,
+within that origin. **Design / Kanban / Graph / Gantt** sit beside the project selector.
+Design starts with a brief, then functional/quality requirements, entities, components/flows
+and decisions. Section questions prefill project chat without submitting or replacing an
+unsent message. Design turns can read project facts but cannot change goals, delegate,
+propose actions or create tasks; queued turns retain their own mode. The illustrative
+Events Concierge example fills only empty fields. Draft edits autosave per project in
+this browser, with a not-saved indicator on failure; they are not shared or backed up
+and do not publish to Notion. **Published design** links the existing Notion record.
+Kanban / Graph / Gantt share filters,
 selected task and retained Work chat. Card `↑` / `↓` counts open the focused dependency
 graph; **Show on board** returns to Kanban. Graph supports background drag, wheel/pinch
 zoom, **Fit**, **Center selected**, keyboard controls and an expandable text equivalent.
