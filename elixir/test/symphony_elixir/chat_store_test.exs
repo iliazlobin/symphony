@@ -967,6 +967,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert_receive {:runtime, worker, _, "design guard"}
     assert_receive {:design_runtime, ^design, instructions, specs, thread_specs}
     assert instructions =~ "This turn is Design-only"
+    assert instructions =~ "under 180 words"
     refute instructions =~ "When the current human message asks to create tasks"
     refute Enum.any?(specs, &(&1["name"] in ~w(symphony_propose_action symphony_delegate symphony_report symphony_set_goal)))
     assert Enum.any?(specs, &(&1["name"] == "symphony_project_status"))
@@ -993,6 +994,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert design_instructions =~ "This turn is Design-only"
     assert_receive {:view_tool, %{"snapshot" => ^design}}
     completed = wait_chat(c, chat, &(&1["status"] == "idle" and &1["queued_count"] == 0))
+    assert Enum.map(Enum.filter(completed["messages"], &(&1["role"] == "assistant")), & &1["view_context"]) == [design, nil, design]
     assert completed["proposals"] == []
     assert completed["agent_goal"] == chat["agent_goal"]
     assert {:ok, saved_parent} = Store.get(c.project, parent["id"], c.auth, server)

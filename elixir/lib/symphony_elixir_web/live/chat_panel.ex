@@ -2,7 +2,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
   @moduledoc "Project-bound management conversations, streamed from the conversation owner."
   use Phoenix.LiveComponent
 
-  alias SymphonyElixir.Chat.{Artifacts, Sessions}
+  alias SymphonyElixir.Chat.{Artifacts, Sessions, ViewContext}
   alias SymphonyElixir.ProjectDirectory
   alias SymphonyElixirWeb.{BrowserAuth, ChatNavigation, Endpoint, Markdown}
 
@@ -594,6 +594,36 @@ defmodule SymphonyElixirWeb.ChatPanel do
   defp messages(nil), do: []
   defp messages(chat), do: list(chat["messages"])
 
+  defp visible_messages(chat, false), do: messages(chat)
+
+  defp visible_messages(chat, true) do
+    {visible, _legacy_response} =
+      Enum.reduce(messages(chat), {[], false}, fn message, {visible, legacy_response} ->
+        cond do
+          not is_nil(message["origin"]) ->
+            {visible, legacy_response and message["role"] != "user"}
+
+          message["role"] == "user" ->
+            design = ViewContext.design?(message["view_context"])
+            {if(design, do: [message | visible], else: visible), design}
+
+          message["role"] == "assistant" ->
+            # Older responses lack a turn snapshot. Infer only the first plain
+            # response, never an operational report or a later action receipt.
+            design = design_response?(message, legacy_response)
+            {if(design, do: [message | visible], else: visible), false}
+
+          true ->
+            {visible, false}
+        end
+      end)
+
+    Enum.reverse(visible)
+  end
+
+  defp design_response?(message, legacy_response),
+    do: ViewContext.design?(message["view_context"]) or (legacy_response and not Map.has_key?(message, "view_context"))
+
   defp message_author(assigns) do
     assigns = assign(assigns, :author, message_identity(assigns.message, assigns.agent))
 
@@ -850,6 +880,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
         task_agent_name: task_name,
         agent: current_agent(assigns, selected_session, issue, task_name),
         agent_progress: agent_progress(assigns.chat),
+        visible_messages: visible_messages(assigns.chat, assigns.design_mode),
         project_agent_title: project_agent_title(assigns.project),
         issue_groups: ChatNavigation.issues(assigns.issue_tasks, assigns.issue_activity, project, assigns.issue_query),
         issue_sessions: matching_sessions(sessions, assigns.pr_query),
@@ -1013,7 +1044,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
             <p :if={is_nil(@list_error) && matching_chats(@chats, @thread_query) == []} class="chat-detail-empty">{if @thread_query == "", do: "No chats yet. Start a new chat for this project.", else: "No chats match your search."}</p>
           </section>
           <div id="chat-conversation-detail" class="chat-conversation-detail" hidden={@workspace_view != "conversation"}>
-          <details :if={agent_progress_visible?(@agent_progress)} id="agent-progress" class="agent-progress" aria-label="Agent goal and reports"><summary>Goal and reports</summary>
+          <details :if={!@design_mode && agent_progress_visible?(@agent_progress)} id="agent-progress" class="agent-progress" aria-label="Agent goal and reports"><summary>Goal and reports</summary>
             <p :if={@agent_progress.notice != ""} class="agent-report-status" role="status">{@agent_progress.notice}</p>
             <div :if={@agent_progress.goal} class="agent-goal"><span class="agent-goal-status" data-goal-status={@agent_progress.goal["status"]}>{String.capitalize(@agent_progress.goal["status"])} goal</span><span class="agent-goal-text" title={@agent_progress.goal["text"]}>{@agent_progress.goal["text"]}</span></div>
             <div :if={@agent_progress.reports + @agent_progress.instructions + @agent_progress.queued_reports > 0} class="agent-report-status" role="status">
@@ -1023,7 +1054,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
             </div>
           </details>
           <div id="session-chat-content" class="chat-scroll" role={if @embedded, do: "region", else: "tabpanel"} tabindex="0" aria-label={if @embedded, do: "Conversation"} aria-labelledby={if !@embedded, do: "session-chat-tab"} hidden={!@embedded && @session_tab != "chat"}>
-            <div :if={messages(@chat) == []} class="chat-empty">
+            <div :if={@visible_messages == []} class="chat-empty">
               <span class="chat-orbit" aria-hidden="true">∿</span><h1>{if @design_mode, do: "Let’s shape the design", else: if(@embedded && @task_id, do: "Let’s work on this task", else: "What’s next for #{project_label(@project)}?")}</h1>
               <p>{if @design_mode, do: "Explore ideas and clarify decisions. Task creation comes later.", else: if(@embedded && @task_id, do: "Discuss progress, clarify the scope, or plan the next step. This chat stays with the task.", else: "Plan work, create or update tasks, and review project progress.")}</p>
               <div :if={!@design_mode && (!@embedded || is_nil(@task_id))} class="chat-starters">
@@ -1034,7 +1065,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
             </div>
 
             <div id="chat-messages" class="chat-messages" aria-live="off">
-              <article :for={message <- messages(@chat)} id={"message-#{message["id"]}"} class={"chat-message chat-message-#{message_style(message)}"}>
+              <article :for={message <- @visible_messages} id={"message-#{message["id"]}"} class={"chat-message chat-message-#{message_style(message)}"}>
                 <div class="message-meta"><.message_author message={message} agent={@agent} /><span :if={message_kind(message)} class="message-kind">{message_kind(message)}</span><.message_timestamp value={message["created_at"]} label={message_time_label(message)} class="message-time" /><span :if={message["status"] == "streaming"} class="streaming-mark">Responding</span><span :if={message["role"] == "assistant" && message["status"] in ["interrupted", "error"]} class="message-outcome">{if message["status"] == "interrupted", do: "Stopped", else: "Failed"}</span></div>
                 <div :if={String.trim(text(message["text"])) != "" && message["role"] == "user"} class="message-text">{text(message["text"])}</div>
                 <div :if={String.trim(text(message["text"])) != "" && message["role"] != "user"} class="markdown-content message-markdown">{Markdown.render(text(message["text"]))}</div>
@@ -1092,7 +1123,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
             <form id="chat-composer" phx-target={@myself} phx-submit="send-message" phx-change="draft" class="chat-composer">
               <input type="hidden" name="chat_id" value={@chat && @chat["id"] || ""} />
               <label for="chat-message-input" class="visually-hidden">Message {if @issue, do: if(@selected_session, do: @selected_session.name <> " work agent", else: @task_agent_name <> " task agent"), else: project_label(@project)}</label>
-              <textarea id="chat-message-input" name="message" data-draft={@draft} data-draft-revision={@client_id} placeholder={if @issue, do: if(@selected_session, do: "Message work agent…", else: "Message task agent…"), else: "Describe a task or ask #{project_label(@project)}…"} rows="2" maxlength="16000" disabled={is_nil(@project)}>{@draft}</textarea>
+              <textarea id="chat-message-input" name="message" data-draft={@draft} data-draft-revision={@client_id} placeholder={if @design_mode, do: "Brainstorm an idea or ask about this design…", else: if(@issue, do: if(@selected_session, do: "Message work agent…", else: "Message task agent…"), else: "Describe a task or ask #{project_label(@project)}…")} rows="2" maxlength="16000" disabled={is_nil(@project)}>{@draft}</textarea>
               <div class="composer-bottom"><span class="composer-project">{project_label(@project)}</span>
                 <button :if={@running} id="stop-response-button" type="button" class="button" phx-target={@myself} phx-click="stop-response" phx-value-chat_id={@chat["id"]} title="Stop this response; coding tasks keep running">■ Stop</button>
                 <button id="send-message-button" class="button button-primary" disabled={is_nil(@project)} phx-disable-with="Sending…" aria-label={if @queueing, do: "Queue message", else: "Send message"}>{if @queueing, do: "Queue ↑", else: "Send ↑"}</button>

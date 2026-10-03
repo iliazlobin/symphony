@@ -839,7 +839,8 @@ for one public listener and shared sign-in. Project → Task → Work selectors 
 within that origin. **Design / Kanban / Graph / Gantt** sit beside the project selector.
 Design starts with a brief, then functional/quality requirements, entities, components/flows
 and decisions. Section questions prefill project chat without submitting or replacing an
-unsent message. Design turns can read project facts but cannot change goals, delegate,
+unsent message. Design shows its own discussion; operational history remains in planning
+views. Switching projects keeps Design selected. Design turns can read project facts but cannot change goals, delegate,
 propose actions or create tasks; queued turns retain their own mode. The illustrative
 Events Concierge example fills only empty fields. Draft edits autosave per project in
 this browser, with a not-saved indicator on failure; they are not shared or backed up

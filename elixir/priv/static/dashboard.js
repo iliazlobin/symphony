@@ -96,7 +96,12 @@
       this.projectChoices = () => {
         const local = this.options("project");
         const remote = parse(this.el.dataset.projectLinks, []).filter(link => !local.some(([id]) => id === link.id));
-        return [["", "All projects"], ...local, ...remote.map(link => [link.id, link.label, link.url])];
+        return [["", "All projects"], ...local, ...remote.map(link => {
+          if (this.el.dataset.boardView !== "design") return [link.id, link.label, link.url];
+          const target = new URL(link.url, window.location.href);
+          target.searchParams.set("view", "design");
+          return [link.id, link.label, target.href];
+        })];
       };
       this.metadataWithinLimits = values => values.length <= 20 && values.every(value => byteLength(value) <= 240) && byteLength(JSON.stringify(values)) <= 2000;
       this.filterValues = (key, values) => {

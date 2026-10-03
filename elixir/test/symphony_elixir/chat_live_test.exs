@@ -110,7 +110,7 @@ defmodule SymphonyElixir.ChatLiveTest do
       update(project, id, auth, fn chat ->
         chat = if (chat["queue"] || []) == [], do: Map.put(chat, "queue_paused", false), else: chat
         user = %{"id" => client_id, "role" => "user", "text" => text, "widgets" => [], "view_context" => context}
-        assistant = %{"id" => "response-" <> client_id, "role" => "assistant", "text" => "", "status" => "streaming", "widgets" => []}
+        assistant = %{"id" => "response-" <> client_id, "role" => "assistant", "text" => "", "status" => "streaming", "widgets" => [], "view_context" => context}
 
         if chat["status"] == "running" or chat["queue_paused"] == true or Enum.any?(chat["proposals"] || [], &(&1["status"] == "executing")) do
           Map.update(chat, "queue", [user], &(&1 ++ [user]))
@@ -1105,6 +1105,88 @@ defmodule SymphonyElixir.ChatLiveTest do
     last = List.last(chat["queue"])
     assert last["text"] == "Ordinary discussion"
     refute Map.has_key?(last["view_context"], "mode")
+  end
+
+  test "Design shows its turns without operational reports and preserves the full planning history", ctx do
+    design = %{"version" => 1, "project_id" => "alpha", "mode" => "design"}
+    message = fn id, role, extra -> Map.merge(%{"id" => id, "role" => role, "text" => id, "widgets" => []}, extra) end
+
+    messages = [
+      message.("ordinary-user", "user", %{}),
+      message.("ordinary-answer", "assistant", %{"view_context" => nil}),
+      message.("design-legacy-user", "user", %{"view_context" => design}),
+      message.("interleaved-pr", "assistant", %{"origin" => "pr_update", "view_context" => design}),
+      message.("design-legacy-answer", "assistant", %{}),
+      message.("later-action-receipt", "assistant", %{}),
+      message.("design-modern-user", "user", %{"view_context" => design}),
+      message.("interleaved-report", "user", %{"origin" => "agent_message", "agent_kind" => "report", "view_context" => design}),
+      message.("interleaved-evidence", "assistant", %{"origin" => "agent_evidence", "view_context" => design}),
+      message.("operational-reflection", "assistant", %{}),
+      message.("design-modern-answer", "assistant", %{"view_context" => design}),
+      message.("design-next-user", "user", %{"view_context" => design}),
+      message.("ordinary-stamped-answer", "assistant", %{"view_context" => nil}),
+      message.("design-question", "user", %{"view_context" => design}),
+      message.("system-observation", "system", %{}),
+      message.("unbound-answer", "assistant", %{}),
+      message.("design-current-user", "user", %{"view_context" => design}),
+      message.("design-current-answer", "assistant", %{"view_context" => design, "status" => "streaming", "text" => ""})
+    ]
+
+    queued = [message.("ordinary-queued", "user", %{})]
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    chat = chat |> Map.put("messages", messages) |> Map.put("queue", queued) |> Map.put("status", "running") |> Map.put("agent_goal", %{"text" => "Coordinate delivery", "status" => "active"})
+    {:ok, _} = FixtureStore.put(chat)
+    view = embedded_view(ctx, nil)
+    assert has_element?(view, "#agent-progress")
+    send(view.pid, {:design_mode, true})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-design-mode=true]") end)
+
+    for id <- ~w(design-legacy-user design-legacy-answer design-modern-user design-modern-answer design-next-user design-question design-current-user design-current-answer) do
+      assert has_element?(view, "#chat-messages #message-#{id}")
+    end
+
+    for id <-
+          ~w(ordinary-user ordinary-answer interleaved-pr later-action-receipt interleaved-report interleaved-evidence operational-reflection ordinary-stamped-answer system-observation unbound-answer) do
+      refute has_element?(view, "#chat-messages #message-#{id}")
+    end
+
+    refute has_element?(view, "#agent-progress")
+    refute has_element?(view, ".chat-empty")
+    assert has_element?(view, "#message-design-current-answer .streaming-mark", "Responding")
+    assert has_element?(view, "#stop-response-button")
+    assert has_element?(view, "#queued-ordinary-queued")
+    assert has_element?(view, "#send-message-button", "Queue")
+    assert has_element?(view, "#chat-message-input[placeholder='Brainstorm an idea or ask about this design…']")
+    assert {:ok, ^chat} = FixtureStore.get("alpha", "a1", nil)
+
+    send(view.pid, {:design_mode, false})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-design-mode=false]") end)
+    assert has_element?(view, "#agent-progress")
+
+    for message <- messages do
+      assert has_element?(view, "#chat-messages #message-#{message["id"]}")
+    end
+
+    assert {:ok, ^chat} = FixtureStore.get("alpha", "a1", nil)
+  end
+
+  test "Design welcomes a new discussion despite existing operational history and leaves queue status visible", ctx do
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    queued = [%{"id" => "existing-queued", "role" => "user", "text" => "Previously authorized request"}]
+    chat = chat |> Map.put("queue", queued) |> Map.put("queue_paused", true) |> Map.put("agent_notice", "Delivery needs attention")
+    {:ok, _} = FixtureStore.put(chat)
+    view = embedded_view(ctx, nil)
+    assert has_element?(view, "#message-m1", "Alpha secret")
+    send(view.pid, {:design_mode, true})
+    assert eventually(fn -> has_element?(view, ".chat-empty h1", "Let’s shape the design") end)
+    refute has_element?(view, "#message-m1")
+    refute has_element?(view, "#agent-progress")
+    refute has_element?(view, ".chat-starters")
+    assert has_element?(view, "#queued-existing-queued", "Previously authorized request")
+    assert has_element?(view, "#chat-queue", "Paused")
+    assert has_element?(view, "#resume-queue-button")
+    assert has_element?(view, "#chat-message-input[placeholder='Brainstorm an idea or ask about this design…']")
+    assert {:ok, ^chat} = FixtureStore.get("alpha", "a1", nil)
   end
 
   defp embedded_view(ctx, context, read_only \\ false) do
