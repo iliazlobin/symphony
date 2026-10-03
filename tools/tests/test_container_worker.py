@@ -9,6 +9,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("container_worker", ROOT / "tools/container_worker.py")
@@ -17,6 +18,14 @@ SPEC.loader.exec_module(WORKER)
 
 
 class ContainerWorkerTests(unittest.TestCase):
+    def test_credential_failures_have_safe_machine_exit_codes_before_any_model_turn(self):
+        for error, expected in ((WORKER.AuthLeaseError("PRIVATE INTERNAL MESSAGE"), 78),
+                                (WORKER.AuthLeaseBusy("PRIVATE INTERNAL MESSAGE"), 79)):
+            with self.subTest(expected=expected), patch.object(WORKER, "main", side_effect=error), \
+                    patch.object(WORKER, "print") as output:
+                self.assertEqual(WORKER.entrypoint(), expected)
+                self.assertNotIn("PRIVATE", str(output.call_args))
+
     def test_canary_retains_recovery_markers_when_container_cleanup_is_unverified(self):
         spec = importlib.util.spec_from_file_location("probe_cancellation", ROOT / "tools/probe_cancellation.py")
         probe = importlib.util.module_from_spec(spec)
@@ -157,6 +166,24 @@ os.killpg=signal_unreaped
             with self.assertRaises(FileExistsError):
                 WORKER.prepare_stage_home(workspace, home, "d" * 32, "builder", work_id)
             self.assertEqual((stage / "retained-session").read_text(), "native-history")
+
+    def test_authentication_is_writable_only_in_the_owned_stage_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace, home = root / "workspace", root / "dedicated-codex"
+            workspace.mkdir()
+            home.mkdir(mode=0o700)
+            (home / "config.toml").write_text('model="fixture"\n')
+            (home / "auth.json").write_text("FAKE AUTH")
+            (home / "auth.json").chmod(0o600)
+            for role in ("builder", "reviewer"):
+                command = WORKER.create_command(workspace, home, "sha256:" + "a" * 64, role,
+                                                root / "unused.cid", "b" * 32, "/docker")
+                mounts = [command[index + 1] for index, value in enumerate(command) if value == "--mount"]
+                self.assertFalse(any("dst=/codex-home/auth.json" in mount for mount in mounts))
+                self.assertIn("dst=/codex-home", mounts[1])
+                self.assertFalse(mounts[1].endswith(",readonly"))
+                self.assertFalse(any(f"src={home}," in mount for mount in mounts))
 
     def test_retained_state_rejects_missing_or_foreign_scope_and_unsafe_markers(self):
         with tempfile.TemporaryDirectory() as directory:

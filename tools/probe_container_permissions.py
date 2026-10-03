@@ -67,10 +67,11 @@ def probe(image=None, seccomp_policy=None, apparmor_profile=None, fixture_parent
         with disposable_root(runtime["parent"], fixed=True) as root:
             workspace, home = root / "pipe", root / "codex"
             workspace.mkdir()
-            home.mkdir()
+            home.mkdir(mode=0o700)
             (workspace / "read-canary").write_text("disposable")
             (workspace / ".env").write_text("FAKE_TEST_VALUE=disposable")
             (home / "auth.json").write_text('{}')
+            (home / "auth.json").chmod(0o600)
             (home / "AGENTS.md").write_text("Disposable fixture. No model turns are started.\n")
             (home / "config.toml").write_text(profile.permission_config().replace(
                 'default_permissions = "symphony-builder"', f'default_permissions = "symphony-{role}"'))

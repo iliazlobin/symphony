@@ -1,0 +1,215 @@
+defmodule SymphonyElixir.WorkerAuthPreflightTest do
+  use SymphonyElixir.TestSupport
+  alias SymphonyElixir.{Config, PathSafety, WorkerFailure}
+  alias SymphonyElixir.Config.Schema
+
+  setup do
+    {:ok, root} = PathSafety.canonicalize(Path.join(System.tmp_dir!(), "symphony-auth-preflight-#{System.unique_integer([:positive])}"))
+    workspace = root <> "/issue"
+    File.mkdir_p!(workspace)
+    on_exit(fn -> File.rm_rf(root) end)
+    %{root: root, workspace: workspace}
+  end
+
+  test "controlled preflight proves provider access before creating a thread", ctx do
+    configure(ctx, "ok")
+    assert Config.codex_auth_preflight?()
+    assert {:ok, session} = AppServer.start_session(ctx.workspace)
+    AppServer.stop_session(session)
+    requests = trace(ctx)
+    assert Enum.map(requests, & &1["method"]) == ["initialize", "initialized", "account/read", "getAuthStatus", "account/rateLimits/read", "thread/start"]
+    assert Enum.at(requests, 2)["params"] == %{"refreshToken" => true}
+    assert Enum.at(requests, 3)["params"] == %{"includeToken" => false, "refreshToken" => false}
+    assert Enum.at(requests, 4)["params"] == nil
+  end
+
+  test "cached account, invalid authentication and missing provider evidence never start work", ctx do
+    for mode <-
+          ~w(no_account wrong_account wrong_requires_auth malformed_account wrong_auth_method missing_status_auth token_leak empty_limits malformed_limits unauthorized refresh_revoked provider_401) do
+      fixture = fixture(ctx, mode)
+      configure(fixture, mode)
+
+      logs =
+        capture_log(fn ->
+          result = AppServer.start_session(fixture.workspace)
+          assert {:error, {:startup_failed, :worker_auth, :worker_auth_required}} = result
+        end)
+
+      refute logs =~ "PRIVATE_TOKEN_SENTINEL"
+      refute logs =~ "PRIVATE_PROVIDER_SENTINEL"
+      refute Enum.any?(trace(fixture), &(&1["method"] in ["thread/start", "turn/start"]))
+      assert_stopped(fixture)
+    end
+  end
+
+  test "transient provider or transport failure remains retryable and stops startup", ctx do
+    for mode <- ~w(transient provider_429 provider_503 provider_401_body untrusted_401 wrong_rpc_code) do
+      fixture = fixture(ctx, mode)
+      configure(fixture, mode)
+      assert {:error, {:startup_failed, :worker_auth, reason}} = AppServer.start_session(fixture.workspace)
+      assert {:response_error, error} = reason
+      assert error["code"] in [-32_000, -32_603]
+      refute WorkerFailure.authentication_required?(reason)
+      refute Enum.any?(trace(fixture), &(&1["method"] in ["thread/start", "turn/start"]))
+      assert_stopped(fixture)
+    end
+  end
+
+  test "dedicated wrapper auth exit statuses require explicit recovery before initialization", ctx do
+    for status <- [78, 79] do
+      fixture = fixture(ctx, "wrapper-#{status}")
+      configure(fixture, "exit_#{status}")
+      result = AppServer.start_session(fixture.workspace)
+      assert {:error, {:startup_failed, :initialize, :worker_auth_required}} = result
+      refute Enum.any?(trace(fixture), &(&1["method"] in ["thread/start", "turn/start"]))
+      assert_stopped(fixture)
+    end
+  end
+
+  test "wrapper exit statuses remain ordinary failures for default or uncontrolled clients", ctx do
+    for {controlled, enabled} <- [{true, nil}, {false, true}], status <- [78, 79] do
+      fixture = fixture(ctx, "wrapper-#{controlled}-#{status}")
+      configure(fixture, "exit_#{status}", controlled: controlled, auth_preflight: enabled)
+      result = AppServer.start_session(fixture.workspace)
+
+      if controlled do
+        assert {:error, {:startup_failed, :initialize, {:port_exit, ^status}}} = result
+      else
+        assert {:error, {:port_exit, ^status}} = result
+      end
+
+      refute WorkerFailure.authentication_required?(elem(result, 1))
+      refute Enum.any?(trace(fixture), &(&1["method"] in ["thread/start", "turn/start"]))
+    end
+  end
+
+  test "preflight deadline includes a silent provider and guardian cleanup", ctx do
+    configure(ctx, "timeout", read_timeout_ms: 500)
+    started = System.monotonic_time(:millisecond)
+    assert {:error, {:startup_failed, :worker_auth, :response_timeout}} = AppServer.start_session(ctx.workspace)
+    assert System.monotonic_time(:millisecond) - started < 2_000
+    refute Enum.any?(trace(ctx), &(&1["method"] in ["thread/start", "turn/start"]))
+    assert_stopped(ctx)
+  end
+
+  test "opt-in is disabled by default and does not affect uncontrolled clients", ctx do
+    for {controlled, enabled} <- [{true, nil}, {false, true}] do
+      fixture = fixture(ctx, "#{controlled}")
+      configure(fixture, "ok", controlled: controlled, auth_preflight: enabled)
+      assert Config.codex_auth_preflight?() == (enabled == true)
+      assert {:ok, session} = AppServer.start_session(fixture.workspace)
+      AppServer.stop_session(session)
+      refute Enum.any?(trace(fixture), &(&1["method"] in ["account/read", "getAuthStatus", "account/rateLimits/read"]))
+    end
+  end
+
+  test "configuration rejects malformed preflight flags" do
+    config = %{"codex" => %{"auth_preflight" => "not-a-boolean"}}
+    assert {:error, {:invalid_workflow_config, message}} = Schema.parse(config)
+    assert message =~ "auth_preflight"
+  end
+
+  defp fixture(ctx, label) do
+    root = ctx.root <> "/" <> label
+    workspace = root <> "/issue"
+    File.mkdir_p!(workspace)
+    %{root: root, workspace: workspace}
+  end
+
+  defp configure(ctx, mode, opts \\ []) do
+    command = server(ctx, mode)
+    codex = %{command: command, read_timeout_ms: opts[:read_timeout_ms] || 5_000}
+    codex = if Keyword.has_key?(opts, :auth_preflight) and is_nil(opts[:auth_preflight]), do: codex, else: Map.put(codex, :auth_preflight, Keyword.get(opts, :auth_preflight, true))
+
+    settings = %{
+      tracker: %{kind: "memory"},
+      workspace: %{root: ctx.root},
+      codex: codex,
+      control: %{enabled: Keyword.get(opts, :controlled, true), state_path: ctx.root <> "/control.json"}
+    }
+
+    File.write!(Workflow.workflow_file_path(), "---\n" <> Jason.encode!(settings) <> "\n---\nTask")
+    WorkflowStore.force_reload()
+  end
+
+  defp trace(ctx) do
+    File.read!(ctx.root <> "/trace") |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1)
+  end
+
+  defp assert_stopped(ctx) do
+    pid = File.read!(ctx.root <> "/pid")
+    wait_for_exit(pid)
+  end
+
+  defp wait_for_exit(pid, attempts \\ 40)
+
+  defp wait_for_exit(pid, 0) do
+    {_output, status} = System.cmd("/bin/kill", ["-0", pid], stderr_to_stdout: true)
+    assert status != 0
+  end
+
+  defp wait_for_exit(pid, attempts) do
+    {_output, status} = System.cmd("/bin/kill", ["-0", pid], stderr_to_stdout: true)
+
+    if status == 0 do
+      Process.sleep(50)
+      wait_for_exit(pid, attempts - 1)
+    end
+  end
+
+  defp server(ctx, mode) do
+    path = ctx.root <> "/server.py"
+
+    File.write!(path, """
+    #!/usr/bin/env python3
+    import json, os, sys, time
+    root = #{Jason.encode!(ctx.root)}
+    mode = #{Jason.encode!(mode)}
+    open(root + '/pid', 'w').write(str(os.getpid()))
+    def send(msg): print(json.dumps(msg), flush=True)
+    for line in sys.stdin:
+        msg = json.loads(line)
+        with open(root + '/trace', 'a') as f: f.write(json.dumps(msg) + '\\n')
+        method = msg['method']
+        if method == 'initialize':
+            if mode.startswith('exit_'): sys.exit(int(mode[5:]))
+            send({'id': msg['id'], 'result': {}})
+        elif method == 'account/read':
+            result = {'account': {'type': 'chatgpt'}, 'requiresOpenaiAuth': True}
+            if mode == 'no_account': result['account'] = None
+            if mode == 'wrong_account': result['account'] = {'type': 'apiKey'}
+            if mode == 'wrong_requires_auth': result['requiresOpenaiAuth'] = False
+            if mode == 'malformed_account': result = []
+            send({'id': msg['id'], 'result': result})
+        elif method == 'getAuthStatus':
+            result = {'authMethod': 'chatgpt', 'requiresOpenaiAuth': True, 'authToken': None}
+            if mode == 'wrong_auth_method': result['authMethod'] = 'apiKey'
+            if mode == 'missing_status_auth': del result['requiresOpenaiAuth']
+            if mode == 'token_leak': result['authToken'] = 'PRIVATE_TOKEN_SENTINEL'
+            send({'id': msg['id'], 'result': result})
+        elif method == 'account/rateLimits/read':
+            if mode == 'timeout': time.sleep(5)
+            elif mode in ('unauthorized', 'refresh_revoked', 'transient'):
+                code = {'unauthorized': 'unauthorized', 'refresh_revoked': 'refresh_token_revoked', 'transient': -32000}[mode]
+                send({'id': msg['id'], 'error': {'code': code, 'message': 'PRIVATE_PROVIDER_SENTINEL'}})
+            elif mode.startswith('provider_') or mode in ('untrusted_401', 'wrong_rpc_code'):
+                status = {'provider_429': '429 Too Many Requests', 'provider_503': '503 Service Unavailable'}.get(mode, '401 Unauthorized')
+                message = 'failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: ' + status
+                message += '; content-type=application/json; body=PRIVATE_PROVIDER_SENTINEL'
+                if mode == 'provider_401_body': message = message.replace('failed: 401 Unauthorized', 'failed: 503 Service Unavailable') + ' 401 Unauthorized'
+                if mode == 'untrusted_401': message = 'Task description says 401 Unauthorized'
+                code = -32000 if mode == 'wrong_rpc_code' else -32603
+                send({'id': msg['id'], 'error': {'code': code, 'message': message}})
+            else:
+                result = {'rateLimits': {'primary': {'usedPercent': 0}}}
+                if mode == 'empty_limits': result['rateLimits'] = {}
+                if mode == 'malformed_limits': result = []
+                send({'id': msg['id'], 'result': result})
+        elif method == 'thread/start':
+            send({'id': msg['id'], 'result': {'thread': {'id': 'auth-verified'}, 'activePermissionProfile': {'id': 'symphony-builder'}}})
+    """)
+
+    File.chmod!(path, 0o755)
+    path
+  end
+end

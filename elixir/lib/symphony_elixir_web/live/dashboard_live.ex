@@ -6,6 +6,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixir.Chat.ViewContext
   alias SymphonyElixir.Config
   alias SymphonyElixir.TaskKind
+  alias SymphonyElixir.WorkerFailure
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, ChatPanel, Endpoint, Markdown, SettingsPanel, TaskIntakePanel}
   alias SymphonyElixirWeb.{BoardCache, ChatNavigation, ObservabilityPubSub, Presenter}
   alias SymphonyElixirWeb.{TaskBoard, TaskExecution, TaskRework}
@@ -1113,7 +1114,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
     """
   end
 
-  defp blocker(task), do: Map.get(task, :blocker_reason) || task.attention
+  defp blocker(task) do
+    case get_in(task, [:runtime, :error]) do
+      error when is_binary(error) and error != "" -> WorkerFailure.summary(error)
+      _ -> Map.get(task, :blocker_reason) || task.attention
+    end
+  end
+
   defp display(value) when is_binary(value) and value != "", do: value |> String.downcase() |> String.replace("_", " ") |> String.capitalize()
   defp display(_), do: "Unknown"
   defp records(value) when is_list(value), do: Enum.filter(value, &is_map/1)
@@ -1357,7 +1364,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     entries = Map.get(payload, :running, []) ++ Map.get(payload, :blocked, [])
     entry = Enum.find(entries, &(&1.issue_id == task.issue_id))
     runtime = task.runtime || %{}
-    (entry && entry[:last_message]) || runtime[:last_message] || runtime[:error]
+    if is_nil(runtime[:error]), do: (entry && entry[:last_message]) || runtime[:last_message]
   end
 
   defp orchestrator, do: Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator

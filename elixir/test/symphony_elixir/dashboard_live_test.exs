@@ -766,6 +766,50 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute_received {:settings_command, _}
   end
 
+  test "worker failures show a concise safe reason in cards and details without raw activity", ctx do
+    private = "agent exited: {%RuntimeError{message: \"Bearer private-provider-token\"}, [{PrivateWorker, :run, 3, [file: \"private/config.ex\", line: 44]}]}"
+    retry = %{issue_id: "2", issue_identifier: "GH-2", attempt: 1, due_at: "2099-01-01T00:00:00Z", error: private}
+
+    board =
+      %{ctx.board | runtime: Map.put(ctx.board.runtime, :retrying, [retry])}
+      |> execution_board("2", %{"attempts" => 1})
+      |> update_task("2", &Map.put(&1, :blocker_reason, private))
+
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    card = "[data-task-id='github:example/fixture:2']"
+    assert has_element?(view, card <> " .execution-summary", "Retry scheduled")
+    assert has_element?(view, card <> " .attention-badge", "Worker failed; inspect service logs")
+    refute has_element?(view, card <> " .card-activity")
+    open_task(view, "2")
+    assert has_element?(view, "#board-dialog .attention-badge", "Worker failed; inspect service logs")
+
+    html = render(view)
+    refute html =~ "RuntimeError"
+    refute html =~ "private-provider-token"
+    refute html =~ "private/config.ex"
+    refute_received {:settings_command, _}
+  end
+
+  test "worker sign-in hold explains coding recovery independently of project chat and budgets", ctx do
+    board = execution_board(ctx.board, "2", %{"attempts" => 1, "tokens" => 10, "runtime_ms" => 50, "hold" => "worker_auth_required"})
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:2'] .execution-summary", "Worker sign-in required")
+    open_task(view, "2")
+    assert has_element?(view, "#board-dialog .execution-note", "coding worker's Codex sign-in")
+    assert has_element?(view, "#board-dialog .execution-note", "Project chat remains available")
+    assert has_element?(view, "#board-dialog button[phx-value-action=retry]")
+    refute has_element?(view, "#board-dialog button[phx-value-action=cancel]")
+    refute has_element?(view, "#board-dialog", "Retry scheduled")
+
+    exhausted = execution_board(ctx.board, "2", %{"attempts" => 2, "hold" => "worker_auth_required"})
+    refresh(view, ctx.runtime, exhausted)
+    assert has_element?(view, "#board-dialog .execution-note", "Attempts limit reached")
+    refute has_element?(view, "#board-dialog button[phx-value-action=retry]")
+    refute_received {:settings_command, _}
+  end
+
   test "settled owner review takes precedence over a lingering continuation retry timer", ctx do
     retry = %{issue_id: "4", issue_identifier: "GH-4", attempt: 1, due_at: "2099-01-01T00:00:00Z", error: nil}
     runtime_board = %{ctx.board | runtime: Map.put(ctx.board.runtime, :retrying, [retry])}

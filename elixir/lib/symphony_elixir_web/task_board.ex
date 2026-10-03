@@ -17,6 +17,7 @@ defmodule SymphonyElixirWeb.TaskBoard do
   alias SymphonyElixir.GitHub.{Board, Client}
   alias SymphonyElixir.{IssueAcceptance, Orchestrator, TaskDependencies, TaskIdentity, TaskKind, TaskRouting, Tracker}
   alias SymphonyElixir.Tracker.Issue
+  alias SymphonyElixir.WorkerFailure
   alias SymphonyElixirWeb.{BoardCache, Presenter, WorkflowGraph}
 
   @spec load(GenServer.name(), pos_integer()) :: map()
@@ -390,13 +391,21 @@ defmodule SymphonyElixirWeb.TaskBoard do
   defp controlled_stage(_runtime, _hold, _handoff, _terminal, _queued, true), do: "done"
   defp controlled_stage(%{status: "running"}, _hold, _handoff, _terminal, _queued, false), do: "running"
   defp controlled_stage(_runtime, _hold, _handoff, true, _queued, false), do: "review"
+  defp controlled_stage(_runtime, "worker_auth_required", _handoff, _terminal, _queued, false), do: "ready"
   defp controlled_stage(_runtime, hold, handoff, _terminal, queued, false), do: stage(nil, hold, handoff, false, queued)
 
-  defp blocker_reason(%{error: error}, _hold, _attention) when is_binary(error) and error != "", do: String.slice(error, 0, 2_000)
+  defp blocker_reason(_runtime, "worker_auth_required", _attention), do: "Worker sign-in required"
+  defp blocker_reason(%{error: error}, _hold, _attention) when is_binary(error) and error != "", do: WorkerFailure.summary(error)
   defp blocker_reason(_runtime, hold, attention) when is_binary(hold), do: attention || humanize_hold(hold)
   defp blocker_reason(_runtime, _hold, attention), do: attention
 
-  defp execution_status(%{status: status}, _hold, _ledger), do: status
+  defp execution_status(%{status: "running"}, _hold, _ledger), do: "running"
+  defp execution_status(_runtime, "worker_auth_required", _ledger), do: "blocked"
+
+  defp execution_status(%{status: status} = runtime, _hold, _ledger) do
+    if WorkerFailure.authentication_required?(runtime[:error]), do: "blocked", else: status
+  end
+
   defp execution_status(_runtime, _hold, %{"active" => active}) when is_map(active), do: "unknown"
   defp execution_status(_runtime, hold, _ledger) when is_binary(hold), do: "held"
   defp execution_status(_runtime, _hold, _ledger), do: "idle"
@@ -436,8 +445,15 @@ defmodule SymphonyElixirWeb.TaskBoard do
   defp reservation_attention(_runtime, %{"active" => active}) when is_map(active), do: "Execution reservation needs reconciliation"
   defp reservation_attention(_runtime, _ledger), do: nil
 
-  defp attention(%{status: "blocked"}, _hold, _admitted, _issue, _tracker, _terminal, _ledger), do: "Worker needs input"
-  defp attention(%{status: "retrying"}, _hold, _admitted, _issue, _tracker, _terminal, _ledger), do: "Retry scheduled"
+  defp attention(%{status: "running"}, _hold, _admitted, _issue, _tracker, _terminal, _ledger), do: nil
+  defp attention(_runtime, "worker_auth_required", _admitted, _issue, _tracker, _terminal, _ledger), do: "Worker sign-in required"
+
+  defp attention(%{status: status} = runtime, _hold, _admitted, _issue, _tracker, _terminal, _ledger) when status in ["blocked", "retrying"] do
+    if WorkerFailure.authentication_required?(runtime[:error]),
+      do: "Worker sign-in required",
+      else: if(status == "blocked", do: "Worker needs input", else: "Retry scheduled")
+  end
+
   defp attention(_runtime, hold, _admitted, _issue, _tracker, _terminal, _ledger) when is_binary(hold), do: humanize_hold(hold)
 
   defp attention(_runtime, _hold, admitted, issue, tracker, false, ledger) do

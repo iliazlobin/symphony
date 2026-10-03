@@ -520,7 +520,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~s(href="https://example.org/issues/MT-BLOCKED")
     assert html =~ ~s(aria-label="Open MT-HTTP in the issue tracker")
     assert html =~ "rendered"
-    assert html =~ "turn blocked: waiting for user input"
+    assert html =~ "Worker failed; inspect service logs"
+    refute html =~ "turn blocked: waiting for user input"
     assert has_element?(view, "#lane-in_progress .task-card[data-status=running]")
     assert html =~ "Live updates connected"
     assert html =~ "Disconnected"

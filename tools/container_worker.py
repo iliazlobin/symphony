@@ -11,8 +11,14 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from container_auth import AuthLease, AuthLeaseBusy, AuthLeaseError, prepare_marker
 
 OWNER_LABEL = "com.openai.symphony.owner"
+AUTH_UNAVAILABLE_EXIT = 78
+AUTH_BUSY_EXIT = 79
 
 
 def stage_path(codex_home, owner, role, work_id=None):
@@ -95,7 +101,9 @@ def create_command(workspace, codex_home, image, role, cidfile, owner, docker, s
 
     stage_home = stage_path(codex_home, owner, role, work_id)
     stage_mounts = ["--mount", f"type=bind,src={stage_home},dst=/codex-home"]
-    for filename in ("config.toml", "AGENTS.md", "auth.json"):
+    # Authentication moves into the writable stage directory under one durable
+    # guardian claim. A read-only auth leaf loses Codex-managed token refresh.
+    for filename in ("config.toml", "AGENTS.md"):
         source = codex_home / filename
         if source.exists():
             if source.is_symlink() or not source.is_file():
@@ -153,18 +161,31 @@ def main():
     resume = os.environ.get("SYMPHONY_PR_WORK_RESUME")
     if resume not in (None, "true"):
         raise ValueError("Invalid retained session resume flag")
-    prepare_stage_home(args.workspace, args.codex_home, os.environ["SYMPHONY_CONTAINER_OWNER"],
-                       os.environ.get("SYMPHONY_WORKER_ROLE", "builder"), os.environ.get("SYMPHONY_PR_WORK_ID"),
-                       resume=resume == "true")
+    owner = os.environ["SYMPHONY_CONTAINER_OWNER"]
+    role = os.environ.get("SYMPHONY_WORKER_ROLE", "builder")
+    stage = prepare_stage_home(args.workspace, args.codex_home, owner, role,
+                               os.environ.get("SYMPHONY_PR_WORK_ID"), resume=resume == "true")
     docker_env = {key: value for key, value in os.environ.items() if key not in ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG")}
     context = subprocess.run([docker, "context", "inspect", "colima", "--format", "{{.Endpoints.docker.Host}}"], env=docker_env, capture_output=True, text=True, timeout=10, check=True)
     endpoint = context.stdout.strip()
     if not endpoint.startswith("unix:///") or any(c in endpoint for c in ("\n", "\r", "\0")):
         raise ValueError("Only an explicitly identified local Docker socket is supported")
+    cidfile = Path(os.environ["SYMPHONY_CONTAINER_CIDFILE"])
+    # The host-only marker precedes the claim. Before Docker intent exists,
+    # guardian cleanup can safely retire a cancelled wait or unstarted stage.
+    prepare_marker(cidfile, owner, Path(args.codex_home).resolve(strict=True), stage)
+    AuthLease(Path(args.codex_home).resolve(strict=True)).wait_claim(owner, stage, cidfile, role)
     command[1:1] = ["--host", endpoint]
     intent = os.environ["SYMPHONY_CONTAINER_CIDFILE"] + ".intent"
     with open(os.open(intent, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as marker:
         json.dump({"owner": os.environ["SYMPHONY_CONTAINER_OWNER"], "docker_host": endpoint}, marker)
+        marker.flush()
+        os.fsync(marker.fileno())
+    directory = os.open(Path(intent).parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
     result = subprocess.run(command, env=docker_env, text=True, capture_output=True, timeout=60)
     if result.returncode != 0:
         raise RuntimeError("Worker container creation failed: " + result.stderr[-2000:])
@@ -176,5 +197,17 @@ def main():
     os.execve(docker, [docker, "--host", endpoint, "start", "--attach", "--interactive", cid], docker_env)
 
 
+def entrypoint():
+    try:
+        main()
+        return 0
+    except AuthLeaseBusy:
+        print("Worker sign-in is busy; no model turn was started", file=sys.stderr)
+        return AUTH_BUSY_EXIT
+    except AuthLeaseError:
+        print("Dedicated worker sign-in needs recovery; no model turn was started", file=sys.stderr)
+        return AUTH_UNAVAILABLE_EXIT
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(entrypoint())

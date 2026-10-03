@@ -55,11 +55,46 @@ defmodule SymphonyElixir.ProcessGroupEdgeTest do
     assert_blocked(context)
   end
 
+  test "authentication is retired only after exact container removal", context do
+    {command, env, trace} = fixture(context, "matching", true)
+    assert {:ok, {"", 0}} = ProcessGroup.run(command, cd: context.workspace, env: env, timeout_ms: 3_000)
+    assert commands(trace) == ["inspect", "rm", "inspect"]
+    assert File.read!(Path.join(context.root, "auth-retired")) == "retired"
+    assert Path.wildcard(Path.join(context.root, ".symphony-process-locks/*.auth")) == []
+  end
+
+  test "uncertain container cleanup retains authentication ownership", context do
+    {command, env, trace} = fixture(context, "unavailable", true)
+    assert {:ok, {_output, status}} = ProcessGroup.run(command, cd: context.workspace, env: env, timeout_ms: 3_000)
+    assert status != 0
+    assert commands(trace) == ["inspect"]
+    refute File.exists?(Path.join(context.root, "auth-retired"))
+    assert [_marker] = Path.wildcard(Path.join(context.root, ".symphony-process-locks/*.auth"))
+    assert_blocked(context)
+  end
+
+  test "an authentication claim interrupted before container intent is retired", context do
+    {command, env, _trace} = fixture(context, "auth_only", true)
+    assert {:ok, {"", 0}} = ProcessGroup.run(command, cd: context.workspace, env: env, timeout_ms: 3_000)
+    assert File.read!(Path.join(context.root, "auth-retired")) == "retired"
+    assert Path.wildcard(Path.join(context.root, ".symphony-process-locks/*.auth")) == []
+  end
+
+  test "failed authentication retirement retains recovery markers and blocks reuse", context do
+    {command, env, trace} = fixture(context, "auth_failed", true)
+    assert {:ok, {output, status}} = ProcessGroup.run(command, cd: context.workspace, env: env, timeout_ms: 3_000)
+    assert status != 0
+    assert output =~ "Worker authentication retirement failed"
+    assert commands(trace) == ["inspect", "rm", "inspect"]
+    assert [_marker] = Path.wildcard(Path.join(context.root, ".symphony-process-locks/*.auth"))
+    assert_blocked(context)
+  end
+
   defp assert_blocked(context) do
     assert [_intent] = Path.wildcard(Path.join(context.root, ".symphony-process-locks/*.intent"))
     marker = Path.join(context.workspace, "unexpected-reuse")
     assert {:ok, {output, status}} = ProcessGroup.run("touch " <> shell_escape(marker), cd: context.workspace, timeout_ms: 2_000)
-    assert status != 0
+    assert status == 78
     assert output =~ "operator recovery is required"
     refute File.exists?(marker)
   end
@@ -68,7 +103,7 @@ defmodule SymphonyElixir.ProcessGroupEdgeTest do
     trace |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1) |> Enum.map(&Enum.at(&1, 2))
   end
 
-  defp fixture(context, mode) do
+  defp fixture(context, mode, auth \\ false) do
     python = System.find_executable("python3")
     bin = Path.join(context.root, "bin")
     File.mkdir_p!(bin)
@@ -93,26 +128,48 @@ defmodule SymphonyElixir.ProcessGroupEdgeTest do
         if removed.exists():
             print('Error: No Such Object: fixture', file=sys.stderr)
             sys.exit(1)
-        owner = os.environ['SYMPHONY_CONTAINER_OWNER'] if mode == 'matching' else 'foreign-owner'
+        owner = os.environ['SYMPHONY_CONTAINER_OWNER'] if mode in ('matching', 'auth_failed') else 'foreign-owner'
         print(owner + ' ' + 'a' * 64)
     elif sys.argv[3:5] == ['rm', '--force']:
-        assert mode == 'matching' and sys.argv[5] == 'a' * 64
+        assert mode in ('matching', 'auth_failed') and sys.argv[5] == 'a' * 64
         removed.touch()
     else:
         raise RuntimeError('Unexpected fixture Docker operation')
     """)
 
     File.chmod!(docker, 0o755)
+    helper_root = Path.join(context.root, "tools")
+    File.mkdir_p!(helper_root)
+    helper = Path.join(helper_root, "container_auth.py")
+
+    File.write!(helper, """
+    import json, pathlib, sys
+    assert sys.argv[1:3] == ['retire', '--marker']
+    marker = pathlib.Path(sys.argv[3])
+    metadata = json.loads(marker.read_text())
+    assert sys.argv[4:] == ['--owner', metadata['owner'], '--cidfile', metadata['cidfile']]
+    assert not pathlib.Path(metadata['cidfile']).exists() or pathlib.Path(#{Jason.encode!(removed)}).exists()
+    if #{Jason.encode!(mode)} == 'auth_failed':
+        sys.exit(1)
+    pathlib.Path(#{Jason.encode!(Path.join(context.root, "auth-retired"))}).write_text('retired')
+    """)
+
     child = Path.join(context.root, "container-intent.py")
 
     File.write!(child, """
     import json, os, pathlib
     cidfile = pathlib.Path(os.environ['SYMPHONY_CONTAINER_CIDFILE'])
-    cidfile.write_text('a' * 64)
-    pathlib.Path(str(cidfile) + '.intent').write_text(json.dumps({
-        'owner': os.environ['SYMPHONY_CONTAINER_OWNER'],
-        'docker_host': 'unix:///fixture-only.sock'
-    }))
+    if #{if auth, do: "True", else: "False"}:
+        marker = pathlib.Path(str(cidfile) + '.auth')
+        marker.write_text(json.dumps({'owner': os.environ['SYMPHONY_CONTAINER_OWNER'],
+                                     'cidfile': str(cidfile), 'helper': #{Jason.encode!(helper)}}))
+        marker.chmod(0o600)
+    if #{Jason.encode!(mode)} != 'auth_only':
+        cidfile.write_text('a' * 64)
+        pathlib.Path(str(cidfile) + '.intent').write_text(json.dumps({
+            'owner': os.environ['SYMPHONY_CONTAINER_OWNER'],
+            'docker_host': 'unix:///fixture-only.sock'
+        }))
     """)
 
     env = [

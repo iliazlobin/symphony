@@ -423,6 +423,30 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     refute_receive {:native_command, _, _, _}
   end
 
+  test "task detail tools give the chat model safe worker failures rather than exceptions", ctx do
+    private = "agent exited: {%RuntimeError{message: \"Bearer private-model-token\"}, [{PrivateWorker, :run, 3, [file: \"private/config.ex\", line: 44]}]}"
+
+    task =
+      hd(ctx.board.tasks)
+      |> Map.put(:runtime, %{status: "retrying", error: private})
+      |> Map.put(:blocker_reason, private)
+
+    Application.put_env(:symphony_elixir, :chat_test_board, %{ctx.board | tasks: [task]})
+    assert {:ok, %{"widgets" => [%{"task" => details}]} = result} = Tools.call("symphony_task_details", %{"task_id" => task.issue_id}, ctx.context)
+    assert details["blocker_reason"] == "Worker failed; inspect service logs"
+    assert details["execution_status"] == "Retry scheduled"
+    refute Jason.encode!(result) =~ "private-model-token"
+    refute Jason.encode!(result) =~ "RuntimeError"
+    refute Jason.encode!(result) =~ "private/config.ex"
+
+    held = %{task | runtime: nil, hold: "worker_auth_required", ledger: %{"attempts" => 1, "tokens" => 10, "runtime_ms" => 50}}
+    Application.put_env(:symphony_elixir, :chat_test_board, %{ctx.board | tasks: [held]})
+    assert {:ok, %{"widgets" => [%{"task" => auth}]} = result} = Tools.call("symphony_task_details", %{"task_id" => held.issue_id}, ctx.context)
+    assert auth["execution_status"] == "Worker sign-in required"
+    assert auth["execution_note"] =~ "coding worker's Codex sign-in"
+    refute Jason.encode!(result) =~ "private-model-token"
+  end
+
   test "a queued task at its attempt limit exposes the board hold and never promises admission", ctx do
     control =
       ctx.board.control

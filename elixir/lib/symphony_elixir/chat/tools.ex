@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.Chat.Tools do
   @moduledoc "Project-bound management tools. Model calls can prepare writes; only an operator confirms them."
 
-  alias SymphonyElixir.{AgentProtocol, Config, Orchestrator, TaskDraft, WorkEvidence}
+  alias SymphonyElixir.{AgentProtocol, Config, Orchestrator, TaskDraft, WorkerFailure, WorkEvidence}
   alias SymphonyElixir.Chat.{Coordination, GitHub, Sessions, ViewContext}
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, TaskBoard, TaskExecution}
 
@@ -392,7 +392,8 @@ defmodule SymphonyElixir.Chat.Tools do
     with :ok <- complete_board(board), {:ok, task} <- find_task(args["task_id"], context, board) do
       details =
         task_view(task, board)
-        |> Map.merge(string_keys(Map.take(task, ~w(blocker_reason github_status)a)))
+        |> Map.put("blocker_reason", task_blocker_reason(task))
+        |> Map.put("github_status", task[:github_status])
         |> Map.put("description", truncate(task[:description], 32_000))
         |> Map.put("labels", task[:labels] || [])
         |> Map.put("pr_work", pr_work_details(task))
@@ -535,6 +536,16 @@ defmodule SymphonyElixir.Chat.Tools do
   end
 
   defp task_lane(task), do: task[:lane] || scheduler_lane(task.stage)
+
+  defp task_blocker_reason(%{hold: "worker_auth_required"}), do: "Worker sign-in required"
+
+  defp task_blocker_reason(task) do
+    case get_in(task, [:runtime, :error]) do
+      error when is_binary(error) and error != "" -> WorkerFailure.summary(error)
+      _ -> task[:blocker_reason]
+    end
+  end
+
   defp scheduler_lane("ready"), do: "work"
   defp scheduler_lane("running"), do: "in_progress"
   defp scheduler_lane(stage), do: stage

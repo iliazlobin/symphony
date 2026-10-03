@@ -18,6 +18,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from symphony_control import ControlError, DEFAULT_CONFIG, load_config, read_private
+from container_auth import AuthLease, AuthLeaseError
 
 REPOSITORY = "iliazlobin/events-concierge"
 REMOTE = "https://github.com/" + REPOSITORY + ".git"
@@ -96,6 +97,8 @@ def permission_config() -> str:
     sections = [
         'model = "gpt-6-astra"',
         'model_reasoning_effort = "medium"',
+        'cli_auth_credentials_store = "file"',
+        'forced_login_method = "chatgpt"',
         'approval_policy = "on-request"',
         'approvals_reviewer = "user"',
         'default_permissions = "symphony-builder"',
@@ -124,6 +127,20 @@ def permission_config() -> str:
             f'[permissions.{name}.network]', 'enabled = false',
         ]
     return "\n".join(sections) + "\n"
+
+
+def worker_workflow(workflow: str) -> str:
+    """Generated dedicated-container workflows always verify provider auth."""
+    pieces = workflow.split("---\n", 2)
+    settings = yaml.safe_load(pieces[1])
+    codex = settings.setdefault("codex", {})
+    if not isinstance(codex, dict):
+        raise ControlError("Worker workflow Codex configuration must be an object")
+    codex["auth_preflight"] = True
+    # One enrolled credential is one serialized worker stream. Concurrency
+    # needs an explicit pool of independently enrolled credentials first.
+    settings["agent"]["max_concurrent_agents"] = 1
+    return "---\n" + yaml.safe_dump(settings, sort_keys=False) + "---\n" + pieces[2]
 
 
 def initialize(args, repository: str = REPOSITORY, profile_bin: Path | None = None) -> dict:
@@ -173,7 +190,7 @@ def initialize(args, repository: str = REPOSITORY, profile_bin: Path | None = No
         },
     }
     write_private(state / "control.token", secrets.token_urlsafe(48) + "\n")
-    write_private(state / "WORKFLOW.md", workflow)
+    write_private(state / "WORKFLOW.md", worker_workflow(workflow))
     write_private(state / "codex/config.toml", permission_config())
     write_private(config_file, json.dumps(config, indent=2) + "\n")
     return {"config": str(config_file), "mode": "paused", "source_revision": base,
@@ -264,9 +281,8 @@ def container_launch_options(config: dict) -> list[str]:
 def codex_server(config: dict) -> None:
     if config.get("worker_launch_enabled") is not True:
         raise ControlError("Live workers are disabled until isolation, cancellation, authentication and pilot acceptance are verified")
-    home = Path(config["codex_home"])
-    if not (home / "auth.json").is_file():
-        raise ControlError("Dedicated worker Codex login is missing; run profile.py login")
+    # The sole credential can currently belong to another stage. The wrapper
+    # waits for its durable lease; checking only the master file loses that fact.
     rules = Path(config["state_dir"]) / "bin/codex-rules"
     if not rules.is_file():
         raise ControlError("Managed worker rules are not installed; run profile.py install-rules")
@@ -303,6 +319,31 @@ def install_rules(config: dict) -> dict:
     run(sys.executable, config["rules_source"], "install",
         "--real-codex", config["codex_binary"], "--bin-dir", str(Path(config["state_dir"]) / "bin"), env=env)
     return {"installed": True, "codex_home": config["codex_home"]}
+
+
+def worker_auth_status(config: dict) -> dict:
+    try:
+        return AuthLease(config["codex_home"]).status()
+    except (AuthLeaseError, OSError, ValueError):
+        return {"state": "recovery", "credential_present": False,
+                "sign_in_required": True, "provider_verified": False}
+
+
+def worker_login(config: dict) -> None:
+    try:
+        with AuthLease(config["codex_home"]).enrollment() as home:
+            env = worker_env(config)
+            env["CODEX_HOME"] = str(home)
+            try:
+                status = subprocess.run([config["codex_binary"], "login", "--device-auth"], env=env).returncode
+            except (FileNotFoundError, PermissionError):
+                # Popen reports these only after its failed exec child is
+                # settled. Other interruptions retain the durable claim.
+                status = 127
+        if status:
+            raise ControlError("Dedicated worker sign-in did not complete")
+    except (AuthLeaseError, OSError) as exc:
+        raise ControlError("Dedicated worker sign-in is in use or unavailable; reconcile its ownership first") from exc
 
 
 def google_oauth_environment(config: dict) -> dict:
@@ -423,8 +464,8 @@ def main(repository: str = REPOSITORY, profile_bin: Path | None = None) -> int:
             elif args.command == "install-rules":
                 result = install_rules(config)
             elif args.command == "login":
-                env = dict(os.environ, CODEX_HOME=config["codex_home"])
-                os.execve(config["codex_binary"], [config["codex_binary"], "login", "--device-auth"], env)
+                worker_login(config)
+                result = {"login_completed": True}
             elif args.command == "doctor":
                 try:
                     container_launch_options(config)
@@ -434,7 +475,7 @@ def main(repository: str = REPOSITORY, profile_bin: Path | None = None) -> int:
                 result = {
                     "repository": config["repository"], "base_sha": config["base_sha"],
                     "integration_branch": config["integration_branch"],
-                    "worker_auth_present": (Path(config["codex_home"]) / "auth.json").is_file(),
+                    "worker_auth": worker_auth_status(config),
                     "managed_rules_present": (Path(config["state_dir"]) / "bin/codex-managed").is_file(),
                     "compiled_service_present": (ROOT / "elixir/bin/symphony").is_file(),
                     "auto_merge_enabled": config["auto_merge"]["enabled"],
