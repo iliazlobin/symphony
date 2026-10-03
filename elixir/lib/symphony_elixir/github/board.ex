@@ -7,6 +7,7 @@ defmodule SymphonyElixir.GitHub.Board do
   @check_limit 20
   @unavailable "GitHub PR evidence unavailable. Issue and execution data remain visible."
   @partial "GitHub PR evidence is partial or changed during refresh; some relationships are not shown."
+  @history_partial "Older PR history not loaded; current PR details remain available."
 
   @doc "Enriches an existing project snapshot within a separate bounded read budget."
   def enrich(board, settings, timeout \\ 2_000)
@@ -42,7 +43,7 @@ defmodule SymphonyElixir.GitHub.Board do
     reader = Task.async(fn -> fetch(tracker, selected) end)
 
     case Task.yield(reader, timeout) || Task.shutdown(reader, :brutal_kill) do
-      {:ok, {:ok, data}} -> apply_evidence(board, tracker, selected, data, length(tasks) > @issue_limit)
+      {:ok, {:ok, data, errors}} -> apply_evidence(board, tracker, selected, data, errors, length(tasks) > @issue_limit)
       _ -> unavailable(board, @unavailable)
     end
   end
@@ -56,7 +57,7 @@ defmodule SymphonyElixir.GitHub.Board do
 
     case Client.request("POST", "/graphql", %{}, body, tracker_settings: tracker, request_fun: request_fun) do
       {:ok, %{status: 200, body: %{"data" => %{"repository" => %{"nameWithOwner" => ^repo} = data}} = response}} ->
-        if Map.get(response, "errors", []) == [], do: {:ok, data}, else: {:error, :partial_response}
+        {:ok, data, error_scope(Map.get(response, "errors", []), tasks)}
 
       _ ->
         {:error, :unavailable}
@@ -66,6 +67,22 @@ defmodule SymphonyElixir.GitHub.Board do
   catch
     _, _ -> {:error, :unavailable}
   end
+
+  defp error_scope(errors, tasks) do
+    aliases = Map.new(tasks, &{"issue_" <> &1.issue_id, true})
+    scope_errors(errors, aliases)
+  end
+
+  defp scope_errors(errors, aliases) when is_list(errors) do
+    Enum.reduce(errors, %{}, fn error, affected ->
+      case error do
+        %{"path" => ["repository", issue | _]} when is_map_key(aliases, issue) -> Map.put(affected, issue, true)
+        _ -> aliases
+      end
+    end)
+  end
+
+  defp scope_errors(_errors, aliases), do: aliases
 
   @doc false
   @spec request_once(String.t(), String.t(), map(), map(), map()) :: {:ok, map()} | {:error, atom()}
@@ -151,32 +168,53 @@ defmodule SymphonyElixir.GitHub.Board do
     """
   end
 
-  defp apply_evidence(board, tracker, selected, data, truncated) do
+  defp apply_evidence(board, tracker, selected, data, errors, truncated) do
     repo = tracker.provider["repo"]
-    index = Map.new(selected, &{&1.issue_id, evidence(data["issue_" <> &1.issue_id], &1, repo)})
+    index = Map.new(selected, &{&1.issue_id, evidence(data["issue_" <> &1.issue_id], &1, repo, Map.has_key?(errors, "issue_" <> &1.issue_id))})
 
-    {tasks, incomplete} =
-      Enum.map_reduce(board.tasks, truncated, fn task, incomplete ->
+    tasks =
+      Enum.map(board.tasks, fn task ->
         case index[task.issue_id] do
-          {:ok, prs, partial, feedback} ->
+          {:ok, prs, reason, feedback} ->
             links = Enum.flat_map(prs, &pr_links/1)
-            status = evidence_status(partial)
-            task = %{task | pull_requests: prs, links: base_links(task) ++ links, github_status: status} |> Map.put(:feedback, feedback)
-            {task, incomplete or partial}
+            status = evidence_status(not is_nil(reason))
+
+            %{task | pull_requests: prs, links: base_links(task) ++ links, github_status: status}
+            |> Map.put(:feedback, feedback)
+            |> Map.put(:github_partial_reason, reason)
 
           nil ->
             status = empty_status(task)
-            {%{task | pull_requests: [], links: base_links(task), github_status: status} |> Map.put(:feedback, Feedback.unavailable()), incomplete}
+
+            %{task | pull_requests: [], links: base_links(task), github_status: status}
+            |> Map.put(:feedback, Feedback.unavailable())
+            |> Map.put(:github_partial_reason, nil)
 
           _ ->
-            {%{task | pull_requests: [], links: base_links(task), github_status: "unavailable"} |> Map.put(:feedback, Feedback.unavailable()), true}
+            %{task | pull_requests: [], links: base_links(task), github_status: "unavailable"}
+            |> Map.put(:feedback, Feedback.unavailable())
+            |> Map.put(:github_partial_reason, "evidence_unavailable")
         end
       end)
 
-    %{board | tasks: tasks, enrichment_error: if(incomplete, do: @partial)}
+    reason = enrichment_reason(tasks, truncated)
+    %{board | tasks: tasks, enrichment_error: enrichment_message(reason)} |> Map.put(:enrichment_reason, reason)
   end
 
-  defp evidence(%{"number" => number, "url" => url, "updatedAt" => updated} = issue, task, repo) when is_integer(number) and number > 0 do
+  defp enrichment_reason(tasks, truncated) do
+    cond do
+      Enum.any?(tasks, &(&1[:github_partial_reason] == "evidence_unavailable")) -> "evidence_unavailable"
+      truncated -> "issue_limit"
+      Enum.any?(tasks, &(&1[:github_partial_reason] == "history_truncated")) -> "history_truncated"
+      true -> nil
+    end
+  end
+
+  defp enrichment_message(nil), do: nil
+  defp enrichment_message("history_truncated"), do: @history_partial
+  defp enrichment_message(_reason), do: @partial
+
+  defp evidence(%{"number" => number, "url" => url, "updatedAt" => updated} = issue, task, repo, query_partial) when is_integer(number) and number > 0 do
     if Integer.to_string(number) == task.issue_id and url == "https://github.com/#{repo}/issues/#{number}" and
          (is_nil(task.updated_at) or task.updated_at == updated) do
       {linked, linked_partial} = connection(issue["closedByPullRequestsReferences"], "hasNextPage")
@@ -184,8 +222,9 @@ defmodule SymphonyElixir.GitHub.Board do
       linked = Enum.map(linked, &{&1, "linked"})
       references = Enum.flat_map(events, &referenced_pr(&1, number, repo))
       parsed = Enum.map(linked ++ references, fn {pr, relation} -> pull_request(pr, repo, relation) end)
-      prs = parsed |> Enum.reject(&is_nil/1) |> Enum.uniq_by(& &1.number) |> Enum.sort_by(& &1.number, :desc)
-      partial = linked_partial or events_partial or Enum.any?(parsed, &is_nil/1)
+      prs = parsed |> Enum.reject(&is_nil/1) |> Enum.uniq_by(& &1.number) |> Enum.sort_by(& &1.number, :desc) |> partial_checks(query_partial)
+      invalid = query_partial or Enum.any?(parsed, &is_nil/1)
+      reason = partial_reason(issue, invalid, linked_partial or events_partial)
 
       raw_prs =
         Enum.zip(linked ++ references, parsed)
@@ -193,13 +232,34 @@ defmodule SymphonyElixir.GitHub.Board do
         |> Enum.map(fn {{raw, _relation}, _parsed} -> raw end)
         |> Enum.uniq_by(& &1["number"])
 
-      {:ok, prs, partial, Feedback.collect(issue, raw_prs, task, repo, partial)}
+      {:ok, prs, reason, Feedback.collect(issue, raw_prs, task, repo, not is_nil(reason))}
     else
       {:error, :stale_issue}
     end
   end
 
-  defp evidence(_issue, _task, _repo), do: {:error, :missing_issue}
+  defp evidence(_issue, _task, _repo, _query_partial), do: {:error, :missing_issue}
+
+  defp partial_reason(_issue, false, false), do: nil
+
+  defp partial_reason(issue, false, true) do
+    if valid_connection?(issue["closedByPullRequestsReferences"], "hasNextPage") and valid_connection?(issue["timelineItems"], "hasPreviousPage"),
+      do: "history_truncated",
+      else: "evidence_unavailable"
+  end
+
+  defp partial_reason(_issue, true, _partial), do: "evidence_unavailable"
+
+  defp valid_connection?(%{"nodes" => nodes, "pageInfo" => page}, direction) when is_list(nodes) and length(nodes) <= 5 and is_map(page), do: is_boolean(page[direction])
+  defp valid_connection?(_connection, _direction), do: false
+
+  defp partial_checks(prs, false), do: prs
+  defp partial_checks(prs, true), do: Enum.map(prs, &partial_check/1)
+  defp partial_check(%{checks: "stale"} = pr), do: pr
+
+  defp partial_check(pr) do
+    %{pr | checks: if(pr.checks == "success", do: "unknown", else: pr.checks), check_details_status: if(pr.check_details_status == "unavailable", do: "unavailable", else: "partial")}
+  end
 
   defp connection(%{"nodes" => nodes, "pageInfo" => page}, direction) when is_list(nodes) and length(nodes) <= 5 and is_map(page),
     do: {nodes, page[direction] != false}
@@ -375,8 +435,9 @@ defmodule SymphonyElixir.GitHub.Board do
       Enum.map(board.tasks, fn task ->
         %{task | pull_requests: [], links: base_links(task), github_status: if(task.source_missing, do: "source_missing", else: "unavailable")}
         |> Map.put(:feedback, Feedback.unavailable())
+        |> Map.put(:github_partial_reason, "evidence_unavailable")
       end)
 
-    %{board | tasks: tasks, enrichment_error: message}
+    %{board | tasks: tasks, enrichment_error: message} |> Map.put(:enrichment_reason, "evidence_unavailable")
   end
 end

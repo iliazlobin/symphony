@@ -543,6 +543,93 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     assert {:ok, %{"context_status" => "unavailable", "snapshot" => nil, "current_tasks" => []}} = Tools.call("symphony_view_context", %{}, ctx.context)
   end
 
+  test "host status refreshes local task and prerequisite execution while omitting source bodies", ctx do
+    [selected, prerequisite] = ctx.board.tasks
+    selected = %{selected | stage: "backlog", lane: "backlog"}
+    selected = selected |> Map.put(:dependencies, [prerequisite.issue_id, "99"]) |> Map.put(:description, "Untrusted body must not enter the status snapshot")
+    prerequisite = %{prerequisite | stage: "ready", lane: "work"}
+    board = %{ctx.board | tasks: [selected, prerequisite]}
+    Application.put_env(:symphony_elixir, :chat_test_board, board)
+    context = Map.put(ctx.context, :task_id, selected.id)
+    assert {:ok, initial} = Tools.snapshot(context)
+    assert initial["selected_task"]["stage"] == "backlog"
+    assert [%{"stage" => "work"}, %{"availability" => "unavailable", "id" => "github:example/repo:99"}] = initial["selected_task"]["prerequisites"]
+    refute Jason.encode!(initial) =~ selected.description
+    refute Map.has_key?(initial, "widgets")
+
+    selected = %{selected | stage: "ready", lane: "work", hold: "worker_auth_required"}
+    prerequisite = %{prerequisite | stage: "running", lane: "work"}
+    Application.put_env(:symphony_elixir, :chat_test_board, %{board | tasks: [selected, prerequisite]})
+    assert {:ok, current} = Tools.snapshot(context)
+    assert current["selected_task"]["stage"] == "work"
+    assert current["selected_task"]["hold"] == "worker_auth_required"
+    assert current["selected_task"]["execution_status"] == "Worker sign-in required"
+    assert hd(current["selected_task"]["prerequisites"])["stage"] == "in_progress"
+    assert current["checked_at"] == board.generated_at
+    assert {:ok, %{"widgets" => [%{"task" => details}]}} = Tools.call("symphony_task_details", %{"task_id" => prerequisite.id}, context)
+    assert details["stage"] == "in_progress"
+  end
+
+  test "host status preserves scope and unknown prerequisites without trusting browser stage hints", ctx do
+    snapshot = %{"version" => 1, "project_id" => ctx.context.project_id, "selected_task_id" => "github:example/repo:1"}
+    assert {:ok, facts} = Tools.snapshot(Map.put(ctx.context, :view_context, snapshot))
+    assert facts["selected_task"]["id"] == snapshot["selected_task_id"]
+    assert {:ok, %{"selected_task" => nil}} = Tools.snapshot(ctx.context)
+    assert {:ok, %{"selected_task" => %{"availability" => "unavailable"}}} = Tools.snapshot(Map.put(ctx.context, :task_id, ctx.context.project_id <> ":99"))
+    foreign = %{snapshot | "project_id" => "github:other/repo"}
+    assert {:error, :invalid_view_context} = Tools.snapshot(Map.put(ctx.context, :view_context, foreign))
+    assert {:error, :unauthorized} = Tools.snapshot(%{ctx.context | auth: %{}})
+    Application.put_env(:symphony_elixir, :chat_test_board, %{ctx.board | source_error: "Unavailable source"})
+    assert {:error, :board_unavailable} = Tools.snapshot(ctx.context)
+    Application.put_env(:symphony_elixir, :chat_test_board, :unavailable)
+    assert {:error, :board_unavailable} = Tools.snapshot(ctx.context)
+
+    for loader <- [fn -> raise "private source failure" end, fn -> throw({:source_failure, "private provider detail"}) end] do
+      Application.put_env(:symphony_elixir, :chat_test_board, loader)
+      assert {:error, :board_unavailable} = Tools.snapshot(ctx.context)
+    end
+  end
+
+  test "host status reads only the selected work's current native phase from the same board", ctx do
+    work_id = String.duplicate("b", 32)
+    put_pr_work(ctx, work_id, %{"phase" => "queued", "goal_revision" => 1, "purpose" => "coding", "builder_thread_id" => "private native thread"})
+    context = Map.merge(ctx.context, %{task_id: ctx.context.project_id <> ":1", session_id: "work:" <> work_id})
+    board = Application.fetch_env!(:symphony_elixir, :chat_test_board)
+    owner = self()
+
+    Application.put_env(:symphony_elixir, :chat_test_board, fn ->
+      send(owner, :snapshot_board_read)
+      board
+    end)
+
+    assert {:ok, facts} = Tools.snapshot(context)
+    assert_receive :snapshot_board_read
+    refute_receive :snapshot_board_read
+
+    assert facts["work_session"] == %{
+             "session_id" => context.session_id,
+             "task_id" => context.task_id,
+             "work_id" => work_id,
+             "purpose" => "coding",
+             "execution_state" => "queued",
+             "goal_revision" => 1,
+             "executable" => true
+           }
+
+    refute Jason.encode!(facts) =~ "private native thread"
+
+    put_pr_work(ctx, work_id, %{"phase" => "owner_review", "goal_revision" => 2})
+    assert {:ok, current} = Tools.snapshot(context)
+    assert current["work_session"]["execution_state"] == "review"
+    assert current["work_session"]["goal_revision"] == 2
+    assert {:ok, mismatch} = Tools.snapshot(%{context | task_id: ctx.context.project_id <> ":2"})
+    assert mismatch["work_session"]["error"]["code"] == "pr_session_unavailable"
+
+    put_pr_work(ctx, work_id, %{"phase" => "building", "tracker_fingerprint" => "other enrollment"})
+    assert {:ok, mismatch} = Tools.snapshot(context)
+    assert mismatch["work_session"]["error"]["code"] == "pr_session_unavailable"
+  end
+
   test "view retrieval distinguishes unavailable facts from missing tasks and rechecks access", ctx do
     snapshot = %{"version" => 1, "project_id" => ctx.context.project_id, "visible_task_ids" => ["github:example/repo:1"]}
     context = Map.put(ctx.context, :view_context, snapshot)

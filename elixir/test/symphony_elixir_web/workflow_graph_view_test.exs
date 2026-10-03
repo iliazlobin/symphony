@@ -43,15 +43,18 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert length(find(html, "#plan-dependencies-panel [data-selected=true]")) == 1
     assert length(find(html, "#plan-dependencies-panel .plan-edge[data-related=true]")) == 2
     assert length(find(html, "#plan-dependencies-panel [data-filtered=true]")) == 2
-    assert html =~ "1 prerequisites outside filters"
+    assert html =~ "Outside filters"
     assert html =~ "Show on board"
-    assert html =~ "Show sequence"
+    assert html =~ "Show timeline"
+    assert length(find(html, ".plan-inspector-heading .plan-inspector-links button")) == 2
+    assert length(find(html, ".plan-related-list button[aria-label='Prerequisite: GH-1']")) == 1
+    assert length(find(html, ".plan-related-list button[aria-label='Dependent: GH-3']")) == 1
     assert html =~ "phx-click=\"select-plan-task\""
     assert html =~ "phx-click=\"open-card\""
     assert html =~ "phx-value-id=\"issue:2\""
   end
 
-  test "agent ownership shows visible task works and uses scoped navigation" do
+  test "dependency diagram omits agent ownership while retaining task navigation" do
     project = %{"id" => "project:p", "type" => "project", "name" => "Project name"}
     work = %{"id" => "work:1", "type" => "work", "task_id" => "issue:1", "work_id" => "native1", "title" => "Validate candidate", "phase" => "validating"}
     other = %{"id" => "work:2", "type" => "work", "task_id" => "issue:2"}
@@ -63,13 +66,16 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
         visible_task_ids: ["issue:1"]
       )
 
-    assert html =~ "phx-click=\"main-chat\""
-    assert html =~ "Project name"
-    assert html =~ "phx-value-work_id=\"native1\""
-    assert html =~ "validating"
-    assert length(find(html, "#plan-agents-panel [data-plan-node]")) == 3
+    refute html =~ "phx-click=\"main-chat\""
+    refute html =~ "Project name"
+    refute html =~ "phx-value-work_id"
+    refute html =~ "Validate candidate"
+    refute html =~ "Agents"
+    assert length(find(html, "#plan-dependencies-panel [data-plan-node]")) == 1
+    assert find(html, "#plan-agents-panel") == []
+    assert find(html, "[data-canvas-mode]") == []
     refute html =~ "data-node-id=\"work:2\""
-    assert html =~ "GH-1 → Validate candidate"
+    assert html =~ "Text view · 0 relationships"
   end
 
   test "unresolved dependencies remain a separate band with exact accessible evidence" do
@@ -82,9 +88,11 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert html =~ "Unknown sequence"
     assert html =~ "Sequence unresolved"
     assert html =~ "Unavailable"
-    assert html =~ "1 prerequisites unavailable"
-    assert html =~ "1 task is waiting for accepted prerequisites"
-    assert html =~ "1 dependency issue"
+    assert html =~ "Prerequisite: GH-404"
+    refute html =~ "plan-warnings"
+    refute html =~ "Dependencies require human-accepted Done"
+    assert html =~ "Dependency cycle. Revise prerequisites."
+    assert html =~ "Revise malformed prerequisites."
     refute html =~ "<p class=\"board-warning\""
     assert length(find(html, "[data-dependency-status=cycle]")) == 2
     assert length(find(html, "[data-dependency-status=missing]")) == 1
@@ -93,18 +101,20 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
 
   test "selected node without relationships shows concise empty inspector and short error" do
     html = draw([task(1, "work", %{"dependency_error" => "Invalid prerequisite."})], [], selected_id: "task:1", visible_task_ids: [])
-    assert html =~ "No declared relationships"
+    assert html =~ "No declared dependencies"
     assert html =~ "Invalid prerequisite"
     assert length(find(html, "#plan-dependencies-panel [data-selected=true]")) == 1
     assert html =~ "Outside filters"
   end
 
-  test "project agent uses the directory label rather than its canonical identity" do
+  test "a project without tasks has an empty dependency diagram" do
     project = %{"id" => "project:github:example/repo", "type" => "project", "name" => "github:example/repo"}
     graph = %{"version" => 1, "nodes" => [project], "edges" => []}
     board = %{workflow_graph: graph, projects: [%{id: "other", label: "Other"}, %{id: "github:example/repo", label: "Project name"}]}
     html = render_component(&WorkflowGraphView.content/1, board: board)
-    assert html =~ "Open Project name project agent"
+    assert html =~ "No matching tasks"
+    refute html =~ "Project name"
+    assert find(html, "[data-plan-node]") == []
   end
 
   test "cycle curves and skipped relationships stay inside the full content bounds" do
@@ -144,6 +154,68 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert html =~ "M"
   end
 
+  test "wide unbroken titles reserve their full wrapped height and preserve task ports" do
+    for title <- [String.duplicate("W", 120), String.duplicate("界", 120)] do
+      html = draw([task(1, "done", %{"title" => title}), task(2, "work")], [dep(2, 1)])
+      [{_, attrs, _}] = find(html, "[data-node-id='task:1']")
+      height = String.to_integer(Map.new(attrs)["data-node-height"])
+      nodes = positions(html)
+      assert height >= 216
+      assert nodes["task:2"].y > nodes["task:1"].y + height
+      assert Floki.attribute(find(html, "[data-node-id='task:1'] .plan-node-title"), "title") == [title]
+      assert html =~ "M#{nodes["task:1"].x + 130},#{nodes["task:1"].y + height}"
+    end
+  end
+
+  test "skipped layers route around intervening nodes only when the normal path is obstructed" do
+    html = draw([task(1, "done"), task(2, "work"), task(3, "work")], [dep(2, 1), dep(3, 2), dep(3, 1)])
+    nodes = positions(html)
+    skip = dependency_path(html, nodes["task:1"], nodes["task:3"])
+    [{_, svg_attrs, _}] = find(html, "[data-plan-svg]")
+    channel = String.to_integer(Map.new(svg_attrs)["data-content-width"]) - 12
+    assert skip =~ "Q#{channel},"
+    assert skip =~ " L#{nodes["task:3"].x + 130},#{nodes["task:3"].y}"
+    refute dependency_path(html, nodes["task:1"], nodes["task:2"]) =~ "Q#{channel},"
+
+    peers = Enum.map(1..10, &task(&1, "work"))
+    edges = [dep(5, 2), dep(6, 3)] ++ Enum.map(7..10, &dep(&1, 5)) ++ [dep(10, 1)]
+    html = draw(peers, edges)
+    nodes = positions(html)
+    skip = dependency_path(html, nodes["task:1"], nodes["task:10"])
+    assert nodes["task:1"].x == nodes["task:10"].x
+    [{_, svg_attrs, _}] = find(html, "[data-plan-svg]")
+    channel = String.to_integer(Map.new(svg_attrs)["data-content-width"]) - 12
+    refute skip =~ "Q#{channel},"
+  end
+
+  test "a wrapped dependency layer cannot obscure a connector to its direct dependent" do
+    html = draw(Enum.map(1..11, &task(&1, "work")), [dep(11, 1)])
+    nodes = positions(html)
+    assert nodes["task:11"].depth - nodes["task:1"].depth == 1
+    assert nodes["task:11"].y - nodes["task:1"].y > 3 * 116
+    [{_, svg_attrs, _}] = find(html, "[data-plan-svg]")
+    channel = String.to_integer(Map.new(svg_attrs)["data-content-width"]) - 12
+    assert dependency_path(html, nodes["task:1"], nodes["task:11"]) =~ "Q#{channel},"
+  end
+
+  test "cycle connectors clear peer cards through column and row gaps" do
+    nodes = Enum.map(1..8, &task(&1, "work"))
+    edges = Enum.map(1..8, &dep(&1, rem(&1, 8) + 1, "cycle"))
+    html = draw(nodes, edges)
+    positions = positions(html)
+    [{_, svg_attrs, _}] = find(html, "[data-plan-svg]")
+    channel = String.to_integer(Map.new(svg_attrs)["data-content-width"]) - 12
+    side_paths = html |> find(".plan-edge") |> Floki.attribute("d") |> Enum.filter(&String.contains?(&1, "Q#{channel},"))
+    assert side_paths != []
+
+    for path <- side_paths do
+      [[_, x, _y]] = Regex.scan(~r/^M(\d+),(\d+)/, path)
+      gap_x = String.to_integer(x) + 22
+      assert path =~ "Q#{gap_x},"
+      assert Enum.all?(positions, fn {_id, node} -> gap_x < node.x or gap_x > node.x + 260 end)
+    end
+  end
+
   test "large diagrams announce truncation and preserve full relationship evidence" do
     html = draw(Enum.map(1..125, &task(&1, "work")), [dep(125, 1)])
     assert length(find(html, "#plan-dependencies-panel .plan-node")) == 120
@@ -160,16 +232,20 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert length(find(html, ".plan-inspector [data-plan-reference='task:1'][phx-value-id='issue:1']")) == 1
   end
 
-  test "selected work opens the agents scene and relationship references remain scoped" do
+  test "selected work focuses its owning task without agent relationships" do
     project = %{"id" => "project:p", "type" => "project", "name" => "Fixture"}
     work = %{"id" => "work:1", "type" => "work", "task_id" => "issue:1", "work_id" => "native1", "title" => "Review candidate"}
     html = draw([project, task(1, "review"), work], [contains("project:p", "task:1"), contains("task:1", "work:1")], selected_id: "work:1")
-    assert html =~ "data-plan-mode=\"agents\""
-    assert Floki.attribute(find(html, "#plan-agents-panel"), "hidden") == []
-    assert length(find(html, ".plan-inspector [data-plan-reference='work:1'][phx-value-work_id='native1']")) == 1
+    assert html =~ "data-plan-mode=\"dependencies\""
+    assert length(find(html, "#plan-dependencies-panel [data-node-id='task:1'][data-selected=true]")) == 1
+    assert html =~ "data-selected-task-id=\"issue:1\""
+    refute html =~ "work:1"
+    assert html =~ "No declared dependencies"
     html = draw([project, task(1, "work")], [contains("project:p", "task:1")], selected_id: "project:p")
-    assert length(find(html, ".plan-inspector [data-plan-reference='project:p'][phx-click='main-chat']")) == 1
+    assert find(html, ".plan-inspector") == []
     assert render_component(&WorkflowGraphView.reference/1, fallback: "Unavailable") =~ "Unavailable"
+    assert render_component(&WorkflowGraphView.reference/1, node: project, fallback: "Project") =~ "Fixture"
+    refute render_component(&WorkflowGraphView.reference/1, node: work, fallback: "Work") =~ "phx-click"
   end
 
   test "fallback, empty selection and completion policies are honest" do
@@ -188,7 +264,47 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
 
     assert draw([%{"id" => "project:p", "type" => "project"}, task(1, nil, %{"title" => nil, "identifier" => nil})]) =~ "Untitled"
     assert draw([task(1, nil)], []) =~ "Unknown"
-    assert draw([%{"id" => "work:1", "type" => "work", "task_id" => "issue:1"}, task(1, "work")]) =~ "Supervision"
+    refute draw([%{"id" => "work:1", "type" => "work", "task_id" => "issue:1"}, task(1, "work")]) =~ "Supervision"
+  end
+
+  test "expected waiting is a node status while malformed prerequisites remain inline" do
+    waiting = task(2, "work", %{"dependency_error" => "Dependencies require human-accepted Done in this project."})
+    html = draw([task(1, "review"), waiting], [dep(2, 1)], selected_id: "issue:2", warnings: ["An obsolete global notice"])
+    assert length(find(html, "[data-node-id='task:2'] .plan-node-dependency-status")) == 1
+    assert html =~ "Waiting on GH-1"
+    refute html =~ "Dependencies require human-accepted Done"
+    refute html =~ "An obsolete global notice"
+    assert find(html, ".plan-node-note") == []
+
+    html = draw([task(1, "done"), task(2, "review")], [dep(2, 1, "satisfied")])
+    assert find(html, ".plan-node-dependency-status") == []
+  end
+
+  test "waiting context is bounded and excludes optional prerequisites" do
+    nodes = Enum.map(1..6, &task(&1, "work"))
+    optional = Map.put(dep(6, 5), "blocking", false)
+    html = draw(nodes, Enum.map(1..4, &dep(6, &1)) ++ [optional])
+    assert html =~ "Waiting on GH-1, GH-2, GH-3 +1"
+    [{_, _, children}] = find(html, "[data-node-id='task:6'] .plan-node-dependency-status")
+    refute Floki.text(children) =~ "GH-5"
+  end
+
+  test "rounded connectors attach to stable task ports and inherit the line color" do
+    html = draw([task(1, "done"), task(2, "work"), task(3, "review")], [dep(2, 1), dep(3, 1)], selected_id: "issue:2")
+    nodes = positions(html)
+    [{_, attrs, _} | _] = find(html, ".plan-edge")
+    attrs = Map.new(attrs)
+    assert attrs["d"] =~ "M#{nodes["task:1"].x + 130},#{nodes["task:1"].y + 116}"
+    assert attrs["d"] =~ " L#{nodes["task:2"].x + 130},#{nodes["task:2"].y}"
+    assert attrs["d"] =~ " Q"
+    refute attrs["d"] =~ " C"
+    assert attrs["vector-effect"] == "non-scaling-stroke"
+    assert attrs["stroke-linejoin"] == "round"
+    assert length(find(html, ".plan-edge[data-related=true]")) == 1
+    assert html =~ "data-selection-active=\"true\""
+    [{_, marker_attrs, _}] = find(html, "#dependencies-arrow")
+    assert Map.new(marker_attrs)["markerwidth"] == "4"
+    assert Floki.attribute(find(html, ".plan-edge-arrow"), "fill") == ["context-stroke"]
   end
 
   defp task(id, lane, extra \\ %{}),
@@ -207,6 +323,16 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
   end
 
   defp find(html, selector), do: html |> Floki.parse_fragment!() |> Floki.find(selector)
+
+  defp dependency_path(html, from, to) do
+    start = "M#{from.x + 130},#{from.y + 116}"
+    finish = " L#{to.x + 130},#{to.y}"
+
+    html
+    |> find(".plan-edge")
+    |> Floki.attribute("d")
+    |> Enum.find(&(String.starts_with?(&1, start) and String.ends_with?(&1, finish)))
+  end
 
   defp positions(html),
     do:

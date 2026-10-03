@@ -68,6 +68,20 @@ defmodule SymphonyElixir.Chat.CoordinationTest do
     defp execution, do: %{"enabled" => true, "mode" => "paused", "admission_status" => "paused"}
   end
 
+  defmodule SnapshotTools do
+    @spec specs() :: [map()]
+    def specs, do: NoExternalTools.specs()
+
+    @spec call(String.t(), map(), map()) :: term()
+    def call(name, args, context), do: NoExternalTools.call(name, args, context)
+
+    @spec snapshot(map()) :: term()
+    def snapshot(context) do
+      send(context.auth.test_pid, {:turn_snapshot, self()})
+      Agent.get(context.auth.snapshot, & &1)
+    end
+  end
+
   defmodule ProposalOnlyTools do
     @spec specs() :: [map()]
     def specs, do: NoExternalTools.specs()
@@ -346,6 +360,93 @@ defmodule SymphonyElixir.Chat.CoordinationTest do
     refute opts.instructions =~ "Recent action outcomes recorded"
     send(parent, {:finish, ""})
     wait_chat(c, c.parent, &(&1["status"] == "idle"))
+  end
+
+  test "a fresh user turn receives current host facts while retaining historical status provenance", c do
+    initial = %{"selected_task" => %{"id" => c.project <> ":19", "stage" => "backlog"}}
+    snapshot = start_supervised!({Agent, fn -> {:ok, initial} end}, id: :turn_snapshot)
+    :sys.replace_state(c.server, &%{&1 | tools: SnapshotTools, settings: Map.put(&1.settings, :provider, "openrouter")})
+    c = %{c | auth: Map.merge(c.auth, %{test_pid: self(), snapshot: snapshot})}
+    {parent, original} = launch(c, c.parent, "Earlier status request")
+    assert_receive {:turn_snapshot, _}
+    assert original.status_snapshot =~ ~s("stage":"backlog")
+    send(parent, {:finish, "GH-19 is in Backlog, not queued"})
+    wait_chat(c, c.parent, &(&1["status"] == "idle"))
+
+    current = %{"selected_task" => %{"id" => c.project <> ":21", "stage" => "work", "prerequisites" => [%{"id" => c.project <> ":19", "stage" => "work", "execution_status" => "Limit reached"}]}}
+    Agent.update(snapshot, fn _ -> {:ok, current} end)
+    {parent, opts} = launch(c, c.parent, "Read current GH-21 and GH-19 status")
+    assert opts.text == "Read current GH-21 and GH-19 status"
+    assert opts.status_snapshot =~ ~s("stage":"work")
+    assert opts.status_snapshot =~ "Limit reached"
+    refute opts.status_snapshot =~ ~s("stage":"backlog")
+    assert Enum.any?(opts.history, &String.contains?(&1["content"], "GH-19 is in Backlog"))
+    refute opts.instructions =~ "GH-19 is in Backlog"
+    assert [%{"tool" => "symphony_host_status", "result" => receipt}] = List.last(disk(c, c.parent)["messages"])["tool_receipts"]
+    assert Jason.decode!(receipt) == current
+    assert List.last(disk(c, c.parent)["messages"])["widgets"] == []
+    send(parent, {:finish, "Current status checked"})
+    wait_chat(c, c.parent, &(&1["status"] == "idle"))
+  end
+
+  test "queued turns refresh at execution and preserve unavailable current facts as an error", c do
+    snapshot = start_supervised!({Agent, fn -> {:ok, %{"selected_task" => %{"stage" => "backlog"}}} end}, id: :queued_snapshot)
+    :sys.replace_state(c.server, &%{&1 | tools: SnapshotTools})
+    c = %{c | auth: Map.merge(c.auth, %{test_pid: self(), snapshot: snapshot})}
+    {parent, _} = launch(c, c.parent, "Hold the current response")
+    assert_receive {:turn_snapshot, _}
+    assert {:ok, _} = Store.send_message(c.project, c.parent["id"], "Queued status request", "queued-snapshot", c.auth, c.server)
+    refute_receive {:turn_snapshot, _}, 30
+    Agent.update(snapshot, fn _ -> {:ok, %{"selected_task" => %{"stage" => "work"}}} end)
+    send(parent, {:finish, "Historical Backlog response"})
+    {parent, opts} = runtime("Queued status request")
+    assert_receive {:turn_snapshot, _}
+    assert opts.status_snapshot =~ ~s("stage":"work")
+    refute opts.status_snapshot =~ ~s("stage":"backlog")
+    send(parent, {:finish, "Current Work response"})
+    wait_chat(c, c.parent, &(&1["status"] == "idle"))
+
+    Agent.update(snapshot, fn _ -> {:error, :board_unavailable} end)
+    {parent, opts} = launch(c, c.parent, "Status during source outage")
+    assert opts.status_snapshot =~ ~s("code":"board_unavailable")
+    refute opts.status_snapshot =~ ~s("stage":"work")
+    send(parent, {:finish, "Current facts unavailable"})
+    wait_chat(c, c.parent, &(&1["status"] == "idle"))
+  end
+
+  test "access revoked after dispatch prevents the first status read and provider inference", c do
+    checks = start_supervised!({Agent, fn -> 0 end}, id: :snapshot_authorization)
+    snapshot = start_supervised!({Agent, fn -> {:ok, %{"selected_task" => %{"stage" => "work"}}} end}, id: :revoked_snapshot)
+    c = %{c | auth: Map.merge(c.auth, %{test_pid: self(), snapshot: snapshot})}
+
+    authorize = fn auth ->
+      allowed = auth[:allowed] == true and auth[:generation] == Agent.get(c.access, & &1)
+      check = Agent.get_and_update(checks, &{&1 + 1, &1 + 1})
+
+      # Admission, delivery recovery, and dispatch each check the sole conversation.
+      # Revoke immediately after the dispatch check has admitted the worker.
+      if check == 3, do: Agent.update(c.access, fn _ -> 2 end)
+      allowed
+    end
+
+    :sys.replace_state(c.server, fn state ->
+      %{
+        state
+        | tools: SnapshotTools,
+          authorize: authorize,
+          chats: %{c.parent["id"] => state.chats[c.parent["id"]]},
+          agent_auth: %{}
+      }
+    end)
+
+    result = Store.send_message(c.project, c.parent["id"], "Read current status", "revoked-snapshot", c.auth, c.server)
+    assert {:ok, _} = result
+    current = wait_disk(c, c.parent, &(&1["status"] == "error"))
+    assert List.last(current["messages"])["status"] == "error"
+    assert List.last(current["messages"])["tool_receipts"] in [nil, []]
+    refute_receive {:turn_snapshot, _}, 30
+    refute_receive {:coordination_runtime, _, _}, 30
+    assert {:error, :unauthorized} = Store.get(c.project, c.parent["id"], c.auth, c.server)
   end
 
   for {status, reason} <- [{"unknown", :write_outcome_unknown}, {"failed", :revision_conflict}, {"cancelled", nil}] do

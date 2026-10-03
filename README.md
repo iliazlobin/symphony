@@ -26,7 +26,7 @@ do not define this profile's authorization policy.
 
 The local service includes a Kanban task board and optional project-specific management
 chat through Codex or OpenRouter and a project → task → work-agent hierarchy. Parent
-agents supervise children and process their reports in durable conversations. Connected Kanban, Graph and Gantt views retain task focus and filters; Graph shows typed dependencies and agent ownership. One workspace endpoint
+agents supervise children and process their reports in durable conversations. Connected Kanban, Graph and Gantt views retain task focus and filters; Graph shows task prerequisites; Gantt shows recorded dates and editable draft estimates. One workspace endpoint
 serves all projects; private project engines use Unix sockets and share browser sign-in. Chat uses bounded management tools to read work and preview authorized
 changes; coding remains with the scheduler's workers. Browser access supports Google
 sign-in with an explicit operator allowlist; existing local installations retain

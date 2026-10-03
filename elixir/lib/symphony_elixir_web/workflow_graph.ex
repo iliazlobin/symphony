@@ -3,6 +3,8 @@ defmodule SymphonyElixirWeb.WorkflowGraph do
 
   alias SymphonyElixir.{TaskDependencies, TaskIdentity, TaskRouting}
 
+  @normal_wait "Dependencies require human-accepted Done in this project."
+
   @spec export([map()], map(), map()) :: map()
   def export(tasks, control, tracker) do
     project = TaskIdentity.project_id(tracker)
@@ -100,7 +102,7 @@ defmodule SymphonyElixirWeb.WorkflowGraph do
       "priority" => task.priority,
       "milestone" => milestone(task[:milestone]),
       "tags" => subject_tags(task[:labels] || []),
-      "dependency_error" => task.dependency_error,
+      "dependency_error" => dependency_error(task.dependency_error),
       "url" => task.url,
       "missing" => task.source_missing,
       "cycle" => Map.has_key?(cycles, task.issue_id)
@@ -262,9 +264,17 @@ defmodule SymphonyElixirWeb.WorkflowGraph do
       if map_size(cycles) > 0, do: ["Dependency cycle: " <> Enum.map_join(cycles |> Map.keys() |> Enum.sort(), ", ", &("GH-" <> &1)) <> ". Revise these prerequisites before work starts."], else: []
 
     absent = if missing == [], do: [], else: ["Some prerequisites are unavailable; their dependencies remain blocked."]
-    invalid = Enum.filter(tasks, &is_binary(&1.dependency_error)) |> Enum.map(&(&1.identifier <> ": " <> &1.dependency_error))
+
+    invalid =
+      tasks
+      |> Enum.filter(&is_binary(dependency_error(&1.dependency_error)))
+      |> Enum.map(&(&1.identifier <> ": " <> &1.dependency_error))
+
     (cycle ++ absent ++ invalid) |> Enum.uniq() |> Enum.sort()
   end
+
+  defp dependency_error(@normal_wait), do: nil
+  defp dependency_error(error), do: error
 
   defp task_id(id), do: "task:" <> id
   defp edge(type, source, target), do: %{"id" => type <> ":" <> source <> ":" <> target, "type" => type, "source" => source, "target" => target}

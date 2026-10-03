@@ -5,7 +5,7 @@ defmodule SymphonyElixir.Chat.Provider do
 
   @spec run(map() | keyword(), (tuple() -> any()), (String.t(), map() -> map())) :: {:ok, map()} | {:error, atom()}
   def run(opts, emit, tool) do
-    opts = Map.new(opts)
+    opts = Map.new(opts) |> with_status_snapshot()
 
     case Map.get(opts, :provider, "codex") do
       "codex" -> Runtime.run(opts, emit, tool)
@@ -13,6 +13,9 @@ defmodule SymphonyElixir.Chat.Provider do
       _ -> {:error, :invalid_provider}
     end
   end
+
+  defp with_status_snapshot(%{status_snapshot: snapshot, text: text} = opts) when is_binary(snapshot) and is_binary(text), do: %{opts | text: text <> snapshot}
+  defp with_status_snapshot(opts), do: opts
 
   defp openrouter_result({:error, :authentication_required}), do: {:error, :openrouter_auth_required}
   defp openrouter_result({:error, :provider_rate_limited}), do: {:error, :openrouter_rate_limited}

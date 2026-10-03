@@ -78,7 +78,7 @@ commands to the native API and owns no scheduling state.
   are browser preferences. Card and Settings dialogs preserve the board underneath.
   [`TaskFilters`](elixir/lib/symphony_elixir_web/task_filters.ex) selects the same task IDs
   for Graph and Gantt; [`WorkflowPlan`](elixir/lib/symphony_elixir_web/workflow_plan.ex)
-  projects dependency steps and context counts without dates or scheduling authority.
+  projects task dependency context and a UTC calendar. Recorded execution/acceptance dates remain distinct from draft estimates, which never grant scheduling authority. Draft start/duration/scale preferences are stored per project in the browser and validated by the LiveView.
   The URL retains the current view, task, Work session and filters.
   A supervised in-memory cache retains one complete board for up to 90 seconds.
   Reloads render that snapshot immediately, including its checked time, while a

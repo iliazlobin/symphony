@@ -819,6 +819,7 @@
       this.mode = this.el.dataset.planMode || "dependencies";
       this.selectedId = this.el.dataset.selectedId;
       this.scope = this.el.dataset.canvasScope;
+      if (this.mode === "timeline") this.loadCalendar();
       const on = (name, handler, options = {}) => this.el.addEventListener(name, handler, {...options, signal: this.abort.signal});
       this.canvas = () => this.el.querySelector(`[data-plan-panel="${this.mode}"] [data-plan-canvas]`);
       this.svg = () => this.canvas()?.querySelector("[data-plan-svg]");
@@ -872,11 +873,6 @@
       };
       this.showMode = () => {
         this.el.querySelectorAll("[data-plan-panel]").forEach(panel => { panel.hidden = panel.dataset.planPanel !== this.mode; });
-        this.el.querySelectorAll("[data-canvas-mode]").forEach(button => {
-          const selected = button.dataset.canvasMode === this.mode;
-          button.setAttribute("aria-selected", String(selected));
-          button.tabIndex = selected ? 0 : -1;
-        });
         if (this.observedCanvas !== this.canvas()) {
           if (this.observedCanvas) this.resize?.unobserve(this.observedCanvas);
           this.observedCanvas = this.canvas();
@@ -897,21 +893,15 @@
         if (Date.now() < (this.ignoreClickUntil || 0) && event.target.closest("[data-plan-node]")) {
           event.preventDefault(); event.stopPropagation(); return;
         }
-        const button = event.target.closest("[data-canvas-action], [data-canvas-mode]");
+        const calendar = event.target.closest("[data-calendar-action]");
+        if (calendar) { this.calendarAction(calendar.dataset.calendarAction); return; }
+        const button = event.target.closest("[data-canvas-action]");
         if (!button) return;
-        if (button.dataset.canvasMode) {
-          this.mode = button.dataset.canvasMode; this.pointers.clear(); this.resetGesture(); this.showMode();
-        } else if (button.dataset.canvasAction === "fit") this.fit();
+        if (button.dataset.canvasAction === "fit") this.fit();
         else if (button.dataset.canvasAction === "center") this.centerSelected();
         else this.zoom(button.dataset.canvasAction === "in" ? 1.25 : 0.8);
       }, {capture: true});
       on("keydown", event => {
-        const tab = event.target.closest("[data-canvas-mode]");
-        if (tab && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
-          const tabs = [...this.el.querySelectorAll("[data-canvas-mode]")], index = tabs.indexOf(tab);
-          const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
-          event.preventDefault(); tabs[next]?.click(); tabs[next]?.focus(); return;
-        }
         if (event.target !== this.canvas()) return;
         const camera = this.camera();
         if (!camera) return;
@@ -928,6 +918,18 @@
           this.paint();
         } else return;
         event.preventDefault();
+      });
+      on("change", event => {
+        const input = event.target;
+        if (input.matches?.("[data-calendar-anchor]")) {
+          if (input.value && (!/^\d{4}-\d{2}-\d{2}$/.test(input.value) || !input.checkValidity?.())) return;
+          this.calendarPrefs.anchor_on = input.value || null;
+        } else if (input.matches?.("[data-calendar-duration]")) {
+          const days = Number(input.value), id = input.dataset.calendarTaskId;
+          if (!id || !Number.isInteger(days) || days < 1 || days > 365) return;
+          this.calendarPrefs.durations[id] = days;
+        } else return;
+        this.saveCalendar(); this.pushCalendar();
       });
       on("focusin", event => {
         const node = event.target.closest("[data-plan-node]"), canvas = this.canvas();
@@ -1009,18 +1011,74 @@
     updated() {
       const selectedChanged = this.selectedId !== this.el.dataset.selectedId;
       this.selectedId = this.el.dataset.selectedId;
-      const showAgents = selectedChanged && this.el.dataset.planMode === "agents" && this.mode !== "agents";
-      if (showAgents) { this.mode = "agents"; this.pointers.clear(); this.resetGesture(); }
       if (this.scope !== this.el.dataset.canvasScope) {
         this.scope = this.el.dataset.canvasScope; this.cameras.clear(); this.mode = this.el.dataset.planMode || "dependencies";
         this.scrollPosition = null;
+        if (this.mode === "timeline") this.loadCalendar();
       }
       requestAnimationFrame(() => {
         this.showMode();
-        if (showAgents) this.centerSelected();
+        if (selectedChanged && this.mode === "dependencies") this.centerSelected();
         const scroll = this.el.querySelector(".plan-gantt-scroll");
         if (scroll && this.scrollPosition) { scroll.scrollLeft = this.scrollPosition.left; scroll.scrollTop = this.scrollPosition.top; }
+        if (this.mode === "timeline") this.calendarScale(this.calendarPrefs?.scale || "day");
       });
+    },
+    loadCalendar() {
+      this.calendarKey = "symphony:calendar:v1:" + this.scope;
+      let stored;
+      try { stored = JSON.parse(localStorage.getItem(this.calendarKey) || "null"); } catch (_) {}
+      const record = stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {};
+      const durations = {};
+      if (record.durations && typeof record.durations === "object" && !Array.isArray(record.durations)) {
+        Object.entries(record.durations).slice(0, 1000).forEach(([id, days]) => {
+          if (id.length <= 512 && Number.isInteger(days) && days >= 1 && days <= 365) durations[id] = days;
+        });
+      }
+      this.calendarPrefs = {anchor_on: /^\d{4}-\d{2}-\d{2}$/.test(record.anchor_on || "") ? record.anchor_on : null,
+        durations, scale: ["day", "week", "fit"].includes(record.scale) ? record.scale : "day"};
+      this.saveCalendar();
+      if (this.calendarPrefs.anchor_on || Object.keys(durations).length) this.pushCalendar();
+      requestAnimationFrame(() => this.calendarScale(this.calendarPrefs.scale));
+    },
+    saveCalendar() {
+      this.calendarSaved = false;
+      try { localStorage.setItem(this.calendarKey, JSON.stringify(this.calendarPrefs)); this.calendarSaved = true; } catch (_) {}
+      const label = this.el.querySelector("[data-calendar-storage-label]");
+      if (label) label.textContent = this.calendarSaved ? "Draft · saved in this browser" : "Draft · not saved";
+    },
+    pushCalendar() {
+      this.pushEvent?.("change-calendar-plan", {anchor_on: this.calendarPrefs.anchor_on, durations: this.calendarPrefs.durations});
+    },
+    calendarNameWidth() {
+      const measured = this.el.querySelector(".plan-row-name")?.getBoundingClientRect?.().width;
+      return Number.isFinite(measured) && measured > 0 ? measured : 260;
+    },
+    calendarScale(scale) {
+      const scroll = this.el.querySelector(".plan-gantt-scroll"), days = Number(this.el.dataset.calendarDays) || 1;
+      const nameWidth = this.calendarNameWidth();
+      const previousWidth = Number.parseFloat(this.el.style?.getPropertyValue("--timeline-day-width")) || 36;
+      const center = scroll ? (scroll.scrollLeft + (scroll.clientWidth - nameWidth) / 2) / previousWidth : 0;
+      const width = scale === "week" ? 14 : scale === "fit" ? Math.max(.5, Math.min(56, ((scroll?.clientWidth || 700) - nameWidth - 24) / days)) : 36;
+      this.el.style?.setProperty("--timeline-day-width", width + "px");
+      this.el.style?.setProperty("--calendar-days", String(days));
+      if (scroll && width !== previousWidth) scroll.scrollLeft = Math.max(0, center * width - (scroll.clientWidth - nameWidth) / 2);
+      this.el.dataset.calendarScale = scale;
+      this.el.querySelectorAll("[data-calendar-action]").forEach(button => {
+        if (["day", "week", "fit"].includes(button.dataset.calendarAction)) button.setAttribute("aria-pressed", String(button.dataset.calendarAction === scale));
+      });
+      const label = this.el.querySelector("[data-calendar-storage-label]");
+      if (label) label.textContent = this.calendarSaved ? "Draft · saved in this browser" : "Draft · not saved";
+      this.el.dispatchEvent?.(new CustomEvent("symphony:plan-viewport", {bubbles: true}));
+    },
+    calendarAction(action) {
+      if (action === "today") {
+        const scroll = this.el.querySelector(".plan-gantt-scroll"), offset = Number(this.el.dataset.calendarTodayOffset);
+        const width = Number.parseFloat(this.el.style?.getPropertyValue("--timeline-day-width")) || 36;
+        if (scroll && Number.isFinite(offset)) scroll.scrollLeft = Math.max(0, offset * width - (scroll.clientWidth - this.calendarNameWidth()) / 2);
+      } else if (["day", "week", "fit"].includes(action)) {
+        this.calendarPrefs.scale = action; this.calendarScale(action); this.saveCalendar();
+      }
     },
     destroyed() { this.abort.abort(); this.resize?.disconnect(); this.pointers.clear(); }
   };

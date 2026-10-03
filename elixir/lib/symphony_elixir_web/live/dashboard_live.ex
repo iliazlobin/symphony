@@ -42,6 +42,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:lanes, @lanes)
       |> assign(:url_filters, %{})
       |> assign(:board_view, "kanban")
+      |> assign(:calendar_plan, %{"anchor_on" => nil, "durations" => %{}})
       |> assign(:linked_task, nil)
       |> assign(:chat_task_id, nil)
       |> assign(:chat_session_id, nil)
@@ -273,6 +274,25 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   def handle_event("switch-view", _params, socket), do: {:noreply, socket}
 
+  def handle_event("change-calendar-plan", params, socket) when is_map(params) do
+    anchor = calendar_anchor(params["anchor_on"])
+
+    known = MapSet.new(socket.assigns.board.tasks, & &1.id)
+    durations = if is_map(params["durations"]), do: params["durations"], else: %{}
+
+    durations =
+      durations
+      |> Enum.take(1000)
+      |> Map.new()
+      |> Map.filter(fn {id, days} ->
+        MapSet.member?(known, id) and is_integer(days) and days >= 1 and days <= 365
+      end)
+
+    {:noreply, assign(socket, :calendar_plan, %{"anchor_on" => anchor, "durations" => durations})}
+  end
+
+  def handle_event("change-calendar-plan", _params, socket), do: {:noreply, socket}
+
   def handle_event(action, %{"id" => id}, socket) when action in ["select-task", "open-task"] do
     case Enum.find(socket.assigns.board.tasks, &(&1.id == id)) do
       nil ->
@@ -362,6 +382,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   def handle_event("refresh", _params, socket), do: {:noreply, refresh_board(socket)}
+
+  defp calendar_anchor(value) when is_binary(value) do
+    case Date.from_iso8601(value) do
+      {:ok, date} -> if abs(Date.diff(date, Date.utc_today())) <= 365, do: Date.to_iso8601(date)
+      _ -> nil
+    end
+  end
+
+  defp calendar_anchor(_value), do: nil
 
   defp handle_write_event("new-task", _params, socket) do
     if BrowserAuth.authorized?(socket.assigns.auth) do
@@ -735,7 +764,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <nav id="board-view-picker" class="board-view-picker" aria-label="Task views">
             <.link :for={{view, label} <- [{"kanban", "Kanban"}, {"graph", "Graph"}, {"gantt", "Gantt"}]} id={"view-#{view}"}
               patch={view_path(@url_filters, view, @chat_task_id, @chat_session_id)} aria-current={if @board_view == view, do: "page"}
-              title={"#{label} view"} data-board-view-link={view}>{label}</.link>
+              title={"#{label} view"} data-board-view-link={view}>
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path :if={view == "kanban"} d="M3 4h4v12H3zM9 4h3v8H9zM14 4h3v10h-3z" />
+                <path :if={view == "graph"} d="M10 7v3M4 13v-3h12v3M8 3h4v4H8zM2 13h4v4H2zM14 13h4v4h-4z" />
+                <path :if={view == "gantt"} d="M3 3v14h14M5 5h6M8 9h7M11 13h6" />
+              </svg><span>{label}</span>
+            </.link>
           </nav>
         </div>
         <span class="header-spacer"></span>
@@ -777,7 +812,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <p :if={@payload[:error]} class="board-warning" role="alert"><strong>Snapshot unavailable:</strong> {@payload.error.code}</p>
         <p :if={@board.source_error} class="board-warning" role="alert">{@board.source_error}</p>
         <p :if={@board.runtime_error} class="board-warning" role="alert">{@board.runtime_error}</p>
-        <p :if={Map.get(@board, :enrichment_error)} class="board-warning" role="alert"><strong>Pull request details incomplete:</strong> {Map.get(@board, :enrichment_error)}</p>
         <div :if={@dispatch_guidance} id="board-dispatch-guidance" class="board-notice" role="status">
           <p>{@dispatch_guidance}</p>
           <button type="button" class="button button-small" phx-click="open-settings" phx-value-tab="execution">Execution settings</button>
@@ -840,7 +874,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <SymphonyElixirWeb.WorkflowGraphView.content board={@board} project={@chat_project} filters={@url_filters} selected_id={@selected_plan_id} visible_task_ids={@visible_task_ids} />
         </div>
         <div :if={@board_view == "gantt"} id="gantt-view" class="board-view-panel" aria-label="Gantt view">
-          <SymphonyElixirWeb.WorkflowGanttView.content board={@board} project={@chat_project} filters={@url_filters} selected_id={@chat_task_id} visible_task_ids={@visible_task_ids} />
+          <SymphonyElixirWeb.WorkflowGanttView.content board={@board} project={@chat_project} filters={@url_filters} selected_id={@chat_task_id} visible_task_ids={@visible_task_ids} plan_options={@calendar_plan} />
         </div>
       </div>
       <div id="board-context" class="board-context" aria-label="Board data and execution status">
@@ -848,6 +882,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <strong :if={Map.get(@board, :data_mode)}>{Map.get(@board, :data_mode)}</strong>
           <span class="board-source-state" data-unavailable={to_string(not is_nil(@board.source_error))}>{source_status(@board, @loading)}</span>
           <span class="board-runtime-state" data-unavailable={to_string(runtime_unavailable?(@board, @payload))}>{execution_status(@board, @payload)}</span>
+          <span :if={Map.get(@board, :enrichment_error)} class="board-sync-note" title={Map.get(@board, :enrichment_error)}>{if @board[:enrichment_reason] == "history_truncated", do: "Older PR history not loaded", else: "Some PR details unavailable"}</span>
           <span :if={@read_only} class="evidence-badge">Read-only</span>
         </div>
         <div :if={context_links(@board) != []} class="board-context-links">

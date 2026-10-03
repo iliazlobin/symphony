@@ -1703,7 +1703,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   @tag :threads_fixture
-  test "work graph selection highlights that work and keeps its session across views", ctx do
+  test "work selection focuses its task dependencies and keeps its session across views", ctx do
     work_id = String.duplicate("a", 32)
     task_id = "github:example/fixture:2"
     node_id = "work:github:example/fixture:" <> work_id
@@ -1718,11 +1718,14 @@ defmodule SymphonyElixir.DashboardLiveTest do
     render_click(view, "switch-view", %{"view" => "graph", "id" => task_id})
     render_click(view, "select-plan-task", %{"id" => task_id, "work_id" => work_id})
     assert :sys.get_state(view.pid).socket.assigns.chat_session_id == "work:" <> work_id
-    assert has_element?(view, ".plan-node[data-node-id='#{node_id}'][data-selected=true]")
+    assert has_element?(view, ".plan-node[data-node-id='task:#{task_id}'][data-selected=true]")
+    refute has_element?(view, ".plan-node[data-node-id='#{node_id}'], #plan-agents-panel, [data-canvas-mode]")
+    assert has_element?(view, "#workflow-graph[data-plan-mode=dependencies]")
     view |> element("#view-gantt") |> render_click()
     assert :sys.get_state(view.pid).socket.assigns.chat_session_id == "work:" <> work_id
     view |> element("#view-graph") |> render_click()
-    assert has_element?(view, ".plan-node[data-node-id='#{node_id}'][data-selected=true]")
+    assert has_element?(view, ".plan-node[data-node-id='task:#{task_id}'][data-selected=true]")
+    refute has_element?(view, ".plan-node[data-node-id='#{node_id}']")
     render_click(view, "select-plan-task", %{"id" => task_id, "work_id" => String.duplicate("b", 32)})
     assert :sys.get_state(view.pid).socket.assigns.chat_session_id == "work:" <> work_id
     render_click(view, "select-plan-task", %{"id" => task_id})
@@ -1737,6 +1740,67 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert :sys.get_state(view.pid).socket.assigns.url_filters == %{"view" => "graph", "q" => "Backlog", "status" => "backlog"}
     assert has_element?(view, "#graph-view [data-plan-task-id='github:example/fixture:1']")
     refute has_element?(view, "#graph-view [data-plan-task-id='github:example/fixture:2']")
+  end
+
+  test "calendar drafts retain validated browser values without native control changes", ctx do
+    view = authorized_board_view()
+    before_control = GenServer.call(ctx.runtime, :control_snapshot)
+    before_tasks = :sys.get_state(view.pid).socket.assigns.board.tasks
+    anchor = Date.utc_today() |> Date.add(5) |> Date.to_iso8601()
+    id = "github:example/fixture:1"
+    other = "github:example/fixture:2"
+
+    render_click(view, "change-calendar-plan", %{"anchor_on" => anchor, "durations" => %{id => 3, other => 365}})
+    assert :sys.get_state(view.pid).socket.assigns.calendar_plan == %{"anchor_on" => anchor, "durations" => %{id => 3, other => 365}}
+    render_click(view, "switch-view", %{"view" => "gantt", "id" => id})
+    assert has_element?(view, "[data-calendar-anchor][value='#{anchor}']")
+    assert has_element?(view, "[data-calendar-duration][data-calendar-task-id='#{id}'][value='3']")
+    render_click(view, "switch-view", %{"view" => "graph", "id" => id})
+    render_click(view, "switch-view", %{"view" => "gantt", "id" => id})
+    assert has_element?(view, "[data-calendar-duration][data-calendar-task-id='#{id}'][value='3']")
+    assert :sys.get_state(view.pid).socket.assigns.board.tasks == before_tasks
+    assert GenServer.call(ctx.runtime, :control_snapshot) == before_control
+    refute_received {:settings_command, _}
+  end
+
+  test "calendar draft validation rejects foreign durations and malformed or unbounded input", ctx do
+    view = authorized_board_view()
+    before_control = GenServer.call(ctx.runtime, :control_snapshot)
+    known = "github:example/fixture:1"
+
+    durations = %{
+      known => 2,
+      "github:example/fixture:2" => 0,
+      "github:example/fixture:3" => 366,
+      "github:example/fixture:4" => "2",
+      "github:example/fixture:5" => 1.5,
+      "github:example/other:1" => 4,
+      "github:example/fixture:999" => 4
+    }
+
+    render_click(view, "change-calendar-plan", %{"anchor_on" => "not-a-date", "durations" => durations})
+    assert :sys.get_state(view.pid).socket.assigns.calendar_plan == %{"anchor_on" => nil, "durations" => %{known => 2}}
+
+    for anchor <- ["2026-99-99", Date.to_iso8601(Date.add(Date.utc_today(), 366)), Date.to_iso8601(Date.add(Date.utc_today(), -366)), nil, 1] do
+      render_click(view, "change-calendar-plan", %{"anchor_on" => anchor, "durations" => []})
+      assert :sys.get_state(view.pid).socket.assigns.calendar_plan == %{"anchor_on" => nil, "durations" => %{}}
+    end
+
+    for days <- [-1, nil, true] do
+      render_click(view, "change-calendar-plan", %{"durations" => %{known => days}})
+      assert :sys.get_state(view.pid).socket.assigns.calendar_plan["durations"] == %{}
+    end
+
+    for offset <- [-365, 365] do
+      anchor = Date.to_iso8601(Date.add(Date.utc_today(), offset))
+      render_click(view, "change-calendar-plan", %{"anchor_on" => anchor, "durations" => "invalid"})
+      assert :sys.get_state(view.pid).socket.assigns.calendar_plan == %{"anchor_on" => anchor, "durations" => %{}}
+    end
+
+    socket = :sys.get_state(view.pid).socket
+    assert {:noreply, ^socket} = SymphonyElixirWeb.DashboardLive.handle_event("change-calendar-plan", [], socket)
+    assert GenServer.call(ctx.runtime, :control_snapshot) == before_control
+    refute_received {:settings_command, _}
   end
 
   test "task intent and routing labels do not appear as subject tags", ctx do
@@ -1996,7 +2060,10 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refresh(view, ctx.runtime, incomplete)
     assert has_element?(view, ".board-source-state[data-unavailable=true]", "GitHub unavailable")
     assert has_element?(view, ".board-runtime-state[data-unavailable=true]", "Execution unavailable")
-    assert has_element?(view, ".board-warning", "PR checks could not be read")
+    refute has_element?(view, ".board-warning", "PR checks could not be read")
+    assert has_element?(view, ".board-sync-note[title='PR checks could not be read']", "Some PR details unavailable")
+    assert has_element?(view, "[data-task-id='github:example/fixture:2'] .pull-request-checks", "CI: Unknown")
+    assert has_element?(view, "[data-task-id='github:example/fixture:2'] .pull-request-checks", "GitHub review: Unknown")
     assert has_element?(view, "[data-task-id='github:example/fixture:2']", "Ready fixture")
     refute has_element?(view, ".board-runtime-state", "Paused")
   end

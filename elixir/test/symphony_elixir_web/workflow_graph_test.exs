@@ -80,6 +80,18 @@ defmodule SymphonyElixirWeb.WorkflowGraphTest do
     assert Enum.find(uncontrolled["edges"], &(&1["source"] == "task:github:example/tasks:3" and &1["type"] == "depends_on"))["status"] == "satisfied"
   end
 
+  test "ordinary acceptance waiting remains dependency status without an error or warning" do
+    settings = settings()
+    first = issue("1", "Depends on: none", "open")
+    second = issue("2", "Depends on: #1", "open")
+    graph = TaskBoard.project([first, second], %{}, %{}, settings).workflow_graph
+    dependent = Enum.find(graph["nodes"], &(&1["issue_id"] == "2"))
+    assert dependent["dependency_error"] == nil
+    assert graph["warnings"] == []
+    assert [%{"status" => "waiting"}] = Enum.filter(graph["edges"], &(&1["type"] == "depends_on"))
+    assert Enum.any?(graph["edges"], &(&1["type"] == "contains"))
+  end
+
   test "retained prerequisites preserve cycles and typed edges while remaining unavailable source facts" do
     settings = settings()
     a = issue("1", "Depends on: #2 (design: baseline)", "open")

@@ -26,6 +26,152 @@ defmodule SymphonyElixirWeb.WorkflowPlan do
     end
   end
 
+  @doc "Calendar projection: recorded starts and acceptance stay separate from editable browser drafts."
+  @spec calendar(map(), :all | [String.t()], Date.t(), map()) :: map()
+  def calendar(board, visible_task_ids, today, options \\ %{}) do
+    plan = project(board, visible_task_ids)
+    anchor = bounded_anchor(options["anchor_on"], today)
+    observed = (timestamp_date(board[:generated_at]) || today) |> earlier_date(today)
+    source = calendar_source(board[:tasks])
+    durations = if is_map(options["durations"]), do: options["durations"], else: %{}
+    task_nodes = Enum.filter(plan["nodes"], &(&1["type"] == "task"))
+    parents = plan["edges"] |> Enum.filter(&(&1["type"] == "depends_on" and &1["blocking"] != false)) |> Enum.group_by(& &1["source"])
+
+    dated =
+      task_nodes
+      |> Enum.sort_by(&{&1["start_step"] || 999_999, &1["id"]})
+      |> Enum.reduce(%{}, &calendar_node(&1, &2, source, parents, durations, today, anchor, observed))
+
+    nodes = Enum.map(plan["nodes"], &(dated[&1["id"]] || &1))
+    rows = Enum.map(plan["rows"], &dated[&1["id"]])
+    context = Enum.filter(nodes, &(&1["type"] == "task" and options["context_task_id"] in [&1["task_id"], &1["id"]]))
+    bounds = calendar_bounds(rows ++ context, today)
+
+    plan |> Map.merge(%{"rows" => rows, "nodes" => nodes, "calendar" => Map.put(bounds, "anchor_on", Date.to_iso8601(anchor))})
+  end
+
+  defp calendar_source(tasks) when is_list(tasks), do: tasks |> Enum.filter(&(is_map(&1) and is_binary(&1[:id]))) |> Map.new(&{&1.id, &1})
+  defp calendar_source(_tasks), do: %{}
+
+  defp calendar_node(node, dated, source, parents, durations, today, anchor, observed) do
+    task = source[node["task_id"]] || %{}
+    duration = draft_duration(durations[node["task_id"]])
+    context = %{dated: dated, parents: parents, duration: duration, today: today, anchor: anchor, observed: observed}
+    timeline = calendar_timing(node, task, context)
+
+    timeline = if timeline["kind"] == "unscheduled" and node["lane"] != "done", do: Map.put(timeline, "duration_days", duration), else: timeline
+    Map.put(dated, node["id"], Map.put(node, "timeline", timeline))
+  end
+
+  defp calendar_timing(%{"lane" => "done"}, task, context) do
+    accepted = task[:acceptance] |> record_value("accepted_at") |> timestamp_date()
+    accepted_timing(accepted, context.today)
+  end
+
+  defp calendar_timing(%{"execution_status" => "running"}, task, context) do
+    started = running_start(task)
+
+    if started && Date.compare(started, context.observed) != :gt do
+      timing("running", started, Date.add(context.today, context.duration), context.duration)
+      |> Map.merge(%{"observed_through_on" => Date.to_iso8601(context.observed), "draft_start_on" => Date.to_iso8601(context.today)})
+    else
+      undated("Execution timing is unavailable; check the service clock and active run.")
+    end
+  end
+
+  defp calendar_timing(node, _task, context) do
+    if node["planning_status"] != "sequenced" or node["missing"] == true,
+      do: undated("Revise the declared prerequisites to schedule this task."),
+      else: draft_timing(context.parents[node["id"]] || [], context.dated, context.anchor, context.today, context.duration)
+  end
+
+  defp accepted_timing(%Date{} = accepted, today) do
+    if Date.compare(accepted, today) != :gt,
+      do: timing("accepted", accepted, Date.add(accepted, 1), 0),
+      else: undated("No acceptance date recorded.")
+  end
+
+  defp accepted_timing(_accepted, _today), do: undated("No acceptance date recorded.")
+
+  defp running_start(task) do
+    runtime = task[:runtime] || %{}
+    same_issue = record_value(runtime, :issue_id) == task[:issue_id] and is_binary(task[:issue_id])
+
+    if record_value(runtime, :status) == "running" and same_issue,
+      do: timestamp_date(record_value(runtime, :started_at)),
+      else: nil
+  end
+
+  defp draft_timing(parents, dated, anchor, today, duration) do
+    ends = Enum.map(parents, &prerequisite_end(&1, dated, anchor))
+
+    if Enum.any?(ends, &is_nil/1) do
+      undated("A prerequisite has no finish estimate.")
+    else
+      start = Enum.reduce(ends, anchor, &later_date/2)
+      finish = Date.add(start, duration)
+
+      if Date.diff(finish, today) <= 366,
+        do: timing("draft", start, finish, duration),
+        else: undated("Draft exceeds the bounded date range; revise estimates.")
+    end
+  end
+
+  defp prerequisite_end(edge, dated, anchor) do
+    timing = dated[edge["target"]] |> record_value("timeline")
+    date = if record_value(timing, "kind") == "accepted", do: record_value(timing, "start_on"), else: record_value(timing, "end_on")
+    date_value(date) || if(edge["status"] == "satisfied", do: anchor)
+  end
+
+  defp timing(kind, start, finish, duration),
+    do: %{"kind" => kind, "start_on" => Date.to_iso8601(start), "end_on" => Date.to_iso8601(finish), "duration_days" => duration, "reason" => nil}
+
+  defp undated(reason), do: %{"kind" => "unscheduled", "start_on" => nil, "end_on" => nil, "duration_days" => nil, "reason" => reason}
+  defp draft_duration(value) when is_integer(value) and value in 1..365, do: value
+  defp draft_duration(_value), do: 1
+
+  defp bounded_anchor(value, today) do
+    case date_value(value) do
+      %Date{} = date -> if abs(Date.diff(date, today)) <= 366, do: date, else: today
+      _ -> today
+    end
+  end
+
+  defp calendar_bounds(rows, today) do
+    lower = Date.add(today, -366)
+    upper = Date.add(today, 366)
+    dates = Enum.flat_map(rows, fn row -> Enum.map(~w(start_on end_on), &(row["timeline"][&1] |> date_value())) end) |> Enum.reject(&is_nil/1)
+    start = Enum.reduce(dates, Date.add(today, -7), &earlier_date/2) |> later_date(lower)
+    finish = Enum.reduce(dates, Date.add(today, 21), &later_date/2) |> earlier_date(upper)
+
+    %{"today_on" => Date.to_iso8601(today), "start_on" => Date.to_iso8601(start), "end_on" => Date.to_iso8601(finish), "day_count" => Date.diff(finish, start) + 1}
+  end
+
+  defp earlier_date(first, second), do: if(Date.compare(first, second) == :lt, do: first, else: second)
+  defp later_date(first, second), do: if(Date.compare(first, second) == :gt, do: first, else: second)
+  defp record_value(record, key) when is_map(record), do: record[key]
+  defp record_value(_record, _key), do: nil
+  defp date_value(%Date{} = date), do: date
+
+  defp date_value(value) when is_binary(value) do
+    case Date.from_iso8601(value) do
+      {:ok, date} -> date
+      _ -> nil
+    end
+  end
+
+  defp date_value(_value), do: nil
+  defp timestamp_date(%DateTime{} = value), do: DateTime.to_date(value)
+
+  defp timestamp_date(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, date, _offset} -> DateTime.to_date(date)
+      _ -> nil
+    end
+  end
+
+  defp timestamp_date(_value), do: nil
+
   defp complete?(board, graph) when is_map(graph) do
     is_nil(board[:source_error]) and is_nil(board[:runtime_error]) and graph["version"] == 1 and
       is_list(graph["nodes"]) and is_list(graph["edges"]) and

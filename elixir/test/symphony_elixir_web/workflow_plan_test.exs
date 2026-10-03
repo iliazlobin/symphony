@@ -248,6 +248,140 @@ defmodule SymphonyElixirWeb.WorkflowPlanTest do
     end
   end
 
+  test "calendar drafts use explicit durations and prerequisite finishes without inventing capacity" do
+    original = board([issue("1", "none"), issue("2", "#1"), issue("3", "#1"), issue("4", "#2, #3")])
+    options = %{"anchor_on" => "2026-10-05", "durations" => %{canonical("1") => 3, canonical("2") => 2, canonical("3") => 5}}
+    plan = WorkflowPlan.calendar(original, :all, ~D[2026-10-03], options)
+    assert timing(plan, "1")["start_on"] == "2026-10-05"
+    assert timing(plan, "1")["end_on"] == "2026-10-08"
+    assert timing(plan, "2")["start_on"] == "2026-10-08"
+    assert timing(plan, "3")["start_on"] == "2026-10-08"
+    assert timing(plan, "4")["start_on"] == "2026-10-13"
+    assert timing(plan, "4")["duration_days"] == 1
+    assert Enum.all?(plan["rows"], &(&1["timeline"]["kind"] == "draft"))
+    assert plan["calendar"]["today_on"] == "2026-10-03"
+    assert plan["calendar"]["anchor_on"] == "2026-10-05"
+    assert plan["edges"] == original.workflow_graph["edges"]
+    assert original.control == %{}
+
+    filtered = WorkflowPlan.calendar(original, [canonical("4")], ~D[2026-10-03], options)
+    assert timing(filtered, "4") == timing(plan, "4")
+    assert row(filtered, "4")["upstream_outside_filter"] == 2
+
+    context_options = %{"context_task_id" => canonical("4"), "durations" => %{canonical("1") => 30, canonical("2") => 30, canonical("3") => 30}}
+    context = WorkflowPlan.calendar(original, [canonical("1")], ~D[2026-10-03], context_options)
+    assert length(context["rows"]) == 1
+    assert context["calendar"]["end_on"] == "2026-12-03"
+  end
+
+  test "accepted dates are milestones and never infer work duration from tracker timestamps" do
+    accepted = acceptance() |> put_in(["acceptance", "accepted_at"], "2026-10-01T20:00:00Z")
+    original = board([issue("1", "none"), issue("2", "#1")], %{"issues" => %{"1" => accepted}})
+    plan = WorkflowPlan.calendar(original, :all, ~D[2026-10-03])
+    assert timing(plan, "1")["kind"] == "accepted"
+    assert timing(plan, "1")["start_on"] == "2026-10-01"
+    assert timing(plan, "1")["duration_days"] == 0
+    assert timing(plan, "2")["start_on"] == "2026-10-03"
+    assert timing(plan, "2")["kind"] == "draft"
+
+    past_anchor = WorkflowPlan.calendar(original, :all, ~D[2026-10-03], %{"anchor_on" => "2026-09-20"})
+    assert timing(past_anchor, "2")["start_on"] == "2026-10-01"
+
+    absent = update_in(original.tasks, fn tasks -> Enum.map(tasks, &Map.put(&1, :acceptance, nil)) end)
+    undated = WorkflowPlan.calendar(absent, :all, ~D[2026-10-03])
+    assert timing(undated, "1")["kind"] == "unscheduled"
+    assert timing(undated, "1")["start_on"] == nil
+    assert timing(undated, "2")["start_on"] == "2026-10-03"
+
+    future_record = put_in(accepted, ["acceptance", "accepted_at"], "2026-10-10T20:00:00Z")
+    future = board([issue("1", "none")], %{"issues" => %{"1" => future_record}}) |> WorkflowPlan.calendar(:all, ~D[2026-10-03])
+    assert timing(future, "1")["kind"] == "unscheduled"
+    assert timing(future, "1")["start_on"] == nil
+  end
+
+  test "active starts are recorded separately from estimated remaining work and dependent starts" do
+    runtime = %{running: [%{issue_id: "1", issue_identifier: "GH-1", started_at: "2026-10-01T23:00:00-07:00"}]}
+    original = TaskBoard.project([issue("1", "none"), issue("2", "#1")], runtime, %{}, settings())
+    plan = WorkflowPlan.calendar(original, :all, ~D[2026-10-03], %{"durations" => %{canonical("1") => 4}})
+    assert timing(plan, "1")["kind"] == "running"
+    assert timing(plan, "1")["start_on"] == "2026-10-02"
+    assert timing(plan, "1")["observed_through_on"] == "2026-10-03"
+    assert timing(plan, "1")["draft_start_on"] == "2026-10-03"
+    assert timing(plan, "1")["end_on"] == "2026-10-07"
+    assert timing(plan, "2")["start_on"] == "2026-10-07"
+
+    stale = %{original | generated_at: "2026-10-02T23:59:00Z"} |> WorkflowPlan.calendar(:all, ~D[2026-10-03])
+    assert stale["calendar"]["today_on"] == "2026-10-03"
+    assert timing(stale, "1")["observed_through_on"] == "2026-10-02"
+    assert timing(stale, "1")["draft_start_on"] == "2026-10-03"
+
+    future = %{original | generated_at: "2026-10-10T23:59:00Z"} |> WorkflowPlan.calendar(:all, ~D[2026-10-03])
+    assert timing(future, "1")["observed_through_on"] == "2026-10-03"
+
+    datetime = put_in(original.tasks, Enum.map(original.tasks, fn task -> if task.issue_id == "1", do: put_in(task, [:runtime, :started_at], ~U[2026-10-02 09:00:00Z]), else: task end))
+    assert WorkflowPlan.calendar(datetime, :all, ~D[2026-10-03]) |> timing("1") |> Map.fetch!("start_on") == "2026-10-02"
+  end
+
+  test "foreign, malformed and future execution timing cannot create recorded intervals" do
+    graph = board([issue("1", "none")]).workflow_graph
+    graph = update_in(graph["nodes"], fn nodes -> Enum.map(nodes, &if(&1["type"] == "task", do: Map.put(&1, "execution_status", "running"), else: &1)) end)
+
+    for runtime <- [
+          nil,
+          "bad",
+          %{status: "running", issue_id: "2", started_at: "2026-10-01T10:00:00Z"},
+          %{status: "running", issue_id: "1", started_at: "bad"},
+          %{status: "running", issue_id: "1", started_at: "2026-10-09T10:00:00Z"}
+        ] do
+      original = %{workflow_graph: graph, tasks: [%{id: canonical("1"), issue_id: "1", runtime: runtime}]}
+      plan = WorkflowPlan.calendar(original, :all, ~D[2026-10-03])
+      assert timing(plan, "1")["kind"] == "unscheduled"
+      assert timing(plan, "1")["reason"] =~ "active run"
+      assert timing(plan, "1")["start_on"] == nil
+    end
+  end
+
+  test "calendar bounds and draft defaults remain finite for oversized or invalid estimates" do
+    original = board([issue("1", "none"), issue("2", "#1"), issue("3", "#2")])
+    options = %{"anchor_on" => "2020-01-01", "durations" => %{canonical("1") => 365, canonical("2") => 2}}
+    plan = WorkflowPlan.calendar(original, :all, ~D[2026-10-03], options)
+    assert plan["calendar"]["anchor_on"] == "2026-10-03"
+    assert timing(plan, "1")["kind"] == "draft"
+    assert timing(plan, "2")["kind"] == "unscheduled"
+    assert timing(plan, "2")["reason"] =~ "date range"
+    assert timing(plan, "3")["kind"] == "unscheduled"
+    assert timing(plan, "3")["reason"] =~ "finish estimate"
+    assert plan["calendar"]["day_count"] <= 733
+
+    for bad <- [0, -1, 366, "10", nil] do
+      defaults = WorkflowPlan.calendar(original, :all, ~D[2026-10-03], %{"anchor_on" => "bad", "durations" => %{canonical("1") => bad}})
+      assert timing(defaults, "1")["duration_days"] == 1
+      assert defaults["calendar"]["anchor_on"] == "2026-10-03"
+    end
+
+    assert WorkflowPlan.calendar(original, :all, ~D[2026-10-03], %{"anchor_on" => ~D[2026-10-05], "durations" => "bad"})["calendar"]["anchor_on"] == "2026-10-05"
+  end
+
+  test "calendar uncertainty preserves task control states and old recorded dates retain a bounded window" do
+    original = board([issue("1", "#2"), issue("2", "#1"), issue("3", "#99")])
+    plan = WorkflowPlan.calendar(original, :all, ~D[2026-10-03])
+    assert Enum.all?(plan["rows"], &(&1["timeline"]["kind"] == "unscheduled"))
+    assert row(plan, "1")["lane"] == row(WorkflowPlan.project(original), "1")["lane"]
+    assert timing(plan, "1")["reason"] =~ "prerequisites"
+    assert WorkflowPlan.calendar(%{}, :all, ~D[2026-10-03])["calendar"]["day_count"] == 29
+
+    accepted = acceptance() |> put_in(["acceptance", "accepted_at"], "2000-01-01T00:00:00Z")
+    history = board([issue("1", "none")], %{"issues" => %{"1" => accepted}}) |> WorkflowPlan.calendar(:all, ~D[2026-10-03])
+    assert timing(history, "1")["start_on"] == "2000-01-01"
+    assert history["calendar"]["start_on"] == Date.to_iso8601(Date.add(~D[2026-10-03], -366))
+    assert history["calendar"]["day_count"] <= 733
+
+    source = %{workflow_graph: original.workflow_graph, tasks: nil}
+    assert WorkflowPlan.calendar(source, [], ~D[2026-10-03])["rows"] == []
+    assert WorkflowPlan.calendar(%{source | tasks: [nil]}, [], ~D[2026-10-03])["rows"] == []
+  end
+
+  defp timing(plan, id), do: row(plan, id)["timeline"]
   defp row(plan, id), do: Enum.find(plan["rows"], &(&1["task_id"] == canonical(id)))
   defp canonical(id), do: "github:example/tasks:" <> id
   defp board(issues, control \\ %{}), do: TaskBoard.project(issues, %{}, control, settings())

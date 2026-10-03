@@ -840,11 +840,16 @@ within that origin. **Kanban / Graph / Gantt** beside the project selector share
 selected task and retained Work chat. Card `↑` / `↓` counts open the focused dependency
 graph; **Show on board** returns to Kanban. Graph supports background drag, wheel/pinch
 zoom, **Fit**, **Center selected**, keyboard controls and an expandable text equivalent.
-Switch **Dependencies / Agents** to inspect prerequisites or ownership.
+Graph shows task dependencies only. Waiting is task status; malformed declarations
+and unavailable evidence remain visible beside the affected task.
 
-Gantt shows relative dependency steps, not dates or durations. Priority orders peers;
-milestone, kind and state remain visible. Missing prerequisites, invalid declarations
-and cycles have no invented position. Dependencies outside filters retain context.
+Gantt uses a UTC calendar with **Day / Week**, **Today** and **Fit** controls. Solid
+segments show recorded active execution; diamonds show human acceptance. Dashed bars
+are draft estimates, ordered by prerequisites and priority. Undated tasks default to
+one estimated day; edit the draft start or per-task days to refine the projection.
+Start/duration/scale preferences stay in this browser per project, with an explicit
+not-saved indicator if storage fails. They are not shared scheduler state. Unknown
+prerequisites and cycles remain unscheduled. Filtered neighbors retain context.
 These views never queue work, change priority or record acceptance.
 Dependencies declare delivery, design, technical or process prerequisites and optional reasons:
 `Depends on: #19 (technical: approved baseline)`. Source ingestion retains these edges

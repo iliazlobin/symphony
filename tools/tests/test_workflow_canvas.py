@@ -42,12 +42,11 @@ function scene(mode,width,height){
  const canvas={dataset:{},getBoundingClientRect:bounds,querySelector:()=>svg,setPointerCapture(){},releasePointerCapture(){},removeAttribute(k){if(k==="data-panning")delete this.dataset.panning;},closest:s=>s==="[data-plan-canvas]"?canvas:null};
  return {mode,svg,canvas,panel:{dataset:{planPanel:mode},hidden:false}};
 }
-const scenes=[scene("dependencies",1284,600),scene("agents",1284,424)], outputs=[{}];
-const buttons=["dependencies","agents"].map(mode=>({dataset:{canvasMode:mode},attrs:{},setAttribute(k,v){this.attrs[k]=v;},closest:s=>s.includes("data-canvas-mode")?buttons.find(b=>b.dataset.canvasMode===mode):null,click(){listeners.get("click")({target:this});},focus(){}}));
+const scenes=[scene("dependencies",1284,600)], outputs=[{}];
 const el={dataset:{canvasScope:"p",planMode:"dependencies"},addEventListener:(n,f)=>listeners.set(n,f),dispatchEvent(){viewportEvents++;},querySelector:s=>{
  if(s===".plan-gantt-scroll")return null;
  const mode=s.match(/data-plan-panel="([^"]+)"/)?.[1];return scenes.find(scene=>scene.mode===mode)?.canvas||null;
-},querySelectorAll:s=>s==="[data-plan-panel]"?scenes.map(s=>s.panel):s==="[data-canvas-mode]"?buttons:s==="[data-canvas-zoom]"?outputs:[]};
+},querySelectorAll:s=>s==="[data-plan-panel]"?scenes.map(s=>s.panel):s==="[data-canvas-zoom]"?outputs:[]};
 const sandbox={window:{},AbortController,requestAnimationFrame:fn=>fn(),CustomEvent:class{},ResizeObserver:class{constructor(fn){resize=fn;}observe(){}unobserve(){}disconnect(){this.disconnected=true;}}};
 vm.runInNewContext(source,sandbox);const hook={...sandbox.window.SymphonyHooks.WorkflowCanvas,el,handleEvent:(n,f)=>events.set(n,f)};hook.mounted();
 assert(hook.camera().scale>.89 && hook.camera().scale<1);assert(outputs[0].textContent.endsWith("%"));
@@ -62,15 +61,13 @@ listeners.get("pointercancel")(pointer(1,420,360));assert.equal(hook.pointers.si
 const beforePinch=hook.camera().scale;listeners.get("pointerdown")(pointer(1,300,300));listeners.get("pointerdown")(pointer(2,500,300));listeners.get("pointermove")(pointer(2,700,300));
 assert.equal(hook.camera().scale,beforePinch*2);listeners.get("pointerup")(pointer(1,300,300));listeners.get("lostpointercapture")(pointer(2,700,300));
 const saved=plain(hook.camera()), box=scenes[0].svg.attrs.viewBox;hook.beforeUpdate();hook.updated();assert.deepEqual(plain(hook.camera()),saved);assert.equal(scenes[0].svg.attrs.viewBox,box);
-buttons[1].click();assert.equal(hook.mode,"agents");assert.equal(scenes[0].panel.hidden,true);assert.equal(hook.observedCanvas,scenes[1].canvas);hook.zoom(1.25);const agents=plain(hook.camera());buttons[0].click();assert.deepEqual(plain(hook.camera()),saved);buttons[1].click();assert.deepEqual(plain(hook.camera()),agents);
-buttons[0].click();const centerX=hook.camera().x+size.width/(2*hook.camera().scale),centerY=hook.camera().y+size.height/(2*hook.camera().scale);size.width=900;size.height=500;resize();
+const centerX=hook.camera().x+size.width/(2*hook.camera().scale),centerY=hook.camera().y+size.height/(2*hook.camera().scale);size.width=900;size.height=500;resize();
 assert(Math.abs(hook.camera().x+size.width/(2*hook.camera().scale)-centerX)<1e-9);assert(Math.abs(hook.camera().y+size.height/(2*hook.camera().scale)-centerY)<1e-9);
 const key=k=>listeners.get("keydown")({target:scenes[0].canvas,key:k,preventDefault(){}});const oldX=hook.camera().x;key("ArrowRight");assert(hook.camera().x>oldX);key("f");assert(hook.camera().scale<1);
 events.get("focus-plan-task")({id:"issue:2",view:"graph"});assert.equal(focusCount,1);assert.equal(hook.camera().x+size.width/(2*hook.camera().scale),478);
 const camera=plain(hook.camera());events.get("focus-plan-task")({id:"issue:2",view:"kanban"});assert.deepEqual(plain(hook.camera()),camera);
-let preventedTab=false;listeners.get("keydown")({target:buttons[0],key:"ArrowRight",preventDefault(){preventedTab=true;}});assert(preventedTab);assert.equal(hook.mode,"agents");
-buttons[0].click();el.dataset.selectedId="work:1";el.dataset.planMode="agents";hook.updated();assert.equal(hook.mode,"agents");assert.equal(scenes[0].panel.hidden,true);
-buttons[0].click();hook.updated();assert.equal(hook.mode,"dependencies"); // A periodic refresh preserves an explicit operator mode.
+el.dataset.selectedId="work:1";hook.updated();assert.equal(hook.mode,"dependencies");assert.equal(scenes[0].panel.hidden,false);
+hook.updated();assert.equal(hook.mode,"dependencies"); // Work selection stays in task dependencies.
 listeners.get("focusin")({target:{closest:()=>selected}});assert.equal(hook.camera().x+size.width/(2*hook.camera().scale),478);
 el.dataset.canvasScope="other";hook.updated();assert.equal(hook.cameras.size,1);assert.notDeepEqual(plain(hook.camera()),camera);
 assert(viewportEvents>8);hook.destroyed();assert.equal(hook.abort.signal.aborted,true);assert.equal(hook.pointers.size,0);
@@ -84,6 +81,36 @@ const el={dataset:{canvasScope:"p",planMode:"timeline"},addEventListener(){},que
 const sandbox={window:{},AbortController,requestAnimationFrame:fn=>fn()};vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),sandbox);
 const hook={...sandbox.window.SymphonyHooks.WorkflowCanvas,el,handleEvent:(n,f)=>events.set(n,f)};hook.mounted();hook.beforeUpdate();scroll.scrollLeft=0;scroll.scrollTop=0;hook.updated();assert.equal(scroll.scrollLeft,380);assert.equal(scroll.scrollTop,264);
 events.get("focus-plan-task")({id:"issue:4",view:"gantt"});assert.equal(scrolled,1);assert.equal(focused,1);events.get("focus-plan-task")({id:"issue:4",view:"graph"});assert.equal(focused,1);hook.destroyed();
+''')
+
+    def test_calendar_drafts_scale_storage_and_refresh_without_dispatch(self):
+        self.run_hook(r'''
+const assert=require("node:assert/strict"),fs=require("node:fs"),vm=require("node:vm"),plain=x=>JSON.parse(JSON.stringify(x));
+const stored=new Map(),sent=[],listeners=new Map(),events=new Map(),props=new Map(),label={};let failing=false;
+const scroll={clientWidth:800,scrollLeft:180,scrollTop:54},buttons=["day","week","today","fit"].map(a=>({dataset:{calendarAction:a},setAttribute(k,v){this[k]=v;}}));
+const el={dataset:{canvasScope:"p",planMode:"timeline",calendarDays:"28",calendarTodayOffset:"7"},style:{setProperty:(k,v)=>props.set(k,v),getPropertyValue:k=>props.get(k)||""},addEventListener:(k,f)=>listeners.set(k,f),dispatchEvent(){},querySelector:s=>s===".plan-gantt-scroll"?scroll:s===".plan-row-name"?{getBoundingClientRect:()=>({width:200})}:s==="[data-calendar-storage-label]"?label:null,querySelectorAll:s=>s==="[data-calendar-action]"?buttons:[]};
+const sandbox={window:{},AbortController,CustomEvent:class{},requestAnimationFrame:fn=>fn(),localStorage:{getItem:k=>stored.get(k)||null,setItem(k,v){if(failing)throw Error("quota");stored.set(k,v);}}};
+vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),sandbox);
+const mount=()=>{const hook={...sandbox.window.SymphonyHooks.WorkflowCanvas,el,pushEvent:(event,payload)=>sent.push({event,payload:plain(payload)}),handleEvent:(k,f)=>events.set(k,f)};hook.mounted();return hook;};
+let hook=mount();assert.equal(label.textContent,"Draft · saved in this browser");assert.equal(props.get("--calendar-days"),"28");assert.equal(sent.length,0);
+const change=(field)=>listeners.get("change")({target:field});
+change({matches:s=>s==="[data-calendar-anchor]",value:"2026-10-03",checkValidity:()=>true});
+assert.deepEqual(sent.at(-1),{event:"change-calendar-plan",payload:{anchor_on:"2026-10-03",durations:{}}});
+change({matches:s=>s==="[data-calendar-anchor]",value:"",checkValidity:()=>true});assert.equal(sent.at(-1).payload.anchor_on,null);
+change({matches:s=>s==="[data-calendar-anchor]",value:"2026-10-03",checkValidity:()=>true});
+change({matches:s=>s==="[data-calendar-duration]",value:"3",dataset:{calendarTaskId:"issue:4"}});
+assert.equal(sent.at(-1).payload.durations["issue:4"],3);
+const count=sent.length;for(const value of ["0","366","2.5","oops"]){change({matches:s=>s==="[data-calendar-duration]",value,dataset:{calendarTaskId:"issue:4"}});}assert.equal(sent.length,count);
+change({matches:s=>s==="[data-calendar-anchor]",value:"2026-02-30",checkValidity:()=>false});assert.equal(sent.length,count);
+const center=(scroll.scrollLeft+300)/36;hook.calendarAction("week");assert.equal(props.get("--timeline-day-width"),"14px");assert.equal(buttons[1]["aria-pressed"],"true");assert.equal(scroll.scrollLeft,Math.max(0,center*14-300));
+hook.calendarAction("fit");assert.equal(parseFloat(props.get("--timeline-day-width")),576/28);
+hook.calendarAction("day");hook.calendarAction("today");assert.equal(scroll.scrollLeft,0);
+scroll.scrollLeft=340;scroll.scrollTop=108;hook.beforeUpdate();scroll.scrollLeft=0;scroll.scrollTop=0;hook.updated();assert.equal(scroll.scrollLeft,340);assert.equal(scroll.scrollTop,108);
+hook.destroyed();hook=mount();assert.equal(sent.at(-1).payload.durations["issue:4"],3);assert.equal(hook.calendarPrefs.anchor_on,"2026-10-03");
+el.dataset.canvasScope="other";hook.updated();assert.deepEqual(plain(hook.calendarPrefs.durations),{});assert.equal(hook.calendarPrefs.anchor_on,null);
+hook.destroyed();stored.set("symphony:calendar:v1:other",JSON.stringify({anchor_on:"bad",scale:"agents",durations:{good:365,zero:0,big:366,float:2.5,string:"3"}}));hook=mount();assert.deepEqual(plain(hook.calendarPrefs.durations),{good:365});assert.equal(hook.calendarPrefs.scale,"day");assert.equal(hook.calendarPrefs.anchor_on,null);
+hook.destroyed();stored.set("symphony:calendar:v1:other","{");hook=mount();assert.deepEqual(plain(hook.calendarPrefs.durations),{});
+failing=true;hook.saveCalendar();assert.equal(label.textContent,"Draft · not saved");hook.calendarAction("week");assert.equal(label.textContent,"Draft · not saved");hook.destroyed();
 ''')
 
     def test_filters_and_chat_viewport_remain_consistent_during_rapid_view_change(self):
