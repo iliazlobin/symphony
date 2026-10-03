@@ -77,7 +77,7 @@ defmodule SymphonyElixirWeb.WorkflowPlan do
 
   # The literal empty constructor is compiler-inlined and loses MapSet opacity.
   @spec empty_set() :: MapSet.t()
-  defp empty_set(), do: MapSet.new([], &Function.identity/1)
+  defp empty_set, do: MapSet.new([], &Function.identity/1)
 
   @spec visible_ids(map(), map(), :all | [String.t()]) :: MapSet.t()
   defp visible_ids(board, graph, :all) do
