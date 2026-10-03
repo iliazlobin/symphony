@@ -117,13 +117,18 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
                     ws = web.WebSocketResponse()
                     await ws.prepare(request)
                     async for message in ws:
-                        await ws.send_str(project + ":" + message.data)
+                        await ws.send_str(request.headers.get("Cookie", "") if message.data == "cookie" else project + ":" + message.data)
                     return ws
                 payload = {"project": project, "path": request.path, "auth": request.headers.get("Authorization"), "cookie": request.headers.get("Cookie")}
                 if request.path == "/auth/google/callback":
                     payload["raw_query"] = request.rel_url.raw_query_string
                     payload["query"] = dict(request.query)
                 response = web.json_response(payload)
+                if request.path == "/fixture/sign-in":
+                    response.set_cookie("_symphony_workspace", request.query["grant"], httponly=True, samesite="Lax")
+                    response.set_cookie("fixture_preference", project, samesite="Strict")
+                elif request.path == "/fixture/sign-out":
+                    response.del_cookie("_symphony_workspace")
                 response.enable_compression(force=web.ContentCoding.gzip)
                 return response
             app.router.add_route("*", "/{path:.*}", endpoint)
@@ -169,6 +174,62 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await symphony.receive()).data, "symphony:two")
                 await events.send_str("three")
                 self.assertEqual((await events.receive()).data, "events:three")
+
+    async def test_proxy_does_not_replace_browser_session_after_project_switch_or_logout(self):
+        # Exercise production client construction, not the fixture's clients.
+        self.workspace.config["runtime"] = Path(self.temp.name)
+        for project in self.workspace.config["projects"].values():
+            project["_workspace_publication"] = False
+        for client in self.workspace.clients.values():
+            await client.close()
+        try:
+            with patch.object(self.workspace, "spawn", return_value=None), \
+                    patch.object(self.workspace, "monitor", return_value=None), \
+                    patch.object(self.workspace, "wait_ready", return_value=None):
+                await self.workspace.start_engines(None)
+            self.clients.extend(self.workspace.clients.values())
+            headers = {"Host": "localhost:8778", "Cookie": "_symphony_workspace=old-grant"}
+            for slug in ("events", "symphony"):
+                async with self.client.get(self.url + "/projects/" + slug + "/fixture/sign-in?grant=" + slug + "-old-grant", headers=headers) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(response.headers.getall("Set-Cookie"), [
+                        "_symphony_workspace=" + slug + "-old-grant; HttpOnly; Path=/; SameSite=Lax",
+                        "fixture_preference=" + slug + "; Path=/; SameSite=Strict",
+                    ])
+
+            # A browser may reauthenticate or another browser may have its own grant.
+            # Both HTTP and websocket requests must forward exactly that browser's cookie.
+            for grant in ("fresh-shared-grant", "other-browser-grant"):
+                headers["Cookie"] = "_symphony_workspace=" + grant
+                for slug in ("events", "symphony", "events"):
+                    async with self.client.get(self.url + "/projects/" + slug + "/api/v1/control", headers=headers) as response:
+                        cookie = (await response.json())["cookie"]
+                        with self.subTest(grant=grant, project=slug, transport="http"):
+                            self.assertEqual(cookie, headers["Cookie"])
+                    async with self.client.ws_connect(self.url + "/projects/" + slug + "/live/websocket", headers=headers) as websocket:
+                        await websocket.send_str("cookie")
+                        cookie = (await websocket.receive()).data
+                        with self.subTest(grant=grant, project=slug, transport="websocket"):
+                            self.assertEqual(cookie, headers["Cookie"])
+
+            async with self.client.get(self.url + "/projects/events/fixture/sign-out", headers=headers) as response:
+                self.assertIn("Max-Age=0", response.headers["Set-Cookie"])
+            # Logging out removes the browser cookie. Neither project's proxy may
+            # resurrect a grant retained from an earlier response.
+            for slug in ("events", "symphony"):
+                async with self.client.get(self.url + "/projects/" + slug + "/api/v1/control", headers={"Host": "localhost:8778"}) as response:
+                    cookie = (await response.json())["cookie"]
+                    with self.subTest(project=slug, transport="http", logged_out=True):
+                        self.assertIsNone(cookie)
+                async with self.client.ws_connect(self.url + "/projects/" + slug + "/live/websocket", headers={"Host": "localhost:8778"}) as websocket:
+                    await websocket.send_str("cookie")
+                    cookie = (await websocket.receive()).data
+                    with self.subTest(project=slug, transport="websocket", logged_out=True):
+                        self.assertEqual(cookie, "")
+        finally:
+            await asyncio.gather(*self.workspace.monitors, return_exceptions=True)
+            if self.workspace.auth_runner is not None:
+                await self.workspace.auth_runner.cleanup()
 
     async def test_readiness_decodes_gzip_without_decompressing_proxy_responses(self):
         self.workspace.config["listen_port"] = 8778

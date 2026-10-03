@@ -577,7 +577,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
   end
 
   defp matches_project_agent?(title, query) do
-    String.contains?(String.downcase(title <> " project orchestration main chat"), String.downcase(query))
+    String.contains?(String.downcase(title <> " project conversation orchestration main chat"), String.downcase(query))
   end
 
   defp embedded_title(task_id, title), do: if(is_binary(title) and title != "", do: title, else: "Task " <> task_identifier(task_id))
@@ -922,7 +922,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
       </div>
 
       <nav :if={@embedded && @authorized && is_nil(@unavailable) && !@loading} id="operator-scope" class="operator-breadcrumbs" data-agent-role={@agent.role} aria-label="Agent hierarchy">
-        <button id="project-agent-breadcrumb" type="button" class="breadcrumb-project" phx-click="main-chat" phx-target={@myself} aria-current={if is_nil(@task_id), do: "location"} title={@project_agent_title}>{String.replace_suffix(@project_agent_title, " project agent", "")}</button>
+        <button id="project-agent-breadcrumb" type="button" class="breadcrumb-project" phx-click="main-chat" phx-target={@myself} aria-current={if is_nil(@task_id), do: "location"} title="Project conversation" aria-label={"Open " <> @project_agent_title <> " conversation"}>Project</button>
         <span :if={@design_mode} class="design-chat-mode">Design discussion</span>
         <span :if={!@design_mode} class="breadcrumb-separator" aria-hidden="true">/</span>
         <details :if={@embedded && @authorized && is_nil(@unavailable)} hidden={@design_mode} id="issue-switcher" class="issue-switcher" phx-hook="IssueSwitcher">
@@ -934,17 +934,16 @@ defmodule SymphonyElixirWeb.ChatPanel do
             </form>
             <div id="issue-options" class="issue-options" role="listbox" aria-label="Issues by category and activity">
               <button :if={matches_project_agent?(@project_agent_title, @issue_query)} id="issue-option-main" type="button" role="option" aria-selected={to_string(is_nil(@task_id))}
-                phx-click="main-chat" phx-target={@myself} class="issue-option issue-option-main"><span class="issue-option-name">{@project_agent_title}</span><span>Project conversation</span></button>
+                phx-click="main-chat" phx-target={@myself} class="issue-option issue-option-main" aria-label={@project_agent_title <> " conversation"}><span class="issue-option-name">Project conversation</span></button>
               <div :for={group <- @issue_groups} role="group" aria-label={group.label} class="issue-option-group" data-issue-category={group.id}>
                 <div class="issue-group-label">{group.label}<span>{length(group.issues)}</span></div>
                 <button :for={item <- group.issues} id={"issue-option-" <> Base.url_encode64(item.id, padding: false)} type="button" role="option" aria-selected={to_string(@task_id == item.id)}
-                  phx-click="select-issue" phx-value-id={item.id} phx-target={@myself} class="issue-option" data-issue-id={item.id}>
+                  phx-click="select-issue" phx-value-id={item.id} phx-target={@myself} class="issue-option" data-issue-id={item.id} title={item.identifier <> ": " <> item.title}>
                   <span class="issue-option-title"><span>{item.identifier}</span><span class="issue-option-name">{item.title}</span></span>
                   <span class="issue-option-meta">
                     <time :if={item.created_at} datetime={item.created_at} title={"Created " <> item.created_at}>{compact_created_at(item.created_at)}</time>
-                    <span :if={is_nil(item.created_at)} title="Creation time unavailable">Created —</span>
-                    <span class="issue-option-priority" data-priority={item.priority || "none"} title={if item.priority, do: "Priority P#{item.priority}", else: "Priority not set"}>{if item.priority, do: "P#{item.priority}", else: "Priority —"}</span>
-                    <span class="issue-option-pr-count" title={pr_evidence(item.github_status, item.pull_request_count).message || "Pull requests attributed to this issue"}>{issue_pr_count(item)}</span>
+                    <span :if={item.priority} class="issue-option-priority" data-priority={item.priority} title={"Priority P#{item.priority}"}>P{item.priority}</span>
+                    <span :if={item.pull_request_count > 0} class="issue-option-pr-count" title={pr_evidence(item.github_status, item.pull_request_count).message || "Pull requests attributed to this issue"}>{issue_pr_count(item)}</span>
                     <time :if={item.activity_at} class="issue-option-updated" datetime={item.activity_at} title={item.activity_label <> ": " <> item.activity_at}>{compact_updated_at(item.activity_at)}</time>
                   </span>
                   <span :if={item.preview not in [nil, ""]} class="issue-option-preview">{item.preview}</span>
@@ -972,13 +971,13 @@ defmodule SymphonyElixirWeb.ChatPanel do
               <p :if={@pr_evidence.message} class="issue-options-empty" role="status">{@pr_evidence.message}</p>
               <div :for={session <- @issue_sessions} class="issue-pr-option" data-pr-number={session.pr && session.pr.number} data-session-id={session.id}>
                 <button type="button" class="issue-pr-select" aria-pressed={to_string(!is_nil(@selected_session) && @selected_session.id == session.id)}
-                  phx-click="select-pr-session" phx-value-id={session.id} phx-target={@myself}>
-                  <.agent_label name={session.name} role="work" /><span class="work-session-state">{session_state(session)}</span>
+                  phx-click="select-pr-session" phx-value-id={session.id} phx-target={@myself} aria-label={"Open work conversation: " <> session.name}>
+                  <span class="work-option-name" title={session.name}>{session.name}</span><span class="work-session-state">{session_state(session)}</span>
                 </button>
                 <div :if={session.pr} class="issue-pr-meta">
                   <a :if={session.pr.url} href={session.pr.url} target="_blank" rel="noopener noreferrer">PR #{session.pr.number} ↗</a>
                   <span class="pr-state" data-pr-state={session.pr.state}>{session.pr.status}</span>
-                  <span>Review: {String.capitalize(String.replace(session.pr.review, "_", " "))}</span>
+                  <span :if={session.pr.review != "no_decision"}>Review: {String.capitalize(String.replace(session.pr.review, "_", " "))}</span>
                   <a :if={session.pr.checks_url} href={session.pr.checks_url} target="_blank" rel="noopener noreferrer">CI: {String.capitalize(session.pr.ci)} ↗</a>
                 </div>
               </div>
@@ -1251,11 +1250,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
     count = item.pull_request_count
     label = if count == 1, do: "PR", else: "PRs"
 
-    cond do
-      item.github_status == "available" -> "#{count} #{label}"
-      count > 0 -> "#{count}+ #{label}"
-      true -> "PRs —"
-    end
+    if item.github_status == "available", do: "#{count} #{label}", else: "#{count}+ #{label}"
   end
 
   defp matches_search?(values, query) do

@@ -955,6 +955,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#operator-scope [data-working-count='1']", "1 active")
     for n <- 1..4, do: assert(has_element?(view, "#issue-pr-menu a[href='https://github.com/example/fixture/pull/#{n}']", "PR ##{n}"))
     assert has_element?(view, "#issue-pr-menu [data-pr-number='4']", "Merged")
+    assert has_element?(view, "#issue-pr-menu [data-pr-number='4'] .work-option-name")
+    refute has_element?(view, "#issue-pr-menu .agent-role")
     assert has_element?(view, ".issue-chat-identity > details:first-child#issue-pr-menu")
     refute has_element?(view, "#main-chat-button")
     refute has_element?(view, ".embedded-chat .chat-session-tabs")
@@ -1085,8 +1087,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, row <> " .issue-option-priority", "P2")
     assert has_element?(view, row <> " .issue-option-pr-count", "2 PRs")
     other = "#issue-options [data-issue-id='github:example/fixture:3']"
-    assert has_element?(view, other, "Created —")
-    assert has_element?(view, other, "Priority —")
+    refute has_element?(view, other, "Created —")
+    refute has_element?(view, other <> " .issue-option-priority")
     assert has_element?(view, other <> " .issue-option-pr-count", "1+ PR")
 
     render_click(view, "select-task", %{"id" => "github:example/fixture:2"})
@@ -1110,7 +1112,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     render_click(view, "select-task", %{"id" => "github:example/fixture:2"})
     render(view)
     assert has_element?(view, "#issue-pr-menu summary", "Work All")
-    assert has_element?(view, "#issue-options [data-issue-id='github:example/fixture:2'] .issue-option-pr-count", "0 PRs")
+    refute has_element?(view, "#issue-options [data-issue-id='github:example/fixture:2'] .issue-option-pr-count")
     assert has_element?(view, "#issue-pr-menu", "No linked pull requests yet.")
 
     for {status, label, message} <- [
@@ -1123,7 +1125,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
       refresh(view, ctx.runtime, update_task(board, "2", &%{&1 | github_status: status}))
       assert has_element?(view, "#issue-pr-menu .issue-options-empty", message)
       assert label in ["Unavailable", "Not loaded", "Incomplete"]
-      assert has_element?(view, "#issue-options [data-issue-id='github:example/fixture:2'] .issue-option-pr-count", "PRs —")
+      refute has_element?(view, "#issue-options [data-issue-id='github:example/fixture:2'] .issue-option-pr-count")
       assert has_element?(view, "#issue-pr-menu [role=status]", message)
       assert has_element?(view, "#issue-pr-menu summary", "Work All")
       refute has_element?(view, "#issue-pr-menu", "No linked pull requests yet.")

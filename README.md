@@ -37,10 +37,10 @@ in the background. GitHub retains issue content and publication evidence. See th
 [operator guide](profiles/events-concierge/README.md#operate) for setup and limits.
 
 Each issue has one task agent responsible for the entire task, with a searchable activity-grouped issue picker
-showing creation time, priority, PR count and latest activity. Card titles open details;
-click outside or press Escape to dismiss them. Card bodies select chat without opening details. The working-session selector shows the
-selected `<task name> task agent` or `<work name> work agent`, with the task agent first.
-Work agents and card shortcuts select retained working sessions; linked PRs remain resources.
+showing concise titles, priority and available PR evidence. The embedded chat uses Project → Task → Work navigation without repeating the selected project name. Card titles open details;
+click outside or press Escape to dismiss them. Card bodies select chat without opening details. The Work selector lists
+the task conversation first, then retained work sessions with status and PR links.
+Card shortcuts select working sessions; linked PRs remain resources.
 The board shows Backlog, Work, In progress, Review and Done. In progress is derived from
 active execution; Work retains queued, paused, blocked and failed tasks. Compact cards
 show useful state and PR evidence; chat renders safe Markdown without duplicating the board.

@@ -23,7 +23,7 @@ import time
 import urllib.parse
 
 from yarl import URL
-from aiohttp import ClientError, ClientSession, ClientTimeout, UnixConnector, WSMsgType, web
+from aiohttp import ClientError, ClientSession, ClientTimeout, DummyCookieJar, UnixConnector, WSMsgType, web
 import yaml
 
 from symphony_control import ControlError, load_config, read_private
@@ -348,7 +348,9 @@ class Workspace:
         os.chmod(auth_path, 0o600)
         for slug in self.config["projects"]:
             socket_path = self.config["runtime"] / (slug + ".sock")
-            self.clients[slug] = ClientSession(connector=UnixConnector(path=str(socket_path)), timeout=ClientTimeout(total=65, connect=5, sock_read=60), auto_decompress=False)
+            # The browser owns the shared session. A proxy cookie jar would retain
+            # per-project grants and override fresh browser cookies or logout.
+            self.clients[slug] = ClientSession(connector=UnixConnector(path=str(socket_path)), timeout=ClientTimeout(total=65, connect=5, sock_read=60), auto_decompress=False, cookie_jar=DummyCookieJar())
             await self.spawn(slug)
             self.monitors.append(asyncio.create_task(self.monitor(slug)))
             if self.config["projects"][slug]["_workspace_publication"]:

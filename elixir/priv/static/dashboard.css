@@ -788,9 +788,10 @@ h2, h3, strong { font-weight: 500; }
 .chat-orbit { width: 36px; height: 36px; border-radius: 10px; font-size: 24px; }
 .chat-starters { margin-top: 8px; }
 .chat-starters button { padding: 10px 12px; font-size: 12px; }
-.operator-breadcrumbs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 56px; padding: 12px 16px; border-bottom: 1px solid var(--line); flex-shrink: 0; background: var(--panel); position: relative; z-index: 21; }
-.breadcrumb-project { max-width: 180px; padding: 0; border: 0; background: transparent; color: var(--fg); white-space: nowrap; text-overflow: ellipsis; overflow: hidden; font-size: 13px; }
-.breadcrumb-project:hover { color: var(--accent); }
+.operator-breadcrumbs { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-height: 44px; padding: 6px 12px; border-bottom: 1px solid var(--line); flex-shrink: 0; background: var(--panel); position: relative; z-index: 21; }
+.breadcrumb-project { flex-shrink: 0; min-height: 32px; padding: 4px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 12px; }
+.breadcrumb-project:hover, .breadcrumb-project[aria-current=location] { color: var(--accent); background: var(--soft); }
+.operator-breadcrumbs :is(button, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .breadcrumb-separator { color: var(--muted); font-size: 12px; }
 .breadcrumb-category { color: var(--muted); font-size: 11px; }
 .operator-breadcrumbs .issue-switcher, .operator-breadcrumbs .issue-pr-menu { position: relative; flex: 0 1 auto; width: auto; min-width: 0; margin: 0; }
@@ -800,11 +801,21 @@ h2, h3, strong { font-weight: 500; }
 .operator-breadcrumbs .issue-switcher > summary > span:not(.breadcrumb-category) { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .operator-breadcrumbs .issue-switcher-menu, .operator-breadcrumbs .issue-pr-list { width: min(360px, calc(100vw - 48px)); max-width: var(--chat-menu-width, 100vw); transform: translateX(var(--chat-menu-offset, 0px)); left: 0; right: auto; padding: 8px; box-shadow: 0 8px 32px #0002; border-radius: 10px; }
 .operator-breadcrumbs .issue-pr-list { left: auto; right: 0; }
-.operator-breadcrumbs .issue-switcher-menu input, .operator-breadcrumbs .issue-pr-search input { padding: 8px 10px; font-size: 13px; }
-.operator-breadcrumbs .issue-option { padding: 10px 8px; }
+.operator-breadcrumbs .issue-switcher-menu input, .operator-breadcrumbs .issue-pr-search input { min-height: 36px; padding: 6px 8px; font-size: 12px; }
+.operator-breadcrumbs .issue-option { min-height: 44px; padding: 7px 8px; gap: 3px; line-height: 1.4; }
+.operator-breadcrumbs .issue-option-name, .operator-breadcrumbs .work-option-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .operator-breadcrumbs .issue-option-meta { gap: 6px; }
+.operator-breadcrumbs .issue-option-meta:not(:has(.issue-option-priority, .issue-option-pr-count)) { display: none; }
+.operator-breadcrumbs .issue-group-label { padding: 8px 8px 4px; font-size: 10px; }
 .operator-breadcrumbs .issue-option-updated, .operator-breadcrumbs .issue-option-preview, .operator-breadcrumbs .issue-option time { display: none; }
-.operator-breadcrumbs .issue-option-main { gap: 2px; }
+.operator-breadcrumbs .issue-option-main { justify-content: center; border-radius: 6px; margin: 2px 0; }
+.operator-breadcrumbs .issue-option-main .issue-option-name { flex: initial; font-size: 12px; color: inherit; }
+.operator-breadcrumbs .issue-pr-option { padding: 4px 0; }
+.operator-breadcrumbs .issue-pr-select { flex-wrap: nowrap; gap: 6px; min-height: 36px; padding: 6px 8px; line-height: 1.4; border-radius: 6px; }
+.operator-breadcrumbs .work-option-name { flex: 1; min-width: 0; }
+.operator-breadcrumbs .work-session-state { flex-shrink: 0; font-size: 10px; }
+.operator-breadcrumbs .issue-pr-meta { gap: 4px 8px; margin-top: 3px; padding: 0 8px 5px; font-size: 10px; }
+.operator-breadcrumbs .issue-pr-main { flex-direction: row; margin-bottom: 3px; min-height: 40px; }
 .operator-task-state, .operator-working-count { font-size: 10px; color: var(--muted); }
 .operator-task-state { margin-left: auto; }
 .agent-progress { padding: 8px 16px; margin: 0; font-size: 11px; }
@@ -832,13 +843,15 @@ h2, h3, strong { font-weight: 500; }
 }
 @media (max-width: 540px) {
   .dialog-inner { padding: 16px; }
-  .operator-breadcrumbs { gap: 4px; padding: 8px 12px; }
-  .breadcrumb-project { max-width: 115px; }
+  .operator-breadcrumbs { gap: 3px; padding: 6px 8px; }
   .operator-breadcrumbs .issue-switcher > summary, .operator-breadcrumbs .issue-pr-menu > summary { padding: 4px; max-width: 100px; }
   .operator-breadcrumbs .breadcrumb-category { display: none; }
   .operator-task-state { flex-basis: auto; }
   .kanban-board { display: block; }
   .chat-scroll, .chat-composer-wrap { padding: 12px; }
+}
+@media (pointer: coarse) {
+  .operator-breadcrumbs :is(.breadcrumb-project, .issue-switcher > summary, .issue-pr-menu > summary, .issue-pr-select, .issue-switcher-menu input, .issue-pr-search input) { min-height: 44px; }
 }
 /* Connected planning views share one bounded workspace and task focus. */
 .dashboard-shell[data-chat-open=true] { height: 100dvh; min-height: 0; overflow: hidden; align-items: stretch; }
