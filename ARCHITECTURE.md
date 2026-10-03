@@ -76,6 +76,10 @@ commands to the native API and owns no scheduling state.
   task lifecycle stages remain Backlog, Work, Review and Done; active Work projects into
   In progress. Failed attempts remain in Work, and only human acceptance produces Done. Sorting and manual order
   are browser preferences. Card and Settings dialogs preserve the board underneath.
+  [`TaskFilters`](elixir/lib/symphony_elixir_web/task_filters.ex) selects the same task IDs
+  for Graph and Gantt; [`WorkflowPlan`](elixir/lib/symphony_elixir_web/workflow_plan.ex)
+  projects dependency steps and context counts without dates or scheduling authority.
+  The URL retains the current view, task, Work session and filters.
   A supervised in-memory cache retains one complete board for up to 90 seconds.
   Reloads render that snapshot immediately, including its checked time, while a
   fresh read runs in the background. Configuration, credentials, data source and

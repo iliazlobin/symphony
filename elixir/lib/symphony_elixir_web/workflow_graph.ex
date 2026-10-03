@@ -24,12 +24,13 @@ defmodule SymphonyElixirWeb.WorkflowGraph do
     {works, ownership} = work_nodes(tasks, control, project, tracker)
     contains = Enum.map(tasks, &edge("contains", project_id, task_id(&1.id))) ++ ownership
     warnings = warnings(tasks, cycles, missing)
+    task_nodes = dependency_counts(Enum.map(tasks, &task_node(&1, cycles)) ++ missing, dependencies)
 
     %{
       "version" => 1,
       "project_id" => project,
       "policy" => policy,
-      "nodes" => Enum.sort_by([%{"id" => project_id, "type" => "project", "name" => project}] ++ Enum.map(tasks, &task_node(&1, cycles)) ++ missing ++ works, & &1["id"]),
+      "nodes" => Enum.sort_by([%{"id" => project_id, "type" => "project", "name" => project}] ++ task_nodes ++ works, & &1["id"]),
       "edges" => Enum.sort_by(contains ++ dependencies, & &1["id"]),
       "warnings" => warnings
     }
@@ -97,6 +98,9 @@ defmodule SymphonyElixirWeb.WorkflowGraph do
       "execution_status" => task.execution_status,
       "task_kind" => task.task_kind,
       "priority" => task.priority,
+      "milestone" => milestone(task[:milestone]),
+      "tags" => subject_tags(task[:labels] || []),
+      "dependency_error" => task.dependency_error,
       "url" => task.url,
       "missing" => task.source_missing,
       "cycle" => Map.has_key?(cycles, task.issue_id)
@@ -158,11 +162,56 @@ defmodule SymphonyElixirWeb.WorkflowGraph do
         "execution_status" => "unknown",
         "task_kind" => "general",
         "priority" => nil,
+        "milestone" => nil,
+        "tags" => [],
+        "dependency_error" => nil,
         "url" => nil,
         "missing" => true,
         "cycle" => false
       }
     end)
+  end
+
+  defp milestone(value) when is_map(value) do
+    Map.new([{"id", :id}, {"title", :title}, {"state", :state}, {"url", :url}], fn {key, atom} -> {key, value[key] || value[atom]} end)
+  end
+
+  defp milestone(_), do: nil
+
+  defp subject_tags(labels) do
+    labels
+    |> Enum.filter(&is_binary/1)
+    |> Enum.reject(fn label ->
+      normalized = String.downcase(label)
+
+      String.match?(normalized, ~r/\A(?:kind:|priority:|symphony:|work:)/) or
+        normalized in ~w(ready running backlog review done)
+    end)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp dependency_counts(nodes, edges) do
+    by_id = Map.new(nodes, &{&1["id"], &1})
+    upstream = Enum.group_by(edges, & &1["source"], & &1["target"])
+    downstream = Enum.group_by(edges, & &1["target"], & &1["source"])
+
+    Enum.map(nodes, fn node ->
+      node
+      |> neighbor_counts("upstream", upstream[node["id"]] || [], by_id)
+      |> neighbor_counts("downstream", downstream[node["id"]] || [], by_id)
+    end)
+  end
+
+  defp neighbor_counts(node, direction, ids, by_id) do
+    ids = Enum.uniq(ids)
+    unknown = Enum.count(ids, &((by_id[&1] || %{})["missing"] == true))
+
+    Map.merge(node, %{
+      (direction <> "_count") => length(ids),
+      (direction <> "_known") => length(ids) - unknown,
+      (direction <> "_unknown") => unknown
+    })
   end
 
   defp work_nodes(tasks, control, project, tracker) do
@@ -214,7 +263,7 @@ defmodule SymphonyElixirWeb.WorkflowGraph do
 
     absent = if missing == [], do: [], else: ["Some prerequisites are unavailable; their dependencies remain blocked."]
     invalid = Enum.filter(tasks, &is_binary(&1.dependency_error)) |> Enum.map(&(&1.identifier <> ": " <> &1.dependency_error))
-    Enum.uniq(cycle ++ absent ++ invalid)
+    (cycle ++ absent ++ invalid) |> Enum.uniq() |> Enum.sort()
   end
 
   defp task_id(id), do: "task:" <> id

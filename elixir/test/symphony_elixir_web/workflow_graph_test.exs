@@ -8,7 +8,13 @@ defmodule SymphonyElixirWeb.WorkflowGraphTest do
 
   test "real task prerequisites and native works retain independent status, priority and evidence" do
     settings = settings()
-    first = issue("1", "Depends on: none", "open")
+
+    first = %{
+      issue("1", "Depends on: none", "open")
+      | milestone: %{id: "7", title: "Pilot", state: "open", url: nil},
+        labels: ["ready", "kind:feature", "priority:1", "symphony:ready", "work:coding", "category:testing", "api"]
+    }
+
     second = issue("2", "Depends on: #1 (design: approved baseline)", "open")
     accepted = accepted(settings.tracker)
 
@@ -42,6 +48,17 @@ defmodule SymphonyElixirWeb.WorkflowGraphTest do
     assert dependency["status"] == "satisfied"
     assert dependency["evidence"]["candidate_sha"] == @sha
     assert graph["warnings"] == []
+    first_node = Enum.find(graph["nodes"], &(&1["issue_id"] == "1"))
+    second_node = Enum.find(graph["nodes"], &(&1["issue_id"] == "2"))
+    assert first_node["task_id"] == "github:example/tasks:1"
+    assert first_node["milestone"] == %{"id" => "7", "title" => "Pilot", "state" => "open", "url" => nil}
+    assert first_node["tags"] == ["api", "category:testing"]
+    assert first_node["task_kind"] == "feature"
+    assert first_node["upstream_count"] == 0
+    assert first_node["downstream_count"] == 1
+    assert second_node["upstream_count"] == 1
+    assert second_node["upstream_known"] == 1
+    assert second_node["upstream_unknown"] == 0
   end
 
   test "cycles and unavailable prerequisites are explicit; closed alone is waiting on controlled boards" do
@@ -76,6 +93,10 @@ defmodule SymphonyElixirWeb.WorkflowGraphTest do
     assert Enum.count(graph["nodes"], & &1["cycle"]) == 2
     assert Enum.find(graph["nodes"], &(&1["issue_id"] == "2"))["missing"]
     assert Enum.count(graph["edges"], &(&1["status"] == "cycle")) == 2
+    retained = Enum.find(graph["nodes"], &(&1["issue_id"] == "2"))
+    assert retained["milestone"] == nil
+    assert retained["tags"] == []
+    assert Enum.find(graph["nodes"], &(&1["issue_id"] == "1"))["upstream_unknown"] == 1
 
     graph_only = TaskBoard.project([a], %{}, %{control | "issues" => %{}}, settings).workflow_graph
     assert Enum.count(graph_only["nodes"], & &1["cycle"]) == 2

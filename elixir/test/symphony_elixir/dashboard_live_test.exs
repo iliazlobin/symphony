@@ -1639,27 +1639,104 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#lane-review [data-task-id='github:example/fixture:4']")
   end
 
-  test "graph opens a keyboard-ready modal and creation controls are absent" do
+  test "planning views share task focus, filters and links without dispatch", ctx do
     view = authorized_board_view()
-    refute has_element?(view, "#new-task-button, .lane-add")
-    view |> element("#workflow-graph-button") |> render_click()
-    assert has_element?(view, "#board-dialog[aria-modal=true][data-kind=graph] #workflow-graph")
-    assert has_element?(view, "#close-dialog")
+    filters = %{"project" => "github:example/fixture", "priority" => "P1"}
+    render_patch(view, "/?" <> URI.encode_query(Map.put(filters, "chat_task", "github:example/fixture:2")))
+
+    assert has_element?(view, "#board-project-picker + #board-view-picker")
+    assert has_element?(view, "[data-mobile-filter-toggle][aria-expanded=false][aria-controls=board-filter-panel]")
+    assert has_element?(view, "#view-kanban[aria-current=page]")
+    refute has_element?(view, "#workflow-graph-button, #new-task-button, .lane-add")
+
+    view |> element("#view-graph") |> render_click()
+    assert has_element?(view, "#task-board-app[data-board-view=graph]")
+    assert has_element?(view, "#graph-view #workflow-graph")
+    assert has_element?(view, "#kanban-view[hidden] .task-card")
+    refute has_element?(view, "#board-dialog")
+    assert :sys.get_state(view.pid).socket.assigns.chat_task_id == "github:example/fixture:2"
+    assert :sys.get_state(view.pid).socket.assigns.url_filters == Map.put(filters, "view", "graph")
+
+    view |> element("#view-gantt") |> render_click()
+    assert has_element?(view, "#task-board-app[data-board-view=gantt]")
+    assert has_element?(view, "#gantt-view")
+    assert :sys.get_state(view.pid).socket.assigns.chat_task_id == "github:example/fixture:2"
+    render_click(view, "switch-view", %{"view" => "kanban", "id" => "github:example/fixture:2"})
+    assert has_element?(view, "#view-kanban[aria-current=page]")
+    refute has_element?(view, "#kanban-view[hidden]")
+    assert :sys.get_state(view.pid).socket.assigns.url_filters == filters
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:settings_command, _}
+  end
+
+  test "graph refresh preserves focus and title details return to the same view" do
+    view = authorized_board_view()
+    render_click(view, "switch-view", %{"view" => "graph", "id" => "github:example/fixture:1"})
+    render_click(view, "open-card", %{"id" => "github:example/fixture:1"})
+    assert has_element?(view, "#board-dialog[data-kind=task]")
+    assert has_element?(view, "#graph-view #workflow-graph")
     view |> element("#close-dialog") |> render_click()
+    assert has_element?(view, "#task-board-app[data-board-view=graph][data-selected-task='github:example/fixture:1']")
+    send(view.pid, :refresh_board)
+    render_async(view)
+    assert has_element?(view, "#graph-view #workflow-graph")
     refute has_element?(view, "#board-dialog")
   end
 
-  test "graph stays open across automatic refresh after opening a task title" do
+  test "card dependency indicators link to a focused graph and malformed view is ignored" do
     view = authorized_board_view()
-    view |> element("[data-task-id='github:example/fixture:1'] .card-title") |> render_click()
-    assert has_element?(view, "#board-dialog[data-kind=task]")
-    view |> element("#workflow-graph-button") |> render_click()
-    assert has_element?(view, "#board-dialog[data-kind=graph]")
+    assert has_element?(view, "[data-task-id='github:example/fixture:1'] .card-dependencies a[aria-label*='prerequisites']")
+    view |> element("[data-task-id='github:example/fixture:1'] .card-dependencies a[title='Prerequisites · open graph']") |> render_click()
+    assert has_element?(view, "#task-board-app[data-board-view=graph][data-selected-task='github:example/fixture:1']")
+    render_patch(view, "/?view=untrusted")
+    assert has_element?(view, "#task-board-app[data-board-view=kanban]")
+    refute :sys.get_state(view.pid).socket.assigns.url_filters["view"]
+  end
 
-    send(view.pid, :refresh_board)
-    render_async(view)
-    assert has_element?(view, "#board-dialog[data-kind=graph] #workflow-graph")
-    refute has_element?(view, "#board-dialog[data-kind=task]")
+  test "filter changes preserve the planning view and narrow its rows" do
+    view = authorized_board_view()
+    render_click(view, "switch-view", %{"view" => "gantt"})
+    render_click(view, "board-filters", %{"project" => "github:example/fixture", "q" => "no matching title"})
+    assert has_element?(view, "#task-board-app[data-board-view=gantt]")
+    assert :sys.get_state(view.pid).socket.assigns.url_filters["view"] == "gantt"
+    assert has_element?(view, "#gantt-view", "No matching tasks")
+  end
+
+  @tag :threads_fixture
+  test "work graph selection highlights that work and keeps its session across views", ctx do
+    work_id = String.duplicate("a", 32)
+    task_id = "github:example/fixture:2"
+    node_id = "work:github:example/fixture:" <> work_id
+    work = %{"id" => work_id, "issue_id" => "2", "phase" => "building", "instruction" => "Address checks", "builder_thread_id" => "retained-thread"}
+    board = update_task(ctx.board, "2", &%{&1 | ledger: %{"pr_work" => %{work_id => work}}})
+    graph = board.workflow_graph
+    node = %{"id" => node_id, "type" => "work", "work_id" => work_id, "task_id" => task_id, "title" => "Address checks", "phase" => "building"}
+    edge = %{"id" => "task-work", "type" => "contains", "source" => "task:" <> task_id, "target" => node_id}
+    board = %{board | workflow_graph: %{graph | "nodes" => graph["nodes"] ++ [node], "edges" => graph["edges"] ++ [edge]}}
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    render_click(view, "switch-view", %{"view" => "graph", "id" => task_id})
+    render_click(view, "select-plan-task", %{"id" => task_id, "work_id" => work_id})
+    assert :sys.get_state(view.pid).socket.assigns.chat_session_id == "work:" <> work_id
+    assert has_element?(view, ".plan-node[data-node-id='#{node_id}'][data-selected=true]")
+    view |> element("#view-gantt") |> render_click()
+    assert :sys.get_state(view.pid).socket.assigns.chat_session_id == "work:" <> work_id
+    view |> element("#view-graph") |> render_click()
+    assert has_element?(view, ".plan-node[data-node-id='#{node_id}'][data-selected=true]")
+    render_click(view, "select-plan-task", %{"id" => task_id, "work_id" => String.duplicate("b", 32)})
+    assert :sys.get_state(view.pid).socket.assigns.chat_session_id == "work:" <> work_id
+    render_click(view, "select-plan-task", %{"id" => task_id})
+    assert is_nil(:sys.get_state(view.pid).socket.assigns.chat_session_id)
+    assert has_element?(view, ".plan-node[data-node-id='task:#{task_id}'][data-selected=true]")
+    refute_receive {:settings_command, _}
+  end
+
+  test "view switching accepts the current filter draft before its debounced patch" do
+    view = authorized_board_view()
+    render_click(view, "switch-view", %{"view" => "graph", "filters" => %{"q" => "Backlog", "status" => "backlog"}})
+    assert :sys.get_state(view.pid).socket.assigns.url_filters == %{"view" => "graph", "q" => "Backlog", "status" => "backlog"}
+    assert has_element?(view, "#graph-view [data-plan-task-id='github:example/fixture:1']")
+    refute has_element?(view, "#graph-view [data-plan-task-id='github:example/fixture:2']")
   end
 
   test "task intent and routing labels do not appear as subject tags", ctx do

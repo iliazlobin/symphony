@@ -836,11 +836,19 @@ for commands, limitations and the existing GitHub task workflow.
 
 Use the [workspace service](../profiles/events-concierge/README.md#workspace-service)
 for one public listener and shared sign-in. Project → Task → Work selectors navigate
-within that origin. **Graph** opens typed task dependencies or the agent hierarchy, with
-a complete text equivalent, keyboard focus containment, Escape and focus restoration.
+within that origin. **Kanban / Graph / Gantt** beside the project selector share filters,
+selected task and retained Work chat. Card `↑` / `↓` counts open the focused dependency
+graph; **Show on board** returns to Kanban. Graph supports background drag, wheel/pinch
+zoom, **Fit**, **Center selected**, keyboard controls and an expandable text equivalent.
+Switch **Dependencies / Agents** to inspect prerequisites or ownership.
+
+Gantt shows relative dependency steps, not dates or durations. Priority orders peers;
+milestone, kind and state remain visible. Missing prerequisites, invalid declarations
+and cycles have no invented position. Dependencies outside filters retain context.
+These views never queue work, change priority or record acceptance.
 Dependencies declare delivery, design, technical or process prerequisites and optional reasons:
 `Depends on: #19 (technical: approved baseline)`. Source ingestion retains these edges
-locally; missing targets and cycles block admission. Editing declarations uses the
+locally; unaccepted prerequisites and cycles block admission. Editing declarations uses the
 existing confirmed, scope-checked task-content path; arbitrary graph edits are not exposed.
 
 Standalone engines remain available for development. `server.project_links` accepts up to
