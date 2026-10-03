@@ -847,6 +847,11 @@ Standalone engines remain available for development. `server.project_links` acce
 20 `{id, label, url}` entries; the workspace supplies scoped URLs automatically. Distinct
 `server.session_cookie` values apply only to standalone controllers sharing a hostname.
 
+Coding workers verify their subscription before model execution. The host profile supports
+[dedicated login or explicit reuse of the laptop login](../profiles/events-concierge/README.md#coding-worker-sign-in)
+through an authentication-only client; both modes keep coding inside the isolated container.
+Permanent sign-in failures retain task usage and stop retries, including failures during a turn.
+
 ## License
 
 This project is licensed under the [Apache License 2.0](../LICENSE).

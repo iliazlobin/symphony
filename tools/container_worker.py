@@ -15,6 +15,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from container_auth import AuthLease, AuthLeaseBusy, AuthLeaseError, prepare_marker
+from local_codex_auth import LocalCodexAuth, LocalCodexAuthError, _paths, bridge
 
 OWNER_LABEL = "com.openai.symphony.owner"
 AUTH_UNAVAILABLE_EXIT = 78
@@ -75,13 +76,41 @@ def prepare_stage_home(workspace, codex_home, owner, role, work_id=None, *, resu
     return stage
 
 
-def create_command(workspace, codex_home, image, role, cidfile, owner, docker, seccomp_policy=None, apparmor_profile=None, work_id=None):
+def validate_local_auth_paths(workspace, codex_home, local_home, client_cwd, binary, source_path=None):
+    try:
+        executable, home, cwd = _paths(binary, local_home, client_cwd)
+        workspace = Path(workspace).resolve(strict=True)
+        runtime_home = Path(codex_home).resolve(strict=True)
+        roots = [workspace, runtime_home, home]
+        forbidden = [workspace.parent, runtime_home, runtime_home.parent / "stage-state",
+                     runtime_home.parent / "pr-work-state", cwd]
+        if source_path is not None:
+            source = Path(source_path)
+            if not source.is_absolute():
+                raise ValueError("Invalid source tree")
+            source = source.resolve(strict=True)
+            roots.append(source)
+            forbidden.append(source)
+        for root in roots:
+            if cwd == root or root in cwd.parents or cwd in root.parents:
+                raise ValueError("Authentication client must be outside worker trees")
+        if any(executable == root or root in executable.parents for root in forbidden):
+            raise ValueError("Authentication executable cannot be supplied by worker storage")
+        return str(executable)
+    except (LocalCodexAuthError, OSError, TypeError, ValueError):
+        raise LocalCodexAuthError("Local authentication requires its original home and an isolated private client directory") from None
+
+
+def create_command(workspace, codex_home, image, role, cidfile, owner, docker, seccomp_policy=None, apparmor_profile=None, work_id=None, *, external_auth=False):
+    if type(external_auth) is not bool:
+        raise ValueError("External worker authentication requires an explicit boolean")
     workspace = Path(workspace).resolve(strict=True)
     codex_home = Path(codex_home).resolve(strict=True)
     cidfile = Path(cidfile).resolve()
     if not workspace.is_dir() or not codex_home.is_dir():
         raise ValueError("Workspace and dedicated Codex home must be directories")
-    if codex_home == Path.home() / ".codex":
+    personal_home = (Path.home() / ".codex").resolve()
+    if codex_home == personal_home or personal_home in codex_home.parents:
         raise ValueError("The personal Codex home must not be mounted into a worker")
     if codex_home == workspace or workspace in codex_home.parents or codex_home in workspace.parents:
         raise ValueError("Workspace and Codex home must be separate trees")
@@ -124,6 +153,9 @@ def create_command(workspace, codex_home, image, role, cidfile, owner, docker, s
         if apparmor_profile not in ("symphony-codex", "symphony-self-codex") or seccomp_policy is None:
             raise ValueError("Only the reviewed worker AppArmor profile is supported")
         compatibility += ["--security-opt", "apparmor=" + apparmor_profile]
+    server = "exec codex app-server"
+    if external_auth:
+        server = 'exec codex -c \'cli_auth_credentials_store="ephemeral"\' app-server'
     return [
         docker, "create", "--name", "symphony-" + owner,
         "--label", OWNER_LABEL + "=" + owner, "--cidfile", str(cidfile),
@@ -136,7 +168,7 @@ def create_command(workspace, codex_home, image, role, cidfile, owner, docker, s
         "--env", "CODEX_HOME=/codex-home", "--env", "HOME=/tmp/worker-home",
         "--env", "GIT_CONFIG_NOSYSTEM=1", "--env", "GIT_TERMINAL_PROMPT=0",
         "--workdir", str(workspace), image,
-        "/bin/sh", "-c", 'mkdir -p "$HOME"; exec codex app-server',
+        "/bin/sh", "-c", 'mkdir -p "$HOME"; ' + server,
     ]
 
 
@@ -147,7 +179,16 @@ def main():
     parser.add_argument("--image", required=True)
     parser.add_argument("--seccomp-policy", help="Reviewed repository policy for Codex's inner Linux sandbox")
     parser.add_argument("--apparmor-profile", help="Explicit worker-only AppArmor compatibility profile")
+    parser.add_argument("--auth-source", choices=("dedicated", "local_codex"), default="dedicated")
+    parser.add_argument("--local-codex-binary")
+    parser.add_argument("--local-codex-home")
+    parser.add_argument("--auth-cwd", help="Private host directory for the authentication-only client")
+    parser.add_argument("--auth-source-path", help="Original source tree excluded from authentication executables")
     args = parser.parse_args()
+    local_auth = args.auth_source == "local_codex"
+    local_fields = (args.local_codex_binary, args.local_codex_home, args.auth_cwd)
+    if (local_auth and not all(local_fields)) or (not local_auth and any(field is not None for field in (*local_fields, args.auth_source_path))):
+        parser.error("Local authentication paths require the explicit local_codex source")
     docker = shutil.which("docker")
     if not docker:
         raise RuntimeError("Docker CLI unavailable")
@@ -157,6 +198,7 @@ def main():
         os.environ["SYMPHONY_CONTAINER_CIDFILE"],
         os.environ["SYMPHONY_CONTAINER_OWNER"], docker, args.seccomp_policy, args.apparmor_profile,
         work_id=os.environ.get("SYMPHONY_PR_WORK_ID"),
+        external_auth=local_auth,
     )
     resume = os.environ.get("SYMPHONY_PR_WORK_RESUME")
     if resume not in (None, "true"):
@@ -165,6 +207,13 @@ def main():
     role = os.environ.get("SYMPHONY_WORKER_ROLE", "builder")
     stage = prepare_stage_home(args.workspace, args.codex_home, owner, role,
                                os.environ.get("SYMPHONY_PR_WORK_ID"), resume=resume == "true")
+    if local_auth and ((stage / "auth.json").exists() or (stage / "auth.json").is_symlink()):
+        raise LocalCodexAuthError("Local authentication cannot reuse a credential file in worker session state")
+    if local_auth:
+        args.local_codex_binary = validate_local_auth_paths(
+            args.workspace, args.codex_home, args.local_codex_home, args.auth_cwd,
+            args.local_codex_binary, args.auth_source_path,
+        )
     docker_env = {key: value for key, value in os.environ.items() if key not in ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG")}
     context = subprocess.run([docker, "context", "inspect", "colima", "--format", "{{.Endpoints.docker.Host}}"], env=docker_env, capture_output=True, text=True, timeout=10, check=True)
     endpoint = context.stdout.strip()
@@ -173,8 +222,9 @@ def main():
     cidfile = Path(os.environ["SYMPHONY_CONTAINER_CIDFILE"])
     # The host-only marker precedes the claim. Before Docker intent exists,
     # guardian cleanup can safely retire a cancelled wait or unstarted stage.
-    prepare_marker(cidfile, owner, Path(args.codex_home).resolve(strict=True), stage)
-    AuthLease(Path(args.codex_home).resolve(strict=True)).wait_claim(owner, stage, cidfile, role)
+    if not local_auth:
+        prepare_marker(cidfile, owner, Path(args.codex_home).resolve(strict=True), stage)
+        AuthLease(Path(args.codex_home).resolve(strict=True)).wait_claim(owner, stage, cidfile, role)
     command[1:1] = ["--host", endpoint]
     intent = os.environ["SYMPHONY_CONTAINER_CIDFILE"] + ".intent"
     with open(os.open(intent, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as marker:
@@ -194,18 +244,24 @@ def main():
         raise RuntimeError("Docker returned inconsistent container identity")
     # The guardian owns removal. Creating before attaching means no app-server
     # process can run before the CID has been recorded outside the checkout.
-    os.execve(docker, [docker, "--host", endpoint, "start", "--attach", "--interactive", cid], docker_env)
+    worker_command = [docker, "--host", endpoint, "start", "--attach", "--interactive", cid]
+    if local_auth:
+        with LocalCodexAuth(binary=args.local_codex_binary, home=args.local_codex_home, cwd=args.auth_cwd) as auth:
+            return bridge(worker_command, docker_env, auth)
+    os.execve(docker, worker_command, docker_env)
 
 
 def entrypoint():
     try:
-        main()
-        return 0
+        return main() or 0
     except AuthLeaseBusy:
         print("Worker sign-in is busy; no model turn was started", file=sys.stderr)
         return AUTH_BUSY_EXIT
     except AuthLeaseError:
         print("Dedicated worker sign-in needs recovery; no model turn was started", file=sys.stderr)
+        return AUTH_UNAVAILABLE_EXIT
+    except LocalCodexAuthError:
+        print("Local Codex sign-in needs recovery; worker stopped", file=sys.stderr)
         return AUTH_UNAVAILABLE_EXIT
 
 

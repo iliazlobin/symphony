@@ -154,6 +154,7 @@ defmodule SymphonyElixir.Codex.AppServer do
                }}
 
             {:error, reason} ->
+              reason = if Map.get(session, :controlled, false), do: controlled_worker_failure(reason), else: reason
               Logger.warning("Codex session ended with error for #{issue_context(issue)} session_id=#{session_id}: #{inspect(reason)}")
 
               emit_message(
@@ -447,7 +448,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp verify_subscription_account(%{"account" => %{"type" => "chatgpt"}, "requiresOpenaiAuth" => true}), do: :ok
   defp verify_subscription_account(_account), do: {:error, :worker_auth_required}
 
-  defp verify_subscription_status(%{"authMethod" => "chatgpt", "requiresOpenaiAuth" => true} = status) do
+  defp verify_subscription_status(%{"authMethod" => method, "requiresOpenaiAuth" => true} = status)
+       when method in ["chatgpt", "chatgptAuthTokens"] do
     if is_nil(status["authToken"]), do: :ok, else: {:error, :worker_auth_required}
   end
 
@@ -464,7 +466,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     case result do
       {:error, reason} ->
-        reason = controlled_startup_failure(reason)
+        reason = controlled_worker_failure(reason)
         Logger.warning("Codex startup failed #{fields} reason=#{startup_reason(reason)}")
         {:error, {:startup_failed, phase, reason}}
 
@@ -478,11 +480,11 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   # Dedicated subscription wrappers reserve these statuses for unsafe/missing
   # credentials (78) and unavailable exclusive auth ownership (79).
-  defp controlled_startup_failure({:port_exit, status} = reason) when status in [78, 79] do
+  defp controlled_worker_failure({:port_exit, status} = reason) when status in [78, 79] do
     if Config.codex_auth_preflight?(), do: :worker_auth_required, else: reason
   end
 
-  defp controlled_startup_failure(reason), do: reason
+  defp controlled_worker_failure(reason), do: reason
 
   defp startup_thread(%{thread_id: thread_id}) when is_binary(thread_id), do: " thread_id=#{thread_id}"
   defp startup_thread(_context), do: ""
@@ -1160,6 +1162,14 @@ defmodule SymphonyElixir.Codex.AppServer do
     payload = to_string(data)
 
     case Jason.decode(payload) do
+      {:ok, %{"method" => "account/chatgptAuthTokens/refresh"}} ->
+        # The host auth adapter owns this callback and its private response.
+        # Match it before response IDs: server request IDs can overlap ours.
+        # Never log its payload or start controlled work without its owner.
+        if Config.control_settings().enabled,
+          do: {:error, :worker_auth_required},
+          else: with_timeout_response(port, request_id, timeout_ms, "")
+
       {:ok, %{"id" => ^request_id, "error" => error}} ->
         {:error, {:response_error, error}}
 

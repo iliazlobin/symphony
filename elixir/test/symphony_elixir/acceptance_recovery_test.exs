@@ -237,6 +237,15 @@ defmodule SymphonyElixir.AcceptanceRecoveryTest do
       "PYTHONPATH=#{c.root}/untrusted-modules"
     ]
 
+    environment =
+      environment ++
+        Enum.flat_map(["MIX_DEPS_PATH", "MIX_BUILD_PATH"], fn name ->
+          case System.get_env(name) do
+            nil -> []
+            value -> ["#{name}=#{value}"]
+          end
+        end)
+
     mix = System.find_executable("mix")
     {output, status} = System.cmd("env", environment ++ [mix, "run", "--no-start", "-e", script, "--" | args(c)], cd: source, stderr_to_stdout: true)
     assert status == 0, output
