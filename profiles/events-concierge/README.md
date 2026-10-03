@@ -21,7 +21,7 @@ inputs enforced by the tool sandbox and Linux kernel respectively.
 
 Use Elixir 1.19.5 / OTP 28 from `elixir/mise.toml`, Python 3.9+ with
 `tools/requirements.txt`, Git, GitHub CLI and Codex 0.153.4. Authenticate GitHub CLI as
-the repository owner. Install worker Codex authentication independently; do not copy
+the repository owner. Select [worker authentication](#coding-worker-sign-in) explicitly; do not copy
 the owner's existing Codex home, cloud credentials, application `.env` or MCP settings.
 
 Run from this repository:
@@ -253,18 +253,53 @@ follow the existing drain/restart procedure to preserve active work.
 controller also signs browsers out; saved conversations remain. Google sign-in does
 not provide the separate Codex subscription login or GitHub service credentials.
 
-**Coding worker sign-in.** OpenRouter chat, Google browser login and the dedicated Codex
-subscription are independent. With `codex.auth_preflight: true`, controlled startup checks
+### Coding worker sign-in
+
+OpenRouter chat, Google browser login and Codex coding
+authentication are independent. With `codex.auth_preflight: true`, controlled startup checks
 the account, token-free authentication status and provider rate limits before a model turn.
 Permanent authentication failures remain in Work with **Worker sign-in required**;
 automatic retries stop and the hold survives restart and global resume. Temporary transport
 failures retain bounded retries. Cards and chat show short messages; service logs retain diagnostics.
 
-Each dedicated credential has one owner at a time. The host moves its sole `auth.json`
+The default `worker_auth_source: "dedicated"` keeps an independently enrolled worker
+login. Each dedicated credential has one owner at a time. The host moves its sole `auth.json`
 into the stage's writable home and returns the current refreshed file only after verifying
 the exact container was removed. Configuration/rules remain read-only; sessions remain in
 their stage. A shared credential serializes builder/reviewer execution even when task
 concurrency is higher. Never restore an older authentication snapshot or copy personal credentials.
+
+For an explicitly authorized laptop login, set these fields in the existing private
+configuration while admission is drained and services are stopped:
+
+```json
+{
+  "worker_auth_source": "local_codex",
+  "local_codex_binary": "/absolute/trusted/path/to/codex",
+  "local_codex_home": "/Users/OWNER/.codex"
+}
+```
+
+The host runs an authentication-only Codex client in the private `worker_home`. Coding
+and tools still run in the isolated container. The original home stays on the host;
+only short-lived access tokens cross private pipes into the worker's ephemeral store.
+Refresh requests must keep the same account within a stage. A new or resumed stage uses
+the laptop's currently signed-in account. Tokens never enter arguments, environment or
+saved session state. Private auth RPCs stay off controller output; known token fields and
+values are redacted. A refresh failure holds the task without
+automatic retries or resetting usage. There is no fallback between login sources.
+The executable must resolve outside source/workspace/session trees to an owned,
+non-group/non-other-writable file. Existing retained worker credential files block reuse.
+
+This adapter uses the experimental external-token App Server protocol; host 0.160.0 and
+worker 0.153.4 are covered by a disposable no-model probe. Revalidate when either version
+changes. `doctor` reports cached sign-in, not provider validity; startup verifies the
+provider before a model turn. For local login recovery, use the original CLI's `login`
+and resume only within remaining budgets. The profile's `login` command never modifies
+the original account. To select dedicated login again, drain/stop and remove local-only
+configuration fields; never copy authentication files between modes.
+
+For dedicated login recovery:
 
 1. Drain admission and wait for worker cleanup; retain the task ledger and consumed usage.
 2. Run `python3 profiles/events-concierge/profile.py --config /absolute/private/config.json doctor`.

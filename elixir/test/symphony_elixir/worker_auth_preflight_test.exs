@@ -25,7 +25,7 @@ defmodule SymphonyElixir.WorkerAuthPreflightTest do
 
   test "cached account, invalid authentication and missing provider evidence never start work", ctx do
     for mode <-
-          ~w(no_account wrong_account wrong_requires_auth malformed_account wrong_auth_method missing_status_auth token_leak empty_limits malformed_limits unauthorized refresh_revoked provider_401) do
+          ~w(no_account wrong_account wrong_requires_auth malformed_account wrong_auth_method missing_status_auth token_leak empty_limits malformed_limits unauthorized refresh_revoked provider_401 external_missing_method external_invalid_method external_missing_status_auth external_token_leak external_provider_401 external_refresh_callback external_refresh_callback_collision) do
       fixture = fixture(ctx, mode)
       configure(fixture, mode)
 
@@ -37,7 +37,35 @@ defmodule SymphonyElixir.WorkerAuthPreflightTest do
 
       refute logs =~ "PRIVATE_TOKEN_SENTINEL"
       refute logs =~ "PRIVATE_PROVIDER_SENTINEL"
+      refute logs =~ "PRIVATE_CALLBACK_SENTINEL"
       refute Enum.any?(trace(fixture), &(&1["method"] in ["thread/start", "turn/start"]))
+      assert_stopped(fixture)
+    end
+  end
+
+  test "external authentication cannot replace the selected reviewer permission profile", ctx do
+    configure(ctx, "external_wrong_profile")
+    result = AppServer.start_session(ctx.workspace, profile: :reviewer)
+    assert {:error, {:startup_failed, :thread_start, {:permission_profile_mismatch, "symphony-reviewer"}}} = result
+    assert_stopped(ctx)
+  end
+
+  test "external ChatGPT tokens retain token-free provider checks and both role permissions", ctx do
+    for role <- [:builder, :reviewer] do
+      fixture = fixture(ctx, "external-#{role}")
+      configure(fixture, "external_ok")
+      assert {:ok, session} = AppServer.start_session(fixture.workspace, profile: role)
+      AppServer.stop_session(session)
+      requests = trace(fixture)
+
+      assert Enum.map(requests, & &1["method"]) == ["initialize", "initialized", "account/read", "getAuthStatus", "account/rateLimits/read", "thread/start"]
+      assert Enum.at(requests, 2)["params"] == %{"refreshToken" => true}
+      assert Enum.at(requests, 3)["params"] == %{"includeToken" => false, "refreshToken" => false}
+      assert Enum.at(requests, 4)["params"] == nil
+      params = List.last(requests)["params"]
+      assert params["config"]["default_permissions"] == "symphony-#{role}"
+      assert params["approvalPolicy"] == "never"
+      assert params["dynamicTools"] == []
       assert_stopped(fixture)
     end
   end
@@ -80,6 +108,46 @@ defmodule SymphonyElixir.WorkerAuthPreflightTest do
 
       refute WorkerFailure.authentication_required?(elem(result, 1))
       refute Enum.any?(trace(fixture), &(&1["method"] in ["thread/start", "turn/start"]))
+    end
+  end
+
+  test "auth ownership loss after a turn starts is terminal and retains reported usage", ctx do
+    for status <- [78, 79], role <- [:builder, :reviewer] do
+      fixture = fixture(ctx, "mid-turn-#{status}-#{role}")
+      configure(fixture, "external_turn_exit_#{status}")
+      assert {:ok, session} = AppServer.start_session(fixture.workspace, profile: role)
+      messages_key = make_ref()
+      Process.put(messages_key, [])
+      on_message = fn message -> Process.put(messages_key, [message | Process.get(messages_key)]) end
+      issue = %{id: "7", identifier: "GH-7", title: "Fixture task"}
+
+      logs =
+        capture_log(fn ->
+          assert {:error, :worker_auth_required} = AppServer.run_turn(session, "Fixture turn", issue, on_message: on_message)
+        end)
+
+      messages = Process.delete(messages_key)
+      assert Enum.any?(messages, &(&1.event == :session_started))
+      assert Enum.any?(messages, &(get_in(&1, [:payload, "method"]) == "thread/tokenUsage/updated" and get_in(&1, [:payload, "params", "tokenUsage", "total", "totalTokens"]) == 23))
+      assert Enum.any?(messages, &(&1.event == :turn_ended_with_error and &1.reason == :worker_auth_required))
+      assert WorkerFailure.authentication_required?(:worker_auth_required)
+      refute logs =~ "PRIVATE"
+      AppServer.stop_session(session)
+      assert_stopped(fixture)
+    end
+  end
+
+  test "mid-turn reserved exits do not change default or uncontrolled behavior", ctx do
+    for {controlled, enabled} <- [{true, nil}, {false, true}], status <- [78, 79] do
+      fixture = fixture(ctx, "mid-turn-default-#{controlled}-#{status}")
+      configure(fixture, "external_turn_exit_#{status}", controlled: controlled, auth_preflight: enabled)
+      assert {:ok, session} = AppServer.start_session(fixture.workspace)
+      issue = %{id: "7", identifier: "GH-7", title: "Fixture task"}
+      result = AppServer.run_turn(session, "Fixture turn", issue)
+      assert {:error, {:port_exit, ^status}} = result
+      refute WorkerFailure.authentication_required?(elem(result, 1))
+      AppServer.stop_session(session)
+      assert_stopped(fixture)
     end
   end
 
@@ -183,16 +251,22 @@ defmodule SymphonyElixir.WorkerAuthPreflightTest do
             send({'id': msg['id'], 'result': result})
         elif method == 'getAuthStatus':
             result = {'authMethod': 'chatgpt', 'requiresOpenaiAuth': True, 'authToken': None}
+            if mode.startswith('external_'): result['authMethod'] = 'chatgptAuthTokens'
             if mode == 'wrong_auth_method': result['authMethod'] = 'apiKey'
-            if mode == 'missing_status_auth': del result['requiresOpenaiAuth']
-            if mode == 'token_leak': result['authToken'] = 'PRIVATE_TOKEN_SENTINEL'
+            if mode == 'external_missing_method': del result['authMethod']
+            if mode == 'external_invalid_method': result['authMethod'] = 'externalAuth'
+            if mode in ('missing_status_auth', 'external_missing_status_auth'): del result['requiresOpenaiAuth']
+            if mode in ('token_leak', 'external_token_leak'): result['authToken'] = 'PRIVATE_TOKEN_SENTINEL'
             send({'id': msg['id'], 'result': result})
         elif method == 'account/rateLimits/read':
             if mode == 'timeout': time.sleep(5)
+            elif mode in ('external_refresh_callback', 'external_refresh_callback_collision'):
+                callback_id = msg['id'] if mode.endswith('_collision') else 'private-refresh'
+                send({'id': callback_id, 'method': 'account/chatgptAuthTokens/refresh', 'error': {'message': 'PRIVATE_PROVIDER_SENTINEL'}, 'params': {'reason': 'unauthorized', 'previousAccountId': 'PRIVATE_CALLBACK_SENTINEL', 'accessToken': 'PRIVATE_TOKEN_SENTINEL'}})
             elif mode in ('unauthorized', 'refresh_revoked', 'transient'):
                 code = {'unauthorized': 'unauthorized', 'refresh_revoked': 'refresh_token_revoked', 'transient': -32000}[mode]
                 send({'id': msg['id'], 'error': {'code': code, 'message': 'PRIVATE_PROVIDER_SENTINEL'}})
-            elif mode.startswith('provider_') or mode in ('untrusted_401', 'wrong_rpc_code'):
+            elif mode.startswith('provider_') or mode in ('untrusted_401', 'wrong_rpc_code', 'external_provider_401'):
                 status = {'provider_429': '429 Too Many Requests', 'provider_503': '503 Service Unavailable'}.get(mode, '401 Unauthorized')
                 message = 'failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: ' + status
                 message += '; content-type=application/json; body=PRIVATE_PROVIDER_SENTINEL'
@@ -206,7 +280,14 @@ defmodule SymphonyElixir.WorkerAuthPreflightTest do
                 if mode == 'malformed_limits': result = []
                 send({'id': msg['id'], 'result': result})
         elif method == 'thread/start':
-            send({'id': msg['id'], 'result': {'thread': {'id': 'auth-verified'}, 'activePermissionProfile': {'id': 'symphony-builder'}}})
+            profile = msg['params'].get('config', {}).get('default_permissions', 'symphony-builder')
+            if mode == 'external_wrong_profile': profile = 'symphony-builder'
+            send({'id': msg['id'], 'result': {'thread': {'id': 'auth-verified'}, 'activePermissionProfile': {'id': profile}}})
+        elif method == 'turn/start':
+            send({'id': msg['id'], 'result': {'turn': {'id': 'auth-turn'}}})
+            send({'method': 'turn/started', 'params': {'turn': {'id': 'auth-turn'}}})
+            send({'method': 'thread/tokenUsage/updated', 'params': {'tokenUsage': {'total': {'inputTokens': 20, 'outputTokens': 3, 'totalTokens': 23}}}})
+            if mode.startswith('external_turn_exit_'): sys.exit(int(mode.rsplit('_', 1)[1]))
     """)
 
     File.chmod!(path, 0o755)

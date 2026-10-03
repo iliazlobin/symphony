@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from symphony_control import ControlError, DEFAULT_CONFIG, load_config, read_private
 from container_auth import AuthLease, AuthLeaseError
+from local_codex_auth import cached_status
 
 REPOSITORY = "iliazlobin/events-concierge"
 REMOTE = "https://github.com/" + REPOSITORY + ".git"
@@ -278,6 +279,52 @@ def container_launch_options(config: dict) -> list[str]:
     return ["--seccomp-policy", str(seccomp), "--apparmor-profile", policy_name]
 
 
+def worker_auth_options(config: dict) -> list[str]:
+    """Select authentication explicitly, without mounting or copying local state."""
+    source = config.get("worker_auth_source", "dedicated")
+    fields = ("local_codex_binary", "local_codex_home")
+    if source == "dedicated":
+        if any(field in config for field in fields):
+            raise ControlError("Local Codex paths require the explicit local_codex authentication source")
+        return []
+    if source != "local_codex":
+        raise ControlError("Unknown worker authentication source")
+    try:
+        binary, home, cwd = (Path(config[field]) for field in (*fields, "worker_home"))
+        if (not all(path.is_absolute() for path in (binary, home, cwd))
+                or home != Path.home() / ".codex" or home.is_symlink() or not home.is_dir()):
+            raise ValueError("Invalid local authentication location")
+        binary = binary.resolve(strict=True)
+        binary_info = binary.stat()
+        if (not stat.S_ISREG(binary_info.st_mode) or binary_info.st_uid != os.getuid()
+                or stat.S_IMODE(binary_info.st_mode) & 0o022 or not os.access(binary, os.X_OK)):
+            raise ValueError("Invalid local authentication executable")
+        info = cwd.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) & 0o077 or cwd.resolve(strict=True) != cwd
+                or cwd == home or home in cwd.parents):
+            raise ValueError("Invalid authentication client directory")
+        runtime_home = Path(config["codex_home"]).resolve(strict=True)
+        if runtime_home == home or home in runtime_home.parents:
+            raise ValueError("Personal configuration cannot be mounted into workers")
+        forbidden = [runtime_home, runtime_home.parent / "stage-state", runtime_home.parent / "pr-work-state", cwd]
+        for field in ("workspace_root", "source_path"):
+            if field in config:
+                root = Path(config[field]).resolve(strict=True)
+                if cwd == root or root in cwd.parents or cwd in root.parents:
+                    raise ValueError("Authentication client cannot run in a source tree")
+                forbidden.append(root)
+        if any(binary == root or root in binary.parents for root in forbidden):
+            raise ValueError("Authentication executable cannot be supplied by worker storage")
+    except (OSError, ValueError, TypeError, KeyError):
+        raise ControlError("Local Codex authentication requires its original home, an executable CLI, and an isolated private client directory") from None
+    options = ["--auth-source", "local_codex", "--local-codex-binary", str(binary),
+               "--local-codex-home", str(home), "--auth-cwd", str(cwd)]
+    if "source_path" in config:
+        options += ["--auth-source-path", str(Path(config["source_path"]).resolve(strict=True))]
+    return options
+
+
 def codex_server(config: dict) -> None:
     if config.get("worker_launch_enabled") is not True:
         raise ControlError("Live workers are disabled until isolation, cancellation, authentication and pilot acceptance are verified")
@@ -289,6 +336,7 @@ def codex_server(config: dict) -> None:
     image = config.get("worker_image_id", "")
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
         raise ControlError("Verified immutable worker image ID is missing")
+    auth_options = worker_auth_options(config)
     launch_options = container_launch_options(config)
     # Rule synchronization runs on the host. The worker sees only its dedicated
     # Codex home and its own checkout mounted into a separate PID namespace.
@@ -311,7 +359,8 @@ def codex_server(config: dict) -> None:
         raise ControlError("Retained builder resume requires a work identity")
     wrapper = ROOT / "tools/container_worker.py"
     os.execve(sys.executable, [sys.executable, "-I", str(wrapper), "--workspace", str(Path.cwd()),
-                             "--codex-home", config["codex_home"], "--image", image, *launch_options], env)
+                             "--codex-home", config["codex_home"], "--image", image,
+                             *auth_options, *launch_options], env)
 
 
 def install_rules(config: dict) -> dict:
@@ -322,14 +371,29 @@ def install_rules(config: dict) -> dict:
 
 
 def worker_auth_status(config: dict) -> dict:
+    source = config.get("worker_auth_source", "dedicated")
+    if source == "local_codex":
+        try:
+            worker_auth_options(config)
+            return cached_status(binary=config["local_codex_binary"], home=config["local_codex_home"], cwd=config["worker_home"])
+        except (ControlError, OSError, ValueError):
+            return {"state": "recovery", "source": source, "credential_present": False,
+                    "sign_in_required": True, "provider_verified": False}
+    if source != "dedicated":
+        return {"state": "recovery", "source": "invalid", "credential_present": False,
+                "sign_in_required": True, "provider_verified": False}
     try:
-        return AuthLease(config["codex_home"]).status()
-    except (AuthLeaseError, OSError, ValueError):
-        return {"state": "recovery", "credential_present": False,
+        worker_auth_options(config)
+        return dict(AuthLease(config["codex_home"]).status(), source=source)
+    except (AuthLeaseError, ControlError, OSError, ValueError):
+        return {"state": "recovery", "source": source, "credential_present": False,
                 "sign_in_required": True, "provider_verified": False}
 
 
 def worker_login(config: dict) -> None:
+    worker_auth_options(config)
+    if config.get("worker_auth_source", "dedicated") == "local_codex":
+        raise ControlError("Local Codex authentication uses the original CLI sign-in; this profile does not enroll or copy credentials")
     try:
         with AuthLease(config["codex_home"]).enrollment() as home:
             env = worker_env(config)
