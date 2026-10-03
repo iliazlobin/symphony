@@ -75,6 +75,11 @@ defmodule SymphonyElixirWeb.WorkflowPlan do
   defp valid_warnings?(_warnings), do: false
   defp nonempty_string?(value), do: is_binary(value) and value != ""
 
+  # The literal empty constructor is compiler-inlined and loses MapSet opacity.
+  @spec empty_set() :: MapSet.t()
+  defp empty_set(), do: MapSet.new([], &Function.identity/1)
+
+  @spec visible_ids(map(), map(), :all | [String.t()]) :: MapSet.t()
   defp visible_ids(board, graph, :all) do
     case board[:tasks] do
       tasks when is_list(tasks) -> MapSet.new(tasks, & &1.id)
@@ -83,7 +88,7 @@ defmodule SymphonyElixirWeb.WorkflowPlan do
   end
 
   defp visible_ids(_board, _graph, ids) when is_list(ids), do: MapSet.new(ids)
-  defp visible_ids(_board, _graph, _ids), do: MapSet.new()
+  defp visible_ids(_board, _graph, _ids), do: empty_set()
 
   defp sequence(graph, visible) do
     tasks = Enum.filter(graph["nodes"], &(&1["type"] == "task"))
@@ -124,7 +129,7 @@ defmodule SymphonyElixirWeb.WorkflowPlan do
   end
 
   defp adjacency(tasks, edges) do
-    empty = Map.new(tasks, &{&1["id"], MapSet.new()})
+    empty = Map.new(tasks, &{&1["id"], empty_set()})
 
     Enum.reduce(edges, {empty, empty}, fn edge, {parents, children} ->
       source = edge["source"]
@@ -141,7 +146,7 @@ defmodule SymphonyElixirWeb.WorkflowPlan do
     unknown = tasks |> Enum.filter(&unknown?/1) |> MapSet.new(& &1["id"])
     absent = MapSet.difference(MapSet.new(Map.keys(children)), MapSet.new(tasks, & &1["id"]))
     unknown = MapSet.union(unknown, absent)
-    blocked = descendants(MapSet.to_list(MapSet.union(cycles, unknown)), children, MapSet.new())
+    blocked = descendants(MapSet.to_list(MapSet.union(cycles, unknown)), children, empty_set())
 
     Map.new(tasks, fn task ->
       id = task["id"]
@@ -161,13 +166,14 @@ defmodule SymphonyElixirWeb.WorkflowPlan do
   defp unknown?(task),
     do: task["missing"] == true or task["dependency_error"] not in [nil, @normal_wait, @cycle_wait]
 
+  @spec descendants([String.t()], map(), MapSet.t()) :: MapSet.t()
   defp descendants([], _children, seen), do: seen
 
   defp descendants([id | rest], children, seen) do
     if MapSet.member?(seen, id) do
       descendants(rest, children, seen)
     else
-      next = Map.get(children, id, MapSet.new()) |> MapSet.to_list()
+      next = Map.get(children, id, empty_set()) |> MapSet.to_list()
       descendants(next ++ rest, children, MapSet.put(seen, id))
     end
   end
@@ -183,7 +189,7 @@ defmodule SymphonyElixirWeb.WorkflowPlan do
 
   defp assign_levels([id | rest], children, degrees, levels) do
     {queue, degrees, levels} =
-      Enum.reduce(children[id] || MapSet.new(), {rest, degrees, levels}, &assign_child_level(&1, &2, id))
+      Enum.reduce(children[id] || empty_set(), {rest, degrees, levels}, &assign_child_level(&1, &2, id))
 
     assign_levels(queue, children, degrees, levels)
   end
@@ -211,10 +217,11 @@ defmodule SymphonyElixirWeb.WorkflowPlan do
       "end_step" => if(is_integer(step), do: step + 1),
       "visible" => MapSet.member?(context.visible, task["task_id"])
     })
-    |> neighbor_counts("upstream", context.upstream[id] || MapSet.new(), context.nodes, context.visible)
-    |> neighbor_counts("downstream", context.downstream[id] || MapSet.new(), context.nodes, context.visible)
+    |> neighbor_counts("upstream", context.upstream[id] || empty_set(), context.nodes, context.visible)
+    |> neighbor_counts("downstream", context.downstream[id] || empty_set(), context.nodes, context.visible)
   end
 
+  @spec neighbor_counts(map(), String.t(), MapSet.t(), map(), MapSet.t()) :: map()
   defp neighbor_counts(node, direction, ids, by_id, visible) do
     known = Enum.filter(ids, &(is_map(by_id[&1]) and by_id[&1]["missing"] != true))
     outside = Enum.count(known, &(not MapSet.member?(visible, by_id[&1]["task_id"])))
