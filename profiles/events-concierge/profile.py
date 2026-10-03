@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from symphony_control import ControlError, DEFAULT_CONFIG, load_config, read_private
 from container_auth import AuthLease, AuthLeaseError
-from local_codex_auth import cached_status
+from local_codex_auth import LocalCodexAuthError, _paths, cached_status
 
 REPOSITORY = "iliazlobin/events-concierge"
 REMOTE = "https://github.com/" + REPOSITORY + ".git"
@@ -290,20 +290,7 @@ def worker_auth_options(config: dict) -> list[str]:
     if source != "local_codex":
         raise ControlError("Unknown worker authentication source")
     try:
-        binary, home, cwd = (Path(config[field]) for field in (*fields, "worker_home"))
-        if (not all(path.is_absolute() for path in (binary, home, cwd))
-                or home != Path.home() / ".codex" or home.is_symlink() or not home.is_dir()):
-            raise ValueError("Invalid local authentication location")
-        binary = binary.resolve(strict=True)
-        binary_info = binary.stat()
-        if (not stat.S_ISREG(binary_info.st_mode) or binary_info.st_uid != os.getuid()
-                or stat.S_IMODE(binary_info.st_mode) & 0o022 or not os.access(binary, os.X_OK)):
-            raise ValueError("Invalid local authentication executable")
-        info = cwd.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                or stat.S_IMODE(info.st_mode) & 0o077 or cwd.resolve(strict=True) != cwd
-                or cwd == home or home in cwd.parents):
-            raise ValueError("Invalid authentication client directory")
+        binary, home, cwd = _paths(config["local_codex_binary"], config["local_codex_home"], config["worker_home"])
         runtime_home = Path(config["codex_home"]).resolve(strict=True)
         if runtime_home == home or home in runtime_home.parents:
             raise ValueError("Personal configuration cannot be mounted into workers")
@@ -316,7 +303,7 @@ def worker_auth_options(config: dict) -> list[str]:
                 forbidden.append(root)
         if any(binary == root or root in binary.parents for root in forbidden):
             raise ValueError("Authentication executable cannot be supplied by worker storage")
-    except (OSError, ValueError, TypeError, KeyError):
+    except (LocalCodexAuthError, OSError, ValueError, TypeError, KeyError):
         raise ControlError("Local Codex authentication requires its original home, an executable CLI, and an isolated private client directory") from None
     options = ["--auth-source", "local_codex", "--local-codex-binary", str(binary),
                "--local-codex-home", str(home), "--auth-cwd", str(cwd)]

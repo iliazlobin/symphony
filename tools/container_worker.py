@@ -15,7 +15,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from container_auth import AuthLease, AuthLeaseBusy, AuthLeaseError, prepare_marker
-from local_codex_auth import LocalCodexAuth, LocalCodexAuthError, bridge
+from local_codex_auth import LocalCodexAuth, LocalCodexAuthError, _paths, bridge
 
 OWNER_LABEL = "com.openai.symphony.owner"
 AUTH_UNAVAILABLE_EXIT = 78
@@ -78,17 +78,7 @@ def prepare_stage_home(workspace, codex_home, owner, role, work_id=None, *, resu
 
 def validate_local_auth_paths(workspace, codex_home, local_home, client_cwd, binary, source_path=None):
     try:
-        home, cwd, executable = Path(local_home), Path(client_cwd), Path(binary)
-        if (not home.is_absolute() or home != Path.home() / ".codex" or home.is_symlink()
-                or not cwd.is_absolute() or not executable.is_absolute()):
-            raise ValueError("Invalid local client paths")
-        executable = executable.resolve(strict=True)
-        info = executable.stat()
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or stat.S_IMODE(info.st_mode) & 0o022 or not os.access(executable, os.X_OK)):
-            raise ValueError("Invalid local client executable")
-        private_directory(home)
-        private_directory(cwd)
+        executable, home, cwd = _paths(binary, local_home, client_cwd)
         workspace = Path(workspace).resolve(strict=True)
         runtime_home = Path(codex_home).resolve(strict=True)
         roots = [workspace, runtime_home, home]
@@ -107,7 +97,7 @@ def validate_local_auth_paths(workspace, codex_home, local_home, client_cwd, bin
         if any(executable == root or root in executable.parents for root in forbidden):
             raise ValueError("Authentication executable cannot be supplied by worker storage")
         return str(executable)
-    except (OSError, TypeError, ValueError):
+    except (LocalCodexAuthError, OSError, TypeError, ValueError):
         raise LocalCodexAuthError("Local authentication requires its original home and an isolated private client directory") from None
 
 

@@ -122,6 +122,62 @@ class ContainerWorkerTests(unittest.TestCase):
                 with self.assertRaises(WORKER.LocalCodexAuthError):
                     WORKER.validate_local_auth_paths(workspace, home, local, workspace / "inside", binary)
 
+    def test_local_personal_home_accepts_standard_mode_without_relaxing_private_client(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "workspaces").mkdir(mode=0o700)
+            workspace, runtime, home, client = (root / name for name in ("workspaces/GH-1", "codex", ".codex", "auth-client"))
+            for path in (workspace, runtime, home, client):
+                path.mkdir(mode=0o700)
+            binary = root / "local-cli"
+            binary.write_text("fixture executable")
+            binary.chmod(0o700)
+            args = (workspace, runtime, home, client, binary)
+            with patch.object(WORKER.Path, "home", return_value=root):
+                home.chmod(0o755)
+                self.assertEqual(WORKER.validate_local_auth_paths(*args), str(binary))
+                self.assertEqual(home.stat().st_mode & 0o777, 0o755)
+                for mode in (0o775, 0o777):
+                    home.chmod(mode)
+                    with self.subTest(mode=mode), self.assertRaises(WORKER.LocalCodexAuthError):
+                        WORKER.validate_local_auth_paths(*args)
+                home.chmod(0o755)
+                client.chmod(0o755)
+                with self.assertRaises(WORKER.LocalCodexAuthError):
+                    WORKER.validate_local_auth_paths(*args)
+
+    def test_local_personal_auth_leaf_is_checked_by_metadata_without_reading_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "workspaces").mkdir(mode=0o700)
+            workspace, runtime, home, client = (root / name for name in ("workspaces/GH-1", "codex", ".codex", "auth-client"))
+            for path in (workspace, runtime, home, client):
+                path.mkdir(mode=0o700)
+            home.chmod(0o755)
+            binary = root / "local-cli"
+            binary.write_text("fixture executable")
+            binary.chmod(0o700)
+            credential = home / "auth.json"
+            credential.write_text("FAKE AUTH MUST NOT BE READ")
+            credential.chmod(0o600)
+            args = (workspace, runtime, home, client, binary)
+            with patch.object(WORKER.Path, "home", return_value=root), \
+                    patch.object(WORKER.Path, "read_text", side_effect=AssertionError("Credential read")), \
+                    patch.object(WORKER.Path, "read_bytes", side_effect=AssertionError("Credential read")):
+                self.assertEqual(WORKER.validate_local_auth_paths(*args), str(binary))
+                for mode in (0o640, 0o604):
+                    credential.chmod(mode)
+                    with self.subTest(mode=mode), self.assertRaises(WORKER.LocalCodexAuthError):
+                        WORKER.validate_local_auth_paths(*args)
+                credential.chmod(0o600)
+                os.link(credential, root / "linked-auth")
+                with self.assertRaises(WORKER.LocalCodexAuthError):
+                    WORKER.validate_local_auth_paths(*args)
+                credential.unlink()
+                credential.symlink_to(root / "linked-auth")
+                with self.assertRaises(WORKER.LocalCodexAuthError):
+                    WORKER.validate_local_auth_paths(*args)
+
     def test_local_executable_rejects_worker_trees_unsafe_modes_and_foreign_owners(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

@@ -333,6 +333,49 @@ class ProfileTests(unittest.TestCase):
             with patch.object(profile.Path, "home", return_value=owner), self.assertRaises(profile.ControlError):
                 profile.worker_auth_options(config)
 
+    def test_local_auth_accepts_owned_standard_home_but_keeps_client_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config, owner = self.local_auth_config(Path(tmp).resolve())
+            home = Path(config["local_codex_home"])
+            with patch.object(profile.Path, "home", return_value=owner):
+                home.chmod(0o755)
+                self.assertIn("local_codex", profile.worker_auth_options(config))
+                self.assertEqual(home.stat().st_mode & 0o777, 0o755)
+                for mode in (0o775, 0o777):
+                    home.chmod(mode)
+                    with self.subTest(mode=mode), self.assertRaises(profile.ControlError):
+                        profile.worker_auth_options(config)
+                home.chmod(0o755)
+                Path(config["worker_home"]).chmod(0o755)
+                with self.assertRaises(profile.ControlError):
+                    profile.worker_auth_options(config)
+
+    def test_local_auth_rejects_unsafe_personal_auth_leaf_without_reading_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config, owner = self.local_auth_config(root)
+            home = Path(config["local_codex_home"])
+            home.chmod(0o755)
+            credential = home / "auth.json"
+            credential.write_text("FAKE AUTH MUST NOT BE READ")
+            credential.chmod(0o600)
+            with patch.object(profile.Path, "home", return_value=owner), \
+                    patch.object(profile.Path, "read_text", side_effect=AssertionError("Credential read")), \
+                    patch.object(profile.Path, "read_bytes", side_effect=AssertionError("Credential read")):
+                self.assertIn("local_codex", profile.worker_auth_options(config))
+                for mode in (0o640, 0o604):
+                    credential.chmod(mode)
+                    with self.subTest(mode=mode), self.assertRaises(profile.ControlError):
+                        profile.worker_auth_options(config)
+                credential.chmod(0o600)
+                os.link(credential, root / "linked-auth")
+                with self.assertRaises(profile.ControlError):
+                    profile.worker_auth_options(config)
+                credential.unlink()
+                credential.symlink_to(root / "linked-auth")
+                with self.assertRaises(profile.ControlError):
+                    profile.worker_auth_options(config)
+
     def test_local_auth_resolves_safe_cli_links_and_rejects_worker_controlled_executables(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()

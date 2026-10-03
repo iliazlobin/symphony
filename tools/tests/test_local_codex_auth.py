@@ -127,6 +127,40 @@ class LocalCodexAuthTests(unittest.TestCase):
             with self.assertRaises(AUTH.LocalCodexAuthError):
                 AUTH.LocalCodexAuth(binary=unsafe, home=self.home, cwd=self.cwd)
 
+    def test_standard_owner_home_preserves_protected_credential_leaf(self):
+        self.home.chmod(0o755)
+        self.assertEqual(self.client().home, self.home)
+        credential = self.home / 'auth.json'
+        credential.write_text('FAKE_ONLY')
+        credential.chmod(0o600)
+        self.assertEqual(self.client().home, self.home)
+        self.assertEqual(credential.read_text(), 'FAKE_ONLY')
+        self.assertEqual(credential.stat().st_mode & 0o777, 0o600)
+        credential.chmod(0o644)
+        with self.assertRaises(AUTH.LocalCodexAuthError):
+            self.client()
+
+    def test_original_credential_leaf_rejects_links_and_nonregular_paths(self):
+        credential = self.home / 'auth.json'
+        credential.symlink_to(self.root / 'missing')
+        with self.assertRaises(AUTH.LocalCodexAuthError):
+            self.client()
+        credential.unlink()
+        credential.mkdir(mode=0o700)
+        with self.assertRaises(AUTH.LocalCodexAuthError):
+            self.client()
+        credential.rmdir()
+        original = self.root / 'fake-auth'
+        original.write_text('FAKE_ONLY')
+        original.chmod(0o600)
+        os.link(original, credential)
+        with self.assertRaises(AUTH.LocalCodexAuthError):
+            self.client()
+        credential.unlink()
+        self.home.chmod(0o775)
+        with self.assertRaises(AUTH.LocalCodexAuthError):
+            self.client()
+
     def fixture(self, *, account_switch=False, status_leak=False):
         first = token()
         second = token('other-account' if account_switch else 'fixture-account', 2)

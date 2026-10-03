@@ -41,8 +41,15 @@ def _validated_paths(binary, home, cwd):
         raise LocalCodexAuthError(AUTH_ERROR)
     for directory in (home, cwd):
         info = directory.lstat()
+        forbidden_mode = 0o022 if directory == home else 0o077
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                or stat.S_IMODE(info.st_mode) & 0o077 or directory.resolve(strict=True) != directory):
+                or stat.S_IMODE(info.st_mode) & forbidden_mode or directory.resolve(strict=True) != directory):
+            raise LocalCodexAuthError(AUTH_ERROR)
+    credential = home / 'auth.json'
+    if credential.exists() or credential.is_symlink():
+        info = credential.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) & 0o077 or info.st_nlink != 1):
             raise LocalCodexAuthError(AUTH_ERROR)
     binary = binary.resolve(strict=True)
     info = binary.stat()
