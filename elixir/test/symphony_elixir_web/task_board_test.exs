@@ -505,13 +505,13 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
   end
 
   test "execution and blocker evidence retain actual reason and safe canonical links" do
-    runtime = %{blocked: [Map.put(activity("1"), :error, "Worker needs input: choose the deployment region")], retrying: [Map.put(activity("2"), :error, "Rate limit; retry at the recorded deadline")]}
+    runtime = %{blocked: [Map.put(activity("1"), :error, "codex turn requires operator input")], retrying: [Map.put(activity("2"), :error, "Worker response timed out; retry scheduled")]}
     control = %{"issues" => %{"3" => %{"hold" => "token_budget"}, "4" => %{"active" => %{}}}}
     issues = [issue("1", url: "https://evil.example/steal"), issue("2"), issue("3"), issue("4"), issue("5")]
     board = TaskBoard.project(issues, runtime, control, settings())
-    assert task(board.tasks, "1").blocker_reason =~ "choose the deployment region"
+    assert task(board.tasks, "1").blocker_reason == "codex turn requires operator input"
     assert task(board.tasks, "1").execution_status == "blocked"
-    assert task(board.tasks, "2").blocker_reason =~ "Rate limit"
+    assert task(board.tasks, "2").blocker_reason == "Worker response timed out; retry scheduled"
     assert task(board.tasks, "3").blocker_reason == "Token budget"
     assert task(board.tasks, "3").execution_status == "held"
     assert task(board.tasks, "4").execution_status == "unknown"
@@ -524,6 +524,26 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
            ]
 
     assert Enum.all?(board.tasks, &(&1.pull_requests == []))
+  end
+
+  test "raw worker failures never become board summaries and authentication holds remain in Work" do
+    private = "agent exited: {%RuntimeError{message: \"unexpected provider failure: Bearer private-secret\"}, [{PrivateWorker, :run, 3, [file: \"private/config.ex\", line: 44]}]}"
+    runtime = %{retrying: [Map.put(activity("1"), :error, private)]}
+    control = %{"issues" => %{"2" => %{"hold" => "worker_auth_required", "tokens" => 10, "attempts" => 1, "runtime_ms" => 50}}}
+    board = TaskBoard.project([issue("1"), issue("2", labels: [])], runtime, control, settings())
+    failed = task(board.tasks, "1")
+    blocked = task(board.tasks, "2")
+
+    refute failed.blocker_reason =~ "private-secret"
+    refute failed.blocker_reason =~ "RuntimeError"
+    refute failed.blocker_reason =~ "private/config.ex"
+    assert String.length(failed.blocker_reason) < 240
+    assert blocked.stage == "ready"
+    assert blocked.lane == "work"
+    assert blocked.execution_status == "blocked"
+    assert blocked.attention == "Worker sign-in required"
+    assert blocked.blocker_reason == "Worker sign-in required"
+    assert blocked.ledger["tokens"] == 10
   end
 
   test "enrichment failure and tracker reload preserve issue data with separate uncertainty" do

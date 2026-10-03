@@ -34,6 +34,14 @@ Keep scope bounded.
 
 
 class ProfileTests(unittest.TestCase):
+    def test_generated_single_credential_workflow_serializes_workers_without_changing_source(self):
+        source = WORKFLOW.replace("max_concurrent_agents: 1", "max_concurrent_agents: 5")
+        result = profile.worker_workflow(source)
+        settings = profile.yaml.safe_load(result.split("---\n", 2)[1])
+        self.assertEqual(settings["agent"]["max_concurrent_agents"], 1)
+        self.assertTrue(settings["codex"]["auth_preflight"])
+        self.assertIn("max_concurrent_agents: 5", source)
+
     def test_openrouter_loads_only_explicit_private_key_without_sourcing_env(self):
         self.assertEqual(profile.openrouter_environment({}), {})
         with tempfile.TemporaryDirectory() as tmp:
@@ -170,6 +178,7 @@ class ProfileTests(unittest.TestCase):
             self.assertIs(installed["worker_launch_enabled"], False)
             workflow = profile.yaml.safe_load((state / "WORKFLOW.md").read_text().split("---\n", 2)[1])
             self.assertEqual(workflow["agent"]["max_concurrent_agents"], 1)
+            self.assertTrue(workflow["codex"]["auth_preflight"])
             # The generated scalar sections are also valid INI when the TOML
             # root keys get an explicit section; no Codex/auth calls are needed.
             config = configparser.RawConfigParser(delimiters=("=",))
@@ -181,6 +190,8 @@ class ProfileTests(unittest.TestCase):
             self.assertFalse(config.getboolean("features", "multi_agent"))
             self.assertEqual(config["root"]["approval_policy"], '"on-request"')
             self.assertEqual(config["root"]["approvals_reviewer"], '"user"')
+            self.assertEqual(config["root"]["cli_auth_credentials_store"], '"file"')
+            self.assertEqual(config["root"]["forced_login_method"], '"chatgpt"')
             for role in ("builder", "reviewer"):
                 self.assertFalse(config.getboolean("permissions.symphony-" + role + ".network", "enabled"))
                 self.assertEqual(config["permissions.symphony-" + role + ".filesystem"]['":root"'], '"deny"')
@@ -200,6 +211,52 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(all(path.startswith(("/usr/local/bin/", "/usr/bin/", "/bin/"))
                             for path in result.stdout.splitlines()))
+
+    def test_worker_login_serializes_enrollment_without_inheriting_host_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve() / "codex"
+            home.mkdir(mode=0o700)
+            config = {"codex_home": str(home), "codex_binary": "/fixture/codex"}
+
+            def login(command, *, env):
+                self.assertEqual(command, ["/fixture/codex", "login", "--device-auth"])
+                self.assertEqual(env["CODEX_HOME"], str(home))
+                self.assertNotIn("GITHUB_TOKEN", env)
+                self.assertNotIn("OPENROUTER_API_KEY", env)
+                state = profile.worker_auth_status(config)
+                self.assertEqual(state["state"], "active")
+                self.assertFalse(state["provider_verified"])
+                (home / "auth.json").write_text("FAKE AUTH")
+                (home / "auth.json").chmod(0o600)
+                return SimpleNamespace(returncode=0)
+
+            with patch.dict(os.environ, {"GITHUB_TOKEN": "DO NOT INHERIT", "OPENROUTER_API_KEY": "DO NOT INHERIT"}), \
+                    patch.object(profile.subprocess, "run", side_effect=login):
+                profile.worker_login(config)
+            self.assertEqual(profile.worker_auth_status(config)["state"], "idle")
+            with profile.AuthLease(home).enrollment(), patch.object(profile.subprocess, "run") as launch:
+                with self.assertRaises(profile.ControlError):
+                    profile.worker_login(config)
+                launch.assert_not_called()
+
+    def test_failed_settled_login_releases_enrollment_but_uncertain_login_retains_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve() / "codex"
+            home.mkdir(mode=0o700)
+            config = {"codex_home": str(home), "codex_binary": "/fixture/codex"}
+            for outcome in (SimpleNamespace(returncode=1), FileNotFoundError(), PermissionError()):
+                with self.subTest(outcome=type(outcome).__name__), patch.object(profile.subprocess, "run") as launch:
+                    if isinstance(outcome, Exception):
+                        launch.side_effect = outcome
+                    else:
+                        launch.return_value = outcome
+                    with self.assertRaises(profile.ControlError):
+                        profile.worker_login(config)
+                    self.assertEqual(profile.worker_auth_status(config)["state"], "idle")
+            with patch.object(profile.subprocess, "run", side_effect=OSError("uncertain host interruption")):
+                with self.assertRaises(profile.ControlError):
+                    profile.worker_login(config)
+            self.assertEqual(profile.worker_auth_status(config)["state"], "active")
 
     def sandbox_config(self, root):
         from worker_policy import render_policy

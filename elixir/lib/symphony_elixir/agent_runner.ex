@@ -4,7 +4,7 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.{CandidatePipeline, Config, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{CandidatePipeline, Config, PromptBuilder, Tracker, WorkerFailure, Workspace}
   alias SymphonyElixir.Codex.AppServer
   alias SymphonyElixir.Tracker.Issue
 
@@ -40,8 +40,13 @@ defmodule SymphonyElixir.AgentRunner do
         end
 
       {:error, reason} ->
-        Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
-        raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+        if Config.control_settings().enabled do
+          Logger.error("Agent run failed for #{issue_context(issue)}: #{WorkerFailure.summary(reason)}")
+          raise WorkerFailure, reason: reason
+        else
+          Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
+          raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+        end
     end
   end
 

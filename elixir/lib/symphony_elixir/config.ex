@@ -52,6 +52,10 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @doc "Opt-in provider-backed subscription verification before a controlled coding thread starts."
+  @spec codex_auth_preflight?() :: boolean()
+  def codex_auth_preflight?, do: settings!().codex.auth_preflight
+
   @spec browser_auth_secret_environment_names() :: [String.t()]
   def browser_auth_secret_environment_names do
     browser_auth_settings()

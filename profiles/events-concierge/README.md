@@ -57,26 +57,16 @@ for task creation, queueing, status and authorized controls. The initial mode is
 launch has a separate host gate; resume cannot bypass the activation prerequisites
 in [Verification and recovery](#verification-and-recovery).
 
-**Task concurrency.** Use **Settings → Execution** to change the effective limit
-within the existing workflow ceiling without restarting or interrupting active work.
-In the private `WORKFLOW.md` identified by `workflow_path`,
-`agent.max_concurrent_agents` accepts an integer from `1` (default) through `5`. Each issue
-runs its builder and then its reviewer, in independent task/review workspaces;
-the setting caps overlapping issue pipelines, not the number of tasks in the queue.
-Budgets remain per issue, while
-Codex account usage limits are shared. The host publisher still processes handoffs
-serially. To change the workflow ceiling, drain, wait for active work and cleanup to finish, then change the setting
-and restart the scheduler with its existing ledger. New installations remain paused
-with worker launch disabled; changing concurrency does not enable execution.
+**Task concurrency.** A dedicated subscription credential permits one active issue
+pipeline. Generated profiles set `agent.max_concurrent_agents: 1`; builder and independent
+reviewer run sequentially and preserve their separate sessions. Do not raise this ceiling
+while stages share one credential. Multiple independently enrolled slots require a separate
+capacity design and verification. The generic scheduler supports up to five tasks; this
+Mac profile's credential ownership constrains its usable concurrency.
 
-Each active stage is capped at 2 CPUs and 4 GiB; these are limits, not reservations
-or guaranteed throughput. Five active stages have combined caps of 10 CPUs and
-20 GiB, with additional resources needed for existing services, host operations,
-cleanup and VM overhead. Leave headroom for macOS and other applications. The scheduler
-does not check CPU or memory capacity before admission: supporting five slots does
-not establish that five workloads fit on a particular Mac. Validate capacity before
-raising the live limit; retain one otherwise. A Colima resize requires approval for
-the shared-VM restart and verification of affected services afterward.
+Each active stage is capped at 2 CPUs and 4 GiB. These are limits, not guaranteed
+throughput. Leave headroom for macOS, other services and cleanup. A Colima resize requires
+approval for the shared-VM restart and verification of affected services afterward.
 
 **GitHub — task and PR interface.** Create or edit work in
 [Issues](https://github.com/iliazlobin/events-concierge/issues), using the
@@ -91,7 +81,7 @@ configured routing labels asynchronously.
 
 **Web board.** Open the configured browser origin; this Mac uses
 [Symphony](http://localhost:8778/) with Google sign-in. Real tracker issues,
-runtime activity and durable holds appear in Backlog, Work, Review and Done.
+runtime activity and durable holds appear in Backlog, Work, In progress, Review and Done.
 The always-visible filters narrow status, priority, milestone, labels and assignee. Search and
 sorting apply within each lane. Manual drag ordering is saved in this browser and
 does not change scheduler priority. GitHub issues without a priority remain unspecified.
@@ -262,6 +252,30 @@ follow the existing drain/restart procedure to preserve active work.
 **Settings → Connections → Sign out** ends the Symphony session. Restarting the
 controller also signs browsers out; saved conversations remain. Google sign-in does
 not provide the separate Codex subscription login or GitHub service credentials.
+
+**Coding worker sign-in.** OpenRouter chat, Google browser login and the dedicated Codex
+subscription are independent. With `codex.auth_preflight: true`, controlled startup checks
+the account, token-free authentication status and provider rate limits before a model turn.
+Permanent authentication failures remain in Work with **Worker sign-in required**;
+automatic retries stop and the hold survives restart and global resume. Temporary transport
+failures retain bounded retries. Cards and chat show short messages; service logs retain diagnostics.
+
+Each dedicated credential has one owner at a time. The host moves its sole `auth.json`
+into the stage's writable home and returns the current refreshed file only after verifying
+the exact container was removed. Configuration/rules remain read-only; sessions remain in
+their stage. A shared credential serializes builder/reviewer execution even when task
+concurrency is higher. Never restore an older authentication snapshot or copy personal credentials.
+
+1. Drain admission and wait for worker cleanup; retain the task ledger and consumed usage.
+2. Run `python3 profiles/events-concierge/profile.py --config /absolute/private/config.json doctor`.
+   `worker_auth` reports ownership/file health, not provider validity. Resolve `active` or `recovery`
+   ownership before login; a timeout never authorizes takeover.
+3. Run `python3 profiles/events-concierge/profile.py --config /absolute/private/config.json login`
+   to renew the dedicated subscription. A known completed/failed login releases its enrollment
+   claim; interrupted login retains it until its exact child is proven stopped. Preserve the
+   claim and current file during recovery; never delete markers to force a new owner.
+4. Resume only previously running admission. Retry the task only within its remaining budget;
+   startup verifies the provider again. Sign-in does not reset an exhausted attempt limit.
 
 Existing installations use `local_token` until the provider is configured. In that
 mode, Settings → Connections accepts the private `token_file` beside the operator
@@ -724,7 +738,7 @@ scheduler after editing its workflow, with active work settled and the existing
 control ledger preserved. The disposable probes use the same initialization limit;
 command and cancellation acceptance deadlines remain separate.
 
-Controlled startup errors identify `initialize`, `thread_start` or `turn_start` and
+Controlled startup errors identify `initialize`, `worker_auth`, `thread_start` or `turn_start` and
 retain the original failure reason. Logs record per-phase `elapsed_ms`, the worker
 role and available issue/thread identifiers without adding protocol payloads. Use
 these fields to locate a timeout before changing limits; a missing turn

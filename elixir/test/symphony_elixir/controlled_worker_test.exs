@@ -72,6 +72,21 @@ defmodule SymphonyElixir.ControlledWorkerTest do
     end
   end
 
+  test "controlled worker preserves structured authentication failures through its exception", %{root: root} do
+    for mode <- ["auth_failed", "auth_completed"] do
+      fixture = Path.join(root, mode)
+      workspace = Path.join(fixture, issue().identifier)
+      init_repo(workspace)
+      {base, 0} = System.cmd("git", ["rev-parse", "HEAD"], cd: workspace)
+      controlled_workflow(fixture, fake_server(fixture, mode), control_base_sha: String.trim(base))
+
+      exception = assert_raise SymphonyElixir.WorkerFailure, "Worker sign-in required", fn -> AgentRunner.run(issue(), self(), run_id: "auth-run") end
+      assert SymphonyElixir.WorkerFailure.authentication_required?(exception)
+      assert {:turn_failed, %{"turn" => %{"error" => %{"codexErrorInfo" => "unauthorized"}}}} = exception.reason
+      refute_receive {:worker_candidate_ready, _, _}
+    end
+  end
+
   test "guardian kills same-group children and grandchildren after its Erlang owner dies", %{root: root} do
     pid_file = Path.join(root, "pids")
     caller = self()
@@ -412,6 +427,10 @@ defmodule SymphonyElixir.ControlledWorkerTest do
                     send({'method': 'item/updated', 'params': {'n': n}})
                     time.sleep(0.025)
             send({'id': 3, 'result': {'turn': {'id': 'turn'}}})
+            if mode in ('auth_failed', 'auth_completed'):
+                method = 'turn/failed' if mode == 'auth_failed' else 'turn/completed'
+                send({'method': method, 'params': {'turn': {'status': 'failed', 'error': {'codexErrorInfo': 'unauthorized', 'message': 'PRIVATE_AUTH_SENTINEL'}}}})
+                continue
             if mode == 'stream':
                 for n in range(100):
                     send({'method': 'item/updated', 'params': {'n': n}})

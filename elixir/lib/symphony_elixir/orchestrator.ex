@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias SymphonyElixir.{AgentRunner, Config, ControlLedger, IssueAcceptance}
-  alias SymphonyElixir.{PRWork, StatusDashboard, TaskDependencies, TaskRouting, Tracker, Workspace}
+  alias SymphonyElixir.{PRWork, StatusDashboard, TaskDependencies, TaskRouting, Tracker, WorkerFailure, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -142,13 +142,20 @@ defmodule SymphonyElixir.Orchestrator do
         {:noreply, state}
 
       issue_id ->
+        hold = worker_failure_hold(state, issue_id, state.running[issue_id], reason)
         {running_entry, state} = pop_running_entry(state, issue_id)
-        state = record_session_completion_totals(state, running_entry)
+        state = record_session_completion_totals(state, running_entry, hold)
         session_id = running_entry_session_id(running_entry)
 
-        state = handle_agent_down(reason, state, issue_id, running_entry, session_id)
+        state =
+          cond do
+            not is_nil(state.control_fault) -> release_issue_claim(state, issue_id)
+            hold == "worker_auth_required" -> block_worker_auth_failure(state, issue_id, running_entry)
+            true -> handle_agent_down(reason, state, issue_id, running_entry, session_id)
+          end
 
-        Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
+        error = if state.control, do: WorkerFailure.summary(reason), else: inspect(reason)
+        Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{error}")
 
         notify_dashboard()
         {:noreply, state}
@@ -314,17 +321,45 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_agent_down(state, issue_id, running_entry, session_id, reason) do
-    Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
+    error = if state.control, do: WorkerFailure.summary(reason), else: "agent exited: #{inspect(reason)}"
+    Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{error}; scheduling retry")
 
     next_attempt = next_retry_attempt_from_running(running_entry)
 
     schedule_issue_retry(state, issue_id, next_attempt, %{
       identifier: running_entry.identifier,
       issue_url: running_entry.issue.url,
-      error: "agent exited: #{inspect(reason)}",
+      error: error,
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path)
     })
+  end
+
+  defp worker_failure_hold(%{control: nil}, _id, _entry, _reason), do: nil
+
+  defp worker_failure_hold(state, id, entry, reason) do
+    if matching_run?(state, id, entry[:run_id]) and WorkerFailure.authentication_required?(reason),
+      do: "worker_auth_required"
+  end
+
+  defp block_worker_auth_failure(state, issue_id, entry) do
+    # finish_control already persisted settlement and the hold in one write. Never
+    # install a second hold after settlement: a restart between writes could admit work.
+    blocked = %{
+      issue_id: issue_id,
+      identifier: entry.identifier,
+      issue: entry.issue,
+      worker_host: entry[:worker_host],
+      workspace_path: entry[:workspace_path],
+      session_id: running_entry_session_id(entry),
+      error: "Worker sign-in required",
+      blocked_at: DateTime.utc_now(),
+      last_codex_message: nil,
+      last_codex_event: :worker_auth_required,
+      last_codex_timestamp: entry[:last_codex_timestamp]
+    }
+
+    %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id), blocked: Map.put(state.blocked, issue_id, blocked), claimed: MapSet.put(state.claimed, issue_id)}
   end
 
   defp maybe_dispatch(%State{} = state) do
@@ -2240,7 +2275,9 @@ defmodule SymphonyElixir.Orchestrator do
     {Map.get(state.running, issue_id), %{state | running: Map.delete(state.running, issue_id)}}
   end
 
-  defp record_session_completion_totals(state, running_entry) when is_map(running_entry) do
+  defp record_session_completion_totals(state, running_entry, hold \\ nil)
+
+  defp record_session_completion_totals(state, running_entry, hold) when is_map(running_entry) do
     runtime_seconds = running_seconds(running_entry.started_at, DateTime.utc_now())
 
     codex_totals =
@@ -2255,10 +2292,10 @@ defmodule SymphonyElixir.Orchestrator do
       )
 
     state = %{state | codex_totals: codex_totals}
-    if state.control, do: finish_control(state, running_entry.issue.id, Map.get(running_entry, :run_id), nil), else: state
+    if state.control, do: finish_control(state, running_entry.issue.id, Map.get(running_entry, :run_id), hold), else: state
   end
 
-  defp record_session_completion_totals(state, _running_entry), do: state
+  defp record_session_completion_totals(state, _running_entry, _hold), do: state
 
   defp runtime_settings(state) do
     ceiling = state.max_concurrent_agents

@@ -486,6 +486,13 @@ fields locally if they want stricter startup checks.
   - Default: `3600000` (1 hour)
 - `read_timeout_ms` (integer)
   - Default: `5000`
+- `auth_preflight` (boolean)
+  - Default: `false`; generated dedicated subscription-worker profiles enable it.
+  - Controlled workers verify subscription account, token-free auth status and provider rate limits
+    after initialization, before starting or resuming a thread. No model turn is used for this check.
+  - Structured permanent authentication failures atomically settle the attempt and persist
+    `worker_auth_required`. They are not retried automatically; operator retry retains usage and limits.
+  - Disabled and uncontrolled runtimes retain their existing authentication behavior.
 - `stall_timeout_ms` (integer)
   - Default: `300000` (5 minutes)
   - If `<= 0`, stall detection is disabled.

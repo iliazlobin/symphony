@@ -330,6 +330,81 @@ defmodule SymphonyElixir.ControlOrchestratorTest do
     assert_receive {:DOWN, ^monitor, :process, ^worker, _}, 1_000
   end
 
+  test "worker authentication settles once and holds dispatch across restart and resume", ctx do
+    {worker, run} = seed_owned_worker(ctx)
+
+    send(
+      ctx.pid,
+      {:codex_worker_update, "7", run,
+       %{
+         event: :notification,
+         timestamp: DateTime.utc_now(),
+         payload: %{"method" => "thread/tokenUsage/updated", "params" => %{"tokenUsage" => %{"total" => %{"inputTokens" => 23, "outputTokens" => 0, "totalTokens" => 23}}}}
+       }}
+    )
+
+    assert Orchestrator.control_snapshot(ctx.pid)["issues"]["7"]["active"]["tokens"] == 23
+    stop_with_auth_failure(worker)
+    snapshot = await_auth_hold(ctx.pid)
+    assert %{"attempts" => 1, "tokens" => 23, "active" => nil, "hold" => "worker_auth_required"} = snapshot["issues"]["7"]
+    assert snapshot["issues"]["7"]["runtime_ms"] >= 0
+    assert :sys.get_state(ctx.pid).retry_attempts == %{}
+    assert :sys.get_state(ctx.pid).blocked["7"].error == "Worker sign-in required"
+    assert :sys.get_state(ctx.pid).blocked["7"].last_codex_message == nil
+
+    path = :sys.get_state(ctx.pid).control.path
+    assert File.read!(path) |> Jason.decode!() |> get_in(["issues", "7", "hold"]) == "worker_auth_required"
+    retained = snapshot["issues"]["7"]
+    stop_supervised!(Orchestrator)
+    pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, "Recovered#{System.unique_integer([:positive])}"), task_supervisor: ctx.supervisor})
+    assert Orchestrator.control_snapshot(pid)["issues"]["7"] == retained
+    resume = %{"command_id" => "resume-auth-held", "expected_revision" => snapshot["revision"], "action" => "resume"}
+    assert {:ok, _} = Orchestrator.control_command(resume, pid)
+    send(pid, :run_poll_cycle)
+    assert Orchestrator.control_snapshot(pid)["issues"]["7"] == retained
+    assert :sys.get_state(pid).running == %{}
+    assert :sys.get_state(pid).retry_attempts == %{}
+
+    pause = %{resume | "command_id" => "pause-before-retry", "expected_revision" => snapshot["revision"] + 1, "action" => "pause"}
+    assert {:ok, _} = Orchestrator.control_command(pause, pid)
+    retry = %{"command_id" => "explicit-auth-retry", "expected_revision" => snapshot["revision"] + 2, "action" => "retry", "issue_id" => "7"}
+    assert {:ok, receipt} = Orchestrator.control_command(retry, pid)
+    assert {:ok, %{"replayed" => true}} = Orchestrator.control_command(retry, pid)
+    retried = Orchestrator.control_snapshot(pid)["issues"]["7"]
+    assert retried["hold"] == nil
+    assert Map.drop(retried, ["hold"]) == Map.drop(retained, ["hold"])
+    assert receipt["revision"] == snapshot["revision"] + 3
+    assert :sys.get_state(pid).running == %{}
+  end
+
+  test "late authentication failures cannot overwrite cancellation or another active run", ctx do
+    {worker, run} = seed_owned_worker(ctx)
+    ref = :sys.get_state(ctx.pid).running["7"].ref
+    send(ctx.pid, {:DOWN, make_ref(), :process, worker, auth_failure()})
+    assert Orchestrator.control_snapshot(ctx.pid)["issues"]["7"]["active"]["run_id"] == run
+    assert :sys.get_state(ctx.pid).running["7"].ref == ref
+    cancel = %{"command_id" => "cancel-before-auth", "expected_revision" => 1, "action" => "cancel", "issue_id" => "7"}
+    assert {:ok, _} = Orchestrator.control_command(cancel, ctx.pid)
+    send(ctx.pid, {:DOWN, ref, :process, worker, auth_failure()})
+    send(ctx.pid, {:codex_worker_update, "7", run, %{event: :turn_failed, timestamp: DateTime.utc_now(), payload: %{"error" => %{"codexErrorInfo" => "unauthorized"}}}})
+    assert Orchestrator.control_snapshot(ctx.pid)["issues"]["7"]["hold"] == "cancelled"
+    assert :sys.get_state(ctx.pid).retry_attempts == %{}
+    assert :sys.get_state(ctx.pid).blocked == %{}
+  end
+
+  test "authentication hold persistence failure closes admission without scheduling retry", ctx do
+    {worker, _run} = seed_owned_worker(ctx)
+    path = :sys.get_state(ctx.pid).control.path
+    File.rename!(path, path <> ".saved")
+    File.mkdir!(path)
+    stop_with_auth_failure(worker)
+    wait_for(fn -> not is_nil(Orchestrator.control_snapshot(ctx.pid)["fault"]) end)
+    assert :sys.get_state(ctx.pid).running == %{}
+    assert :sys.get_state(ctx.pid).retry_attempts == %{}
+    assert {:error, :control_unavailable} = Orchestrator.control_command(%{"command_id" => "blocked-resume", "expected_revision" => 1, "action" => "resume"}, ctx.pid)
+    assert get_in(File.read!(path <> ".saved") |> Jason.decode!(), ["issues", "7", "active", "run_id"]) != nil
+  end
+
   test "fresh reviewer thread totals accumulate toward one token ceiling", ctx do
     {worker, run} = seed_owned_worker(ctx)
     monitor = Process.monitor(worker)
@@ -449,6 +524,28 @@ defmodule SymphonyElixir.ControlOrchestratorTest do
 
   defp api_conn(token) do
     %{build_conn() | host: "localhost"} |> Plug.Conn.put_req_header("authorization", "Bearer " <> token)
+  end
+
+  defp auth_failure do
+    reason = {:turn_failed, %{"turn" => %{"error" => %{"codexErrorInfo" => "unauthorized", "message" => "PRIVATE_REVOKED_TOKEN"}}}}
+    {SymphonyElixir.WorkerFailure.exception(reason: reason), [:private_stack]}
+  end
+
+  defp stop_with_auth_failure(worker), do: Process.exit(worker, auth_failure())
+
+  defp await_auth_hold(pid) do
+    wait_for(fn -> Orchestrator.control_snapshot(pid)["issues"]["7"]["hold"] == "worker_auth_required" end)
+    Orchestrator.control_snapshot(pid)
+  end
+
+  defp wait_for(condition, attempts \\ 50)
+  defp wait_for(condition, 0), do: assert(condition.())
+
+  defp wait_for(condition, attempts) do
+    unless condition.() do
+      Process.sleep(10)
+      wait_for(condition, attempts - 1)
+    end
   end
 
   defp seed_owned_worker(%{pid: pid, supervisor: supervisor, issue: issue}) do
