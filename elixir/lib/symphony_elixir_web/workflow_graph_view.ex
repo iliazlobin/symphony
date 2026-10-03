@@ -1,224 +1,340 @@
 defmodule SymphonyElixirWeb.WorkflowGraphView do
-  @moduledoc "Bounded, read-only workflow and ownership diagrams with a text equivalent."
+  @moduledoc "Interactive read-only task dependencies with accessible relationship evidence."
   use Phoenix.Component
-  alias SymphonyElixir.TaskDependencies
+  alias SymphonyElixirWeb.WorkflowPlan
 
   @lanes ~w(backlog work in_progress review done)
   @max_nodes 120
-  @node_width 176
-  @node_height 76
-  @padding 40
-  @column_step 204
-  @row_step 140
+  @node_width 260
+  @node_height 116
+  @padding 44
+  @column_step 304
+  @row_gap 60
 
   attr(:board, :map, required: true)
   attr(:project, :string, default: nil)
   attr(:filters, :map, default: %{})
+  attr(:selected_id, :string, default: nil)
+  attr(:visible_task_ids, :any, default: :all)
 
   @spec content(map()) :: Phoenix.LiveView.Rendered.t()
   def content(assigns) do
-    graph = Map.get(assigns.board, :workflow_graph) || %{}
-    nodes = graph["nodes"] || []
-    edges = graph["edges"] || []
-    tasks = Enum.filter(nodes, &(&1["type"] == "task"))
-    dependencies = Enum.filter(edges, &(&1["type"] == "depends_on"))
-    hierarchy = nodes |> Enum.reject(&(&1["missing"] == true)) |> Enum.take(@max_nodes) |> hierarchy_positions()
-    task_positions = tasks |> Enum.sort_by(& &1["id"]) |> Enum.take(@max_nodes) |> task_positions(dependencies)
-    {waiting, warnings} = Enum.split_with(graph["warnings"] || [], &policy_wait_warning?/1)
+    plan = WorkflowPlan.project(assigns.board, assigns.visible_task_ids)
+    edges = Enum.filter(plan["edges"], &(&1["type"] == "depends_on"))
+    tasks = Enum.filter(plan["nodes"], &(&1["type"] == "task"))
+    names = Map.new(tasks, &{&1["id"], node_name(&1)})
+    nodes = Enum.map(tasks, &with_dependency_status(&1, edges, names))
+    selected = selected_task(plan["nodes"], nodes, assigns.selected_id)
+    related = Enum.filter(edges, &related_edge?(&1, selected))
+    related_ids = MapSet.new(Enum.flat_map(related, &[&1["source"], &1["target"]]))
+    related_ids = if selected, do: MapSet.put(related_ids, selected["id"]), else: related_ids
+    tasks = Enum.filter(nodes, &(&1["visible"] == true or MapSet.member?(related_ids, &1["id"])))
+    last_step = Enum.reduce(tasks, 0, &max(&1["start_step"] || 0, &2))
+    task_positions = tasks |> bounded_nodes(selected, related_ids) |> positions(&(&1["start_step"] || last_step + 1))
 
     assigns =
       assign(assigns,
-        available: graph["version"] == 1,
-        completion_description: completion_description(graph["policy"]),
-        graph: graph,
-        warnings: warnings,
-        waiting_count: length(waiting),
-        tasks: tasks,
-        dependencies: dependencies,
-        node_names: Map.new(nodes, &{&1["id"], &1["identifier"] || &1["title"] || &1["name"] || &1["id"]}),
+        available: plan["available"],
+        reason: plan["reason"],
+        policy: get_in(assigns.board, [:workflow_graph, "policy"]),
+        selected: selected,
+        related_ids: related_ids,
+        related: related,
+        names: names,
+        by_id: Map.new(nodes, &{&1["id"], &1}),
+        text_nodes: tasks,
+        dependencies: edges,
         task_positions: task_positions,
-        hierarchy: hierarchy,
-        contains: Enum.filter(edges, &(&1["type"] == "contains")),
-        truncated: length(nodes) > @max_nodes,
+        edges: edges,
+        truncated: length(tasks) > @max_nodes,
         max_nodes: @max_nodes,
-        task_height: diagram_height(task_positions, @node_height + @padding),
-        task_width: diagram_width(task_positions),
-        hierarchy_height: diagram_height(hierarchy),
         lanes: @lanes
       )
 
     ~H"""
-    <section id="workflow-graph" class="workflow-graph" aria-label="Task dependencies and agent ownership">
-      <p class="graph-description">Dependencies control admission. Priority orders eligible tasks. {@completion_description}</p>
-      <p :if={!@available} class="board-warning" role="status">Graph unavailable. The board keeps its last-known tasks.</p>
-      <p :if={@truncated} class="board-notice" role="status">Diagram shows the first {@max_nodes} nodes. The dependency list remains available below.</p>
-      <p :if={@waiting_count > 0} class="graph-status" role="status">{@waiting_count} {if @waiting_count == 1, do: "task is", else: "tasks are"} waiting for accepted prerequisites.</p>
-      <p :for={warning <- @warnings} class="board-warning" role="status">{warning}</p>
-      <fieldset :if={@available} class="graph-view-picker"><legend class="visually-hidden">Graph view</legend>
-        <label><input type="radio" name="graph-view" value="dependencies" checked />Dependencies</label>
-        <label><input type="radio" name="graph-view" value="hierarchy" />Agents</label>
-      </fieldset>
-      <div :if={@available} class="graph-dependencies-view">
-        <div class="graph-legend"><span :for={lane <- @lanes}><span class={"lane-dot lane-dot-#{lane}"} aria-hidden="true"></span>{lane_name(lane)}</span></div>
-        <p class="graph-flow-caption">Read top to bottom: prerequisites → dependent tasks.</p>
-        <div class="graph-canvas graph-dependency-canvas" tabindex="0" role="region" aria-label="Dependency diagram; scroll to explore">
-          <svg width={@task_width} height={@task_height} viewBox={"0 0 #{@task_width} #{@task_height}"} role="img" aria-labelledby="dependencies-title dependencies-description">
-            <title id="dependencies-title">Task dependency graph</title><desc id="dependencies-description">Arrows go from prerequisite to dependent, top to bottom. Labels show the task's current state. The dependency list below provides every relationship.</desc>
-            <defs><marker id="dependency-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" /></marker></defs>
-            <path :for={edge <- @dependencies} :if={edge_path(edge, @task_positions)} d={edge_path(edge, @task_positions)} class="graph-edge" data-status={edge["status"]} marker-end="url(#dependency-arrow)" />
-            <g :for={node <- @task_positions} transform={"translate(#{node.x},#{node.y})"} class="graph-node" data-node-id={node["id"]} data-depth={node.depth} data-lane={node["lane"]} data-missing={to_string(node["missing"] == true)} data-cycle={to_string(node["cycle"] == true)}>
-              <rect width="176" height="76" rx="8" /><text x="12" y="20" class="graph-node-id">{node["identifier"]}</text>
-              <text x="12" y="40">{short_title(node["title"])}</text><text x="12" y="61" class="graph-node-status">{if node["missing"], do: "Unavailable", else: lane_name(node["lane"])}{if node["cycle"], do: " · cycle"}</text>
-              <title>{node["identifier"]}: {node["title"]} · {lane_name(node["lane"])} · {node["execution_status"]}</title>
-            </g>
-          </svg>
-        </div>
-        <p :if={@tasks == []} class="graph-empty">No tasks yet. Describe one to the project agent.</p>
-        <p :if={@dependencies == [] && @tasks != []} class="graph-empty">No declared dependencies.</p>
-        <div :if={@dependencies != []} class="graph-relationship-list"><h3>Dependencies</h3>
-          <table><thead><tr><th>Task</th><th>Requires</th><th>Reason</th><th>Status</th></tr></thead><tbody>
-            <tr :for={edge <- @dependencies} data-dependency-status={edge["status"]}><td>{Map.get(@node_names, edge["source"], edge["source"])}</td><td>{Map.get(@node_names, edge["target"], edge["target"])}</td><td>{edge["kind"]}{if edge["reason"], do: " · " <> edge["reason"]}</td><td>{edge["status"]}</td></tr>
-          </tbody></table>
+    <section id="workflow-graph" class="plan-view workflow-graph" phx-hook="WorkflowCanvas" data-canvas-scope={@project || "all"} data-plan-mode="dependencies" data-selected-id={@selected && @selected["id"]} data-selected-task-id={@selected && @selected["task_id"]} aria-label="Task dependencies">
+      <div class="plan-toolbar">
+        <span class="plan-title">Task dependencies</span>
+        <div class="plan-tools" aria-label="Diagram viewport">
+          <button type="button" data-canvas-action="out" aria-label="Zoom out">−</button>
+          <output data-canvas-zoom aria-label="Diagram zoom">100%</output>
+          <button type="button" data-canvas-action="in" aria-label="Zoom in">+</button>
+          <button type="button" data-canvas-action="fit">Fit</button>
+          <button type="button" data-canvas-action="center" disabled={is_nil(@selected)}>Center selected</button>
         </div>
       </div>
-      <div :if={@available} class="graph-hierarchy-view">
-        <p class="graph-description">Project agent → task agents → work agents. Parent agents supervise; work reports return through the same hierarchy.</p>
-        <div class="graph-canvas" tabindex="0" role="region" aria-label="Agent ownership diagram; scroll to explore">
-          <svg width="1040" height={@hierarchy_height} viewBox={"0 0 1040 #{@hierarchy_height}"} role="img" aria-labelledby="hierarchy-title hierarchy-description">
-            <title id="hierarchy-title">Project, task and work agent hierarchy</title><desc id="hierarchy-description">Contains edges express ownership, not dependencies or additional execution authority.</desc>
-            <defs><marker id="hierarchy-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" /></marker></defs>
-            <path :for={edge <- @contains} :if={edge_path(edge, @hierarchy, false)} d={edge_path(edge, @hierarchy, false)} class="graph-edge graph-ownership" marker-end="url(#hierarchy-arrow)" />
-            <g :for={node <- @hierarchy} transform={"translate(#{node.x},#{node.y})"} class="graph-node" data-lane={node["lane"]}>
-              <rect width="176" height="76" rx="8" /><text x="12" y="20" class="graph-node-id">{String.capitalize(node["type"])} agent</text>
-              <text x="12" y="40">{short_title(node["identifier"] || node["name"] || node["title"])}</text><text x="12" y="61" class="graph-node-status">{node["phase"] || if(node["type"] == "task", do: lane_name(node["lane"]), else: "Supervision")}</text>
-              <title>{node["title"] || node["name"] || node["identifier"]}</title>
-            </g>
-          </svg>
+      <p class="plan-caption">Prerequisites → dependent tasks. Priority orders peers. {completion_description(@policy)}</p>
+      <p :if={!@available} class="board-warning" role="status">{@reason || "Graph unavailable. The board keeps its last-known tasks."}</p>
+      <p :if={@truncated} class="board-notice" role="status">Diagram shows up to {@max_nodes} nodes, with the selected relationships first. All relationships remain available in the text view.</p>
+      <div :if={@available} class="plan-main">
+        <div id="plan-dependencies-panel" class="plan-panel" data-plan-panel="dependencies">
+          <div class="plan-canvas" data-plan-canvas tabindex="0" role="region" aria-label="Task dependencies; drag background to pan, scroll to zoom, F to fit, C to center selected">
+            <svg :if={@task_positions != []} class="plan-svg" data-plan-svg data-selection-active={to_string(!is_nil(@selected))} data-content-width={diagram_width(@task_positions)} data-content-height={diagram_height(@task_positions)} viewBox={"0 0 #{diagram_width(@task_positions)} #{diagram_height(@task_positions)}"} role="group" aria-label="Task dependencies">
+              <title>Task dependencies</title>
+              <desc>Arrows go from prerequisite to dependent. Select a node to open its agent; select its title for task details. The text view provides every relationship.</desc>
+              <defs><marker id="dependencies-arrow" markerWidth="4" markerHeight="4" viewBox="0 0 4 4" refX="4" refY="2" markerUnits="strokeWidth" orient="auto"><path class="plan-edge-arrow" d="M0,0 L4,2 L0,4 Z" fill="context-stroke" /></marker></defs>
+              <path :for={edge <- @edges} :if={edge_path(edge, @task_positions)} d={edge_path(edge, @task_positions)} class="plan-edge" data-status={edge["status"]} data-related={to_string(related_edge?(edge, @selected))} vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#dependencies-arrow)" />
+              <g :for={node <- @task_positions} class="plan-node" transform={"translate(#{node.x},#{node.y})"} data-plan-node data-node-id={node["id"]} data-plan-task-id={node["task_id"]} data-plan-visible={to_string(node["visible"] != false)} data-node-x={node.x} data-node-y={node.y} data-node-width="260" data-node-height={node.height} data-depth={node.depth} data-lane={node["lane"]} data-selected={to_string(!is_nil(@selected) && @selected["id"] == node["id"])} data-related={to_string(MapSet.member?(@related_ids, node["id"]))} data-missing={to_string(node["missing"] == true)} data-cycle={to_string(node["cycle"] == true)} data-filtered={to_string(node["visible"] == false)}>
+                <foreignObject width="260" height={node.height}>
+                  <div class="plan-node-card">
+                    <button :if={!node["missing"]} type="button" class="plan-node-select" phx-click="select-plan-task" phx-value-id={node["task_id"]} aria-label={"Open #{node_name(node)} task agent"}></button>
+                    <div class="plan-node-meta"><span>{node_name(node)}</span><span :if={node["priority"]}>P{node["priority"]}</span></div>
+                    <button :if={node["task_id"] && !node["missing"]} type="button" class="plan-node-title" phx-click="open-card" phx-value-id={node["task_id"]} title={node_title(node)}>{node_title(node)}</button>
+                    <span :if={!node["task_id"] || node["missing"]} class="plan-node-title" title={node_title(node)}>{node_title(node)}</span>
+                    <div class="plan-node-meta"><span>{node_status(node)}</span><span :if={node["task_kind"] && node["task_kind"] != "general"}>{String.capitalize(node["task_kind"])}</span></div>
+                    <span :if={node["graph_error"]} class="plan-node-note">{node["graph_error"]}</span>
+                    <span :if={!node["graph_error"] && node["waiting_count"] > 0} class="plan-node-dependency-status" title={node["waiting_label"]}>{node["waiting_label"]}</span>
+                    <span :if={node["visible"] == false} class="plan-node-context">Outside filters</span>
+                  </div>
+                </foreignObject>
+              </g>
+            </svg>
+            <p :if={@task_positions == []} class="plan-empty">No matching tasks. Describe a task to the project agent or adjust filters.</p>
+          </div>
         </div>
-        <ul class="graph-ownership-list"><li :for={edge <- @contains}>{Map.get(@node_names, edge["source"], edge["source"])} → {Map.get(@node_names, edge["target"], edge["target"])}</li></ul>
+        <aside :if={@selected} class="plan-inspector" aria-label="Selected node relationships">
+          <div class="plan-inspector-heading">
+            <h3 title={node_title(@selected)}>{node_name(@selected)}</h3>
+            <div class="plan-inspector-links"><button type="button" phx-click="switch-view" phx-value-view="kanban" phx-value-id={@selected["task_id"]} data-board-view-link="kanban" data-board-view-task={@selected["task_id"]}>Show on board</button><button type="button" phx-click="switch-view" phx-value-view="gantt" phx-value-id={@selected["task_id"]} data-board-view-link="gantt" data-board-view-task={@selected["task_id"]}>Show timeline</button></div>
+          </div>
+          <div class="plan-related-counts"><span>{@selected["upstream_count"] || 0} prerequisites</span><span>{@selected["downstream_count"] || 0} dependents</span></div>
+          <p :if={@selected["graph_error"]} class="plan-node-note">{@selected["graph_error"]}</p>
+          <ul class="plan-related-list"><li :for={edge <- @related}><.reference node={@by_id[neighbor_id(edge, @selected)]} fallback={neighbor_id(edge, @selected)} relationship={relationship_side(edge, @selected)} description={edge["reason"]} /></li></ul>
+          <p :if={@related == []}>No declared dependencies.</p>
+        </aside>
       </div>
+      <div :if={@available} class="plan-legend"><span :for={lane <- @lanes}><span class={"lane-dot lane-dot-#{lane}"} aria-hidden="true"></span>{lane_name(lane)}</span><span>Drag to pan · Scroll to zoom</span></div>
+      <details :if={@available} class="plan-accessible-list"><summary>Text view · {length(@edges)} relationships</summary>
+        <p :if={@dependencies == []}>No declared dependencies.</p>
+        <ul><li :for={node <- @text_nodes}>{node_name(node)} · {node_title(node)} · {node_status(node)}</li></ul>
+        <ul><li :for={edge <- @edges} data-dependency-status={edge["status"]}>{relationship(edge, @names)}<span :if={edge["kind"]}> · {edge["kind"]}</span><span :if={edge["reason"]}> · {edge["reason"]}</span><span :if={edge["status"]}> · {edge["status"]}</span></li></ul>
+      </details>
     </section>
     """
   end
 
-  defp task_positions(tasks, edges) do
-    depths = dependency_depths(tasks, edges)
+  attr(:node, :map, default: nil)
+  attr(:fallback, :string, required: true)
+  attr(:relationship, :string, default: nil)
+  attr(:description, :string, default: nil)
 
-    rows =
-      tasks
-      |> Enum.group_by(&depths[&1["id"]])
-      |> Enum.sort_by(fn {depth, _nodes} -> depth end)
-      |> Enum.flat_map(fn {depth, nodes} ->
-        nodes |> Enum.sort_by(&node_order/1) |> Enum.chunk_every(4) |> Enum.map(&{depth, &1})
-      end)
+  @spec reference(map()) :: Phoenix.LiveView.Rendered.t()
+  def reference(assigns) do
+    node = assigns.node || %{}
 
-    columns = Enum.reduce(rows, 1, fn {_depth, nodes}, width -> max(width, length(nodes)) end)
+    event = if node["type"] == "task" and is_binary(node["task_id"]) and node["missing"] != true, do: "select-plan-task"
 
-    rows
-    |> Enum.with_index()
-    |> Enum.flat_map(fn {{depth, nodes}, row} ->
-      offset = @padding + div((columns - length(nodes)) * @column_step, 2)
-      nodes |> Enum.with_index() |> Enum.map(fn {node, column} -> Map.merge(node, %{x: offset + column * @column_step, y: @padding + row * @row_step, depth: depth}) end)
+    assigns = assign(assigns, label: if(assigns.node, do: node_name(node), else: assigns.fallback), event: event, title: assigns.description || node_title(node))
+
+    ~H"""
+    <button :if={@event} type="button" class="plan-reference" phx-click={@event} phx-value-id={@node["task_id"]} data-plan-reference={@node["id"]} aria-label={if @relationship, do: @relationship <> ": " <> @label} title={@title}><span :if={@relationship} aria-hidden="true">{if @relationship == "Prerequisite", do: "↑", else: "↓"}</span> {@label}</button>
+    <span :if={!@event} title={@title}>{if @relationship, do: @relationship <> ": "}{@label}</span>
+    """
+  end
+
+  defp selected_task(all_nodes, tasks, selected_id) do
+    node = Enum.find(all_nodes, &(&1["id"] == selected_id or (&1["type"] == "task" and &1["task_id"] == selected_id)))
+    if node, do: Enum.find(tasks, &(&1["task_id"] == node["task_id"]))
+  end
+
+  defp with_dependency_status(node, edges, names) do
+    waiting = Enum.filter(edges, &(&1["source"] == node["id"] and &1["status"] == "waiting" and &1["blocking"] != false))
+    labels = Enum.map(waiting, &(names[&1["target"]] || &1["target"])) |> Enum.uniq() |> Enum.sort()
+    label = "Waiting on " <> Enum.join(Enum.take(labels, 3), ", ") <> if(length(labels) > 3, do: " +#{length(labels) - 3}", else: "")
+    Map.merge(node, %{"waiting_count" => length(waiting), "waiting_label" => label, "graph_error" => node_error(node)})
+  end
+
+  defp neighbor_id(edge, selected), do: if(edge["source"] == selected["id"], do: edge["target"], else: edge["source"])
+  defp relationship_side(edge, selected), do: if(edge["source"] == selected["id"], do: "Prerequisite", else: "Dependent")
+
+  defp node_error(%{"planning_status" => "cycle"}), do: "Dependency cycle. Revise prerequisites."
+  defp node_error(%{"dependency_error" => "Dependencies require human-accepted Done in this project."}), do: nil
+  defp node_error(node), do: node["dependency_error"]
+
+  defp related_edge?(_edge, nil), do: false
+  defp related_edge?(edge, node), do: node["id"] in [edge["source"], edge["target"]]
+
+  defp bounded_nodes(nodes, selected, related) do
+    nodes
+    |> Enum.sort_by(fn node ->
+      rank =
+        cond do
+          selected && node["id"] == selected["id"] -> 0
+          MapSet.member?(related, node["id"]) -> 1
+          true -> 2
+        end
+
+      {rank, node["id"]}
     end)
+    |> Enum.take(@max_nodes)
   end
 
-  defp dependency_depths(tasks, edges) do
-    ids = Map.new(tasks, &{&1["id"], &1["id"]})
-    edges = Enum.filter(edges, &(Map.has_key?(ids, &1["source"]) and Map.has_key?(ids, &1["target"])))
-    records = Map.new(ids, fn {id, _} -> {id, %{"dependencies" => Enum.filter(edges, &(&1["source"] == id)) |> Enum.map(&%{"issue_id" => &1["target"]})}} end)
-
-    groups =
-      records
-      |> TaskDependencies.cycle_groups()
-      |> Enum.reduce(ids, fn members, groups -> Enum.reduce(members, groups, &Map.put(&2, &1, Enum.min(members))) end)
-
-    parents = Map.new(Map.values(groups), &{&1, MapSet.new()})
-
-    parents =
-      Enum.reduce(edges, parents, fn edge, parents ->
-        from = groups[edge["source"]]
-        to = groups[edge["target"]]
-        if from == to, do: parents, else: Map.update!(parents, from, &MapSet.put(&1, to))
+  defp positions(nodes, level) do
+    rows =
+      nodes
+      |> Enum.group_by(level)
+      |> Enum.sort_by(&elem(&1, 0))
+      |> Enum.flat_map(fn {depth, members} ->
+        members |> Enum.sort_by(&node_order/1) |> Enum.chunk_every(4) |> Enum.map(&{depth, &1})
       end)
 
-    levels = Enum.reduce(Map.keys(parents), %{}, fn id, levels -> elem(dependency_depth(id, parents, levels), 1) end)
-    Map.new(groups, fn {id, group} -> {id, levels[group]} end)
-  end
+    columns = Enum.reduce(rows, 1, fn {_depth, members}, width -> max(width, length(members)) end)
 
-  defp dependency_depth(id, parents, levels) do
-    case Map.fetch(levels, id) do
-      {:ok, depth} ->
-        {depth, levels}
+    {positions, _height} =
+      Enum.map_reduce(rows, @padding, fn {depth, members}, y ->
+        offset = @padding + div((columns - length(members)) * @column_step, 2)
+        row_height = Enum.reduce(members, @node_height, &max(node_height(&1), &2))
 
-      :error ->
-        {depth, levels} =
-          Enum.reduce(parents[id], {-1, levels}, fn parent, {highest, memo} ->
-            {depth, memo} = dependency_depth(parent, parents, memo)
-            {max(highest, depth), memo}
+        positioned =
+          members
+          |> Enum.with_index()
+          |> Enum.map(fn {node, column} ->
+            Map.merge(node, %{x: offset + column * @column_step, y: y, height: node_height(node), depth: depth})
           end)
 
-        {depth + 1, Map.put(levels, id, depth + 1)}
-    end
+        {positioned, y + row_height + @row_gap}
+      end)
+
+    List.flatten(positions)
   end
 
-  defp node_order(node), do: {if(is_integer(node["priority"]), do: node["priority"], else: 999), node["identifier"] || node["id"]}
+  defp node_height(node) do
+    status_height =
+      cond do
+        node["graph_error"] -> wrapped_lines(node["graph_error"]) * 16 + 8
+        node["waiting_count"] > 0 -> wrapped_lines(node["waiting_label"]) * 16 + 8
+        true -> 0
+      end
 
-  defp hierarchy_positions(nodes) do
-    nodes
-    |> Enum.group_by(& &1["type"])
-    |> Enum.flat_map(fn {type, group} ->
-      column = %{"project" => 0, "task" => 1, "work" => 2}[type] || 2
-      group |> Enum.sort_by(& &1["id"]) |> Enum.with_index() |> Enum.map(fn {node, row} -> Map.merge(node, %{x: 36 + column * 340, y: 12 + row * 106}) end)
+    title_height = wrapped_lines(node_title(node)) * 18
+    context_height = if(node["visible"] == false, do: 26, else: 0)
+    max(@node_height, 72 + title_height + status_height + context_height)
+  end
+
+  defp wrapped_lines(text) do
+    text
+    |> String.split("\n")
+    |> Enum.map(fn line ->
+      units = line |> String.to_charlist() |> Enum.map(&glyph_units/1) |> Enum.sum()
+      max(1, div(units + 29, 30))
     end)
+    |> Enum.sum()
   end
 
-  defp diagram_height(nodes, padding \\ 100), do: Enum.reduce(nodes, 180, fn node, height -> max(height, node.y + padding) end)
-  defp diagram_width(nodes), do: Enum.reduce(nodes, @node_width + 2 * @padding, fn node, width -> max(width, node.x + @node_width + @padding) end)
+  defp glyph_units(char) when char in ~c"WM@" or char >= 0x2E80, do: 2
+  defp glyph_units(_char), do: 1
 
-  defp edge_path(edge, nodes, reverse \\ true) do
+  defp node_order(node), do: {node["priority"] || 999, node["identifier"] || node["id"]}
+  defp diagram_height(nodes), do: Enum.reduce(nodes, 220, fn node, height -> max(height, node.y + node.height + @padding + 44) end)
+
+  defp diagram_width(nodes) do
+    Enum.reduce(nodes, @node_width + 2 * @padding, fn node, width -> max(width, node.x + @node_width + @padding + 24) end)
+  end
+
+  defp edge_path(edge, nodes) do
     source = Enum.find(nodes, &(&1["id"] == edge["source"]))
     target = Enum.find(nodes, &(&1["id"] == edge["target"]))
 
     if source && target do
-      {from, to} = if reverse, do: {target, source}, else: {source, target}
-
-      if reverse do
-        dependency_path(from, to, nodes)
-      else
-        "M#{from.x + 176},#{from.y + 38} C#{from.x + 195},#{from.y + 38} #{to.x - 20},#{to.y + 38} #{to.x},#{to.y + 38}"
-      end
+      connector(target, source, nodes)
     end
   end
 
-  defp dependency_path(from, to, nodes) do
+  defp connector(from, to, nodes) do
+    x1 = from.x + div(@node_width, 2)
+    x2 = to.x + div(@node_width, 2)
+    y1 = from.y + from.height
+    y2 = to.y
+    channel = diagram_width(nodes) - 12
+
     cond do
-      from["id"] == to["id"] ->
-        channel = diagram_width(nodes) - 12
-        "M#{from.x + @node_width},#{from.y + 38} C#{channel},#{from.y + 14} #{channel},#{to.y + 62} #{to.x + @node_width},#{to.y + 38}"
+      from.y >= to.y ->
+        y1 = from.y + div(from.height * 2, 3)
+        y2 = to.y + div(to.height, 3)
+        from_x = from.x + @node_width
+        to_x = to.x + @node_width
+        gap = div(@column_step - @node_width, 2)
+        exit_y = row_end(from, nodes) + div(@row_gap, 3)
+        entry_y = to.y - div(@row_gap, 3)
 
-      from.y > to.y or to.y - from.y > @row_step ->
-        channel = diagram_width(nodes) - 12
-        "M#{from.x + 88},#{from.y + @node_height} V#{from.y + @node_height + 18} H#{channel} V#{to.y - 18} H#{to.x + 88} V#{to.y}"
+        rounded_path([
+          {from_x, y1},
+          {from_x + gap, y1},
+          {from_x + gap, exit_y},
+          {channel, exit_y},
+          {channel, entry_y},
+          {to_x + gap, entry_y},
+          {to_x + gap, y2},
+          {to_x, y2}
+        ])
 
-      from.y == to.y ->
-        bend = from.y + @node_height + if(from.x < to.x, do: 26, else: 40)
-        "M#{from.x + 88},#{from.y + @node_height} C#{from.x + 88},#{bend} #{to.x + 88},#{bend} #{to.x + 88},#{to.y + @node_height}"
+      connector_obstructed?(from, to, nodes) ->
+        exit_y = row_end(from, nodes) + div(@row_gap, 3)
+        entry_y = to.y - div(@row_gap, 3)
+        rounded_path([{x1, y1}, {x1, exit_y}, {channel, exit_y}, {channel, entry_y}, {x2, entry_y}, {x2, y2}])
 
       true ->
-        middle = div(from.y + @node_height + to.y, 2)
-        "M#{from.x + 88},#{from.y + @node_height} C#{from.x + 88},#{middle} #{to.x + 88},#{middle} #{to.x + 88},#{to.y}"
+        middle = div(y1 + y2, 2)
+        rounded_path([{x1, y1}, {x1, middle}, {x2, middle}, {x2, y2}])
     end
   end
 
-  defp policy_wait_warning?(warning),
-    do: Regex.match?(~r/\AGH-[1-9][0-9]*: Dependencies require human-accepted Done in this project\.\z/, warning)
+  defp row_end(from, nodes),
+    do: nodes |> Enum.filter(&(&1.y == from.y)) |> Enum.map(&(&1.y + &1.height)) |> Enum.max()
 
+  defp connector_obstructed?(from, to, nodes) do
+    x1 = from.x + div(@node_width, 2)
+    x2 = to.x + div(@node_width, 2)
+    y1 = from.y + from.height
+    middle = div(y1 + to.y, 2)
+
+    Enum.any?(nodes, fn node ->
+      node["id"] not in [from["id"], to["id"]] and
+        (crosses_vertical?(x1, y1, middle, node) or crosses_vertical?(x2, middle, to.y, node) or
+           crosses_horizontal?(middle, x1, x2, node))
+    end)
+  end
+
+  defp crosses_vertical?(x, first, last, node),
+    do: x >= node.x and x <= node.x + @node_width and max(first, node.y) < min(last, node.y + node.height)
+
+  defp crosses_horizontal?(y, first, last, node),
+    do:
+      y >= node.y and y <= node.y + node.height and
+        max(min(first, last), node.x) < min(max(first, last), node.x + @node_width)
+
+  defp rounded_path(points) do
+    points = Enum.dedup(points)
+    {x, y} = hd(points)
+    {last_x, last_y} = List.last(points)
+    corners = points |> Enum.chunk_every(3, 1, :discard) |> Enum.map_join(&rounded_corner/1)
+    "M#{x},#{y}" <> corners <> " L#{last_x},#{last_y}"
+  end
+
+  defp rounded_corner([before, {x, y} = corner, after_corner]) do
+    radius = min(10, min(div(distance(before, corner), 2), div(distance(corner, after_corner), 2)))
+    {in_x, in_y} = toward(corner, before, radius)
+    {out_x, out_y} = toward(corner, after_corner, radius)
+    " L#{in_x},#{in_y} Q#{x},#{y} #{out_x},#{out_y}"
+  end
+
+  defp distance({x1, y1}, {x2, y2}), do: abs(x2 - x1) + abs(y2 - y1)
+  defp toward({x, y}, {target_x, target_y}, amount), do: {x + direction(target_x - x) * amount, y + direction(target_y - y) * amount}
+  defp direction(value) when value < 0, do: -1
+  defp direction(value) when value > 0, do: 1
+  defp direction(_), do: 0
+  defp relationship(edge, names), do: "#{names[edge["source"]] || edge["source"]} requires #{names[edge["target"]] || edge["target"]}"
+  defp node_name(node), do: node["identifier"] || node["name"] || node["title"] || node["id"]
+  defp node_title(node), do: node["title"] || node["name"] || node["identifier"] || "Untitled"
+  defp node_status(%{"missing" => true}), do: "Unavailable"
+  defp node_status(%{"planning_status" => "cycle"}), do: "Dependency cycle"
+  defp node_status(%{"planning_status" => "blocked"}), do: "Sequence unresolved"
+  defp node_status(%{"planning_status" => "unknown"}), do: "Unknown sequence"
+  defp node_status(node), do: lane_name(node["lane"])
   defp completion_description("human_acceptance"), do: "Done records human acceptance."
   defp completion_description("tracker_completion"), do: "Done follows tracker completion."
   defp completion_description(_), do: "Completion policy unavailable."
   defp lane_name("in_progress"), do: "In progress"
   defp lane_name(lane) when lane in @lanes, do: String.capitalize(lane)
   defp lane_name(_), do: "Unknown"
-  defp short_title(nil), do: "Untitled"
-  defp short_title(title), do: if(String.length(title) > 24, do: String.slice(title, 0, 23) <> "…", else: title)
 end

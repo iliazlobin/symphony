@@ -28,6 +28,7 @@ h2, h3, strong { font-weight: 600; }
 a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 [hidden] { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); clip-path: inset(50%); white-space: nowrap; border: 0; }
 .muted { color: var(--muted); }
 input, select {
   min-width: 0;
@@ -55,6 +56,8 @@ input, select {
 
 /* Navigation and filters stay above the board; dialogs use the native top layer. */
 .dashboard-shell {
+  --control-height: 32px;
+  --control-radius: 6px;
   color-scheme: light;
   --bg: light-dark(#fcfcfc, #17181c);
   --panel: light-dark(#fff, #202126);
@@ -766,7 +769,6 @@ h2, h3, strong { font-weight: 500; }
 .dialog-inner { padding: 24px; }
 .dialog-heading { margin-bottom: 16px; }
 .dialog-heading h2 { font-size: 18px; font-weight: 500; }
-.board-dialog[data-kind=graph] { width: min(1120px, calc(100vw - 32px)); }
 .field, .dialog-actions, .dialog-section { margin-top: 16px; }
 .markdown-content { line-height: 1.55; }
 .markdown-content :is(h1,h2,h3,h4,h5,h6) { font-size: 14px; font-weight: 500; margin: 16px 0 8px; }
@@ -838,38 +840,203 @@ h2, h3, strong { font-weight: 500; }
   .kanban-board { display: block; }
   .chat-scroll, .chat-composer-wrap { padding: 12px; }
 }
-.workflow-graph { font-size: 13px; }
-.graph-description { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
-.graph-status { color: var(--muted); background: var(--soft); padding: 8px 10px; border-radius: 6px; margin-bottom: 12px; font-size: 12px; }
-.graph-flow-caption { color: var(--muted); font-size: 11px; margin: 0 0 8px; }
-.graph-view-picker { border: 0; display: inline-flex; gap: 4px; padding: 4px; margin: 0 0 16px; background: var(--soft); border-radius: 8px; }
-.graph-view-picker label { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 5px; cursor: pointer; font-size: 12px; }
-.graph-view-picker label:has(input:checked) { background: var(--panel); color: var(--accent); }
-.graph-view-picker input { margin: 0; accent-color: var(--accent); min-height: 0; }
-.graph-hierarchy-view { display: none; }
-.workflow-graph:has(input[value=hierarchy]:checked) .graph-hierarchy-view { display: block; }
-.workflow-graph:has(input[value=hierarchy]:checked) .graph-dependencies-view { display: none; }
-.graph-legend { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; color: var(--muted); font-size: 11px; }
-.graph-legend > span { display: flex; align-items: center; gap: 6px; }
-.graph-canvas { max-height: 48dvh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); margin-bottom: 16px; overscroll-behavior: contain; }
-.graph-canvas svg { display: block; }
-.graph-dependency-canvas svg { margin-inline: auto; }
-.graph-edge { stroke: var(--muted); stroke-width: 1.3; fill: none; opacity: .6; }
-.graph-edge[data-status=satisfied] { stroke: var(--good); }
-.graph-edge[data-status=missing], .graph-edge[data-status=cycle] { stroke: var(--warn); stroke-dasharray: 4 3; }
-.graph-canvas marker path { fill: var(--muted); }
-.graph-node rect { fill: var(--panel); stroke: var(--line); }
-.graph-node text { fill: var(--fg); font-size: 11px; }
-.graph-node .graph-node-id, .graph-node .graph-node-status { fill: var(--muted); font-size: 10px; }
-.graph-node[data-lane=in_progress] rect { stroke: var(--accent); }
-.graph-node[data-lane=work] rect { stroke: #d6ad26; }
-.graph-node[data-lane=review] rect { stroke: #d97782; }
-.graph-node[data-lane=done] rect { stroke: var(--good); }
-.graph-node[data-missing=true] rect, .graph-node[data-cycle=true] rect { stroke: var(--warn); stroke-dasharray: 4 3; }
-.graph-empty { color: var(--muted); font-size: 12px; }
-.graph-relationship-list { overflow-x: auto; }
-.graph-relationship-list h3 { font-size: 13px; margin-bottom: 8px; }
-.graph-relationship-list table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.graph-relationship-list :is(th,td) { padding: 8px; border-bottom: 1px solid var(--line); text-align: left; font-weight: 400; overflow-wrap: anywhere; min-width: 100px; }
-.graph-relationship-list th { color: var(--muted); }
-.graph-ownership-list { padding-left: 20px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+/* Connected planning views share one bounded workspace and task focus. */
+.dashboard-shell[data-chat-open=true] { height: 100dvh; min-height: 0; overflow: hidden; align-items: stretch; }
+.dashboard-shell .board-main { height: 100%; min-height: 0; overflow: hidden; }
+.board-location { flex-wrap: wrap; gap: 8px; }
+.board-location .project-combo { width: 200px; flex-basis: 200px; }
+.board-view-picker { display: inline-flex; align-items: center; height: var(--control-height); gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--soft); flex-shrink: 0; }
+.board-view-picker a { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 74px; height: 26px; padding: 0 10px; border-radius: 4px; color: var(--muted); text-decoration: none; font-size: 12px; font-weight: 500; line-height: 18px; white-space: nowrap; }
+.board-view-picker svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.board-view-picker a[aria-current=page] { color: var(--inverse); background: var(--accent); box-shadow: 0 1px 2px #00000012; }
+.board-view-picker a:not([aria-current=page]):hover { color: var(--fg); background: var(--panel); }
+.board-view-picker a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.board-header .combo-control, .board-header #board-search input, .dashboard-shell .board-header .button { height: var(--control-height); border-radius: var(--control-radius); }
+.board-header .combo-control input { height: 30px; }
+.board-header .combo-control button { height: 30px; display: grid; place-items: center; }
+.board-header #board-search input { border: 1px solid var(--line); background: var(--panel); }
+.board-header #board-search input:focus { border-color: var(--accent); }
+.board-sync-note { color: var(--muted); cursor: help; }
+.mobile-filter-toggle { display: none; }
+.board-content { display: flex; flex-direction: column; min-height: 0; overflow: auto; padding-bottom: 12px; }
+.board-summary { flex-shrink: 0; }
+.board-content > :is(.board-warning,.board-notice) { flex-shrink: 0; max-height: 80px; overflow: auto; font-size: 12px; }
+.board-view-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.board-view-panel[hidden] { display: none; }
+.kanban-board { flex: 1; min-height: 0; overflow: auto; grid-template-columns: repeat(5, minmax(180px, 1fr)); padding-bottom: 8px; scroll-padding: 12px; }
+.kanban-lane { align-self: start; min-height: 100%; }
+.lane-heading { position: sticky; top: 0; z-index: 2; background: inherit; }
+.card-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.card-dependencies { display: inline-flex; gap: 5px; }
+.card-dependencies a { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); padding: 2px 4px; border-radius: 4px; text-decoration: none; font-size: 11px; line-height: 16px; white-space: nowrap; }
+.card-dependencies a:hover { color: var(--accent); background: var(--soft); }
+.card-dependencies a:focus-visible { outline: 2px solid var(--accent); }
+.board-context, .board-footer { flex-shrink: 0; }
+.board-context { padding-top: 6px; padding-bottom: 6px; }
+.board-footer { padding-top: 6px; padding-bottom: 6px; }
+.plan-view { display: flex; flex-direction: column; height: 100%; min-height: 340px; gap: 8px; font-size: 12px; }
+.plan-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
+.plan-title { font-size: 13px; font-weight: 600; }
+.plan-tools { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.plan-tools :is(button,.button), .plan-calendar-controls button, .plan-inspector .button { display: inline-flex; align-items: center; justify-content: center; padding: 4px 9px; font-size: 12px; min-height: var(--control-height); border-radius: var(--control-radius); }
+.plan-tools output { min-width: 40px; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
+.plan-tools button, .plan-calendar-controls button, .plan-inspector-links button { border: 1px solid var(--line); background: var(--panel); color: var(--fg); cursor: pointer; }
+.plan-tools button:hover, .plan-calendar-controls button:hover, .plan-inspector-links button:hover { border-color: var(--accent); color: var(--accent); }
+.plan-tools button:focus-visible, .plan-calendar-controls button:focus-visible, .plan-inspector-links button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.plan-caption { color: var(--muted); font-size: 11px; margin: 0; }
+.plan-main, .plan-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; }
+.plan-panel[hidden] { display: none; }
+.plan-legend { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
+.plan-legend > span { display: inline-flex; align-items: center; gap: 5px; }
+.plan-related-counts { display: flex; gap: 12px; color: var(--muted); }
+.plan-node-context { color: var(--muted); font-size: 10px; }
+.plan-node[data-filtered=true] .plan-node-card { background: var(--soft); border-style: dashed; }
+.plan-view .board-warning { max-height: 54px; overflow: auto; font-size: 11px; margin: 0; }
+.plan-inspector-links button { padding: 4px 8px; font-size: 11px; min-height: 28px; border-radius: var(--control-radius); }
+.plan-canvas { position: relative; flex: 1; min-height: 180px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background-color: var(--bg); background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 20px 20px; touch-action: none; cursor: grab; overscroll-behavior: contain; }
+.plan-canvas[data-panning=true] { cursor: grabbing; }
+.plan-svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.plan-edge { fill: none; stroke: var(--muted); stroke-width: 1.25; opacity: .65; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
+.plan-edge[data-related=true] { opacity: 1; stroke: var(--accent); stroke-width: 1.8; }
+.plan-edge[data-status=satisfied] { stroke: var(--good); }
+.plan-edge[data-status=missing], .plan-edge[data-status=cycle] { stroke: var(--warn); stroke-dasharray: 5 4; }
+.plan-svg[data-selection-active=true] .plan-edge:not([data-related=true]) { opacity: .32; }
+.plan-svg marker path { fill: context-stroke; }
+.plan-node-card { position: relative; width: 100%; height: 100%; box-sizing: border-box; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; box-shadow: 0 1px 3px #00000006; display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
+.plan-node-select { position: absolute; inset: 0; z-index: 1; border: 0; padding: 0; background: transparent; cursor: pointer; border-radius: inherit; }
+.plan-node-select:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+.plan-node-title { position: relative; z-index: 2; display: block; padding: 0; border: 0; background: transparent; color: var(--fg); text-align: left; font: inherit; font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; cursor: pointer; text-decoration: none; }
+.plan-node-title:hover { color: var(--accent); text-decoration: underline; }
+.plan-node-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.plan-node-meta { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; line-height: 1.3; }
+.plan-node[data-context=true] .plan-node-card { background: var(--soft); border-style: dashed; }
+.plan-node[data-related=true] .plan-node-card { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.plan-node[data-selected=true] .plan-node-card { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.plan-node-note { color: var(--warn); font-size: 11px; line-height: 1.3; }
+.plan-node-dependency-status { color: var(--muted); font-size: 11px; line-height: 1.3; }
+.plan-inspector { flex-shrink: 0; max-height: 120px; overflow: auto; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); line-height: 1.4; }
+.plan-inspector-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; position: sticky; top: -8px; background: var(--panel); padding: 2px 0; }
+.plan-inspector h3 { flex: 1; min-width: 120px; font-size: 12px; margin: 0; overflow-wrap: anywhere; }
+.plan-inspector p { margin: 4px 0; }
+.plan-inspector-links { display: flex; gap: 6px; flex-wrap: wrap; margin: 0; }
+.plan-related-list { display: flex; align-items: center; gap: 4px 8px; flex-wrap: wrap; margin-top: 4px; padding: 0; list-style: none; }
+.plan-related-list button { padding: 2px 6px; min-height: 24px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--accent); font-size: 11px; cursor: pointer; }
+.plan-related-list button:hover { background: var(--tint); border-color: var(--accent); }
+.plan-inspector ul { margin: 6px 0; padding-left: 18px; }
+.plan-inspector a { overflow-wrap: anywhere; }
+.plan-accessible-list { flex-shrink: 0; max-height: 140px; overflow: auto; color: var(--muted); }
+.plan-accessible-list summary { cursor: pointer; font-size: 11px; }
+.plan-accessible-list table { width: 100%; border-collapse: collapse; }
+.plan-accessible-list :is(th,td) { padding: 6px; border-bottom: 1px solid var(--line); text-align: left; font-weight: 400; }
+.plan-empty { display: grid; place-content: center; flex: 1; text-align: center; color: var(--muted); padding: 24px; }
+.plan-warning { margin: 0; padding: 6px 8px; border-radius: 6px; color: var(--warn); background: var(--soft); font-size: 11px; }
+@media (prefers-reduced-motion: no-preference) {
+  .board-view-panel:not([hidden]) { animation: planning-view-enter .16s ease-out; }
+  .task-card[data-selected=true] { transition: box-shadow .16s, border-color .16s; }
+  @keyframes planning-view-enter { from { opacity: .7; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+}
+@media (max-width: 1200px) {
+  .board-header { gap: 8px; }
+  .board-location .project-combo { flex-basis: 170px; width: 170px; }
+  #board-search { flex-basis: 150px; min-width: 100px; }
+}
+@media (max-width: 860px) {
+  .dashboard-shell[data-chat-open=true] { grid-template-rows: minmax(0, 56dvh) minmax(0, 44dvh); }
+  .dashboard-shell .board-main, .dashboard-shell[data-chat-open=true] .board-main { overflow: visible; z-index: 22; }
+  .board-header { min-height: 44px; padding: 6px 12px; }
+  .board-location { flex: 1; }
+  .board-toolbar { padding: 4px 12px; }
+  .board-content { padding: 6px 12px; }
+  .board-context, .board-footer { display: none; }
+  .filter-row { flex-wrap: wrap; overflow: visible; }
+  .filter-row .filter-combo { flex: 1 1 120px; max-width: 180px; }
+  .mobile-filter-toggle { display: inline-flex; }
+  .board-toolbar .filter-row { display: none; }
+  .board-toolbar[data-mobile-filters=true] .filter-row { display: flex; position: absolute; z-index: 12; top: 100%; left: 12px; right: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 8px 24px #00000012; }
+  .board-toolbar[data-mobile-filters=true] .filter-combo { flex: 1 1 calc(50% - 6px); max-width: none; }
+  .board-toolbar .filter-row .combo-options { left: 0; right: auto; max-height: 40dvh; }
+  .board-toolbar .filter-row .filter-combo:nth-child(even) .combo-options { left: auto; right: 0; }
+  .board-toolbar { position: relative; }
+  .toolbar-primary { justify-content: space-between; }
+  .plan-view { min-height: 300px; }
+  .plan-canvas { min-height: 120px; }
+  .plan-inspector { max-height: 96px; }
+}
+@media (max-width: 540px) {
+  .board-location .brand, .board-location .header-divider { display: none; }
+  .board-location .project-combo { flex: 1 1 130px; width: 130px; }
+  .board-view-picker a { min-width: 58px; padding: 0 6px; gap: 4px; font-size: 11px; }
+  .board-view-picker svg { width: 12px; height: 12px; }
+  .board-header #board-search { display: none; }
+  .board-header .header-spacer { display: none; }
+  .board-summary { padding-bottom: 4px; }
+  .plan-inspector { max-height: 96px; padding: 6px 8px; }
+}
+
+/* Calendar geometry is shared by table rows, bars and dependency ports. */
+.workflow-gantt { --timeline-day-width: 36px; --timeline-name-width: 260px; --timeline-row-height: 54px; --timeline-header-height: 60px; }
+.plan-calendar-toolbar { flex-wrap: wrap; gap: 8px; }
+.plan-calendar-toolbar > strong { font-size: 13px; }
+.plan-calendar-toolbar > .plan-caption { margin-right: auto; }
+.plan-calendar-anchor { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+.plan-calendar-anchor input { height: var(--control-height); border: 1px solid var(--line); border-radius: var(--control-radius); padding: 0 8px; background: var(--panel); color: var(--fg); font: inherit; }
+.plan-calendar-controls { display: flex; align-items: center; gap: 4px; }
+.plan-calendar-controls button[aria-pressed=true] { background: var(--tint); border-color: var(--accent); color: var(--accent); }
+.plan-calendar-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.plan-gantt-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--line); border-radius: 8px; scroll-padding: 8px; }
+.plan-gantt-frame { position: relative; min-width: 100%; }
+.plan-gantt-table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.plan-gantt-table thead th { height: var(--timeline-header-height); padding: 0; color: var(--muted); font-weight: 400; border-bottom: 0; box-shadow: inset 0 -1px var(--line); background: var(--soft); position: sticky; top: 0; z-index: 3; }
+.plan-gantt-table tbody th, .plan-gantt-table td { height: var(--timeline-row-height); padding: 0; border-bottom: 1px solid var(--line); vertical-align: middle; box-sizing: border-box; }
+.plan-gantt-table .plan-row-name { position: sticky; left: 0; width: var(--timeline-name-width); z-index: 2; background: var(--panel); padding: 5px 10px; border-right: 1px solid var(--line); font-weight: 400; text-align: left; }
+.plan-gantt-table thead th.plan-row-name { z-index: 4; background: var(--soft); padding: 0 10px; }
+.plan-row-heading { display: flex; align-items: center; gap: 8px; }
+.plan-row-title { flex: 1; min-width: 0; border: 0; padding: 0; background: transparent; color: var(--fg); text-align: left; font: inherit; font-size: 11px; line-height: 1.25; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; cursor: pointer; }
+.plan-row-title:hover { color: var(--accent); text-decoration: underline; }
+.plan-gantt-table .plan-node-meta { font-size: 9px; gap: 5px; flex-wrap: nowrap; overflow: hidden; white-space: nowrap; margin-top: 3px; }
+.plan-gantt-table .plan-node-meta > span { overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+.plan-gantt-table .plan-node-meta > span:nth-last-child(1) { flex-shrink: 1; }
+.plan-calendar-estimate { display: flex; align-items: center; gap: 2px; color: var(--muted); font-size: 10px; flex-shrink: 0; }
+.plan-calendar-estimate input { width: 32px; height: 22px; border: 1px solid var(--line); border-radius: 4px; padding: 0 2px; background: var(--panel); color: var(--fg); font: inherit; text-align: center; box-sizing: border-box; appearance: textfield; }
+.plan-calendar-estimate input::-webkit-inner-spin-button { appearance: none; }
+.plan-calendar-header { overflow: hidden; }
+.plan-calendar-months, .plan-calendar-weeks, .plan-calendar-days { display: flex; height: 20px; text-align: left; }
+.plan-calendar-months, .plan-calendar-weeks { border-bottom: 1px solid var(--line); box-sizing: border-box; }
+.plan-calendar-months span, .plan-calendar-weeks span { flex-shrink: 0; box-sizing: border-box; border-right: 1px solid var(--line); padding: 3px 6px; overflow: hidden; white-space: nowrap; font-size: 10px; }
+.plan-calendar-months span { color: var(--fg); font-weight: 500; }
+.plan-calendar-days span { flex: 0 0 var(--timeline-day-width); box-sizing: border-box; border-right: 1px solid var(--line); display: grid; place-items: center; font-size: 9px; overflow: hidden; }
+.plan-calendar-days span[data-today=true] { color: var(--accent); background: var(--tint); font-weight: 600; }
+.plan-gantt-track { position: relative; background: repeating-linear-gradient(to right, transparent 0, transparent calc(var(--timeline-day-width) - 1px), var(--line) calc(var(--timeline-day-width) - 1px), var(--line) var(--timeline-day-width)); }
+.plan-gantt-bar, .plan-gantt-unresolved { position: absolute; top: 14px; height: 26px; display: flex; align-items: center; border: 1px dashed var(--accent); background: var(--tint); color: var(--accent); border-radius: 4px; padding: 0 3px; font-size: 10px; cursor: pointer; box-sizing: border-box; }
+.plan-gantt-bar:not([data-timeline-kind=accepted]) { container-type: inline-size; }
+@container (max-width: 24px) { .plan-gantt-label { visibility: hidden; } }
+.plan-gantt-label { overflow: hidden; white-space: nowrap; text-overflow: clip; position: relative; z-index: 1; }
+.plan-gantt-recorded { position: absolute; top: -1px; bottom: -1px; left: -1px; max-width: calc(100% + 2px); background: color-mix(in srgb, var(--accent) 18%, var(--panel)); border: 1px solid var(--accent); border-radius: 4px; box-sizing: border-box; }
+.plan-gantt-bar[data-timeline-kind=accepted] { border: 0; background: transparent; color: var(--good); font-size: 22px; justify-content: center; padding: 0; }
+.plan-gantt-unresolved { left: 8px; border-color: var(--line); color: var(--muted); background: var(--soft); max-width: calc(100% - 16px); }
+.plan-gantt-table tr[data-selected=true] .plan-row-name { background: var(--tint); }
+.plan-gantt-table tr[data-selected=true] :is(.plan-gantt-bar,.plan-gantt-unresolved) { outline: 1px solid var(--accent); outline-offset: 2px; }
+.plan-gantt-table tr[data-plan-visible=false] { opacity: .65; }
+.plan-gantt-arrows { position: absolute; left: var(--timeline-name-width); top: var(--timeline-header-height); width: calc(var(--timeline-day-width) * var(--calendar-days, 1)); pointer-events: none; overflow: visible; }
+.plan-gantt-arrows .plan-edge { opacity: .5; stroke-width: 1; }
+.plan-gantt-arrows .plan-edge[data-related=true] { opacity: 1; stroke-width: 1.5; }
+.plan-gantt-arrows marker path { fill: context-stroke; stroke: none; }
+.plan-calendar-today { position: absolute; top: var(--timeline-header-height); bottom: 0; width: 1px; background: var(--accent); opacity: .6; pointer-events: none; z-index: 1; }
+.plan-calendar-today > span { display: none; }
+.workflow-gantt[data-calendar-dense=true] .plan-calendar-days span { color: transparent; }
+@media (max-width: 720px) {
+  .workflow-gantt { --timeline-name-width: 200px; }
+  .plan-calendar-toolbar { gap: 4px 8px; }
+  .plan-calendar-toolbar > .plan-caption { font-size: 9px; }
+  .plan-calendar-anchor { margin-left: auto; }
+  .plan-calendar-controls { gap: 3px; }
+  .plan-calendar-controls button { padding: 0 6px; }
+  .plan-calendar-legend span:last-child { display: none; }
+}
+
+.card-filter-context { display: none; font-size: 10px; color: var(--muted); padding: 2px 0; }
+.task-card[data-filter-context=true] .card-filter-context { display: block; }
+.task-card[data-filter-context=true] { border-style: dashed; }
+.plan-reference { background: transparent; border: 0; padding: 0; color: var(--accent); font: inherit; cursor: pointer; text-align: left; }
+.plan-reference:hover { text-decoration: underline; }
+.plan-reference:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

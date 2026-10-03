@@ -12,6 +12,8 @@ defmodule SymphonyElixir.Chat.Tools do
   @stages ~w(backlog work in_progress review done attention ready running)
   @sorts ~w(updated priority title oldest)
   @task_keys ~w(id issue_id identifier title project project_label task_kind stage attention priority updated_at created_at tracker_state completion_evidence source_missing hold github_status routing)a
+  @snapshot_keys ~w(id identifier title stage scheduler_stage runtime_status execution_status execution_note project_execution hold attention)
+  @prerequisite_keys ~w(id identifier stage execution_status hold)
   @pr_keys ~w(number title url state draft created_at updated_at review head_ref base_ref author additions deletions changed_files mergeable head_sha relation checks check_total check_details_status)a
   @check_keys ~w(kind name status conclusion url started_at completed_at duration_ms workflow_name run_url run_number run_event)a
   @proposal_keys ~w(id action args project_id tracker_fingerprint expected_revision expected_updated_at created_at queue_labels queue_unheld task_title task_description pr_work)
@@ -162,6 +164,73 @@ defmodule SymphonyElixir.Chat.Tools do
       Sessions.resolve(task, session_id, context.tracker_fingerprint)
     end
   end
+
+  @doc "Refreshes bounded host facts for the current turn without creating a proposal or a UI card."
+  @spec snapshot(map()) :: {:ok, map()} | {:error, term()}
+  def snapshot(context) do
+    with {:ok, _} <- scope(context),
+         {:ok, view} <- ViewContext.validate(context[:view_context], context.project_id),
+         {:ok, board} <- read_board(context),
+         :ok <- complete_board(board) do
+      {:ok, turn_snapshot(context, view, board)}
+    end
+  rescue
+    _ -> {:error, :board_unavailable}
+  catch
+    _, _ -> {:error, :board_unavailable}
+  end
+
+  defp turn_snapshot(context, view, board) do
+    selected = context[:task_id] || (view || %{})["selected_task_id"]
+
+    %{
+      "project_id" => context.project_id,
+      "checked_at" => board[:generated_at],
+      "project_execution" => project_execution(board),
+      "counts" => Enum.frequencies_by(board.tasks, &task_lane/1),
+      "selected_task" => snapshot_selection(selected, context, board),
+      "work_session" => snapshot_session(context, board)
+    }
+  end
+
+  defp snapshot_session(%{task_id: task_id, session_id: session_id} = context, board) when is_binary(task_id) and is_binary(session_id) do
+    with {:ok, task} <- find_task(task_id, context, board),
+         {:ok, session} <- Sessions.resolve(task, session_id, context.tracker_fingerprint) do
+      Map.take(session, ~w(session_id task_id work_id purpose execution_state goal_revision executable))
+    else
+      {:error, reason} -> %{"error" => error_message(reason)}
+    end
+  end
+
+  defp snapshot_session(_context, _board), do: nil
+
+  defp snapshot_selection(nil, _context, _board), do: nil
+
+  defp snapshot_selection(id, context, board) do
+    case find_task(id, context, board) do
+      {:ok, task} ->
+        dependencies = task[:dependencies] || []
+
+        snapshot_task(task, board)
+        |> Map.put("dependency_error", task[:dependency_error])
+        |> Map.put("prerequisites", Enum.map(Enum.take(dependencies, 10), &snapshot_prerequisite(&1, context, board)))
+        |> Map.put("prerequisites_truncated", length(dependencies) > 10)
+
+      _ ->
+        %{"id" => id, "availability" => "unavailable"}
+    end
+  end
+
+  defp snapshot_prerequisite(id, context, board), do: snapshot_selection_fact(context.project_id <> ":" <> id, context, board)
+
+  defp snapshot_selection_fact(id, context, board) do
+    case find_task(id, context, board) do
+      {:ok, task} -> snapshot_task(task, board) |> Map.take(@prerequisite_keys)
+      _ -> %{"id" => id, "availability" => "unavailable"}
+    end
+  end
+
+  defp snapshot_task(task, board), do: task_view(task, board) |> Map.take(@snapshot_keys) |> Map.update!("title", &truncate(&1, 240))
 
   @spec call(String.t(), term(), map()) :: {:ok, map()} | {:error, term()}
   def call(name, args, context) do
@@ -535,6 +604,7 @@ defmodule SymphonyElixir.Chat.Tools do
     |> Map.put("url", board_url(task.project, %{"task" => task.id}))
   end
 
+  defp task_lane(%{stage: stage}) when stage in ~w(ready running), do: scheduler_lane(stage)
   defp task_lane(task), do: task[:lane] || scheduler_lane(task.stage)
 
   defp task_blocker_reason(%{hold: "worker_auth_required"}), do: "Worker sign-in required"
