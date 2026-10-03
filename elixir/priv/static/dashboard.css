@@ -1023,7 +1023,7 @@ h2, h3, strong { font-weight: 500; }
 .plan-gantt-arrows marker path { fill: context-stroke; stroke: none; }
 .plan-calendar-today { position: absolute; top: var(--timeline-header-height); bottom: 0; width: 1px; background: var(--accent); opacity: .6; pointer-events: none; z-index: 1; }
 .plan-calendar-today > span { display: none; }
-.workflow-gantt[data-calendar-scale=fit] .plan-calendar-days span { color: transparent; }
+.workflow-gantt[data-calendar-dense=true] .plan-calendar-days span { color: transparent; }
 @media (max-width: 720px) {
   .workflow-gantt { --timeline-name-width: 200px; }
   .plan-calendar-toolbar { gap: 4px 8px; }

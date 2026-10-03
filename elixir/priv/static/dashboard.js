@@ -979,6 +979,10 @@
       };
       on("pointerup", release); on("pointercancel", release); on("lostpointercapture", release);
       this.resize = typeof ResizeObserver === "function" ? new ResizeObserver(() => {
+        if (this.mode === "timeline") {
+          this.calendarScale(this.calendarPrefs?.scale || "day", this.calendarViewport);
+          return;
+        }
         const size = this.size(), camera = this.camera();
         if (size && camera && this.previousSize) {
           camera.x += (this.previousSize.width - size.width) / (2 * camera.scale);
@@ -1054,16 +1058,23 @@
       const measured = this.el.querySelector(".plan-row-name")?.getBoundingClientRect?.().width;
       return Number.isFinite(measured) && measured > 0 ? measured : 260;
     },
-    calendarScale(scale) {
+    calendarScale(scale, previousViewport = null) {
       const scroll = this.el.querySelector(".plan-gantt-scroll"), days = Number(this.el.dataset.calendarDays) || 1;
       const nameWidth = this.calendarNameWidth();
       const previousWidth = Number.parseFloat(this.el.style?.getPropertyValue("--timeline-day-width")) || 36;
-      const center = scroll ? (scroll.scrollLeft + (scroll.clientWidth - nameWidth) / 2) / previousWidth : 0;
+      const sourceWidth = previousViewport?.width ?? scroll?.clientWidth;
+      const sourceNameWidth = previousViewport?.nameWidth ?? nameWidth;
+      const center = scroll ? (scroll.scrollLeft + (sourceWidth - sourceNameWidth) / 2) / previousWidth : 0;
       const width = scale === "week" ? 14 : scale === "fit" ? Math.max(.5, Math.min(56, ((scroll?.clientWidth || 700) - nameWidth - 24) / days)) : 36;
       this.el.style?.setProperty("--timeline-day-width", width + "px");
       this.el.style?.setProperty("--calendar-days", String(days));
-      if (scroll && width !== previousWidth) scroll.scrollLeft = Math.max(0, center * width - (scroll.clientWidth - nameWidth) / 2);
+      if (scroll && Number.isFinite(scroll.clientWidth) && (width !== previousWidth || previousViewport || scale === "fit")) {
+        const maximum = Math.max(0, nameWidth + days * width - scroll.clientWidth);
+        scroll.scrollLeft = Math.min(maximum, Math.max(0, center * width - (scroll.clientWidth - nameWidth) / 2));
+      }
+      this.calendarViewport = scroll && Number.isFinite(scroll.clientWidth) ? {width: scroll.clientWidth, nameWidth} : null;
       this.el.dataset.calendarScale = scale;
+      this.el.dataset.calendarDense = String(width < 22);
       this.el.querySelectorAll("[data-calendar-action]").forEach(button => {
         if (["day", "week", "fit"].includes(button.dataset.calendarAction)) button.setAttribute("aria-pressed", String(button.dataset.calendarAction === scale));
       });

@@ -92,7 +92,7 @@ const el={dataset:{canvasScope:"p",planMode:"timeline",calendarDays:"28",calenda
 const sandbox={window:{},AbortController,CustomEvent:class{},requestAnimationFrame:fn=>fn(),localStorage:{getItem:k=>stored.get(k)||null,setItem(k,v){if(failing)throw Error("quota");stored.set(k,v);}}};
 vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),sandbox);
 const mount=()=>{const hook={...sandbox.window.SymphonyHooks.WorkflowCanvas,el,pushEvent:(event,payload)=>sent.push({event,payload:plain(payload)}),handleEvent:(k,f)=>events.set(k,f)};hook.mounted();return hook;};
-let hook=mount();assert.equal(label.textContent,"Draft · saved in this browser");assert.equal(props.get("--calendar-days"),"28");assert.equal(sent.length,0);
+let hook=mount();assert.equal(label.textContent,"Draft · saved in this browser");assert.equal(props.get("--calendar-days"),"28");assert.equal(sent.length,0);assert.equal(el.dataset.calendarDense,"false");
 const change=(field)=>listeners.get("change")({target:field});
 change({matches:s=>s==="[data-calendar-anchor]",value:"2026-10-03",checkValidity:()=>true});
 assert.deepEqual(sent.at(-1),{event:"change-calendar-plan",payload:{anchor_on:"2026-10-03",durations:{}}});
@@ -102,15 +102,43 @@ change({matches:s=>s==="[data-calendar-duration]",value:"3",dataset:{calendarTas
 assert.equal(sent.at(-1).payload.durations["issue:4"],3);
 const count=sent.length;for(const value of ["0","366","2.5","oops"]){change({matches:s=>s==="[data-calendar-duration]",value,dataset:{calendarTaskId:"issue:4"}});}assert.equal(sent.length,count);
 change({matches:s=>s==="[data-calendar-anchor]",value:"2026-02-30",checkValidity:()=>false});assert.equal(sent.length,count);
-const center=(scroll.scrollLeft+300)/36;hook.calendarAction("week");assert.equal(props.get("--timeline-day-width"),"14px");assert.equal(buttons[1]["aria-pressed"],"true");assert.equal(scroll.scrollLeft,Math.max(0,center*14-300));
-hook.calendarAction("fit");assert.equal(parseFloat(props.get("--timeline-day-width")),576/28);
-hook.calendarAction("day");hook.calendarAction("today");assert.equal(scroll.scrollLeft,0);
+const center=(scroll.scrollLeft+300)/36;hook.calendarAction("week");assert.equal(props.get("--timeline-day-width"),"14px");assert.equal(buttons[1]["aria-pressed"],"true");assert.equal(scroll.scrollLeft,Math.max(0,center*14-300));assert.equal(el.dataset.calendarDense,"true");
+hook.calendarAction("fit");assert.equal(parseFloat(props.get("--timeline-day-width")),576/28);assert.equal(el.dataset.calendarDense,"true");
+// Fit keeps day numbers when cells are wide enough; density follows geometry, not the scale name.
+scroll.clientWidth=1200;hook.calendarAction("fit");assert.equal(parseFloat(props.get("--timeline-day-width")),976/28);assert.equal(el.dataset.calendarDense,"false");
+delete el.dataset.calendarDense;hook.beforeUpdate();hook.updated();assert.equal(el.dataset.calendarDense,"false");
+scroll.clientWidth=840;hook.calendarAction("fit");assert.equal(props.get("--timeline-day-width"),"22px");assert.equal(el.dataset.calendarDense,"false");
+scroll.clientWidth=839.9;hook.calendarAction("fit");assert.equal(el.dataset.calendarDense,"true");
+scroll.clientWidth=800;hook.calendarAction("day");assert.equal(el.dataset.calendarDense,"false");hook.calendarAction("today");assert.equal(scroll.scrollLeft,0);
 scroll.scrollLeft=340;scroll.scrollTop=108;hook.beforeUpdate();scroll.scrollLeft=0;scroll.scrollTop=0;hook.updated();assert.equal(scroll.scrollLeft,340);assert.equal(scroll.scrollTop,108);
 hook.destroyed();hook=mount();assert.equal(sent.at(-1).payload.durations["issue:4"],3);assert.equal(hook.calendarPrefs.anchor_on,"2026-10-03");
 el.dataset.canvasScope="other";hook.updated();assert.deepEqual(plain(hook.calendarPrefs.durations),{});assert.equal(hook.calendarPrefs.anchor_on,null);
 hook.destroyed();stored.set("symphony:calendar:v1:other",JSON.stringify({anchor_on:"bad",scale:"agents",durations:{good:365,zero:0,big:366,float:2.5,string:"3"}}));hook=mount();assert.deepEqual(plain(hook.calendarPrefs.durations),{good:365});assert.equal(hook.calendarPrefs.scale,"day");assert.equal(hook.calendarPrefs.anchor_on,null);
 hook.destroyed();stored.set("symphony:calendar:v1:other","{");hook=mount();assert.deepEqual(plain(hook.calendarPrefs.durations),{});
 failing=true;hook.saveCalendar();assert.equal(label.textContent,"Draft · not saved");hook.calendarAction("week");assert.equal(label.textContent,"Draft · not saved");hook.destroyed();
+''')
+
+    def test_calendar_resize_refits_dates_and_preserves_date_center_without_dispatch(self):
+        self.run_hook(r'''
+const assert=require("node:assert/strict"),fs=require("node:fs"),vm=require("node:vm");
+const props=new Map(),sent=[],scroll={clientWidth:1200,scrollLeft:0,scrollTop:54};let nameWidth=260,resize;
+const el={dataset:{canvasScope:"p",planMode:"timeline",calendarDays:"28"},style:{setProperty:(k,v)=>props.set(k,v),getPropertyValue:k=>props.get(k)||""},addEventListener(){},dispatchEvent(){},querySelector:s=>s===".plan-gantt-scroll"?scroll:s===".plan-row-name"?{getBoundingClientRect:()=>({width:nameWidth})}:null,querySelectorAll:()=>[]};
+const sandbox={window:{},AbortController,CustomEvent:class{},requestAnimationFrame:fn=>fn(),localStorage:{getItem:()=>null,setItem(){}},ResizeObserver:class{constructor(fn){resize=fn;}observe(){}unobserve(){}disconnect(){}}};
+vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),sandbox);
+const hook={...sandbox.window.SymphonyHooks.WorkflowCanvas,el,pushEvent:(...event)=>sent.push(event)};hook.mounted();
+const width=()=>parseFloat(props.get("--timeline-day-width"));
+const resizeTo=(viewport,name)=>{scroll.clientWidth=viewport;nameWidth=name;resize();};
+hook.calendarAction("fit");assert.equal(width(),916/28);assert.equal(el.dataset.calendarDense,"false");assert.equal(scroll.scrollLeft,0);
+resizeTo(390,200);assert.equal(width(),166/28);assert.equal(el.dataset.calendarDense,"true");assert.equal(scroll.scrollLeft,0);assert.equal(hook.calendarViewport.nameWidth,200);
+resizeTo(1200,260);assert.equal(width(),916/28);assert.equal(el.dataset.calendarDense,"false");assert.equal(scroll.scrollLeft,0);
+// Day/Week keep their fixed cell widths and the date at the viewport center when space changes.
+el.dataset.calendarDays="140";hook.calendarAction("day");scroll.scrollLeft=420;
+const dayCenter=(scroll.scrollLeft+470)/36;resizeTo(390,200);assert.equal(width(),36);assert.equal(el.dataset.calendarDense,"false");assert.equal((scroll.scrollLeft+95)/36,dayCenter);
+resizeTo(1200,260);assert.equal(width(),36);assert.equal(scroll.scrollLeft,420);
+hook.calendarAction("week");scroll.scrollLeft=300;
+const weekCenter=(scroll.scrollLeft+470)/14;resizeTo(390,200);assert.equal(width(),14);assert.equal(el.dataset.calendarDense,"true");assert.equal((scroll.scrollLeft+95)/14,weekCenter);
+resizeTo(1200,260);assert.equal(width(),14);assert.equal(scroll.scrollLeft,300);assert.equal(scroll.scrollTop,54);
+assert.equal(sent.length,0);hook.destroyed();
 ''')
 
     def test_filters_and_chat_viewport_remain_consistent_during_rapid_view_change(self):
