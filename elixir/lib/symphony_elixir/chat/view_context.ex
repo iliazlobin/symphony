@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Chat.ViewContext do
   alias SymphonyElixir.TaskKind
 
   @keys ~w(version project_id filters selected_task_id visible_task_ids viewport_task_ids hidden_columns captured_at board_checked_at truncated mode)
-  @design_reads ~w(symphony_agent_graph symphony_view_context symphony_project_status symphony_search_tasks symphony_pr_session symphony_task_details symphony_read_project_document)
+  @design_reads ~w(symphony_agent_graph symphony_view_context symphony_project_status symphony_search_tasks symphony_pr_session symphony_task_details symphony_read_project_document symphony_propose_design)
   # Retained version-1 messages may refer to the former Ready/Running columns.
   @columns ~w(backlog work in_progress ready running review done)
   @statuses @columns ++ ["attention"]
@@ -50,6 +50,7 @@ defmodule SymphonyElixir.Chat.ViewContext do
   def design?(snapshot), do: is_map(snapshot) and snapshot["mode"] == "design"
 
   @spec allowed_tool?(term(), String.t()) :: boolean()
+  def allowed_tool?(snapshot, "symphony_propose_design"), do: design?(snapshot)
   def allowed_tool?(snapshot, name), do: not design?(snapshot) or name in @design_reads
 
   @spec task_ids(map()) :: [String.t()]

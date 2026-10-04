@@ -1111,6 +1111,37 @@ defmodule SymphonyElixir.ChatLiveTest do
     refute Map.has_key?(last["view_context"], "mode")
   end
 
+  test "Design corrections expose a safe browser review link without execution confirmation", ctx do
+    suggestion = %{
+      "version" => 1,
+      "project" => "alpha",
+      "section" => "data",
+      "base_document" => "design-fixture",
+      "base_revision" => 7,
+      "changes" => [%{"op" => "add_node", "node" => %{"kind" => "entity", "title" => "Event", "text" => "id: UUID"}}]
+    }
+
+    message = %{
+      "id" => "visual-feedback",
+      "role" => "assistant",
+      "text" => "Review the proposed entity.",
+      "view_context" => %{"version" => 1, "project_id" => "alpha", "mode" => "design"},
+      "widgets" => [%{"type" => "design_suggestion", "suggestion" => suggestion}]
+    }
+
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    {:ok, _} = FixtureStore.put(Map.put(chat, "messages", [message]))
+    view = embedded_view(ctx, nil)
+    send(view.pid, {:design_mode, true})
+    assert eventually(fn -> has_element?(view, "[data-review-design]", "Review on board") end)
+    html = render(view)
+    [encoded] = html |> Floki.parse_fragment!() |> Floki.find("[data-review-design]") |> Floki.attribute("data-design-suggestion")
+    assert Jason.decode!(encoded) == suggestion
+    refute has_element?(view, "[phx-click=decide]")
+    assert {:ok, retained} = FixtureStore.get("alpha", "a1", nil)
+    assert retained["messages"] == [message]
+  end
+
   test "Design shows its turns without operational reports and preserves the full planning history", ctx do
     design = %{"version" => 1, "project_id" => "alpha", "mode" => "design"}
     message = fn id, role, extra -> Map.merge(%{"id" => id, "role" => role, "text" => id, "widgets" => []}, extra) end

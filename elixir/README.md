@@ -835,14 +835,26 @@ for commands, limitations and the existing GitHub task workflow.
 Use the [workspace service](../profiles/events-concierge/README.md#workspace-service)
 for one public listener and shared sign-in. Project → Task → Work selectors navigate
 within that origin. **Design / Kanban / Graph / Gantt** sit beside the project selector.
-Design starts with a brief, then functional/quality requirements, entities, components/flows
-and decisions. Section questions prefill project chat without submitting or replacing an
-unsent message. Design shows its own discussion; operational history remains in planning
-views. Switching projects keeps Design selected. Design turns can read project facts but cannot change goals, delegate,
-propose actions or create tasks; queued turns retain their own mode. The illustrative
-Events Concierge example fills only empty fields. Draft edits autosave per project in
-this browser, with a not-saved indicator on failure; they are not shared or backed up
-and do not publish to Notion. **Published design** links the existing Notion record.
+Design keeps five vertical steps: brief, requirements, data, architecture and decisions.
+Each step has an editable whiteboard with notes, component/entity cards, labelled
+connections and freehand sketches; pan, zoom, Fit and undo keep editing simple. Existing
+text drafts migrate onto note cards without discarding their original browser record.
+Entity fields use plain lines, and relationship labels can include `1 → many`.
+
+**Get feedback** prepares project chat without submitting or replacing an unsent message.
+Structured suggestions open a change preview; **Apply** changes only the browser draft,
+with undo, after checking the project and exact draft revision. New edits invalidate old
+suggestions. Freehand strokes remain editable annotations; model feedback covers the
+structured cards and connections. Notes over 600 characters remain intact; feedback can
+add a separate note or adjust its title/position. Design turns cannot create tasks,
+delegate, change
+goals or propose execution actions. Each queued turn retains its mode. Operational
+history remains in planning views, and project switching retains Design.
+
+Draft edits autosave per project in this browser. Storage failures and concurrent-tab
+changes are reported rather than overwriting another draft. Drafts are not shared or
+independently backed up and do not publish to Notion. **Published design** opens the
+existing Notion record. The Events Concierge example remains illustrative.
 Kanban / Graph / Gantt share filters,
 selected task and retained Work chat. Card `↑` / `↓` counts open the focused dependency
 graph; **Show on board** returns to Kanban. Graph supports background drag, wheel/pinch

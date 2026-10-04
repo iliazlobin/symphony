@@ -1201,7 +1201,11 @@ defmodule SymphonyElixirWeb.ChatPanel do
     assigns = assign(assigns, type: widget_type(assigns.widget), task: map(assigns.widget["task"]))
 
     ~H"""
-    <section :if={@type in ["tasks", "task", "status", "proposal", "receipt"]} class={"chat-widget chat-widget-#{@type}"}>
+    <section :if={@type in ["tasks", "task", "status", "proposal", "receipt", "design_suggestion"]} class={"chat-widget chat-widget-#{@type}"}>
+      <div :if={@type == "design_suggestion"} class="design-suggestion-reference">
+        <strong>Suggested design changes</strong><p class="muted">Review the changes on your board before applying them.</p>
+        <button type="button" class="button" data-review-design data-design-suggestion={Jason.encode!(map(@widget["suggestion"]))}>Review on board ↗</button>
+      </div>
       <div :if={@type == "tasks"}>
         <div class="widget-heading"><strong>{text(@widget["title"] || "Tasks")}</strong><a :if={reference_url(@widget["url"], @project)} href={reference_url(@widget["url"], @project)} phx-target={@myself} phx-click={if @embedded && board_link?(@widget["url"], @project && @project["id"]), do: "board-link"} phx-value-url={@widget["url"]}>Open filtered board ↗</a></div>
         <.source_state widget={@widget} />

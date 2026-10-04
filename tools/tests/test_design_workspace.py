@@ -54,6 +54,7 @@ function mount(project = "github:example/events-concierge", options = {}) {
     querySelectorAll: selector => selector === "[data-design-field]" ? fields :
       selector === "[data-design-section]" ? tabs : selector === "[data-design-tab]" ? panels : [],
     querySelector(selector) {
+      if (selector === "[data-design-canvas]") return options.visualRoot ? {} : null;
       if (selector === "[data-design-storage-label]") return status;
       if (selector === "[data-design-progress]") return progress;
       return marks.get(selector.match(/^\[data-design-section-status="([^"]+)"\]$/)?.[1]) || null;
@@ -125,6 +126,49 @@ assert.equal(JSON.parse(stored.get(key(project))).fields.brief.length, 12000);
 const before = stored.get(key(project));
 current.dispatch("input", {target: {matches: () => false, value: "ignored"}});
 assert.equal(stored.get(key(project)), before); assert.equal(sent.length, 0);
+''')
+
+    def test_visual_migration_preserves_original_text_and_reloads_the_canvas(self):
+        self.run_hook(r'''
+const project = "github:example/events-concierge";
+let doc = {version: 1, project, revision: 4, boards: {data: {nodes: []}}};
+sandbox.window.SymphonyDesignCanvas = {
+ validate: (value, scope) => value?.project === scope && Number.isInteger(value.revision),
+ mount: (_root, options) => {
+   if (options.document) doc = plain(options.document);
+   return {select() {}, document: () => plain(doc), refreshFields() {doc.revision++;}, destroy() {}};
+ }
+};
+const fields = Object.fromEntries(Object.keys(fieldSections).map(name => [name, "Original " + name]));
+const raw = JSON.stringify({version: 1, project, section: "data", fields});
+stored.set(key(project), raw);
+let current = mount(project, {visualRoot: true});
+assert.equal(stored.get(key(project)), raw); // Mount never replaces existing evidence.
+assert.equal(current.field("brief").value, "Original brief");
+current.edit("entities", "Reviewed entities");
+let saved = JSON.parse(stored.get(key(project)));
+assert.equal(saved.version, 2); assert.equal(saved.canvas.revision, 5);
+assert.equal(saved.fields.brief, "Original brief");
+assert.equal(saved.fields.entities, "Reviewed entities");
+assert([...stored.entries()].some(([k,v]) => k.startsWith(key(project) + ":recovery:") && v === raw));
+current.hook.destroyed(); current = mount(project, {visualRoot: true});
+assert.equal(current.hook.section, "data"); assert.equal(current.field("entities").value, "Reviewed entities");
+assert.equal(current.hook.canvas.document().revision, 5);
+const invalidRaw = JSON.stringify({...saved, canvas: {...saved.canvas, project: "other"}});
+stored.set(key(project), invalidRaw); current.hook.destroyed(); current = mount(project, {visualRoot: true});
+assert.equal(current.hook.saved, false); assert.equal(stored.get(key(project)), invalidRaw);
+''')
+
+    def test_concurrent_tab_edits_are_preserved_instead_of_overwritten(self):
+        self.run_hook(r'''
+const first = mount(); first.edit("brief", "Original");
+const second = mount(); second.edit("brief", "Newer tab");
+const remote = stored.get(first.hook.key);
+first.edit("entities", "Local unsaved work");
+assert.equal(stored.get(first.hook.key), remote);
+assert.equal(first.hook.saved, false);
+assert.equal(first.field("entities").value, "Local unsaved work");
+assert.equal(first.status.textContent, "Draft changed in another tab · reload before editing");
 ''')
 
     def test_invalid_or_unreadable_storage_is_not_claimed_saved_or_overwritten(self):

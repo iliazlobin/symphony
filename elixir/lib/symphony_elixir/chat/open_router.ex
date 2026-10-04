@@ -212,6 +212,10 @@ defmodule SymphonyElixir.Chat.OpenRouter do
 
   defp validate_call(_, _state), do: fail(:forbidden_tool)
 
+  defp valid_schema?(%{"oneOf" => choices} = schema) when is_list(choices) and length(choices) in 1..8 do
+    map_size(schema) == 1 and Enum.all?(choices, &valid_schema?/1)
+  end
+
   defp valid_schema?(%{"type" => types} = schema) when is_list(types), do: types != [] and Enum.all?(types, &valid_schema?(Map.put(schema, "type", &1)))
 
   defp valid_schema?(%{"type" => "object"} = schema) do
@@ -231,6 +235,8 @@ defmodule SymphonyElixir.Chat.OpenRouter do
 
   defp valid_schema?(_), do: false
   defp nonnegative?(value), do: is_integer(value) and value >= 0
+
+  defp valid_value?(value, %{"oneOf" => choices}), do: Enum.count(choices, &valid_value?(value, &1)) == 1
 
   defp valid_value?(value, %{"type" => types} = schema) when is_list(types), do: Enum.any?(types, &valid_value?(value, Map.put(schema, "type", &1)))
 

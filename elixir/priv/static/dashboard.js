@@ -1186,21 +1186,47 @@
       this.tabs = [...this.el.querySelectorAll("[data-design-section]")];
       this.panels = [...this.el.querySelectorAll("[data-design-tab]")];
       const outline = this.el.querySelector('[role="tablist"]');
-      const media = window.matchMedia?.("(max-width:700px)");
-      const orientation = () => outline?.setAttribute("aria-orientation", media?.matches ? "horizontal" : "vertical");
-      orientation(); media?.addEventListener("change", orientation, {signal: this.abort.signal});
+      outline?.setAttribute("aria-orientation", "vertical");
       this.key = "symphony.design.v1:" + this.el.dataset.designProject;
       this.saved = false;
       this.load();
+      if (window.SymphonyDesignCanvas && this.el.querySelector("[data-design-canvas]")) {
+        this.canvas = window.SymphonyDesignCanvas.mount(this.el, {
+          fields: this.fields, document: this.initialCanvas,
+          onChange: () => { this.save(); this.progress(); }, ask: instruction => this.ask(instruction),
+          canApply: () => {
+            try {
+              if (localStorage.getItem(this.key) !== this.loadedRaw) { this.status("Draft changed in another tab · reload before applying"); return false; }
+              return true;
+            } catch { this.status("Draft storage is unavailable · keep this tab open"); return false; }
+          }
+        });
+        this.canvas.select(this.section);
+        if (this.loadedVersion === 1) this.recoveryRaw = this.loadedRaw;
+      }
+      if (typeof document !== "undefined") document.addEventListener?.("click", event => {
+        const button = event.target.closest?.("[data-review-design]");
+        if (!button || !this.canvas) return;
+        const chat = button.closest("[data-design-mode=true]");
+        if (chat?.dataset.project !== this.el.dataset.designProject) return;
+        try {
+          const suggestion = JSON.parse(button.dataset.designSuggestion);
+          if (this.canvas.proposal(suggestion)) this.select(suggestion.section);
+        } catch { this.status("This suggestion could not be opened. Your draft is kept."); }
+      }, {signal: this.abort.signal});
+      window.addEventListener?.("storage", event => {
+        if (event.key === this.key && event.newValue !== this.loadedRaw) this.status("Draft changed in another tab · reload before editing");
+      }, {signal: this.abort.signal});
       this.el.addEventListener("input", event => {
         if (!event.target.matches("[data-design-field]")) return;
         event.target.value = event.target.value.slice(0, 12000);
-        this.save(); this.progress();
+        this.canvas?.refreshFields(); this.save(); this.progress();
       }, {signal: this.abort.signal});
       this.el.addEventListener("click", event => {
         const tab = event.target.closest("[data-design-section]");
         if (tab) { this.select(tab.dataset.designSection); this.save(); }
         if (event.target.closest("[data-design-example]")) this.example();
+        if (event.target.closest("[data-design-feedback]")) this.ask("Review the current design step. Suggest at most three focused improvements. For concrete corrections to structured cards or connectors, call symphony_propose_design with the supplied project, section, base_document and base_revision. Do not treat a freehand sketch as modelled structure.");
         const prompt = event.target.closest("[data-design-prompt]");
         if (prompt) this.ask(prompt.dataset.designPrompt);
       }, {signal: this.abort.signal});
@@ -1219,14 +1245,18 @@
         raw = localStorage.getItem(this.key);
         if (raw) {
           draft = JSON.parse(raw);
-          if (!draft || draft.version !== 1 || draft.project !== this.el.dataset.designProject ||
+          if (!draft || ![1, 2].includes(draft.version) || draft.project !== this.el.dataset.designProject ||
               !draft.fields || typeof draft.fields !== "object" || Array.isArray(draft.fields) ||
-              this.fields.some(field => typeof draft.fields[field.dataset.designField] !== "string" || draft.fields[field.dataset.designField].length > 12000)) {
+              this.fields.some(field => typeof draft.fields[field.dataset.designField] !== "string" || draft.fields[field.dataset.designField].length > 12000) ||
+              (draft.version === 2 && (!window.SymphonyDesignCanvas || !window.SymphonyDesignCanvas.validate(draft.canvas, this.el.dataset.designProject)))) {
             draft = null; invalid = true;
           }
         }
         this.saved = !invalid;
       } catch { invalid = true; this.saved = false; this.readUnavailable = raw === null; }
+      this.loadedRaw = raw;
+      this.loadedVersion = draft?.version;
+      this.initialCanvas = draft?.canvas;
       this.recoveryRaw = invalid ? raw : null;
       for (const field of this.fields) field.value = draft?.fields[field.dataset.designField] || "";
       this.select(draft?.section || "brief");
@@ -1240,14 +1270,30 @@
         tab.setAttribute("aria-selected", String(active)); tab.tabIndex = active ? 0 : -1;
       }
       for (const panel of this.panels) panel.hidden = panel.dataset.designTab !== this.section;
+      const guides = {
+        brief: ["Shape the idea", "Who is this for, and what problem should it solve?", "Start with a few notes. Sketch an idea if words are not enough."],
+        requirements: ["Define what matters", "What must work? What quality targets matter? Keep unknown targets visible.", "Behavior and non-functional requirements, side by side."],
+        data: ["Model the data", "Add an entity, list its fields, then connect it to another. Use labels such as 1 → many.", "Entities and relationships. Keep it conceptual."],
+        architecture: ["Connect the system", "Draw the main components and trace a user action. Label important boundaries and failures.", "Components and the main data flows."],
+        decisions: ["Resolve the questions", "What is decided, what is uncertain, and what evidence will help?", "Decisions, tradeoffs and focused validation."]
+      };
+      for (const [selector, value] of [["[data-design-heading]", guides[this.section][0]], ["[data-design-guide]", guides[this.section][1]], ["[data-design-description]", guides[this.section][2]]]) {
+        const label = this.el.querySelector(selector); if (label) label.textContent = value;
+      }
+      this.el.querySelector("#design-canvas-panel")?.setAttribute("aria-labelledby", "design-tab-" + this.section);
+      this.canvas?.select(this.section);
     },
     save() {
-      const draft = {version: 1, project: this.el.dataset.designProject, section: this.section,
+      const draft = {version: this.canvas ? 2 : 1, project: this.el.dataset.designProject, section: this.section,
         fields: Object.fromEntries(this.fields.map(field => [field.dataset.designField, field.value]))};
+      if (this.canvas) draft.canvas = this.canvas.document();
       try {
         if (this.readUnavailable) {
-          this.recoveryRaw = localStorage.getItem(this.key);
+          this.loadedRaw = this.recoveryRaw = localStorage.getItem(this.key);
           this.readUnavailable = false;
+        }
+        if (localStorage.getItem(this.key) !== this.loadedRaw) {
+          this.status("Draft changed in another tab · reload before editing"); this.saved = false; return;
         }
         if (this.recoveryRaw !== null) {
           // Preserve malformed/older records before an ordinary edit can replace them.
@@ -1256,7 +1302,8 @@
           localStorage.setItem(recoveryKey, this.recoveryRaw);
           this.recoveryRaw = null;
         }
-        localStorage.setItem(this.key, JSON.stringify(draft)); this.saved = true;
+        const serialized = JSON.stringify(draft);
+        localStorage.setItem(this.key, serialized); this.loadedRaw = serialized; this.saved = true;
       }
       catch { this.saved = false; }
       this.status(this.saved ? "Draft · saved in this browser" : "Draft · not saved; keep this tab open");
@@ -1265,7 +1312,7 @@
     progress() {
       let drafted = 0;
       for (const panel of this.panels) {
-        const filled = [...panel.querySelectorAll("[data-design-field]")].some(field => field.value.trim());
+        const filled = [...panel.querySelectorAll("[data-design-field]")].some(field => field.value.trim()) || this.canvas?.hasContent?.(panel.dataset.designTab);
         if (filled) drafted++;
         const mark = this.el.querySelector(`[data-design-section-status="${panel.dataset.designTab}"]`);
         if (mark) { mark.textContent = filled ? "•" : "○"; mark.setAttribute("aria-label", filled ? "Draft started" : "Empty section"); }
@@ -1285,7 +1332,7 @@
         decisions: "Open: first audience, geography and source coverage.\nOpen: saved choices need accounts?\nValidate: can users find a relevant event in a short discovery session?\nDeeper detail: deduplication and source failure recovery."
       };
       for (const field of this.fields) if (!field.value.trim()) field.value = example[field.dataset.designField] || "";
-      this.progress(); this.save();
+      this.canvas?.refreshFields(); this.canvas?.example?.(); this.progress(); this.save();
     },
     ask(instruction) {
       const chat = this.el.closest("#task-board-app")?.querySelector("#chat-app");
@@ -1295,7 +1342,30 @@
       }
       if (input.value.trim()) { this.status("Your chat has an unsent draft. Send or clear it first."); input.focus(); return; }
       // Bound by UTF-8 bytes, because the host message limit is in bytes, not characters.
-      const text = JSON.stringify(Object.fromEntries(this.fields.filter(field => field.value.trim()).map(field => [field.dataset.designField, field.value])));
+      const canvas = this.canvas?.document();
+      let source;
+      if (canvas) {
+        const board = canvas.boards[this.section];
+        const ids = new Set(board.nodes.slice(0, 12).map(node => node.id));
+        const nodes = board.nodes.slice(0, 12).map(node => ({...node, text: (node.text || "").slice(0, 600), text_truncated: (node.text || "").length > 600}));
+        const edges = board.edges.filter(edge => ids.has(edge.from) && ids.has(edge.to)).slice(0, 24);
+        const names = {brief: ["brief"], requirements: ["functional", "quality"], data: ["entities"], architecture: ["components", "flows"], decisions: ["decisions"]}[this.section];
+        const activeFields = this.fields.filter(field => names.includes(field.dataset.designField));
+        source = {project: canvas.project, section: this.section, base_document: canvas.document_id, base_revision: canvas.revision,
+          structured_board: {nodes, edges},
+          sketch_notice: "Freehand strokes are not included. Feedback covers structured cards and connectors only.",
+          fields: Object.fromEntries(activeFields.map(field => [field.dataset.designField, field.value.slice(0, 600)])),
+          truncated: board.nodes.length > nodes.length || board.edges.length > edges.length ||
+            board.nodes.some(node => (node.text || "").length > 600) || activeFields.some(field => field.value.length > 600)};
+        // Keep valid JSON even for multibyte, large scenes. A partial snapshot must say so.
+        while (byteLength(JSON.stringify(source)) > 12000 && source.structured_board.nodes.length) {
+          source.structured_board.nodes.pop();
+          const kept = new Set(source.structured_board.nodes.map(node => node.id));
+          source.structured_board.edges = source.structured_board.edges.filter(edge => kept.has(edge.from) && kept.has(edge.to));
+          source.truncated = true;
+        }
+      } else source = Object.fromEntries(this.fields.filter(field => field.value.trim()).map(field => [field.dataset.designField, field.value]));
+      const text = JSON.stringify(source);
       let excerpt = "", bytes = 0;
       for (const char of text) { const size = byteLength(char); if (bytes + size > 12000) break; excerpt += char; bytes += size; }
       const safeInstruction = instruction.slice(0, 500);
@@ -1304,7 +1374,7 @@
       input.dispatchEvent(new Event("input", {bubbles: true})); input.focus();
       this.status("Question ready in project chat · review and send");
     },
-    destroyed() { this.abort.abort(); }
+    destroyed() { this.canvas?.destroy(); this.abort.abort(); }
   };
   window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace, IssueSwitcher, IssuePRMenu, WorkflowCanvas, DesignWorkspace};
 })();
