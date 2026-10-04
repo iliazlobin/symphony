@@ -1909,7 +1909,9 @@ defmodule SymphonyElixir.DashboardLiveTest do
     html = html_response(get(build_conn(), "/"), 200)
     assert html =~ ~r|/dashboard\.js\?v=[0-9a-f]{12}|
     conn = get(build_conn(), "/dashboard.js")
-    assert response(conn, 200) == File.read!("priv/static/dashboard.js")
+    expected = File.read!("priv/static/design-canvas.js") <> "\n" <> File.read!("priv/static/dashboard.js")
+    assert response(conn, 200) == expected
+    assert conn.resp_body =~ "SymphonyDesignCanvas"
     assert Plug.Conn.get_resp_header(conn, "content-type") == ["application/javascript; charset=utf-8"]
     assert conn.resp_body =~ "BoardDialog"
     assert conn.resp_body =~ "TaskBoard"
