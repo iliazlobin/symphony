@@ -955,6 +955,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#operator-scope [data-working-count='1']", "1 active")
     for n <- 1..4, do: assert(has_element?(view, "#issue-pr-menu a[href='https://github.com/example/fixture/pull/#{n}']", "PR ##{n}"))
     assert has_element?(view, "#issue-pr-menu [data-pr-number='4']", "Merged")
+    assert has_element?(view, "#issue-pr-menu [data-pr-number='4'] .work-option-name")
+    refute has_element?(view, "#issue-pr-menu .agent-role")
     assert has_element?(view, ".issue-chat-identity > details:first-child#issue-pr-menu")
     refute has_element?(view, "#main-chat-button")
     refute has_element?(view, ".embedded-chat .chat-session-tabs")
@@ -1085,8 +1087,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, row <> " .issue-option-priority", "P2")
     assert has_element?(view, row <> " .issue-option-pr-count", "2 PRs")
     other = "#issue-options [data-issue-id='github:example/fixture:3']"
-    assert has_element?(view, other, "Created —")
-    assert has_element?(view, other, "Priority —")
+    refute has_element?(view, other, "Created —")
+    refute has_element?(view, other <> " .issue-option-priority")
     assert has_element?(view, other <> " .issue-option-pr-count", "1+ PR")
 
     render_click(view, "select-task", %{"id" => "github:example/fixture:2"})
@@ -1110,7 +1112,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     render_click(view, "select-task", %{"id" => "github:example/fixture:2"})
     render(view)
     assert has_element?(view, "#issue-pr-menu summary", "Work All")
-    assert has_element?(view, "#issue-options [data-issue-id='github:example/fixture:2'] .issue-option-pr-count", "0 PRs")
+    refute has_element?(view, "#issue-options [data-issue-id='github:example/fixture:2'] .issue-option-pr-count")
     assert has_element?(view, "#issue-pr-menu", "No linked pull requests yet.")
 
     for {status, label, message} <- [
@@ -1123,7 +1125,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
       refresh(view, ctx.runtime, update_task(board, "2", &%{&1 | github_status: status}))
       assert has_element?(view, "#issue-pr-menu .issue-options-empty", message)
       assert label in ["Unavailable", "Not loaded", "Incomplete"]
-      assert has_element?(view, "#issue-options [data-issue-id='github:example/fixture:2'] .issue-option-pr-count", "PRs —")
+      refute has_element?(view, "#issue-options [data-issue-id='github:example/fixture:2'] .issue-option-pr-count")
       assert has_element?(view, "#issue-pr-menu [role=status]", message)
       assert has_element?(view, "#issue-pr-menu summary", "Work All")
       refute has_element?(view, "#issue-pr-menu", "No linked pull requests yet.")
@@ -1639,6 +1641,23 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#lane-review [data-task-id='github:example/fixture:4']")
   end
 
+  test "Design precedes planning views, keeps board focus and never dispatches", ctx do
+    view = authorized_board_view()
+    task = "github:example/fixture:2"
+    render_patch(view, "/?" <> URI.encode_query(%{"chat_task" => task, "priority" => "P1"}))
+    view |> element("#view-design") |> render_click()
+    assert has_element?(view, "#board-view-picker #view-design:first-child[aria-current=page]")
+    assert has_element?(view, "#design-view [data-design-project='github:example/fixture']")
+    assert has_element?(view, "#chat-app[data-design-mode=true]")
+    assert :sys.get_state(view.pid).socket.assigns.chat_task_id == task
+    render_click(view, "switch-view", %{"view" => "kanban"})
+    assert has_element?(view, "#chat-app[data-design-mode=false]")
+    assert has_element?(view, "#lane-work [data-task-id='#{task}'][data-selected=true]")
+    assert :sys.get_state(view.pid).socket.assigns.url_filters == %{"priority" => "P1"}
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:settings_command, _}
+  end
+
   test "planning views share task focus, filters and links without dispatch", ctx do
     view = authorized_board_view()
     filters = %{"project" => "github:example/fixture", "priority" => "P1"}
@@ -1890,7 +1909,9 @@ defmodule SymphonyElixir.DashboardLiveTest do
     html = html_response(get(build_conn(), "/"), 200)
     assert html =~ ~r|/dashboard\.js\?v=[0-9a-f]{12}|
     conn = get(build_conn(), "/dashboard.js")
-    assert response(conn, 200) == File.read!("priv/static/dashboard.js")
+    expected = File.read!("priv/static/design-canvas.js") <> "\n" <> File.read!("priv/static/dashboard.js")
+    assert response(conn, 200) == expected
+    assert conn.resp_body =~ "SymphonyDesignCanvas"
     assert Plug.Conn.get_resp_header(conn, "content-type") == ["application/javascript; charset=utf-8"]
     assert conn.resp_body =~ "BoardDialog"
     assert conn.resp_body =~ "TaskBoard"

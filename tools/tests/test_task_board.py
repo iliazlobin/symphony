@@ -44,7 +44,7 @@ function mount(savedPrefs = {}, urlFilters = {}, projects = [{id:"github:example
       return elements.get(selector);
     }};
   elements.set("[data-mobile-lane]",{value:"",options:[...lanes.keys()].map(value=>({value}))});
-  const sandbox = {TextEncoder, AbortController, URLSearchParams, window:{matchMedia:()=>({matches:false,addEventListener(){}}),addEventListener(){},getSelection:()=>null,location:{search:"",assign:url=>navigations.push(url)},innerWidth:1400,innerHeight:900},document:{addEventListener(){}},localStorage:{getItem:key=>saved.get(key),setItem:(key,value)=>saved.set(key,value)},setTimeout:(fn)=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id)};
+  const sandbox = {TextEncoder, AbortController, URL, URLSearchParams, window:{matchMedia:()=>({matches:false,addEventListener(){}}),addEventListener(){},getSelection:()=>null,location:{href:"http://localhost:8778/",search:"",assign:url=>navigations.push(url)},innerWidth:1400,innerHeight:900},document:{addEventListener(){}},localStorage:{getItem:key=>saved.get(key),setItem:(key,value)=>saved.set(key,value)},setTimeout:(fn)=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id)};
   vm.runInNewContext(source,sandbox);
   const hook={...sandbox.window.SymphonyHooks.TaskBoard,el,pushEvent:(event,payload)=>sent.push({event,payload})};
   hook.mounted();
@@ -77,6 +77,11 @@ assert.equal(JSON.stringify(picker.hook.prefs),beforeRemote);assert.equal(picker
 assert.deepEqual(plain(picker.hook.filterValues("project", ["github:example/remote"])),[]);
 picker.elements.get("#filter-project").value = "example/remote";
 assert.deepEqual(plain(picker.hook.drawOptions("project")),[["github:example/remote","Remote project","http://localhost:8779/"]]);
+// Design project navigation keeps Design selected without carrying another project's task focus.
+picker.el.dataset.boardView="design";
+assert.deepEqual(plain(picker.hook.drawOptions("project")),[["github:example/remote","Remote project","http://localhost:8779/?view=design"]]);
+picker.hook.toggle("project","github:example/remote");
+assert.equal(picker.navigations.at(-1),"http://localhost:8779/?view=design");
 const single = mount({}, {}, [projects[0]], projectLinks);
 assert.equal(single.elements.get("#filter-project").placeholder,"Example project");
 const multi = mount({project:projects.map(project=>project.id)}, {}, projects, projectLinks);

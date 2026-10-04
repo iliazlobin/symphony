@@ -594,16 +594,14 @@ this is not a multi-tenant role system.
 Google mode requires browser sign-in for the whole board and chat. OAuth callbacks
 validate state, nonce, PKCE and Google-signed identity claims. Browser cookies contain
 an opaque reference to a bounded in-memory grant; no Google access or refresh token
-is retained in the cookie. Sign-out and restart invalidate browser sessions without
-erasing conversations. Identity configuration changes invalidate existing grants.
-Switching projects reuses a valid destination session immediately. Otherwise the
-destination tries Google single sign-on once, without an account picker, using its
-own CSRF-protected form and OAuth callback. Google may still require account selection
-or consent; that returns to the ordinary sign-in form. Explicit sign-out disables
-automatic continuation for that project's browser session until manual sign-in.
-Projects keep separate cookies and authorization policies; no credentials or grants
-are transferred between controllers. A restart still invalidates local grants;
-switching through the project picker can establish a new one using Google sign-in.
+is retained in the cookie. Identity configuration changes invalidate existing grants.
+The workspace service owns one revocable browser session for projects with the same
+reviewed admission policy. Switching projects reuses that session. Its proxy forwards
+browser cookies without retaining its own copies. Sign-out or workspace restart ends
+the shared grant without erasing conversations; a project-engine restart preserves it.
+Standalone controllers retain separate cookies and grants. Their project links try
+Google single sign-on once when necessary; Google may still require account selection
+or consent. Explicit sign-out disables that automatic continuation until manual sign-in.
 Restart after provider, public-origin or private service-environment changes, then
 open the configured address; the socket origin policy is loaded at startup.
 Token-based local API/CLI clients
@@ -836,7 +834,28 @@ for commands, limitations and the existing GitHub task workflow.
 
 Use the [workspace service](../profiles/events-concierge/README.md#workspace-service)
 for one public listener and shared sign-in. Project → Task → Work selectors navigate
-within that origin. **Kanban / Graph / Gantt** beside the project selector share filters,
+within that origin. **Design / Kanban / Graph / Gantt** sit beside the project selector.
+Design keeps five vertical steps: brief, requirements, data, architecture and decisions.
+Each step has an editable whiteboard with notes, component/entity cards, labelled
+connections and freehand sketches; pan, zoom, Fit and undo keep editing simple. Existing
+text drafts migrate onto note cards without discarding their original browser record.
+Entity fields use plain lines, and relationship labels can include `1 → many`.
+
+**Get feedback** prepares project chat without submitting or replacing an unsent message.
+Structured suggestions open a change preview; **Apply** changes only the browser draft,
+with undo, after checking the project and exact draft revision. New edits invalidate old
+suggestions. Freehand strokes remain editable annotations; model feedback covers the
+structured cards and connections. Notes over 600 characters remain intact; feedback can
+add a separate note or adjust its title/position. Design turns cannot create tasks,
+delegate, change
+goals or propose execution actions. Each queued turn retains its mode. Operational
+history remains in planning views, and project switching retains Design.
+
+Draft edits autosave per project in this browser. Storage failures and concurrent-tab
+changes are reported rather than overwriting another draft. Drafts are not shared or
+independently backed up and do not publish to Notion. **Published design** opens the
+existing Notion record. The Events Concierge example remains illustrative.
+Kanban / Graph / Gantt share filters,
 selected task and retained Work chat. Card `↑` / `↓` counts open the focused dependency
 graph; **Show on board** returns to Kanban. Graph supports background drag, wheel/pinch
 zoom, **Fit**, **Center selected**, keyboard controls and an expandable text equivalent.

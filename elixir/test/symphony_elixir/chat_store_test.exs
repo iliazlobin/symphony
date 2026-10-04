@@ -53,7 +53,24 @@ defmodule SymphonyElixir.Chat.StoreTest do
 
     defp respond("view", opts, _emit, tool) do
       send(opts.test_pid, {:view_runtime, opts.view_context, opts.instructions})
+      send(opts.test_pid, {:view_catalog, opts.tools, opts.thread_tools})
       send(opts.test_pid, {:view_tool, tool.("symphony_view_context", %{})})
+      {:ok, %{status: :completed}}
+    end
+
+    defp respond("design guard", opts, emit, tool) do
+      send(opts.test_pid, {:design_runtime, opts.view_context, opts.instructions, opts.tools, opts.thread_tools})
+
+      receive do
+        :check_design -> :ok
+      end
+
+      for name <- ~w(symphony_propose_action symphony_delegate symphony_report symphony_set_goal) do
+        send(opts.test_pid, {:design_tool, name, tool.(name, %{})})
+      end
+
+      send(opts.test_pid, {:design_read, tool.("symphony_view_context", %{})})
+      emit.({:delta, "Keep the first design small."})
       {:ok, %{status: :completed}}
     end
 
@@ -148,6 +165,21 @@ defmodule SymphonyElixir.Chat.StoreTest do
       emit.({:delta, "Continued from saved context"})
       {:ok, %{status: :completed}}
     end
+  end
+
+  defmodule DesignTools do
+    alias SymphonyElixir.Chat.StoreTest.TestTools
+    alias SymphonyElixir.Chat.Tools
+
+    def specs, do: Tools.specs()
+    def call(name, args, context), do: TestTools.call(name, args, context)
+
+    def confirm(proposal, context) do
+      send(context.auth.test_pid, {:operator_view, context.view_context})
+      TestTools.confirm(proposal, context)
+    end
+
+    def reconcile(proposal, context), do: TestTools.reconcile(proposal, context)
   end
 
   defmodule TestTools do
@@ -920,6 +952,85 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert_receive {:view_runtime, nil, _}, 1_000
     assert_receive {:view_tool, %{"snapshot" => nil}}
     wait_chat(%{c | server: server}, chat, &(&1["status"] == "idle"))
+  end
+
+  test "Design restrictions remain bound to each queued turn and suppress parent coordination", c do
+    stop_supervised!(Store)
+    opts = Keyword.put(c.opts, :tools, DesignTools)
+    server = start_supervised!({Store, opts})
+    c = %{c | server: server, opts: opts}
+    assert {:ok, parent} = Store.ensure_conversation(c.project, nil, c.auth, server)
+    assert {:ok, chat} = Store.ensure_conversation(c.project, c.project <> ":1", c.auth, server)
+    input = %{"version" => 1, "project_id" => c.project, "mode" => "design"}
+    assert {:ok, design} = ViewContext.validate(input, c.project)
+    assert {:ok, _} = Store.send_message_with_context(c.project, chat["id"], "design guard", "design-first", design, c.auth, server)
+    assert_receive {:runtime, worker, _, "design guard"}
+    assert_receive {:design_runtime, ^design, instructions, specs, thread_specs}
+    assert instructions =~ "This turn is Design-only"
+    assert instructions =~ "under 180 words"
+    assert instructions =~ "symphony_propose_design"
+    assert instructions =~ "user must Apply"
+    assert instructions =~ "Freehand strokes remain manually editable"
+    refute instructions =~ "When the current human message asks to create tasks"
+    refute Enum.any?(specs, &(&1["name"] in ~w(symphony_propose_action symphony_delegate symphony_report symphony_set_goal)))
+    assert Enum.any?(specs, &(&1["name"] == "symphony_project_status"))
+    assert Enum.any?(specs, &(&1["name"] == "symphony_propose_design"))
+    assert Enum.any?(thread_specs, &(&1["name"] == "symphony_propose_action"))
+    assert Enum.any?(thread_specs, &(&1["name"] == "symphony_delegate"))
+    assert Enum.any?(thread_specs, &(&1["name"] == "symphony_propose_design"))
+    ordinary_specs = Enum.reject(thread_specs, &(&1["name"] == "symphony_propose_design"))
+
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "view", "ordinary-next", c.auth, server)
+    assert {:ok, _} = Store.send_message_with_context(c.project, chat["id"], "view", "design-next", design, c.auth, server)
+    run = :sys.get_state(server).jobs[chat["id"]].run
+    assert {:error, :design_read_only} = GenServer.call(server, {:coordinate, chat["id"], run, "symphony_set_goal", %{"text" => "Must not change", "status" => "active"}, c.auth})
+    send(worker, :check_design)
+
+    for name <- ~w(symphony_propose_action symphony_delegate symphony_report symphony_set_goal) do
+      assert_receive {:design_tool, ^name, %{"error" => %{"code" => "design_read_only"}}}
+    end
+
+    assert_receive {:design_read, %{"snapshot" => ^design}}
+    assert_receive {:view_runtime, nil, ordinary_instructions}, 1_000
+    assert_receive {:view_catalog, ^ordinary_specs, ^thread_specs}
+    refute ordinary_instructions =~ "This turn is Design-only"
+    assert_receive {:view_tool, %{"snapshot" => nil}}
+    assert_receive {:view_runtime, ^design, design_instructions}, 1_000
+    assert_receive {:view_catalog, ^specs, ^thread_specs}
+    assert design_instructions =~ "This turn is Design-only"
+    assert_receive {:view_tool, %{"snapshot" => ^design}}
+    completed = wait_chat(c, chat, &(&1["status"] == "idle" and &1["queued_count"] == 0))
+    assert Enum.map(Enum.filter(completed["messages"], &(&1["role"] == "assistant")), & &1["view_context"]) == [design, nil, design]
+    assert completed["proposals"] == []
+    assert completed["agent_goal"] == chat["agent_goal"]
+    assert {:ok, saved_parent} = Store.get(c.project, parent["id"], c.auth, server)
+    refute Enum.any?(saved_parent["messages"] ++ saved_parent["queue"], &(&1["text"] == "Keep the first design small."))
+
+    stop_supervised!(Store)
+    server = start_supervised!({Store, opts})
+    assert {:ok, restored} = Store.get(c.project, chat["id"], c.auth, server)
+    assert restored["messages"] == completed["messages"]
+    assert List.last(Enum.filter(restored["messages"], &(&1["role"] == "user")))["view_context"] == design
+  end
+
+  test "an explicit operator confirmation is not locked by a historical Design turn", c do
+    stop_supervised!(Store)
+    opts = Keyword.put(c.opts, :tools, DesignTools)
+    server = start_supervised!({Store, opts})
+    c = %{c | server: server, opts: opts}
+    {chat, proposal} = propose(c)
+    design = %{"version" => 1, "project_id" => c.project, "mode" => "design"}
+    assert {:ok, _} = Store.send_message_with_context(c.project, chat["id"], "view", "design-before-action", design, c.auth, server)
+    assert_receive {:view_runtime, %{"mode" => "design"}, _}
+    wait_chat(c, chat, &(&1["status"] == "idle"))
+    refute_receive {:confirmed, _}
+
+    assert {:ok, _} = Store.decide(c.project, chat["id"], proposal["id"], "confirm", c.auth, server)
+    assert_receive {:operator_view, ordinary}
+    refute Map.has_key?(ordinary, "mode")
+    assert_receive {:confirmed, %{"id" => id}}
+    assert id == proposal["id"]
+    wait_chat(c, chat, &(hd(&1["proposals"])["status"] == "completed"))
   end
 
   test "malformed and foreign view context never starts inference or changes history", c do

@@ -110,7 +110,7 @@ defmodule SymphonyElixir.ChatLiveTest do
       update(project, id, auth, fn chat ->
         chat = if (chat["queue"] || []) == [], do: Map.put(chat, "queue_paused", false), else: chat
         user = %{"id" => client_id, "role" => "user", "text" => text, "widgets" => [], "view_context" => context}
-        assistant = %{"id" => "response-" <> client_id, "role" => "assistant", "text" => "", "status" => "streaming", "widgets" => []}
+        assistant = %{"id" => "response-" <> client_id, "role" => "assistant", "text" => "", "status" => "streaming", "widgets" => [], "view_context" => context}
 
         if chat["status"] == "running" or chat["queue_paused"] == true or Enum.any?(chat["proposals"] || [], &(&1["status"] == "executing")) do
           Map.update(chat, "queue", [user], &(&1 ++ [user]))
@@ -157,6 +157,7 @@ defmodule SymphonyElixir.ChatLiveTest do
          task_title: nil,
          view_context: session["view_context"],
          read_only: session["read_only"] || false,
+         design_mode: false,
          board_link: nil,
          closed: false
        )}
@@ -166,6 +167,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     def handle_info({:chat_panel, :main}, socket), do: {:noreply, assign(socket, task_id: nil, task_title: nil)}
     def handle_info({:view_context, context}, socket), do: {:noreply, assign(socket, :view_context, context)}
     def handle_info({:project, project}, socket), do: {:noreply, assign(socket, project_id: project, chat_id: nil)}
+    def handle_info({:design_mode, value}, socket), do: {:noreply, assign(socket, :design_mode, value)}
     def handle_info({:read_only, value}, socket), do: {:noreply, assign(socket, :read_only, value)}
 
     def handle_info({:chat_updated, id}, socket) do
@@ -188,7 +190,7 @@ defmodule SymphonyElixir.ChatLiveTest do
       ~H"""
       <main id="board-host" data-board-link={@board_link} data-closed={to_string(@closed)}>
         <.live_component module={ChatPanel} id="management-chat" auth={@auth} csrf_token="fixture-only"
-          embedded={true} project_id={@project_id} chat_id={@chat_id} task_id={@task_id} task_title={@task_title} view_context={@view_context} read_only={@read_only} />
+          embedded={true} project_id={@project_id} chat_id={@chat_id} task_id={@task_id} task_title={@task_title} view_context={@view_context} read_only={@read_only} design_mode={@design_mode} />
       </main>
       """
     end
@@ -960,7 +962,8 @@ defmodule SymphonyElixir.ChatLiveTest do
   test "embedded chat stays open and selects one retained conversation per task and main", ctx do
     view = embedded_view(ctx, view_context())
     assert has_element?(view, "#chat-app[data-chat-id=a1][data-embedded=true]")
-    assert has_element?(view, "#project-agent-breadcrumb[title='Alpha project project agent']", "Alpha project")
+    assert has_element?(view, "#project-agent-breadcrumb[aria-label='Open Alpha project project agent conversation']", "Project")
+    refute has_element?(view, "#operator-scope", "Alpha project")
     refute has_element?(view, "#new-chat-button")
     refute has_element?(view, "button[phx-click=close-panel]")
     refute has_element?(view, "#back-to-chats")
@@ -997,22 +1000,25 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert has_element?(view, "#session-chat-content:not([hidden])")
   end
 
-  test "project agent uses the configured project name and remains searchable with scoped fallbacks", ctx do
+  test "compact project navigation keeps configured identity accessible and searchable", ctx do
     config = Map.put(ctx.config, :server, %{project_links: [%{id: "github:example/repo", label: "Friendly project", url: "http://localhost:8778"}]})
     File.write!(Workflow.workflow_file_path(), "---\n" <> Jason.encode!(config) <> "\n---\nFixture")
     :ok = WorkflowStore.force_reload()
     view = embedded_view(ctx, view_context())
     send(view.pid, {:project, "github:example/repo"})
-    assert has_element?(view, "#project-agent-breadcrumb", "Friendly project")
-    assert has_element?(view, "#issue-option-main", "Friendly project project agent")
+    assert has_element?(view, "#project-agent-breadcrumb[aria-label='Open Friendly project project agent conversation']", "Project")
+    assert has_element?(view, "#issue-option-main[aria-label='Friendly project project agent conversation']", "Project conversation")
+    refute has_element?(view, "#operator-scope", "Friendly project")
     render_change(view, "search-issues", %{"query" => "friendly"})
     assert has_element?(view, "#issue-option-main")
     render_change(view, "search-issues", %{"query" => "Project agent"})
     assert has_element?(view, "#issue-option-main")
+    render_change(view, "search-issues", %{"query" => "Project conversation"})
+    assert has_element?(view, "#issue-option-main")
     render_change(view, "search-issues", %{"query" => "unrelated"})
     refute has_element?(view, "#issue-option-main")
     send(view.pid, {:project, "github:example/fallback"})
-    assert has_element?(view, "#project-agent-breadcrumb", "github:example/fallback")
+    assert has_element?(view, "#project-agent-breadcrumb[aria-label='Open github:example/fallback project agent conversation']", "Project")
     send(view.pid, {:read_only, true})
     assert has_element?(view, ".chat-header", "Project agent")
     refute has_element?(view, "#issue-switcher")
@@ -1084,6 +1090,139 @@ defmodule SymphonyElixir.ChatLiveTest do
 
   defp draft_message(view, message), do: view |> element("#chat-composer") |> render_change(%{"message" => message})
   defp send_message(view, message), do: view |> element("#chat-composer") |> render_submit(%{"message" => message})
+
+  test "Design mode is stamped by the host even without browser context and cannot confirm old proposals", ctx do
+    view = embedded_view(ctx, nil)
+    send(view.pid, {:design_mode, true})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-design-mode=true]") end)
+    view |> element("#chat-composer") |> render_submit(%{"message" => "Explore an idea", "chat_id" => "a1"})
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    message = chat["messages"] |> Enum.filter(&(&1["role"] == "user")) |> List.last()
+    assert message["view_context"] == %{"version" => 1, "project_id" => "alpha", "mode" => "design"}
+    render_click(view, "decide", %{"id" => "existing-proposal", "decision" => "confirm", "chat_id" => "a1"})
+    assert render(view) =~ "Design is discussion only"
+    send(view.pid, {:design_mode, false})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-design-mode=false]") end)
+    send(view.pid, {:view_context, %{"version" => 1, "project_id" => "alpha", "mode" => "design"}})
+    view |> element("#chat-composer") |> render_submit(%{"message" => "Ordinary discussion", "chat_id" => "a1"})
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    last = List.last(chat["queue"])
+    assert last["text"] == "Ordinary discussion"
+    refute Map.has_key?(last["view_context"], "mode")
+  end
+
+  test "Design corrections expose a safe browser review link without execution confirmation", ctx do
+    suggestion = %{
+      "version" => 1,
+      "project" => "alpha",
+      "section" => "data",
+      "base_document" => "design-fixture",
+      "base_revision" => 7,
+      "changes" => [%{"op" => "add_node", "node" => %{"kind" => "entity", "title" => "Event", "text" => "id: UUID"}}]
+    }
+
+    message = %{
+      "id" => "visual-feedback",
+      "role" => "assistant",
+      "text" => "Review the proposed entity.",
+      "view_context" => %{"version" => 1, "project_id" => "alpha", "mode" => "design"},
+      "widgets" => [%{"type" => "design_suggestion", "suggestion" => suggestion}]
+    }
+
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    {:ok, _} = FixtureStore.put(Map.put(chat, "messages", [message]))
+    view = embedded_view(ctx, nil)
+    send(view.pid, {:design_mode, true})
+    assert eventually(fn -> has_element?(view, "[data-review-design]", "Review on board") end)
+    html = render(view)
+    [encoded] = html |> Floki.parse_fragment!() |> Floki.find("[data-review-design]") |> Floki.attribute("data-design-suggestion")
+    assert Jason.decode!(encoded) == suggestion
+    refute has_element?(view, "[phx-click=decide]")
+    assert {:ok, retained} = FixtureStore.get("alpha", "a1", nil)
+    assert retained["messages"] == [message]
+  end
+
+  test "Design shows its turns without operational reports and preserves the full planning history", ctx do
+    design = %{"version" => 1, "project_id" => "alpha", "mode" => "design"}
+    message = fn id, role, extra -> Map.merge(%{"id" => id, "role" => role, "text" => id, "widgets" => []}, extra) end
+
+    messages = [
+      message.("ordinary-user", "user", %{}),
+      message.("ordinary-answer", "assistant", %{"view_context" => nil}),
+      message.("design-legacy-user", "user", %{"view_context" => design}),
+      message.("interleaved-pr", "assistant", %{"origin" => "pr_update", "view_context" => design}),
+      message.("design-legacy-answer", "assistant", %{}),
+      message.("later-action-receipt", "assistant", %{}),
+      message.("design-modern-user", "user", %{"view_context" => design}),
+      message.("interleaved-report", "user", %{"origin" => "agent_message", "agent_kind" => "report", "view_context" => design}),
+      message.("interleaved-evidence", "assistant", %{"origin" => "agent_evidence", "view_context" => design}),
+      message.("operational-reflection", "assistant", %{}),
+      message.("design-modern-answer", "assistant", %{"view_context" => design}),
+      message.("design-next-user", "user", %{"view_context" => design}),
+      message.("ordinary-stamped-answer", "assistant", %{"view_context" => nil}),
+      message.("design-question", "user", %{"view_context" => design}),
+      message.("system-observation", "system", %{}),
+      message.("unbound-answer", "assistant", %{}),
+      message.("design-current-user", "user", %{"view_context" => design}),
+      message.("design-current-answer", "assistant", %{"view_context" => design, "status" => "streaming", "text" => ""})
+    ]
+
+    queued = [message.("ordinary-queued", "user", %{})]
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    chat = chat |> Map.put("messages", messages) |> Map.put("queue", queued) |> Map.put("status", "running") |> Map.put("agent_goal", %{"text" => "Coordinate delivery", "status" => "active"})
+    {:ok, _} = FixtureStore.put(chat)
+    view = embedded_view(ctx, nil)
+    assert has_element?(view, "#agent-progress")
+    send(view.pid, {:design_mode, true})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-design-mode=true]") end)
+
+    for id <- ~w(design-legacy-user design-legacy-answer design-modern-user design-modern-answer design-next-user design-question design-current-user design-current-answer) do
+      assert has_element?(view, "#chat-messages #message-#{id}")
+    end
+
+    for id <-
+          ~w(ordinary-user ordinary-answer interleaved-pr later-action-receipt interleaved-report interleaved-evidence operational-reflection ordinary-stamped-answer system-observation unbound-answer) do
+      refute has_element?(view, "#chat-messages #message-#{id}")
+    end
+
+    refute has_element?(view, "#agent-progress")
+    refute has_element?(view, ".chat-empty")
+    assert has_element?(view, "#message-design-current-answer .streaming-mark", "Responding")
+    assert has_element?(view, "#stop-response-button")
+    assert has_element?(view, "#queued-ordinary-queued")
+    assert has_element?(view, "#send-message-button", "Queue")
+    assert has_element?(view, "#chat-message-input[placeholder='Brainstorm an idea or ask about this design…']")
+    assert {:ok, ^chat} = FixtureStore.get("alpha", "a1", nil)
+
+    send(view.pid, {:design_mode, false})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-design-mode=false]") end)
+    assert has_element?(view, "#agent-progress")
+
+    for message <- messages do
+      assert has_element?(view, "#chat-messages #message-#{message["id"]}")
+    end
+
+    assert {:ok, ^chat} = FixtureStore.get("alpha", "a1", nil)
+  end
+
+  test "Design welcomes a new discussion despite existing operational history and leaves queue status visible", ctx do
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    queued = [%{"id" => "existing-queued", "role" => "user", "text" => "Previously authorized request"}]
+    chat = chat |> Map.put("queue", queued) |> Map.put("queue_paused", true) |> Map.put("agent_notice", "Delivery needs attention")
+    {:ok, _} = FixtureStore.put(chat)
+    view = embedded_view(ctx, nil)
+    assert has_element?(view, "#message-m1", "Alpha secret")
+    send(view.pid, {:design_mode, true})
+    assert eventually(fn -> has_element?(view, ".chat-empty h1", "Let’s shape the design") end)
+    refute has_element?(view, "#message-m1")
+    refute has_element?(view, "#agent-progress")
+    refute has_element?(view, ".chat-starters")
+    assert has_element?(view, "#queued-existing-queued", "Previously authorized request")
+    assert has_element?(view, "#chat-queue", "Paused")
+    assert has_element?(view, "#resume-queue-button")
+    assert has_element?(view, "#chat-message-input[placeholder='Brainstorm an idea or ask about this design…']")
+    assert {:ok, ^chat} = FixtureStore.get("alpha", "a1", nil)
+  end
 
   defp embedded_view(ctx, context, read_only \\ false) do
     session = %{BrowserAuth.session_key() => ctx.marker, "view_context" => context, "read_only" => read_only}

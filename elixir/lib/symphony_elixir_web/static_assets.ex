@@ -3,6 +3,8 @@ defmodule SymphonyElixirWeb.StaticAssets do
 
   @dashboard_css_path Path.expand("../../priv/static/dashboard.css", __DIR__)
   @dashboard_js_path Path.expand("../../priv/static/dashboard.js", __DIR__)
+  @design_canvas_js_path Path.expand("../../priv/static/design-canvas.js", __DIR__)
+  @design_canvas_css_path Path.expand("../../priv/static/design-canvas.css", __DIR__)
   @browser_login_js_path Path.expand("../../priv/static/browser-login.js", __DIR__)
   @favicon_path Path.expand("../../priv/static/favicon.png", __DIR__)
   @phoenix_html_js_path Application.app_dir(:phoenix_html, "priv/static/phoenix_html.js")
@@ -11,17 +13,19 @@ defmodule SymphonyElixirWeb.StaticAssets do
 
   @external_resource @dashboard_css_path
   @external_resource @dashboard_js_path
+  @external_resource @design_canvas_js_path
+  @external_resource @design_canvas_css_path
   @external_resource @browser_login_js_path
   @external_resource @favicon_path
   @external_resource @phoenix_html_js_path
   @external_resource @phoenix_js_path
   @external_resource @phoenix_live_view_js_path
 
-  @dashboard_css File.read!(@dashboard_css_path)
+  @dashboard_css File.read!(@dashboard_css_path) <> "\n" <> File.read!(@design_canvas_css_path)
   @dashboard_css_digest :crypto.hash(:sha256, @dashboard_css)
                         |> Base.encode16(case: :lower)
                         |> binary_part(0, 12)
-  @dashboard_js File.read!(@dashboard_js_path)
+  @dashboard_js File.read!(@design_canvas_js_path) <> "\n" <> File.read!(@dashboard_js_path)
   @dashboard_js_digest :crypto.hash(:sha256, @dashboard_js) |> Base.encode16(case: :lower) |> binary_part(0, 12)
   @browser_login_js File.read!(@browser_login_js_path)
   @browser_login_js_digest :crypto.hash(:sha256, @browser_login_js) |> Base.encode16(case: :lower) |> binary_part(0, 12)

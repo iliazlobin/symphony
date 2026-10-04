@@ -219,6 +219,44 @@ defmodule SymphonyElixir.Chat.OpenRouterTest do
     end
   end
 
+  test "bounded oneOf schemas accept exactly one alternative before host effects" do
+    alternatives = [%{"type" => "string", "maxLength" => 5}, %{"type" => "integer", "minimum" => 1}]
+    schema = %{"type" => "object", "properties" => %{"id" => %{"oneOf" => alternatives}}, "required" => ["id"], "additionalProperties" => false}
+    observer = self()
+
+    for value <- ["event", 3] do
+      request = fn options -> if length(Jason.decode!(options[:body])["messages"]) == 2, do: http(calls([call(%{"id" => value})])), else: http(response()) end
+
+      assert {:ok, _} =
+               OpenRouter.run(opts(%{tools: [spec(schema)], request: request}), fn _ -> :ok end, fn _, args ->
+                 send(observer, {:union_host_effect, args})
+                 %{}
+               end)
+
+      assert_received {:union_host_effect, %{"id" => ^value}}
+    end
+
+    ambiguous = put_in(schema, ["properties", "id", "oneOf"], [%{"type" => "integer"}, %{"type" => "number"}])
+
+    assert {:error, :invalid_tool_arguments} =
+             run(calls([call(%{"id" => 1})]), %{tools: [spec(ambiguous)]}, fn _, args ->
+               send(observer, {:union_host_effect, args})
+               %{}
+             end)
+
+    assert {:error, :invalid_tool_arguments} =
+             run(calls([call(%{"id" => false})]), %{tools: [spec(schema)]}, fn _, args ->
+               send(observer, {:union_host_effect, args})
+               %{}
+             end)
+
+    for choices <- [[], Enum.map(1..9, fn _ -> %{"type" => "string"} end), [false]] do
+      assert {:error, :invalid_tools} = run(response(), %{tools: [spec(put_in(schema, ["properties", "id", "oneOf"], choices))]})
+    end
+
+    refute_received {:union_host_effect, _}
+  end
+
   test "input validation refuses credentials, unsafe model identifiers and malformed configuration" do
     for {change, expected} <- [
           {%{api_key: nil}, :authentication_required},

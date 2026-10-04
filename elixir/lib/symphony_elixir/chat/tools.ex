@@ -18,6 +18,9 @@ defmodule SymphonyElixir.Chat.Tools do
   @check_keys ~w(kind name status conclusion url started_at completed_at duration_ms workflow_name run_url run_number run_event)a
   @proposal_keys ~w(id action args project_id tracker_fingerprint expected_revision expected_updated_at created_at queue_labels queue_unheld task_title task_description pr_work)
   @documents ~w(ARCHITECTURE.md WORKFLOW.md PROJECT.md README.md AGENTS.md)
+  @design_sections ~w(brief requirements data architecture decisions)
+  @design_fields ~w(note-brief note-functional note-quality note-entities note-components note-flows note-decisions)
+  @design_revision_limit 9_007_199_254_740_991
   @errors %{
     agent_role_forbidden: "This action belongs to a different agent role. Use the project or task agent to coordinate it.",
     unsupported_work_purpose: "Only coding work can execute in this version. Other work adapters are not enabled.",
@@ -42,6 +45,8 @@ defmodule SymphonyElixir.Chat.Tools do
     budget_exhausted: "This issue has exhausted its execution budget. Adjust the configured limit before preparing more work.",
     issue_running: "This issue still has active execution. Wait for it to stop before launching PR work.",
     invalid_view_context: "This view snapshot is invalid or belongs to another project. Send a fresh message from the board.",
+    design_read_only: "Design chat can discuss and read project information. Switch to a task view to create tasks or change execution.",
+    design_context_required: "Design suggestions require a current Design conversation and its project. Open Design and send a fresh canvas snapshot.",
     concurrency_limit_exceeded: "Choose a concurrency limit within the configured project ceiling, or restore its default.",
     invalid_arguments: "Use only the documented fields and allowed values for this tool.",
     unknown_tool: "This management tool is not available.",
@@ -135,6 +140,7 @@ defmodule SymphonyElixir.Chat.Tools do
           %{"document" => enum(@documents)},
           ["document"]
         ),
+        design_spec(),
         spec(
           "symphony_propose_action",
           "Prepare an exact action preview for operator approval. Never claim a proposal was executed. create_task makes an unqueued backlog issue. Supply a title; description and verification are optional and may be empty. Do not combine these fields with body. The legacy body form remains available for existing callers. queue_task can queue an open, unqueued idle backlog task with no hold. edit_task and unqueue_task require a cancelled, idle task; queueing a cancelled task also retains its hold, so Retry remains separate. Queue changes are recorded locally; configured GitHub routing labels synchronize in the background. They never bypass admission or launch gates. Feedback adds a GitHub comment without steering a running worker. set_concurrency persists an admission limit within the configured ceiling; limit:null restores the default. Running work and consumed budgets are unchanged. create_pr_work prepares a separate coding session for an issue; continue_pr_work resumes one exact work_id with the requested instruction. Use task details to select a session. The host binds its branch, approved base and candidate head; never supply those fields. Both require explicit operator confirmation to queue native execution, subject to remaining budget, local task routing, controller mode and launch gates. They clear only a previous owner_review hold; other holds remain. Review and publication policy are unchanged.",
@@ -235,6 +241,8 @@ defmodule SymphonyElixir.Chat.Tools do
   @spec call(String.t(), term(), map()) :: {:ok, map()} | {:error, term()}
   def call(name, args, context) do
     with {:ok, settings} <- scope(context),
+         {:ok, snapshot} <- ViewContext.validate(context[:view_context], context.project_id),
+         :ok <- tool_allowed(snapshot, name),
          :ok <- validate(name, args) do
       dispatch_call(name, args, context, settings)
     end
@@ -242,6 +250,17 @@ defmodule SymphonyElixir.Chat.Tools do
     _ -> {:error, :tool_unavailable}
   catch
     _, _ -> {:error, :tool_unavailable}
+  end
+
+  defp tool_allowed(snapshot, "symphony_propose_design"), do: if(ViewContext.design?(snapshot), do: :ok, else: {:error, :design_context_required})
+  defp tool_allowed(snapshot, name), do: if(ViewContext.allowed_tool?(snapshot, name), do: :ok, else: {:error, :design_read_only})
+
+  defp dispatch_call("symphony_propose_design", args, context, _settings) do
+    if args["project"] == context.project_id do
+      {:ok, %{"widgets" => [%{"type" => "design_suggestion", "suggestion" => args}]}}
+    else
+      {:error, :project_mismatch}
+    end
   end
 
   defp dispatch_call("symphony_view_context", _args, context, _settings) do
@@ -314,6 +333,8 @@ defmodule SymphonyElixir.Chat.Tools do
   @spec confirm(map(), map()) :: {:ok, map()} | {:error, term()}
   def confirm(%{"action" => action} = proposal, context) when action in @routing_actions do
     with {:ok, _settings} <- scope(context),
+         {:ok, snapshot} <- ViewContext.validate(context[:view_context], context.project_id),
+         true <- not ViewContext.design?(snapshot) or {:error, :design_read_only},
          :ok <- validate_proposal(proposal, context),
          {:ok, result} <- native_command(proposal, context, %{issue_id: proposal["args"]["task_id"]}) do
       native_receipt(proposal, context, result)
@@ -326,6 +347,8 @@ defmodule SymphonyElixir.Chat.Tools do
 
   def confirm(proposal, context) do
     with {:ok, settings} <- scope(context),
+         {:ok, snapshot} <- ViewContext.validate(context[:view_context], context.project_id),
+         true <- not ViewContext.design?(snapshot) or {:error, :design_read_only},
          :ok <- validate_proposal(proposal, context),
          {:ok, board} <- read_board(context),
          :ok <- session_action_scope(Map.put(proposal["args"], "action", proposal["action"]), context, board) do
@@ -377,6 +400,50 @@ defmodule SymphonyElixir.Chat.Tools do
   defp string(maximum), do: %{"type" => "string", "maxLength" => maximum}
   defp enum(values), do: %{"type" => "string", "enum" => values}
 
+  defp design_spec do
+    spec(
+      "symphony_propose_design",
+      "Suggest a small reviewed change to this Design canvas only. Use the exact project, section, base_document and base_revision from the current user snapshot. Return plain note/component/entity content and connections; this tool does not edit a draft, create a task, publish or execute anything. The browser rejects different documents, stale revisions and invalid references; only the user's Apply changes the browser draft. Keep unverified facts explicitly marked as assumptions. Never remove an outline note (note-brief, note-functional, note-quality, note-entities, note-components, note-flows or note-decisions).",
+      %{
+        "version" => %{"type" => "integer", "enum" => [1]},
+        "project" => string(240),
+        "section" => enum(@design_sections),
+        "base_document" => Map.put(string(64), "pattern", "^[A-Za-z][A-Za-z0-9_-]{0,63}$"),
+        "base_revision" => %{"type" => "integer", "minimum" => 0, "maximum" => @design_revision_limit},
+        "changes" => %{"type" => "array", "minItems" => 1, "maxItems" => 24, "items" => %{"oneOf" => design_change_schemas()}}
+      },
+      ~w(version project section base_document base_revision changes)
+    )
+  end
+
+  defp design_change_schemas do
+    id = Map.put(string(64), "pattern", "^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+    position = %{"type" => "number", "minimum" => -10_000, "maximum" => 10_000}
+    content = %{"title" => string(160), "text" => string(4_000), "x" => position, "y" => position}
+    node = schema(Map.merge(content, %{"id" => id, "kind" => enum(~w(note component entity))}), ~w(kind title text))
+    edge = schema(%{"id" => id, "from" => id, "to" => id, "label" => string(160)}, ~w(from to label))
+
+    [
+      schema(%{"op" => enum(["add_node"]), "node" => node}, ~w(op node)),
+      schema(%{"op" => enum(["update_node"]), "id" => id, "patch" => Map.put(schema(content, []), "minProperties", 1)}, ~w(op id patch)),
+      schema(%{"op" => enum(["remove_node"]), "id" => id}, ~w(op id)),
+      schema(%{"op" => enum(["add_edge"]), "edge" => edge}, ~w(op edge)),
+      schema(%{"op" => enum(["remove_edge"]), "id" => id}, ~w(op id))
+    ]
+  end
+
+  defp schema(properties, required), do: %{"type" => "object", "properties" => properties, "required" => required, "additionalProperties" => false}
+
+  defp validate("symphony_propose_design", args) when is_map(args) do
+    valid =
+      strict_keys?(args, ~w(version project section base_document base_revision changes), []) and args["version"] == 1 and
+        design_text?(args["project"], 240, true) and args["section"] in @design_sections and
+        design_id?(args["base_document"]) and design_revision?(args["base_revision"]) and
+        design_changes?(args["changes"]) and byte_size(Jason.encode!(args)) <= 32_768
+
+    if valid, do: :ok, else: {:error, :invalid_arguments}
+  end
+
   defp validate(name, args) when is_map(args) do
     case Enum.find(specs(), &(&1["name"] == name)) do
       nil -> {:error, :unknown_tool}
@@ -385,6 +452,56 @@ defmodule SymphonyElixir.Chat.Tools do
   end
 
   defp validate(_name, _args), do: {:error, :invalid_arguments}
+
+  defp design_changes?(changes) when is_list(changes) and length(changes) in 1..24 do
+    identities = Enum.map(changes, &design_change_identity/1) |> Enum.reject(&is_nil/1)
+    Enum.all?(changes, &design_change?/1) and Enum.uniq(identities) == identities
+  end
+
+  defp design_changes?(_), do: false
+
+  defp design_change?(%{"op" => "add_node", "node" => node} = change) when is_map(node) do
+    strict_keys?(change, ~w(op node), []) and strict_keys?(node, ~w(kind title text), ~w(id x y)) and
+      node["kind"] in ~w(note component entity) and design_id_optional?(node) and design_content?(node)
+  end
+
+  defp design_change?(%{"op" => "update_node", "id" => id, "patch" => patch} = change) when is_map(patch) do
+    strict_keys?(change, ~w(op id patch), []) and design_id?(id) and map_size(patch) > 0 and
+      strict_keys?(patch, [], ~w(title text x y)) and design_content?(patch)
+  end
+
+  defp design_change?(%{"op" => "remove_node", "id" => id} = change), do: strict_keys?(change, ~w(op id), []) and design_id?(id) and id not in @design_fields
+
+  defp design_change?(%{"op" => "add_edge", "edge" => edge} = change) when is_map(edge) do
+    strict_keys?(change, ~w(op edge), []) and strict_keys?(edge, ~w(from to label), ~w(id)) and design_id_optional?(edge) and
+      design_id?(edge["from"]) and design_id?(edge["to"]) and edge["from"] != edge["to"] and design_text?(edge["label"], 160, false)
+  end
+
+  defp design_change?(%{"op" => "remove_edge", "id" => id} = change), do: strict_keys?(change, ~w(op id), []) and design_id?(id)
+  defp design_change?(_), do: false
+
+  defp design_change_identity(%{"op" => op, "id" => id}) when op in ~w(update_node remove_node), do: {"node", id}
+  defp design_change_identity(%{"op" => "add_node", "node" => %{"id" => id}}), do: {"node", id}
+  defp design_change_identity(%{"op" => "remove_edge", "id" => id}), do: {"edge", id}
+  defp design_change_identity(%{"op" => "add_edge", "edge" => %{"id" => id}}), do: {"edge", id}
+  defp design_change_identity(_), do: nil
+
+  defp design_content?(content) do
+    Enum.all?(content, fn
+      {"title", value} -> design_text?(value, 160, true)
+      {"text", value} -> design_text?(value, 4_000, false)
+      {key, value} when key in ~w(x y) -> is_number(value) and value >= -10_000 and value <= 10_000
+      _ -> true
+    end)
+  end
+
+  defp strict_keys?(value, required, optional), do: Enum.all?(required, &Map.has_key?(value, &1)) and Enum.all?(Map.keys(value), &(&1 in (required ++ optional)))
+  defp design_revision?(value), do: is_integer(value) and value >= 0 and value <= @design_revision_limit
+  defp design_id_optional?(value), do: not Map.has_key?(value, "id") or design_id?(value["id"])
+  defp design_id?(value), do: is_binary(value) and String.valid?(value) and byte_size(value) <= 64 and Regex.match?(~r/\A[A-Za-z][A-Za-z0-9_-]{0,63}\z/, value)
+
+  defp design_text?(value, limit, nonempty),
+    do: is_binary(value) and String.valid?(value) and byte_size(value) <= limit and not String.contains?(value, <<0>>) and (not nonempty or String.trim(value) != "")
 
   defp validate_schema(args, schema) do
     properties = schema["properties"]

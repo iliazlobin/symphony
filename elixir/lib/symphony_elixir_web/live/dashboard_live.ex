@@ -258,7 +258,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   def handle_event("open-card", _params, socket), do: {:noreply, socket}
 
-  def handle_event("switch-view", %{"view" => view} = params, socket) when view in ["kanban", "graph", "gantt"] do
+  def handle_event("switch-view", %{"view" => view} = params, socket) when view in ["design", "kanban", "graph", "gantt"] do
     id = params["id"] || socket.assigns.chat_task_id
     task = Enum.find(socket.assigns.board.tasks, &(&1.id == id and &1.project == socket.assigns.chat_project))
     filters = if is_map(params["filters"]), do: url_filters(params["filters"]), else: socket.assigns.url_filters
@@ -761,11 +761,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
               placeholder={@project_picker_label} title={@project_picker_label} /><button type="button" data-filter-toggle="project" aria-label="Open project selector">⌄</button></div>
             <div id="options-project" class="combo-options" role="listbox" aria-label="Project options" hidden></div>
           </div>
-          <nav id="board-view-picker" class="board-view-picker" aria-label="Task views">
-            <.link :for={{view, label} <- [{"kanban", "Kanban"}, {"graph", "Graph"}, {"gantt", "Gantt"}]} id={"view-#{view}"}
+          <nav id="board-view-picker" class="board-view-picker" aria-label="Project views">
+            <.link :for={{view, label} <- [{"design", "Design"}, {"kanban", "Kanban"}, {"graph", "Graph"}, {"gantt", "Gantt"}]} id={"view-#{view}"}
               patch={view_path(@url_filters, view, @chat_task_id, @chat_session_id)} aria-current={if @board_view == view, do: "page"}
               title={"#{label} view"} data-board-view-link={view}>
               <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path :if={view == "design"} d="M4 3h8l4 4v10H4zM12 3v4h4M7 10h6M7 13h4" />
                 <path :if={view == "kanban"} d="M3 4h4v12H3zM9 4h3v8H9zM14 4h3v10h-3z" />
                 <path :if={view == "graph"} d="M10 7v3M4 13v-3h12v3M8 3h4v4H8zM2 13h4v4H2zM14 13h4v4h-4z" />
                 <path :if={view == "gantt"} d="M3 3v14h14M5 5h6M8 9h7M11 13h6" />
@@ -806,6 +807,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
       </div>
 
       <div class="board-content">
+        <div :if={@board_view == "design"} id="design-view" class="board-view-panel" aria-label="Design view">
+          <p :if={is_nil(@chat_project)} class="design-empty">Choose a project to start its design.</p>
+          <SymphonyElixirWeb.DesignView.content :if={@chat_project} project={@chat_project} project_label={@project_picker_label} notion_url={design_link(@chat_project)} />
+        </div>
         <p :if={@notice} class="board-notice" role="status">{@notice}</p>
         <p :if={Phoenix.Flash.get(@flash, :error)} class="board-warning" role="alert">{Phoenix.Flash.get(@flash, :error)}</p>
         <p :if={Phoenix.Flash.get(@flash, :info)} class="board-notice" role="status">{Phoenix.Flash.get(@flash, :info)}</p>
@@ -979,9 +984,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
       </div>
       <aside id="management-chat-dock" class="management-chat-dock" aria-label="Project chat">
         <.live_component module={ChatPanel} id="management-chat" auth={@auth} csrf_token={@csrf_token}
-          embedded={true} project_id={@chat_project} chat_id={@chat_id} task_id={@chat_task_id} session_id={@chat_session_id}
-          task_title={chat_task_title(@board, @chat_task_id)} issue_tasks={@board.tasks} issue_activity={@chat_activity}
-          view_context={@view_context} read_only={@read_only} />
+          embedded={true} project_id={@chat_project} chat_id={@chat_id} task_id={if @board_view != "design", do: @chat_task_id} session_id={if @board_view != "design", do: @chat_session_id}
+          task_title={if @board_view != "design", do: chat_task_title(@board, @chat_task_id)} issue_tasks={@board.tasks} issue_activity={@chat_activity}
+          view_context={@view_context} design_mode={@board_view == "design"} read_only={@read_only} />
       </aside>
     </section>
     """
@@ -1480,7 +1485,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
       params
       |> Map.take(["project", "status", "priority", "kind", "milestone", "label", "assignee", "q", "sort", "view"])
       |> Map.reject(fn {_key, value} -> not is_binary(value) or byte_size(value) > 2_000 or value == "" end)
-      |> Map.reject(fn {key, value} -> key == "view" and value not in ["graph", "gantt"] end)
+      |> Map.reject(fn {key, value} -> key == "view" and value not in ["design", "graph", "gantt"] end)
+
+  defp design_link("github:iliazlobin/symphony"), do: "https://app.notion.com/p/3ebd865005a881acbbc1cc9799077ef4"
+  defp design_link("github:iliazlobin/events-concierge"), do: "https://app.notion.com/p/3cfd865005a88162aa6bd4624b6a4af4"
+  defp design_link(_project), do: nil
 
   defp focus_plan_selection({:noreply, socket}) do
     {:noreply, push_event(socket, "focus-plan-task", %{id: socket.assigns.chat_task_id, view: socket.assigns.board_view})}
