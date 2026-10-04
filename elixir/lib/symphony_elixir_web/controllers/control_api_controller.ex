@@ -4,7 +4,15 @@ defmodule SymphonyElixirWeb.ControlApiController do
   alias Plug.Conn
   alias SymphonyElixir.{Config, Orchestrator}
   alias SymphonyElixirWeb.{BrowserAuth, Endpoint}
-  @conflict_reasons [:revision_conflict, :command_id_conflict, :issue_running, :budget_exhausted]
+
+  @conflict_reasons [
+    :revision_conflict,
+    :command_id_conflict,
+    :issue_running,
+    :budget_exhausted,
+    :attempts_not_exhausted,
+    :pr_work_continuation_required
+  ]
 
   @spec show(Conn.t(), map()) :: Conn.t()
   def show(conn, _params) do

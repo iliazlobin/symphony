@@ -222,8 +222,10 @@ prove that its container has stopped.
 
 - Pause stops active work and prevents dispatch. Drain prevents new worker
   lifetimes while allowing the current bounded pipeline to finish. Resume allows
-  eligible work again. Cancel holds one issue; retry clears its hold without
-  resetting budgets.
+  eligible work again. Cancel holds one issue; ordinary retry clears its hold without
+  resetting budgets. An explicitly authorized `retry` with `renew_attempts: true`
+  renews only an exhausted task's bounded attempt cycle. Lifetime usage remains charged;
+  active, accepted or reviewed work and exhausted lifetime budgets remain protected.
 - Commands carry an idempotency key and expected operator revision. A successful
   response follows an atomic, synced ledger write. Failed persistence blocks
   admission and stops owned workers.
