@@ -92,6 +92,27 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     end
   end
 
+  test "growing filtered context retains each task's child diff identity" do
+    nodes = Enum.map(1..12, &task(&1, "work"))
+    edges = Enum.map(1..5, &dep(10, &1)) ++ [dep(11, 6)]
+    graph = %{"version" => 1, "nodes" => nodes, "edges" => edges}
+    assigns = %{__changed__: nil, board: %{workflow_graph: graph}, project: "p", filters: %{}, visible_task_ids: ["issue:10", "issue:11", "issue:12"]}
+    first = WorkflowGraphView.content(Map.put(assigns, :selected_id, "issue:11"))
+    next = WorkflowGraphView.content(Map.put(assigns, :selected_id, "issue:10"))
+    socket = %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}}}
+    {_first_diff, prints, components} = Phoenix.LiveView.Diff.render(socket, first, Phoenix.LiveView.Diff.new_fingerprints(), Phoenix.LiveView.Diff.new_components())
+    {_next_diff, next_prints, _components} = Phoenix.LiveView.Diff.render(socket, next, prints, components)
+    entries = task_diff_entries(prints, "task:10")
+    next_entries = task_diff_entries(next_prints, "task:10")
+    assert is_map(entries)
+    assert is_map(next_entries)
+    assert map_size(entries) == 4
+    assert map_size(next_entries) == 8
+    assert entries["task:10"].index != next_entries["task:10"].index
+    assert entries["task:10"].child_prints == next_entries["task:10"].child_prints
+    assert entries["task:12"].child_prints == next_entries["task:12"].child_prints
+  end
+
   test "dependency diagram omits agent ownership while retaining task navigation" do
     project = %{"id" => "project:p", "type" => "project", "name" => "Project name"}
     work = %{"id" => "work:1", "type" => "work", "task_id" => "issue:1", "work_id" => "native1", "title" => "Validate candidate", "phase" => "validating"}
@@ -361,6 +382,14 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
   end
 
   defp find(html, selector), do: html |> Floki.parse_fragment!() |> Floki.find(selector)
+
+  defp task_diff_entries({_fingerprint, children}, id), do: task_diff_entries(children, id)
+
+  defp task_diff_entries(children, id) when is_map(children) do
+    if Map.has_key?(children, id), do: children, else: Enum.find_value(Map.values(children), &task_diff_entries(&1, id))
+  end
+
+  defp task_diff_entries(_value, _id), do: nil
 
   defp dependency_path(html, from, to) do
     start = "M#{from.x + 130},#{from.y + 116}"
