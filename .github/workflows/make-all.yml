@@ -38,6 +38,12 @@ jobs:
       - name: Verify make all
         run: make all
 
+      - name: Verify reproducible Design editor assets
+        run: |
+          mise install node@22.14.0
+          mise exec node@22.14.0 -- npm ci --ignore-scripts --no-audit --no-fund --prefix assets
+          mise exec node@22.14.0 -- npm run check --prefix assets
+
       - name: Install Python tooling dependencies
         working-directory: .
         run: |

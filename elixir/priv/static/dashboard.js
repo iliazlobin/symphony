@@ -1245,11 +1245,24 @@
       outline?.setAttribute("aria-orientation", "vertical");
       this.key = "symphony.design.v1:" + this.el.dataset.designProject;
       this.saved = false;
+      if (this.el.querySelector("[data-design-canvas]") && window.SymphonyDesignCanvas?.load) {
+        this.status("Opening your whiteboard…");
+        window.SymphonyDesignCanvas.load(this.el.dataset.designEditorJs, this.el.dataset.designEditorCss, this.el.dataset.designEditorAssets)
+          .then(editor => { if (!this.abort.signal.aborted) this.initialize(editor); })
+          .catch(() => { if (!this.abort.signal.aborted) {
+            this.status("Whiteboard unavailable · your saved draft is kept");
+            const message = this.el.querySelector(".design-canvas-loading");
+            if (message) message.textContent = "The whiteboard could not load. Reload to try again.";
+          } });
+      } else this.initialize(window.SymphonyDesignCanvas);
+    },
+    initialize(editor) {
+      this.editor = editor;
       this.load();
-      if (window.SymphonyDesignCanvas && this.el.querySelector("[data-design-canvas]")) {
-        this.canvas = window.SymphonyDesignCanvas.mount(this.el, {
+      if (editor && this.el.querySelector("[data-design-canvas]")) {
+        this.canvas = editor.mount(this.el, {
           fields: this.fields, document: this.initialCanvas,
-          onChange: () => { this.save(); this.progress(); }, ask: instruction => this.ask(instruction),
+          onChange: () => { this.saveSoon(); this.progress(); }, ask: instruction => this.ask(instruction),
           canApply: () => {
             try {
               if (localStorage.getItem(this.key) !== this.loadedRaw) { this.status("Draft changed in another tab · reload before applying"); return false; }
@@ -1258,8 +1271,9 @@
           }
         });
         this.canvas.select(this.section);
-        if (this.loadedVersion === 1) this.recoveryRaw = this.loadedRaw;
+        if (this.loadedVersion < 3) this.recoveryRaw = this.loadedRaw;
       }
+      window.addEventListener?.("pagehide", () => this.flush(), {signal: this.abort.signal});
       if (typeof document !== "undefined") document.addEventListener?.("click", event => {
         const button = event.target.closest?.("[data-review-design]");
         if (!button || !this.canvas) return;
@@ -1301,10 +1315,11 @@
         raw = localStorage.getItem(this.key);
         if (raw) {
           draft = JSON.parse(raw);
-          if (!draft || ![1, 2].includes(draft.version) || draft.project !== this.el.dataset.designProject ||
-              !draft.fields || typeof draft.fields !== "object" || Array.isArray(draft.fields) ||
-              this.fields.some(field => typeof draft.fields[field.dataset.designField] !== "string" || draft.fields[field.dataset.designField].length > 12000) ||
-              (draft.version === 2 && (!window.SymphonyDesignCanvas || !window.SymphonyDesignCanvas.validate(draft.canvas, this.el.dataset.designProject)))) {
+          const legacyFields = draft && [1, 2].includes(draft.version) && draft.fields && typeof draft.fields === "object" && !Array.isArray(draft.fields) &&
+            this.fields.every(field => typeof draft.fields[field.dataset.designField] === "string" && draft.fields[field.dataset.designField].length <= 12000);
+          if (!draft || ![1, 2, 3].includes(draft.version) || draft.project !== this.el.dataset.designProject ||
+              (draft.version < 3 && !legacyFields) ||
+              (draft.version > 1 && (!this.editor || !this.editor.validate(draft.canvas, this.el.dataset.designProject)))) {
             draft = null; invalid = true;
           }
         }
@@ -1314,7 +1329,8 @@
       this.loadedVersion = draft?.version;
       this.initialCanvas = draft?.canvas;
       this.recoveryRaw = invalid ? raw : null;
-      for (const field of this.fields) field.value = draft?.fields[field.dataset.designField] || "";
+      const values = draft?.version === 3 ? this.editor.fields(draft.canvas) : draft?.fields;
+      for (const field of this.fields) field.value = values?.[field.dataset.designField] || "";
       this.select(draft?.section || "brief");
       this.progress();
       this.status(invalid ? "Draft unavailable · edits stay here until saved" : draft ? "Draft · saved in this browser" : "Browser draft · autosaves here");
@@ -1339,10 +1355,18 @@
       this.el.querySelector("#design-canvas-panel")?.setAttribute("aria-labelledby", "design-tab-" + this.section);
       this.canvas?.select(this.section);
     },
+    saveSoon() {
+      if (!this.editor?.nativeScene) { this.save(); return; }
+      clearTimeout(this.saveTimer);
+      this.saveTimer = setTimeout(() => { this.saveTimer = undefined; this.save(); }, 250);
+    },
+    flush() { if (this.saveTimer !== undefined) { clearTimeout(this.saveTimer); this.saveTimer = undefined; this.save(); } },
     save() {
-      const draft = {version: this.canvas ? 2 : 1, project: this.el.dataset.designProject, section: this.section,
-        fields: Object.fromEntries(this.fields.map(field => [field.dataset.designField, field.value]))};
-      if (this.canvas) draft.canvas = this.canvas.document();
+      if (this.canvas?.canSave && !this.canvas.canSave()) { this.saved = false; this.status("Canvas changes are not saved · export them before reloading"); return; }
+      const canvas = this.canvas?.document(), native = canvas?.version === 2;
+      const draft = {version: native ? 3 : canvas ? 2 : 1, project: this.el.dataset.designProject, section: this.section};
+      if (!native) draft.fields = Object.fromEntries(this.fields.map(field => [field.dataset.designField, field.value]));
+      if (canvas) draft.canvas = canvas;
       try {
         if (this.readUnavailable) {
           this.loadedRaw = this.recoveryRaw = localStorage.getItem(this.key);
@@ -1377,6 +1401,7 @@
       if (progress) progress.textContent = drafted ? `${drafted} of 5 sections started · still a draft` : "Start anywhere. Keep questions visible.";
     },
     example() {
+      if (this.canvas?.canSave && !this.canvas.canSave()) { this.status("Undo or export the unsaved drawing before adding an example"); return; }
       if (!this.el.dataset.designProject.endsWith("/events-concierge")) return;
       const example = {
         brief: "Illustrative proposal — refine with the user.\nHelp people discover relevant local events and revisit useful choices. Start with discovery; booking and payments are outside this draft.",
@@ -1391,6 +1416,7 @@
       this.canvas?.refreshFields(); this.canvas?.example?.(); this.progress(); this.save();
     },
     ask(instruction) {
+      if (this.canvas?.canSave && !this.canvas.canSave()) { this.status("Undo or export the unsaved drawing before requesting feedback"); return; }
       const chat = this.el.closest("#task-board-app")?.querySelector("#chat-app");
       const input = chat?.querySelector("#chat-message-input");
       if (!input || input.disabled || chat.dataset.project !== this.el.dataset.designProject || chat.dataset.designMode !== "true") {
@@ -1401,7 +1427,7 @@
       const canvas = this.canvas?.document();
       let source;
       if (canvas) {
-        const board = canvas.boards[this.section];
+        const board = this.canvas.projection ? this.canvas.projection(this.section) : canvas.boards[this.section];
         const ids = new Set(board.nodes.slice(0, 12).map(node => node.id));
         const nodes = board.nodes.slice(0, 12).map(node => ({...node, text: (node.text || "").slice(0, 600), text_truncated: (node.text || "").length > 600}));
         const edges = board.edges.filter(edge => ids.has(edge.from) && ids.has(edge.to)).slice(0, 24);
@@ -1409,7 +1435,7 @@
         const activeFields = this.fields.filter(field => names.includes(field.dataset.designField));
         source = {project: canvas.project, section: this.section, base_document: canvas.document_id, base_revision: canvas.revision,
           structured_board: {nodes, edges},
-          sketch_notice: "Freehand strokes are not included. Feedback covers structured cards and connectors only.",
+          sketch_notice: "Rendered drawings are not shared. Corrections cover tagged notes, entities, components and connectors only.",
           fields: Object.fromEntries(activeFields.map(field => [field.dataset.designField, field.value.slice(0, 600)])),
           truncated: board.nodes.length > nodes.length || board.edges.length > edges.length ||
             board.nodes.some(node => (node.text || "").length > 600) || activeFields.some(field => field.value.length > 600)};
@@ -1430,7 +1456,7 @@
       input.dispatchEvent(new Event("input", {bubbles: true})); input.focus();
       this.status("Question ready in project chat · review and send");
     },
-    destroyed() { this.canvas?.destroy(); this.abort.abort(); }
+    destroyed() { this.flush(); this.canvas?.destroy(); this.abort.abort(); }
   };
   window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace, IssueSwitcher, IssuePRMenu, WorkflowCanvas, DesignWorkspace};
 })();

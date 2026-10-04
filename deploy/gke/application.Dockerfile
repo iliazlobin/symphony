@@ -11,6 +11,7 @@ COPY elixir/config ./config
 RUN mix deps.get --only prod && mix deps.compile
 COPY elixir/lib ./lib
 COPY elixir/priv ./priv
+COPY elixir/assets ./assets
 # Compile the accepted application, including the shared web implementation.
 # Never substitute the preview script, an older service binary or a stub tracker.
 RUN mix escript.build && test -z "$(find _build/prod/lib -name '*.so' -o -name '*.dylib')"
@@ -26,6 +27,8 @@ RUN mix run --no-start -e '\
   Enum.each(["/dashboard.css", "/dashboard.js", "/favicon.png", \
     "/vendor/phoenix_html/phoenix_html.js", "/vendor/phoenix/phoenix.js", \
     "/vendor/phoenix_live_view/phoenix_live_view.js"], fn path -> \
+    {:ok, _type, bytes} = SymphonyElixirWeb.StaticAssets.fetch(path); true = byte_size(bytes) > 0 end); \
+  Enum.each(SymphonyElixirWeb.StaticAssets.design_editor_paths(), fn path -> \
     {:ok, _type, bytes} = SymphonyElixirWeb.StaticAssets.fetch(path); true = byte_size(bytes) > 0 end); \
   "0.154.0" = SymphonyElixir.Chat.Runtime.supported_version()'
 
