@@ -30,6 +30,8 @@ const result = await build({
   assetNames: "files/[name]-[hash]",
   loader: {".woff2": "file"},
   bundle: true,
+  // Dependency locations must not enter chunk identities when node_modules is symlinked.
+  preserveSymlinks: true,
   splitting: true,
   format: "esm",
   platform: "browser",

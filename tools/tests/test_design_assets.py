@@ -2,6 +2,9 @@
 import hashlib
 import json
 import fnmatch
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 import unittest
 
@@ -12,6 +15,23 @@ BUNDLE = ROOT / "elixir/priv/static/design-editor"
 
 
 class DesignAssetTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node") and (SOURCE / "node_modules/esbuild").is_dir(),
+                         "Node and installed locked editor dependencies are required")
+    def test_generated_build_is_independent_of_dependency_symlink_location(self):
+        manifest = json.loads((BUNDLE / "manifest.json").read_text())
+        with tempfile.TemporaryDirectory(prefix="symphony-editor-repro-") as directory:
+            isolated = Path(directory) / "elixir/assets"
+            for name in manifest["sources"]:
+                target = isolated / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(SOURCE / name, target)
+            (isolated / "node_modules").symlink_to((SOURCE / "node_modules").resolve(), target_is_directory=True)
+            shutil.copytree(BUNDLE, Path(directory) / "elixir/priv/static/design-editor")
+            result = subprocess.run([shutil.which("node"), "build.mjs", "--check"], cwd=isolated,
+                                    capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Verified", result.stdout)
+
     def test_generated_manifest_covers_current_sources_and_every_embedded_asset(self):
         manifest = json.loads((BUNDLE / "manifest.json").read_text())
         self.assertEqual(manifest["version"], 1)
