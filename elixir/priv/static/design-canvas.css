@@ -18,7 +18,7 @@
 .design-canvas-edge:hover, .design-canvas-edge.is-selected { stroke: var(--accent, #625bd4); stroke-width: 2.5; }
 .design-canvas-edge-label { font: 11px system-ui, sans-serif; fill: var(--muted, #69707d); paint-order: stroke; stroke: var(--bg, #fcfcfe); stroke-width: 5; stroke-linejoin: round; cursor: pointer; pointer-events: all; }
 .design-canvas-stroke { stroke: var(--fg, #30343b); stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; cursor: pointer; pointer-events: stroke; }
-.design-canvas-stroke:hover { stroke: var(--accent, #625bd4); }
+.design-canvas-stroke:hover, .design-canvas-stroke.is-selected { stroke: var(--accent, #625bd4); stroke-width: 2.5; }
 .design-canvas-card { position: absolute; box-sizing: border-box; background: var(--panel, #fff); color: var(--fg, #30343b); border: 1px solid var(--line, #e5e7eb); border-radius: 9px; box-shadow: 0 2px 6px #1d254009; overflow: hidden; }
 .design-canvas-card.is-selected { border-color: var(--accent, #625bd4); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #625bd4) 14%, transparent), 0 3px 10px #1d25400b; }
 .design-canvas-card-head { display: flex; align-items: center; gap: 6px; padding: 12px 14px 8px; cursor: grab; }

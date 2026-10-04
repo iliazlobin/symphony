@@ -48,7 +48,7 @@ function mount(options = {}) {
   const tools = Object.fromEntries(["select", "pan", "note", "component", "entity", "connect", "draw"].map(tool => [tool, make("button", "canvasTool", tool)]));
   const status = make("span", "canvasStatus", ""), scale = make("span", "canvasScale", ""), selection = make("aside", "canvasSelection", ""), suggestions = make("aside", "canvasSuggestions", "");
   const fields = Object.keys({brief:1,functional:1,quality:1,entities:1,components:1,flows:1,decisions:1}).map(name => { const field = make("textarea", "designField", name); field.value = options.fields?.[name] || ""; return field; });
-  const changes = [], controller = api.mount(root, {fields, document: options.document, onChange: doc => changes.push(plain(doc))});
+  const changes = [], controller = api.mount(root, {fields, document: options.document, canApply: options.canApply, onChange: doc => changes.push(plain(doc))});
   const click = target => root.dispatch("click", {target});
   const input = (id, kind, value) => { const target = root.querySelector(`[data-canvas-${kind}="${id}"]`); assert(target, "input exists"); target.value = value; root.dispatch("input", {target}); return target; };
   return {root, stage, controls, tools, status, scale, selection, suggestions, fields, changes, controller, click, input};
@@ -123,7 +123,10 @@ editor.click(editor.tools.connect);
 editor.click(editor.root.querySelector(`[data-canvas-node="${nodes[0].id}"]`));
 editor.click(editor.root.querySelector(`[data-canvas-node="${nodes[1].id}"]`));
 let edge = editor.controller.document().boards.data.edges[0]; assert.equal(edge.label,"1 → many");
-editor.click(editor.root.querySelector(`[data-canvas-edge="${edge.id}"]`)); editor.input(edge.id,"edge-label","many → many");
+const arrow = editor.root.querySelector(`[data-canvas-edge="${edge.id}"]`);
+editor.stage.dispatch("pointerdown",{target:arrow,button:0,clientX:100,clientY:100,pointerId:1});
+assert.equal(editor.selection.hidden,false); assert.equal(editor.controller.document().boards.data.viewport.x,28);
+editor.click(arrow); editor.input(edge.id,"edge-label","many → many");
 assert.equal(editor.controller.document().boards.data.edges[0].label,"many → many");
 const card = editor.root.querySelector(`[data-canvas-node="${nodes[0].id}"]`), oldX = nodes[0].x;
 editor.root.dispatch("keydown",{target:card,key:"ArrowRight"}); assert.equal(editor.controller.document().boards.data.nodes.find(n=>n.id===nodes[0].id).x,oldX+8);
@@ -173,6 +176,12 @@ assert(stroke.points.length<=600); assert(api.validate(editor.controller.documen
 const after = editor.controller.document().revision; editor.click(editor.controls.undo);
 assert.equal(editor.controller.document().boards.brief.strokes.length,0); assert.equal(editor.controller.document().revision,after+1);
 editor.click(editor.controls.redo); assert.equal(editor.controller.document().boards.brief.strokes.length,1);
+editor.click(editor.tools.select);
+const sketch=editor.root.querySelector(`[data-canvas-stroke="${stroke.id}"]`);
+editor.stage.dispatch("pointerdown",{target:sketch,button:0,clientX:100,clientY:100,pointerId:1});
+editor.click(sketch); assert.equal(editor.selection.hidden,false);
+editor.click(editor.selection.querySelector('[data-canvas-action="delete"]'));
+assert.equal(editor.controller.document().boards.brief.strokes.length,0);
 const previous = plain(editor.controller.document()); editor.controller.destroy(); editor.click(editor.tools.entity);
 assert.deepEqual(plain(editor.controller.document()),previous);
 ''')
@@ -194,6 +203,32 @@ const ghost=editor.root.querySelector(".design-proposed-title"); assert.equal(gh
 editor.click(editor.root.querySelector('[data-canvas-action="apply"]'));
 assert.equal(editor.controller.document().boards.brief.nodes.at(-1).title,literal);
 assert.equal(editor.root.querySelectorAll("img").length,0);
+''')
+
+    def test_apply_rechecks_external_draft_and_preview_shows_before_after(self):
+        self.run_canvas(r'''
+let allowed=true; const editor=mount({fields:{brief:"Existing user scope"},canApply:()=>allowed});
+const proposal=suggestion(editor,"brief",[{op:"update_node",id:"note-brief",patch:{text:"A proposed refinement"}}]);
+assert(editor.controller.proposal(proposal));
+assert.equal(editor.root.querySelector(".design-suggestion-before").textContent,"Before: Existing user scope");
+assert.equal(editor.root.querySelector(".design-suggestion-after").textContent,"After: A proposed refinement");
+const before=plain(editor.controller.document()); allowed=false;
+editor.click(editor.root.querySelector('[data-canvas-action="apply"]'));
+assert.deepEqual(plain(editor.controller.document()),before); assert.equal(editor.fields[0].value,"Existing user scope");
+assert(editor.status.textContent.includes("another tab"));
+allowed=true; editor.click(editor.root.querySelector('[data-canvas-action="apply"]'));
+assert.equal(editor.fields[0].value,"A proposed refinement");
+''')
+
+    def test_examples_are_illustrative_and_never_overwrite_user_diagrams(self):
+        self.run_canvas(r'''
+const editor=mount({fields:{brief:"Actual user scope"}});
+editor.controller.select("data"); editor.click(editor.tools.entity); const actual=plain(editor.controller.document().boards.data);
+assert(editor.controller.example()); assert.deepEqual(plain(editor.controller.document().boards.data),actual);
+assert.equal(editor.controller.document().boards.architecture.nodes.filter(node=>!node.field).length,3);
+assert.equal(editor.fields[0].value,"Actual user scope"); const before=plain(editor.controller.document());
+assert.equal(editor.controller.example(),false); assert.deepEqual(plain(editor.controller.document()),before);
+assert.equal(editor.controller.hasContent("data"),true); assert.equal(editor.controller.hasContent("decisions"),false);
 ''')
 
 

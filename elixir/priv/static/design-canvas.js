@@ -188,13 +188,13 @@
           label.textContent = edge.label; if (!ghost) label.dataset.canvasEdge = edge.id; svg.append(label);
         }
       }
-      for (const stroke of part.strokes) svg.append(svgElement("polyline", {points: stroke.points.map(p => p.join(",")).join(" "), class: "design-canvas-stroke", "data-canvas-stroke": stroke.id}));
+      for (const stroke of part.strokes) svg.append(svgElement("polyline", {points: stroke.points.map(p => p.join(",")).join(" "), class: "design-canvas-stroke" + (selected === stroke.id ? " is-selected" : ""), "data-canvas-stroke": stroke.id, role: "button", tabindex: "0", "aria-label": "Sketch annotation. Select to delete."}));
     }
     function renderSelection() {
       if (!selectionNode) return;
       clear(selectionNode);
-      const node = board().nodes.find(node => node.id === selected), edge = board().edges.find(edge => edge.id === selected);
-      selectionNode.hidden = !node && !edge;
+      const node = board().nodes.find(node => node.id === selected), edge = board().edges.find(edge => edge.id === selected), stroke = board().strokes.find(stroke => stroke.id === selected);
+      selectionNode.hidden = !node && !edge && !stroke;
       if (node) {
         selectionNode.append(element("span", "design-selection-caption", node.kind === "entity" ? "Entity · edit fields on the card" : node.kind === "component" ? "Component · edit its responsibility" : "Note · type directly on the card"));
         if (!node.field) { const remove = element("button", "design-selection-delete", "Delete"); remove.type = "button"; remove.dataset.canvasAction = "delete"; selectionNode.append(remove); }
@@ -202,6 +202,9 @@
         const label = element("label", "design-selection-caption", "Relationship");
         const input = element("input", "design-relationship-label"); input.value = edge.label; input.maxLength = 160; input.dataset.canvasEdgeLabel = edge.id; input.setAttribute("aria-label", "Relationship label, for example 1 to many");
         label.append(input); selectionNode.append(label);
+        const remove = element("button", "design-selection-delete", "Delete"); remove.type = "button"; remove.dataset.canvasAction = "delete"; selectionNode.append(remove);
+      } else if (stroke) {
+        selectionNode.append(element("span", "design-selection-caption", "Sketch · annotation"));
         const remove = element("button", "design-selection-delete", "Delete"); remove.type = "button"; remove.dataset.canvasAction = "delete"; selectionNode.append(remove);
       }
     }
@@ -340,6 +343,8 @@
     }, {signal});
     stage.addEventListener("pointerdown", event => {
       if (event.button !== 0 || event.target.closest("input,textarea,button")) return;
+      const line = event.target.closest("[data-canvas-edge], [data-canvas-stroke]");
+      if (line && tool === "select") { selected = line.dataset.canvasEdge || line.dataset.canvasStroke; renderSelection(); return; }
       const nodeEl = event.target.closest("[data-canvas-node]"), p = canvasPoint(event), v = board().viewport;
       if (tool === "connect") return;
       const before = snapshots(); editGroup = null;
@@ -355,7 +360,7 @@
       else if (gesture.kind === "node") {
         const node = board().nodes.find(node => node.id === gesture.id); node.x = round(bounded(gesture.x + p.x - gesture.start.x, -10000, 10000)); node.y = round(bounded(gesture.y + p.y - gesture.start.y, -10000, 10000));
         const card = world.querySelector(`[data-canvas-node="${node.id}"]`); if (card) { card.style.left = node.x + "px"; card.style.top = node.y + "px"; }
-        clear(svg); renderLines();
+        for (const line of [...svg.children]) if (line.tagName.toLowerCase() !== "defs") line.remove(); renderLines();
       } else {
         const points = gesture.stroke.points, last = points[points.length - 1]; if (points.length < 600 && Math.hypot(p.x - last[0], p.y - last[1]) > 2) points.push([p.x, p.y]);
         const existing = svg.querySelector(".design-canvas-live-stroke"); if (existing) existing.remove(); svg.append(svgElement("polyline", {points: points.map(p => p.join(",")).join(" "), class: "design-canvas-stroke design-canvas-live-stroke"}));
@@ -382,8 +387,9 @@
       if (editing) return;
       if (event.key === "Escape") { tool = "select"; connecting = null; selected = null; render(); return; }
       if (event.key === "Delete" || event.key === "Backspace") { if (selected) { event.preventDefault(); remove(); } return; }
-      const card = event.target.closest("[data-canvas-node]"), edge = event.target.closest("[data-canvas-edge]");
+      const card = event.target.closest("[data-canvas-node]"), edge = event.target.closest("[data-canvas-edge]"), stroke = event.target.closest("[data-canvas-stroke]");
       if (edge && event.key === "Enter") { event.preventDefault(); select(edge.dataset.canvasEdge); root.querySelector("[data-canvas-edge-label]")?.focus(); return; }
+      if (stroke && event.key === "Enter") { event.preventDefault(); select(stroke.dataset.canvasStroke); return; }
       if (!card) return;
       selected = card.dataset.canvasNode;
       if (event.key === "Enter") { event.preventDefault(); card.querySelector("textarea")?.focus(); return; }
