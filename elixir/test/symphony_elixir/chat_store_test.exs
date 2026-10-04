@@ -968,11 +968,17 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert_receive {:design_runtime, ^design, instructions, specs, thread_specs}
     assert instructions =~ "This turn is Design-only"
     assert instructions =~ "under 180 words"
+    assert instructions =~ "symphony_propose_design"
+    assert instructions =~ "user must Apply"
+    assert instructions =~ "Freehand strokes remain manually editable"
     refute instructions =~ "When the current human message asks to create tasks"
     refute Enum.any?(specs, &(&1["name"] in ~w(symphony_propose_action symphony_delegate symphony_report symphony_set_goal)))
     assert Enum.any?(specs, &(&1["name"] == "symphony_project_status"))
+    assert Enum.any?(specs, &(&1["name"] == "symphony_propose_design"))
     assert Enum.any?(thread_specs, &(&1["name"] == "symphony_propose_action"))
     assert Enum.any?(thread_specs, &(&1["name"] == "symphony_delegate"))
+    assert Enum.any?(thread_specs, &(&1["name"] == "symphony_propose_design"))
+    ordinary_specs = Enum.reject(thread_specs, &(&1["name"] == "symphony_propose_design"))
 
     assert {:ok, _} = Store.send_message(c.project, chat["id"], "view", "ordinary-next", c.auth, server)
     assert {:ok, _} = Store.send_message_with_context(c.project, chat["id"], "view", "design-next", design, c.auth, server)
@@ -986,7 +992,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
 
     assert_receive {:design_read, %{"snapshot" => ^design}}
     assert_receive {:view_runtime, nil, ordinary_instructions}, 1_000
-    assert_receive {:view_catalog, ^thread_specs, ^thread_specs}
+    assert_receive {:view_catalog, ^ordinary_specs, ^thread_specs}
     refute ordinary_instructions =~ "This turn is Design-only"
     assert_receive {:view_tool, %{"snapshot" => nil}}
     assert_receive {:view_runtime, ^design, design_instructions}, 1_000
