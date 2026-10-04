@@ -112,6 +112,27 @@ assert.equal(f.sync.sourceKey,null); assert.equal(f.selections.length,0);
 assert(f.nodes.get("[data-design-review-panel]").hidden); f.sync.destroy();
 ''')
 
+    def test_invalid_historical_section_never_dereferences_inherited_or_malformed_boards(self):
+        self.run_hook('''
+for(const section of ["constructor","__proto__","outside","data"]){
+ const f=historicalFixture(), local=scene(9), open=f.sync.open(local);
+ f.answer(0,state(local,7)); await open;
+ const url=new URL(f.sourceURL()); url.searchParams.set("design_section",section);
+ sandbox.window.location.href=url.href;
+ if(section==="data") f.historical.boards.data={elements:{}};
+ const reference=f.sync.sourceReference(); f.answer(1,{scene:f.historical,reviewed_at:"old"}); await reference;
+ assert.equal(f.sync.sourceKey,null); assert.equal(f.selections.length,0);
+ assert(f.nodes.get("[data-design-review-panel]").hidden);
+ assert.deepEqual(copy(f.sync.serverDraft),local); assert.equal(f.sync.revision,7);
+ // A corrected URL remains retryable in the same hook.
+ sandbox.window.location.href=f.sourceURL();
+ const reviewed=historicalFixture().historical, retry=f.sync.sourceReference();
+ f.answer(2,{scene:reviewed,reviewed_at:"current"}); await retry;
+ assert.deepEqual(f.selections,["data"]); assert(!f.nodes.get("[data-design-review-panel]").hidden);
+ f.sync.destroy();
+}
+''')
+
     def test_browser_draft_never_imports_or_overwrites_without_choice(self):
         self.run_hook('''
 const f=fixture(), local=scene(3), open=f.sync.open(local); f.answer(0,state(null));

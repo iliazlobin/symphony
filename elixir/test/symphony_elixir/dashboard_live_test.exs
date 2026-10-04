@@ -1847,6 +1847,73 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute_receive {:settings_command, _}
   end
 
+  test "historical Design navigation survives Settings and unlock return without entering task filters", ctx do
+    {view, _html} = board_view()
+
+    params = %{
+      "project" => "github:example/fixture",
+      "view" => "design",
+      "priority" => "P1",
+      "design_ref" => String.duplicate("a", 64),
+      "design_section" => "data",
+      "design_item" => "event",
+      "design_task" => "github:example/fixture:2"
+    }
+
+    source = "/?" <> URI.encode_query(params)
+    returned = "/?" <> URI.encode_query(Map.put(params, "panel", "settings"))
+    render_patch(view, source)
+    assert :sys.get_state(view.pid).socket.assigns.url_filters == Map.take(params, ~w(project view priority))
+    render_click(view, "open-settings")
+    render_click(view, "settings-tab", %{"tab" => "connections"})
+    assert has_element?(view, "#settings-connections input[name=return_to][value='#{returned}']")
+    render_click(view, "close-dialog")
+    assert_patch(view, source)
+
+    # Sign-in redirects remount through these same query parameters.
+    {:ok, remounted, _html} = live(build_conn(), returned)
+    render_async(remounted)
+    assert has_element?(remounted, "#board-dialog[data-kind=settings]")
+    render_click(remounted, "settings-tab", %{"tab" => "connections"})
+    assert has_element?(remounted, "#settings-connections input[name=return_to][value='#{returned}']")
+    render_click(remounted, "close-dialog")
+    assert_patch(remounted, source)
+    render_click(view, "board-filters", Map.take(params, ~w(project view priority)))
+    assert_patch(view, source)
+
+    render_click(view, "switch-view", %{"view" => "graph"})
+    assert_patch(view, "/?" <> URI.encode_query(Map.take(params, ~w(project priority)) |> Map.put("view", "graph")))
+    assert :sys.get_state(view.pid).socket.assigns.design_source_context == %{}
+    render_patch(view, source)
+    render_click(view, "board-filters", %{"project" => "github:other/project", "view" => "design"})
+    assert_patch(view, "/?" <> URI.encode_query(%{"project" => "github:other/project", "view" => "design"}))
+    assert :sys.get_state(view.pid).socket.assigns.design_source_context == %{}
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:design_call, _, _, _}
+    refute_receive {:intake_prepared, _, _}
+    refute_receive {:settings_command, _}
+  end
+
+  test "malformed or foreign Design source navigation is not retained in Settings", ctx do
+    {view, _html} = board_view()
+    source = %{"project" => "github:example/fixture", "view" => "design", "design_ref" => String.duplicate("a", 64), "design_section" => "data", "design_item" => "event"}
+
+    for changes <- [%{"design_ref" => "bad"}, %{"design_section" => "outside"}, %{"design_item" => "event/invalid"}] do
+      render_patch(view, "/?" <> URI.encode_query(Map.merge(source, changes)))
+      assert :sys.get_state(view.pid).socket.assigns.design_source_context == %{}
+      render_click(view, "open-settings")
+      render_click(view, "settings-tab", %{"tab" => "connections"})
+      expected = "/?" <> URI.encode_query(%{"project" => "github:example/fixture", "view" => "design", "panel" => "settings"})
+      assert has_element?(view, "#settings-connections input[name=return_to][value='#{expected}']")
+      render_click(view, "close-dialog")
+    end
+
+    render_patch(view, "/?" <> URI.encode_query(Map.put(source, "design_task", "github:other/project:2")))
+    assert :sys.get_state(view.pid).socket.assigns.design_source_context.params == Map.take(source, ~w(design_ref design_section design_item))
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:settings_command, _}
+  end
+
   test "Design lifecycle uses scoped owner replies and opens the exact task preview without executing", ctx do
     view = authorized_board_view()
     project = "github:example/fixture"

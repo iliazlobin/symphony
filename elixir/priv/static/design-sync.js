@@ -166,7 +166,8 @@
       if (!reply.ok) { this.sourceKey = null; this.error(reply.error); return; }
       const scene = this.hook.editor.validate(reply.data.scene, this.project);
       if (!scene) { this.sourceKey = null; this.error("design_scene_invalid"); return; }
-      const members = scene.boards[section]?.elements.filter(element => !element.isDeleted && element.customData?.symphony?.id === item) || [];
+      const board = Object.prototype.hasOwnProperty.call(scene.boards, section) ? scene.boards[section] : null;
+      const members = (Array.isArray(board?.elements) ? board.elements : []).filter(element => !element.isDeleted && element.customData?.symphony?.id === item);
       if (!members.some(element => element.customData?.symphony?.role === "node")) { this.sourceKey = null; this.error("design_item_not_reviewed"); return; }
       this.hook.select(section); this.panel(true);
       const confirm = this.el.querySelector("[data-design-confirm-review]"); if (confirm) confirm.hidden = true;

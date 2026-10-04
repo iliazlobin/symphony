@@ -42,6 +42,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:csrf_token, Plug.CSRFProtection.get_csrf_token())
       |> assign(:lanes, @lanes)
       |> assign(:url_filters, %{})
+      |> assign(:design_source_context, %{})
       |> assign(:board_view, "kanban")
       |> assign(:calendar_plan, %{"anchor_on" => nil, "durations" => %{}})
       |> assign(:linked_task, nil)
@@ -83,6 +84,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       socket
       |> assign(:dialog, dialog)
       |> assign(:url_filters, filters)
+      |> assign(:design_source_context, design_source_context(params, filters, project))
       |> assign(:board_view, board_view)
       |> assign(:linked_task, params["task"])
       |> assign(:chat_task_id, chat_task)
@@ -834,6 +836,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         controls_available: controls_available?(assigns),
         dispatch_guidance: dispatch_guidance(assigns.board, assigns.payload),
         settings_projects: Enum.map(assigns.board.projects, &Map.put(&1, :url, safe_url(&1.url))),
+        settings_return_to: board_path(Map.put(board_location_params(assigns), "panel", "settings")),
         project_links: project_links,
         visible_task_ids: visible_task_ids,
         selected_plan_id: selected_plan_id(assigns.board, assigns.chat_task_id, assigns.chat_session_id),
@@ -1010,7 +1013,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 execution_status={execution_status(@board, @payload)} authorized={@authorized} can_control={@controls_available}
                 can_edit={@settings_editable} settings={@settings} settings_available={settings_available?(@settings)} draft={@concurrency_draft}
                 project_id={selected_project(@board, @url_filters)} chat_health={@chat_health} source_status={source_status(@board, @loading)}
-                loading={@loading} csrf_token={@csrf_token} return_to={view_path(Map.put(@url_filters, "panel", "settings"), @board_view, @chat_task_id, @chat_session_id)} total_tokens={get_in(@payload, [:codex_totals, :total_tokens]) || "Unavailable"}
+                loading={@loading} csrf_token={@csrf_token} return_to={@settings_return_to} total_tokens={get_in(@payload, [:codex_totals, :total_tokens]) || "Unavailable"}
                 runtime_duration={runtime_duration(@payload)} rate_limits={pretty(@payload[:rate_limits])} />
             <% :task -> %>
               <p class="muted">{@selected.project_label} · {@selected.identifier} · {lane_label(task_lane(@selected))}</p>
@@ -1586,6 +1589,33 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> Map.reject(fn {_key, value} -> not is_binary(value) or byte_size(value) > 2_000 or value == "" end)
       |> Map.reject(fn {key, value} -> key == "view" and value not in ["design", "graph", "gantt"] end)
 
+  defp design_source_context(params, %{"view" => "design"} = filters, project) do
+    project = filters["project"] || project
+
+    with true <- is_binary(project),
+         true <- design_reference?(params["design_ref"]),
+         true <- design_item?(params["design_item"]),
+         true <- params["design_section"] in ~w(brief requirements data architecture decisions) do
+      source = Map.take(params, ~w(design_ref design_section design_item))
+      task = params["design_task"]
+      source = if scoped_design_task?(task, project), do: Map.put(source, "design_task", task), else: source
+      %{project: project, params: source}
+    else
+      _ -> %{}
+    end
+  end
+
+  defp design_source_context(_params, _filters, _project), do: %{}
+  defp design_reference?(ref) when is_binary(ref), do: Regex.match?(~r/\A[a-f0-9]{64}\z/, ref)
+  defp design_reference?(_ref), do: false
+  defp design_item?(item) when is_binary(item), do: Regex.match?(~r/\A[A-Za-z][A-Za-z0-9_-]{0,63}\z/, item)
+  defp design_item?(_item), do: false
+
+  defp scoped_design_task?(task, project) when is_binary(task) and byte_size(task) <= 240,
+    do: String.starts_with?(task, project <> ":") and not Regex.match?(~r/[\x00-\x1f\x7f]/, task)
+
+  defp scoped_design_task?(_task, _project), do: false
+
   defp design_link("github:iliazlobin/symphony"), do: "https://app.notion.com/p/3ebd865005a881acbbc1cc9799077ef4"
   defp design_link("github:iliazlobin/events-concierge"), do: "https://app.notion.com/p/3cfd865005a88162aa6bd4624b6a4af4"
   defp design_link(_project), do: nil
@@ -1756,14 +1786,21 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  defp board_location(socket) do
-    params = socket.assigns.url_filters
-    params = if socket.assigns.chat_task_id, do: Map.put(params, "chat_task", socket.assigns.chat_task_id), else: params
-    params = if socket.assigns.chat_session_id, do: Map.put(params, "chat_session", socket.assigns.chat_session_id), else: params
-    params = if socket.assigns.dialog == :task && socket.assigns.linked_task, do: Map.put(params, "task", socket.assigns.linked_task), else: params
-    params = if socket.assigns.dialog == :settings, do: Map.put(params, "panel", "settings"), else: params
-    board_path(params)
+  defp board_location(socket), do: board_path(board_location_params(socket.assigns))
+
+  defp board_location_params(assigns) do
+    params = Map.merge(assigns.url_filters, retained_design_source(assigns))
+    params = if assigns.chat_task_id, do: Map.put(params, "chat_task", assigns.chat_task_id), else: params
+    params = if assigns.chat_session_id, do: Map.put(params, "chat_session", assigns.chat_session_id), else: params
+    params = if assigns.dialog == :task && assigns.linked_task, do: Map.put(params, "task", assigns.linked_task), else: params
+    if assigns.dialog == :settings, do: Map.put(params, "panel", "settings"), else: params
   end
+
+  defp retained_design_source(%{url_filters: %{"view" => "design"} = filters, design_source_context: %{project: project, params: params}} = assigns) do
+    if selected_project(assigns.board, filters) == project, do: params, else: %{}
+  end
+
+  defp retained_design_source(_assigns), do: %{}
 
   defp main_chat(socket) do
     socket =
