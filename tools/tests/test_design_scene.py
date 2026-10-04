@@ -167,6 +167,30 @@ source.boards.architecture.elements.push(...model.normalizeElements(wrong,"archi
 assert(model.validate(source,project)); assert.equal(model.projection(source,"architecture").nodes.find(n=>n.id==="note-entities").field,undefined);
 ''')
 
+    def test_recreated_outline_fields_keep_the_initial_layout_and_do_not_move_surviving_notes(self):
+        self.run_scene(r'''
+const source=model.empty(project,{components:"Original components",flows:"Original flow"});
+const initial=copy(model.projection(source,"architecture").nodes);
+for(const element of source.boards.architecture.elements) element.isDeleted=true;
+const before=copy(source), values={components:"Web client\nBackend\nData store",flows:"User → Web client → Backend → Data store"};
+const restored=model.withFields(source,values);assert(restored);assert.deepEqual(source,before);
+const outlines=model.projection(restored,"architecture").nodes.filter(node=>node.field);
+assert.equal(outlines.length,2);assert.equal(model.fields(restored).components,values.components);assert.equal(model.fields(restored).flows,values.flows);
+for(const note of outlines) {const old=initial.find(node=>node.field===note.field);assert.equal(note.x,old.x);assert.equal(note.y,old.y);}
+assert(outlines[0].x+outlines[0].width<=outlines[1].x,"recreated outlines do not cover one another");
+const illustrative=model.example(restored);assert(illustrative);
+assert.deepEqual(model.projection(illustrative,"architecture").nodes.filter(node=>node.field),outlines);
+assert.equal(model.fields(illustrative).components,values.components);assert.equal(model.fields(illustrative).flows,values.flows);
+
+const partial=model.empty(project,{components:"Manually placed components"}), elements=partial.boards.architecture.elements;
+for(const element of elements) if(meta(element)?.id==="note-components") {element.x+=800;element.y+=180;}
+for(const element of elements) if(meta(element)?.id==="note-flows") element.isDeleted=true;
+const survivor=copy(elements.filter(element=>meta(element)?.id==="note-components"));
+const replacement=model.withFields(partial,{flows:"Explicit recreated flow"});assert(replacement);
+assert.deepEqual(replacement.boards.architecture.elements.filter(element=>meta(element)?.id==="note-components"),survivor,"surviving note keeps manual geometry and content");
+assert.equal(model.projection(replacement,"architecture").nodes.find(node=>node.field==="flows").x,370);
+''')
+
     def test_proposals_are_atomic_stale_safe_and_preserve_native_user_content(self):
         self.run_scene(r'''
 let source=model.empty(project,{brief:"User scope"}), original=copy(source);

@@ -1,14 +1,14 @@
 {
   "version": 1,
   "entry": {
-    "js": "editor-4DUBPLAY.js",
+    "js": "editor-I76RD7ZS.js",
     "css": "editor-5WPBF6B4.css"
   },
   "sources": {
     ".gitignore": "4d56952b0fb13bf8f9b6c13a6d4c34a075bac3af447636a1df4335d7576e2f97",
     "build.mjs": "95962359d0e7da40437a53d260cbbea351808b0669e4df1f141ae1325903aaf1",
     "design-editor.jsx": "93f8fa33a6811499ae1024b729004109e54d05aa4c9287fab8545c8391a931e1",
-    "design-scene.js": "6ae7392d924d2c9a2adba46a9af853b39d226b2ff0fc372845e689e7a0b4f5ee",
+    "design-scene.js": "00535be50998f04cf62d5b0b1d15fe85ea1d169b44b6279d7aad11a6ce91865d",
     "licenses/excalidraw.txt": "1352d204fdb90d5e482c13139d848bc2c9300a9a7de358a0a558a23e72d0d8be",
     "licenses/fastdom.txt": "df2ae14f12f31864acef768195afe4584b08a257f25925f49884619279f02f37",
     "licenses/fonts.txt": "4726649fbd98587e46b9ab5c1a8cd6c8ca5ebac5e8aab757b6e0298c4f1bf0b6",
@@ -2408,10 +2408,21 @@
         "chunks/chunk-TXEPDEMK.js"
       ]
     },
-    "editor-4DUBPLAY.js": {
+    "editor-5WPBF6B4.css": {
+      "type": "text/css",
+      "sha256": "221d3edbd13b3b603052b26c59618794cec04357a28a0857b0830941f59dbe11",
+      "bytes": 144648,
+      "imports": [
+        "files/Assistant-Bold-ZDZZ6JHA.woff2",
+        "files/Assistant-Medium-DZ25RZU3.woff2",
+        "files/Assistant-Regular-PLF2XOGW.woff2",
+        "files/Assistant-SemiBold-CZ5MX6FK.woff2"
+      ]
+    },
+    "editor-I76RD7ZS.js": {
       "type": "application/javascript",
-      "sha256": "8aad018d127938088683b546399b83a342882d16c742025343576d4f88c2af7c",
-      "bytes": 761103,
+      "sha256": "108732674c7d780dbe31a277297a8fa69bf71d23fa8fe7a2074d852050b4f465",
+      "bytes": 761161,
       "imports": [
         "chunks/ar-SA-G6X2FPQ2-E2GO2B6B.js",
         "chunks/az-AZ-76LH7QW2-UCK3FTKW.js",
@@ -2480,22 +2491,11 @@
         "chunks/zh-TW-RAJ6MFWO-GY4DFAWV.js"
       ]
     },
-    "editor-4DUBPLAY.js.LEGAL.txt": {
+    "editor-I76RD7ZS.js.LEGAL.txt": {
       "type": "text/plain",
       "sha256": "7b826dafefdf12e44d1d201e45d1b30de5f5ca8889629bfe6622da9441711e7e",
       "bytes": 1361,
       "imports": []
-    },
-    "editor-5WPBF6B4.css": {
-      "type": "text/css",
-      "sha256": "221d3edbd13b3b603052b26c59618794cec04357a28a0857b0830941f59dbe11",
-      "bytes": 144648,
-      "imports": [
-        "files/Assistant-Bold-ZDZZ6JHA.woff2",
-        "files/Assistant-Medium-DZ25RZU3.woff2",
-        "files/Assistant-Regular-PLF2XOGW.woff2",
-        "files/Assistant-SemiBold-CZ5MX6FK.woff2"
-      ]
     },
     "files/Assistant-Bold-ZDZZ6JHA.woff2": {
       "type": "font/woff2",

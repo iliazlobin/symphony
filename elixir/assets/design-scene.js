@@ -489,7 +489,10 @@ export function createSceneModel(convert) {
       for (const [field, value] of Object.entries(values)) {
         const section = FIELD_SECTIONS[field], board = next.boards[section], node = projection(next, section).nodes.find(node => node.field === field);
         if (!node && !value) continue;
-        if (!node) { board.elements.push(...nodeElements({id: "note-" + field, kind: "note", field, title: FIELD_TITLES[field], text: value, x: 0, y: 0, width: 320})); continue; }
+        if (!node) {
+          const index = Object.keys(FIELD_SECTIONS).filter(name => FIELD_SECTIONS[name] === section).indexOf(field);
+          board.elements.push(...nodeElements({id: "note-" + field, kind: "note", field, title: FIELD_TITLES[field], text: value, x: index * 370, y: 0, width: 320})); continue;
+        }
         const previousShape = board.elements.find(element => active(element) && tag(element)?.role === "node" && tag(element).id === node.id);
         previousShapes.set(previousShape.id, clone(previousShape));
         const bodyIndex = board.elements.findIndex(element => active(element) && tag(element)?.id === node.id && tag(element)?.role === "body");
