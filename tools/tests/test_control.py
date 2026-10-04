@@ -32,14 +32,16 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        self.server.payloads.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        self.server.bodies.append(body)
+        self.server.payloads.append(json.loads(body))
         self.do_GET()
 
 
 @contextlib.contextmanager
 def server(response=(200, b'{"revision":4}', {})):
     host = HTTPServer(("127.0.0.1", 0), Handler)
-    host.response, host.requests, host.payloads = response, [], []
+    host.response, host.requests, host.payloads, host.bodies = response, [], [], []
     thread = threading.Thread(target=host.serve_forever, daemon=True)
     thread.start()
     try:
@@ -108,6 +110,50 @@ class ControlTests(unittest.TestCase):
                 with self.assertRaisesRegex(control.ControlError, "redirects"):
                     control.request_json(config, "/api/v1/control")
             self.assertEqual(destination.requests, [])
+
+    def test_retry_renewal_preserves_existing_wire_payload_unless_requested(self):
+        retry = dict(action="retry", expected_revision=3, command_id="same-request", issue_id="7")
+        cancel = dict(retry, action="cancel")
+        with server() as (host, config):
+            control.control(config, "retry", 3, "same-request", "7")
+            control.control(config, "retry", 3, "same-request", "7", renew_attempts=False)
+            control.control(config, "cancel", 3, "same-request", "7", renew_attempts=False)
+            control.control(config, "retry", 3, "same-request", "7", renew_attempts=True)
+            self.assertEqual(host.bodies[:3], [json.dumps(payload).encode() for payload in (retry, retry, cancel)])
+            self.assertEqual(host.payloads[-1], dict(retry, renew_attempts=True))
+
+    def test_retry_renewal_rejects_non_boolean_values_and_other_actions_before_transport(self):
+        with patch.object(control, "request_json") as request:
+            for value in (None, 0, 1, 1.0, "true", [], {}):
+                with self.subTest(value=value), self.assertRaisesRegex(control.ControlError, "must be a boolean"):
+                    control.control({}, "retry", 3, "same-request", "7", renew_attempts=value)
+            for action in ("pause", "drain", "resume", "cancel"):
+                with self.subTest(action=action), self.assertRaisesRegex(control.ControlError, "requires the retry action"):
+                    control.control({}, action, 3, "same-request", "7", renew_attempts=True)
+            request.assert_not_called()
+
+    def test_cli_retry_renewal_uses_the_same_revision_and_command_id(self):
+        retry = dict(action="retry", expected_revision=3, command_id="same-request", issue_id="7")
+        with server() as (host, config), patch.object(control, "load_config", return_value=config):
+            for flags in ([], ["--renew-attempts"]):
+                args = ["symphony_control.py", "retry", "7", "--revision", "3", "--command-id", "same-request", *flags]
+                with patch.object(sys, "argv", args), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(control.main(), 0)
+            self.assertEqual(host.payloads, [retry, dict(retry, renew_attempts=True)])
+
+    def test_cli_other_actions_do_not_accept_retry_renewal_flag(self):
+        with patch.object(control, "load_config") as load:
+            for action in ("pause", "drain", "resume", "cancel", "status", "issue", "mcp"):
+                args = ["symphony_control.py", action]
+                if action in control.ACTIONS:
+                    args += ["--revision", "3"]
+                if action in ("cancel", "issue"):
+                    args += ["7"]
+                with self.subTest(action=action), patch.object(sys, "argv", [*args, "--renew-attempts"]), \
+                        contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                    control.main()
+                self.assertEqual(error.exception.code, 2)
+            load.assert_not_called()
 
     def test_unknown_and_rejected_state_never_become_idle(self):
         for response in ((409, b'{"error":"revision_conflict"}', {}), (200, b'{"error":{"code":"snapshot_unavailable"}}', {}), (200, b"not json", {}), (200, b"x" * (control.MAX_MESSAGE + 1), {})):
@@ -218,9 +264,50 @@ class ControlTests(unittest.TestCase):
         replies = list(map(json.loads, output.getvalue().splitlines()))
         self.assertEqual([reply["id"] for reply in replies], [1, 2, 3, 4, 5])
         self.assertEqual(len(replies[1]["result"]["tools"]), 3)
+        self.assertEqual(replies[0]["result"]["protocolVersion"], "2025-11-25")
+        self.assertEqual(replies[0]["result"]["serverInfo"], {"name": "symphony-control", "version": "0.1.0"})
+        schema = next(tool["inputSchema"] for tool in replies[1]["result"]["tools"] if tool["name"] == "symphony_control")
+        self.assertEqual(schema["properties"]["renew_attempts"]["type"], "boolean")
+        self.assertNotIn("renew_attempts", schema["required"])
+        self.assertFalse(schema["additionalProperties"])
         self.assertTrue(replies[2]["result"]["isError"])
         self.assertEqual(replies[3]["error"]["code"], -32601)
         self.assertEqual(replies[4]["error"]["code"], -32600)
+
+    def test_mcp_retry_renewal_preserves_idempotency_on_repeated_submission(self):
+        arguments = dict(action="retry", expected_revision=3, command_id="same-request", issue_id="7", renew_attempts=True)
+        messages = [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}},
+            *[{"jsonrpc": "2.0", "id": index, "method": "tools/call", "params": {
+                "name": "symphony_control", "arguments": arguments}} for index in (2, 3)],
+        ]
+        output = io.StringIO()
+        with server() as (host, config):
+            control.mcp(config, io.StringIO("\n".join(map(json.dumps, messages)) + "\n"), output)
+            self.assertEqual(host.payloads, [arguments, arguments])
+            self.assertEqual(host.bodies[0], host.bodies[1])
+        replies = list(map(json.loads, output.getvalue().splitlines()))
+        self.assertTrue(all(not reply["result"]["isError"] for reply in replies[1:]))
+        self.assertEqual(replies[1]["result"], replies[2]["result"])
+
+    def test_mcp_retry_renewal_rejects_wrong_types_actions_and_extra_fields(self):
+        arguments = dict(action="retry", expected_revision=3, command_id="same-request", issue_id="7")
+        invalid = [("symphony_control", dict(arguments, renew_attempts=value)) for value in (None, 0, 1, "true", [], {})]
+        invalid += [("symphony_control", dict(arguments, action=action, renew_attempts=True))
+                    for action in ("pause", "drain", "resume", "cancel")]
+        invalid += [("symphony_control", dict(arguments, renew_attempt=True)),
+                    ("symphony_status", {"renew_attempts": False}),
+                    ("symphony_issue", {"issue_identifier": "GH-7", "renew_attempts": False})]
+        messages = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}]
+        messages += [{"jsonrpc": "2.0", "id": index, "method": "tools/call", "params": {
+            "name": name, "arguments": values}} for index, (name, values) in enumerate(invalid, 2)]
+        output = io.StringIO()
+        with patch.object(control, "request_json") as request:
+            control.mcp({}, io.StringIO("\n".join(map(json.dumps, messages)) + "\n"), output)
+            request.assert_not_called()
+        replies = list(map(json.loads, output.getvalue().splitlines()))
+        self.assertEqual(len(replies), len(messages))
+        self.assertTrue(all(reply["result"]["isError"] for reply in replies[1:]))
 
 
 if __name__ == "__main__":

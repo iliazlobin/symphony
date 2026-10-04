@@ -219,8 +219,12 @@ remaining budget, concurrency and the worker launch gate. Normal tracker polling
 The cumulative token budget uses Codex's reported input and output tokens, including
 cached input. A short task can therefore reach its budget while repeatedly reading
 repository context. A `token_budget` hold retains the candidate and consumed usage;
-retry does not reset either. Review the evidence and obtain approval before raising
-the configured per-task ceiling, then retry within the remaining attempt budget.
+ordinary retry does not reset either. After resolving the failure, an explicitly authorized
+`retry ISSUE_ID --renew-attempts --revision CURRENT_REVISION --command-id RECOVERY_ID`
+renews only that exhausted task's configured attempt cycle. Lifetime attempts, tokens and
+runtime stay recorded; other tasks and project ceilings remain unchanged. Renewal rejects
+running or accepted tasks, exhausted lifetime budgets and candidates awaiting owner review.
+Use **Return to Work** for reviewed candidates. Never renew automatically after failure.
 
 Before resuming after `main` changes, follow [Change the baseline](#change-the-baseline).
 Both scheduler and publisher must use the reviewed current baseline. Otherwise a
@@ -547,7 +551,10 @@ python3 tools/symphony_control.py resume --revision CURRENT_REVISION
 These are separate actions, not a sequence to run together. Drain stops new dispatch
 while the current bounded pipeline finishes; pause interrupts active work. Cancel
 holds one issue and requests cleanup; retry clears its hold within the remaining
-budget. Resume permits eligible work without changing the host launch gate.
+attempt allowance. Add `--renew-attempts` only for an explicitly authorized new cycle after
+the previous cycle is exhausted and the failure has been resolved. Keep the same command ID
+and revision after an uncertain response.
+Resume permits eligible work without changing the host launch gate.
 Re-read status to confirm the resulting state.
 MCP reloads its original validated operator configuration for each tool call.
 Reconnect an existing MCP adapter after updating its Python implementation; running

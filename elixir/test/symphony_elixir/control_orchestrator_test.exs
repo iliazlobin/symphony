@@ -151,6 +151,31 @@ defmodule SymphonyElixir.ControlOrchestratorTest do
     assert %{"error" => %{"code" => "command_id_conflict"}} = json_response(post(api_conn(token), "/api/v1/control", %{set | "limit" => nil}), 409)
   end
 
+  test "routed renewal stays paused, preserves usage and returns actionable conflicts", ctx do
+    token = start_control_endpoint(ctx.pid)
+
+    :sys.replace_state(ctx.pid, fn state ->
+      issue = %{"attempts" => 2, "runtime_ms" => 17, "tokens" => 9, "hold" => nil, "active" => nil}
+      %{state | control: %{state.control | data: put_in(state.control.data, ["issues", "7"], issue)}}
+    end)
+
+    retry = %{"command_id" => "api-recovery", "expected_revision" => 0, "action" => "retry", "issue_id" => "7"}
+    assert %{"error" => %{"code" => "budget_exhausted"}} = json_response(post(api_conn(token), "/api/v1/control", retry), 409)
+    renewal = Map.put(retry, "renew_attempts", true)
+    assert %{"renew_attempts" => true, "mode" => "paused", "replayed" => false} = json_response(post(api_conn(token), "/api/v1/control", renewal), 200)
+    assert %{"replayed" => true} = json_response(post(api_conn(token), "/api/v1/control", renewal), 200)
+    next = %{renewal | "command_id" => "premature-renewal", "expected_revision" => 1}
+    assert %{"error" => %{"code" => "attempts_not_exhausted"}} = json_response(post(api_conn(token), "/api/v1/control", next), 409)
+    assert %{"issues" => %{"7" => %{"attempts" => 2, "cycle_attempts" => 0, "runtime_ms" => 17, "tokens" => 9, "active" => nil}}} = Orchestrator.control_snapshot(ctx.pid)
+
+    :sys.replace_state(ctx.pid, fn state ->
+      %{state | control: %{state.control | data: put_in(state.control.data, ["issues", "7", "hold"], "owner_review")}}
+    end)
+
+    assert %{"error" => %{"code" => "pr_work_continuation_required"}} = json_response(post(api_conn(token), "/api/v1/control", next), 409)
+    assert :sys.get_state(ctx.pid).running == %{}
+  end
+
   test "paused poll and queued retry cannot launch an agent", %{pid: pid, issue: issue} do
     send(pid, :run_poll_cycle)
     assert %{"issues" => %{}} = Orchestrator.control_snapshot(pid)

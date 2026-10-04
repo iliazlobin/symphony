@@ -2,6 +2,11 @@ defmodule SymphonyElixir.ControlLedgerTest do
   use ExUnit.Case
   alias SymphonyElixir.ControlLedger
 
+  @work String.duplicate("a", 32)
+  @base String.duplicate("a", 40)
+  @head String.duplicate("b", 40)
+  @work_context %{tracker_fingerprint: "retry-fixture", base_sha: @base, repository: "owner/repo"}
+
   defmodule Owner do
     use GenServer
     alias SymphonyElixir.ControlLedger
@@ -10,9 +15,25 @@ defmodule SymphonyElixir.ControlLedgerTest do
     def terminate(_, ledger), do: ControlLedger.close(ledger)
     def handle_call(:snapshot, _, ledger), do: {:reply, ControlLedger.snapshot(ledger), ledger}
 
-    def handle_call({:command, params}, _, ledger) do
-      case ControlLedger.command(ledger, params, 5) do
+    def handle_call({:command, params}, from, ledger), do: handle_call({:command, params, %{}}, from, ledger)
+
+    def handle_call({:command, params, context}, _, ledger) do
+      case ControlLedger.command(ledger, params, 5, context) do
         {:ok, next, reply, replay} -> {:reply, {:ok, reply, replay}, next}
+        error -> {:reply, error, ledger}
+      end
+    end
+
+    def handle_call({:tokens, id, run, total}, _, ledger) do
+      case ControlLedger.tokens(ledger, id, run, total) do
+        {:ok, next} -> {:reply, :ok, next}
+        error -> {:reply, error, ledger}
+      end
+    end
+
+    def handle_call({:checkpoint, id, run, work, attrs}, _, ledger) do
+      case ControlLedger.checkpoint_pr_work(ledger, id, run, work, attrs) do
+        {:ok, next} -> {:reply, :ok, next}
         error -> {:reply, error, ledger}
       end
     end
@@ -24,8 +45,10 @@ defmodule SymphonyElixir.ControlLedgerTest do
       end
     end
 
-    def handle_call({:finish, id, run, hold}, _, ledger) do
-      case ControlLedger.finish(ledger, id, run, hold) do
+    def handle_call({:finish, id, run, hold}, from, ledger), do: handle_call({:finish, id, run, hold, nil}, from, ledger)
+
+    def handle_call({:finish, id, run, hold, evidence}, _, ledger) do
+      case ControlLedger.finish(ledger, id, run, hold, evidence) do
         {:ok, next} -> {:reply, :ok, next}
         error -> {:reply, error, ledger}
       end
@@ -52,6 +75,45 @@ defmodule SymphonyElixir.ControlLedgerTest do
 
   defp command(action, revision, id \\ nil, command_id \\ nil) do
     %{"command_id" => command_id || "#{action}-#{revision}", "action" => action, "expected_revision" => revision, "issue_id" => id}
+  end
+
+  defp renew(revision, id \\ "7", key \\ nil), do: Map.put(command("retry", revision, id, key), "renew_attempts", true)
+
+  defp issue(attrs \\ %{}), do: Map.merge(%{"attempts" => 2, "attempt_base" => 0, "runtime_ms" => 100, "tokens" => 23, "hold" => "interrupted", "active" => nil}, attrs)
+
+  defp seed_issues(pid, issues) do
+    :sys.replace_state(pid, fn ledger ->
+      data = Map.put(ledger.data, "issues", issues)
+      File.write!(ledger.path, Jason.encode!(data))
+      %{ledger | data: data}
+    end)
+  end
+
+  defp assert_rejected_without_change(pid, path, params, reason) do
+    snapshot = GenServer.call(pid, :snapshot)
+    bytes = File.read!(path)
+    assert {:error, ^reason} = GenServer.call(pid, {:command, params})
+    assert GenServer.call(pid, :snapshot) == snapshot
+    assert File.read!(path) == bytes
+  end
+
+  defp create_work(revision) do
+    Map.merge(command("create_pr_work", revision, "7"), %{"work_id" => @work, "base_sha" => @base, "instruction" => "Recover the existing scoped work"})
+  end
+
+  defp reviewed_handoff(run) do
+    %{
+      "run_id" => run,
+      "work_id" => @work,
+      "expected_head_sha" => nil,
+      "goal_revision" => 1,
+      "candidate_sha" => @head,
+      "base_sha" => @base,
+      "branch" => "codex/gh-7-#{@work}",
+      "builder_session_id" => "retained-builder-turn",
+      "reviewer_session_id" => "independent-review-turn",
+      "review" => %{"candidate_sha" => @head, "verdict" => "approve", "findings" => []}
+    }
   end
 
   test "commands persist, replay once and reject stale or conflicting writes", ctx do
@@ -124,6 +186,189 @@ defmodule SymphonyElixir.ControlLedgerTest do
     assert {:error, :stale_run} = GenServer.call(pid, {:finish, "7", run, nil})
     assert :ok = GenServer.call(pid, {:finish, "7", run2, nil})
     assert {:error, :budget_exhausted} = GenServer.call(pid, {:command, command("retry", 3, "7")})
+  end
+
+  test "explicit renewal grants one bounded attempt cycle while retaining lifetime usage and other issues", ctx do
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    assert {:ok, _, false} = GenServer.call(pid, {:command, command("resume", 0)})
+
+    assert {:ok, other_run, _} = GenServer.call(pid, {:reserve, "8"})
+    assert :ok = GenServer.call(pid, {:tokens, "8", other_run, 9})
+    assert :ok = GenServer.call(pid, {:finish, "8", other_run, "cancelled"})
+
+    for tokens <- [7, 11] do
+      assert {:ok, run, _} = GenServer.call(pid, {:reserve, "7"})
+      assert :ok = GenServer.call(pid, {:tokens, "7", run, tokens})
+      assert :ok = GenServer.call(pid, {:finish, "7", run, nil})
+    end
+
+    before = GenServer.call(pid, :snapshot)
+    assert %{"attempts" => 2, "cycle_attempts" => 2, "tokens" => 18} = before["issues"]["7"]
+    assert {:error, :not_admitted} = GenServer.call(pid, {:reserve, "7"})
+    assert_rejected_without_change(pid, ctx.settings.state_path, command("retry", 1, "7"), :budget_exhausted)
+    assert_rejected_without_change(pid, ctx.settings.state_path, Map.put(command("retry", 1, "7"), "renew_attempts", false), :budget_exhausted)
+
+    assert {:ok, %{"revision" => 2, "renew_attempts" => true}, false} = GenServer.call(pid, {:command, renew(1)})
+    renewed = GenServer.call(pid, :snapshot)
+    assert %{"attempts" => 2, "attempt_base" => 2, "cycle_attempts" => 0, "hold" => nil} = renewed["issues"]["7"]
+    assert Map.drop(renewed["issues"]["7"], ~w(attempt_base cycle_attempts hold)) == Map.drop(before["issues"]["7"], ~w(attempt_base cycle_attempts hold))
+    assert renewed["issues"]["8"] == before["issues"]["8"]
+    assert :sys.get_state(pid).settings == ctx.settings
+
+    for _ <- 1..ctx.settings.max_attempts do
+      prior = GenServer.call(pid, :snapshot)["issues"]["7"]
+      assert {:ok, run, remaining} = GenServer.call(pid, {:reserve, "7"})
+      assert remaining == ctx.settings.max_total_runtime_ms - prior["runtime_ms"]
+      assert :ok = GenServer.call(pid, {:finish, "7", run, nil})
+    end
+
+    assert %{"attempts" => 4, "attempt_base" => 2, "cycle_attempts" => 2, "tokens" => 18} = GenServer.call(pid, :snapshot)["issues"]["7"]
+    assert {:error, :not_admitted} = GenServer.call(pid, {:reserve, "7"})
+    assert_rejected_without_change(pid, ctx.settings.state_path, command("retry", 2, "7"), :budget_exhausted)
+  end
+
+  test "renewal survives restart and exact replay cannot renew another cycle", ctx do
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    seed_issues(pid, %{"7" => issue(%{"attempts" => 5, "attempt_base" => 3}), "8" => issue(%{"tokens" => 67, "hold" => "cancelled"})})
+    params = renew(0, "7", "renew-existing-cycle")
+    assert {:ok, %{"revision" => 1, "mode" => "paused", "renew_attempts" => true} = receipt, false} = GenServer.call(pid, {:command, params})
+    expected = GenServer.call(pid, :snapshot)
+    assert expected["issues"]["7"]["attempt_base"] == 5
+    stop_supervised!(Owner)
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    assert GenServer.call(pid, :snapshot) == expected
+    bytes = File.read!(ctx.settings.state_path)
+    assert {:ok, ^receipt, true} = GenServer.call(pid, {:command, params})
+    assert GenServer.call(pid, :snapshot) == expected
+    assert File.read!(ctx.settings.state_path) == bytes
+    assert_rejected_without_change(pid, ctx.settings.state_path, %{params | "renew_attempts" => false}, :command_id_conflict)
+    assert_rejected_without_change(pid, ctx.settings.state_path, %{params | "command_id" => "different-stale-key"}, :revision_conflict)
+    assert_rejected_without_change(pid, ctx.settings.state_path, renew(1), :attempts_not_exhausted)
+  end
+
+  test "premature renewal is rejected while default and false retry retain ordinary behavior", ctx do
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    assert_rejected_without_change(pid, ctx.settings.state_path, renew(0), :attempts_not_exhausted)
+    row = issue(%{"attempts" => 4, "attempt_base" => 3})
+    seed_issues(pid, %{"7" => row, "8" => row})
+    assert_rejected_without_change(pid, ctx.settings.state_path, renew(0), :attempts_not_exhausted)
+    assert {:ok, receipt, false} = GenServer.call(pid, {:command, command("retry", 0, "7")})
+    refute receipt["renew_attempts"]
+    assert {:ok, receipt, false} = GenServer.call(pid, {:command, Map.put(command("retry", 1, "8"), "renew_attempts", false)})
+    refute receipt["renew_attempts"]
+
+    for id <- ["7", "8"] do
+      assert %{"attempts" => 4, "attempt_base" => 3, "cycle_attempts" => 1, "tokens" => 23, "runtime_ms" => 100, "hold" => nil} = GenServer.call(pid, :snapshot)["issues"][id]
+    end
+  end
+
+  test "renewal cannot bypass active work, acceptance, lifetime budgets or legacy review", ctx do
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+
+    acceptance = %{
+      "command_id" => "human-acceptance",
+      "tracker_fingerprint" => "retry-fixture",
+      "candidate_sha" => @head,
+      "tracker_state" => "closed",
+      "issue_updated_at" => "2026-10-04T00:00:00Z",
+      "accepted_at" => "2026-10-04T00:00:00Z"
+    }
+
+    active = %{"run_id" => "owned-active-run", "started_at_ms" => System.system_time(:millisecond), "tokens" => 0}
+
+    for {attrs, reason} <- [
+          {%{"active" => active}, :issue_running},
+          {%{"acceptance" => acceptance, "hold" => "accepted"}, :task_already_accepted},
+          {%{"tokens" => ctx.settings.max_total_tokens}, :budget_exhausted},
+          {%{"runtime_ms" => ctx.settings.max_total_runtime_ms}, :budget_exhausted},
+          {%{"hold" => "owner_review", "handoff" => %{"candidate_sha" => @head}}, :pr_work_continuation_required}
+        ] do
+      seed_issues(pid, %{"7" => issue(attrs), "8" => issue(%{"tokens" => 41})})
+      assert_rejected_without_change(pid, ctx.settings.state_path, renew(0), reason)
+    end
+  end
+
+  test "renewal requeues the same paused PR work without changing its retained builder identity", ctx do
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    assert {:ok, _, false} = GenServer.call(pid, {:command, command("resume", 0)})
+    assert {:ok, _, false} = GenServer.call(pid, {:command, create_work(1), @work_context})
+    assert {:ok, first, _} = GenServer.call(pid, {:reserve, "7"})
+    assert :ok = GenServer.call(pid, {:checkpoint, "7", first, @work, %{"builder_thread_id" => "retained-builder"}})
+    assert :ok = GenServer.call(pid, {:tokens, "7", first, 7})
+    assert :ok = GenServer.call(pid, {:finish, "7", first, "auth_required"})
+    assert {:ok, _, false} = GenServer.call(pid, {:command, command("retry", 2, "7")})
+    assert {:ok, second, _} = GenServer.call(pid, {:reserve, "7"})
+    assert :ok = GenServer.call(pid, {:checkpoint, "7", second, @work, %{"working_head_sha" => @head}})
+    assert :ok = GenServer.call(pid, {:tokens, "7", second, 11})
+    assert :ok = GenServer.call(pid, {:finish, "7", second, "interrupted"})
+    before = GenServer.call(pid, :snapshot)["issues"]["7"]
+    assert before["pr_work"][@work]["phase"] == "paused"
+    assert {:ok, %{"revision" => 4}, false} = GenServer.call(pid, {:command, renew(3)})
+    renewed = GenServer.call(pid, :snapshot)["issues"]["7"]
+    assert renewed["hold"] == nil
+    assert renewed["attempt_base"] == 2
+    assert renewed["selected_work_id"] == @work
+    assert renewed["pr_work"][@work]["phase"] == "queued"
+    assert Map.drop(renewed["pr_work"][@work], ~w(phase updated_at)) == Map.drop(before["pr_work"][@work], ~w(phase updated_at))
+    assert Map.drop(renewed, ~w(attempt_base cycle_attempts hold pr_work)) == Map.drop(before, ~w(attempt_base cycle_attempts hold pr_work))
+
+    stop_supervised!(Owner)
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    assert GenServer.call(pid, :snapshot)["issues"]["7"] == renewed
+    assert {:ok, third, _} = GenServer.call(pid, {:reserve, "7"})
+    assert GenServer.call(pid, :snapshot)["issues"]["7"]["active"]["work_id"] == @work
+    assert {:error, :stale_run} = GenServer.call(pid, {:finish, "7", second, nil})
+    assert :ok = GenServer.call(pid, {:finish, "7", third, nil})
+  end
+
+  test "renewal cannot reopen a reviewed PR even after its attempt cycle is exhausted", ctx do
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    assert {:ok, _, false} = GenServer.call(pid, {:command, command("resume", 0)})
+    assert {:ok, _, false} = GenServer.call(pid, {:command, create_work(1), @work_context})
+    assert {:ok, first, _} = GenServer.call(pid, {:reserve, "7"})
+    assert :ok = GenServer.call(pid, {:checkpoint, "7", first, @work, %{"builder_thread_id" => "retained-builder"}})
+    assert :ok = GenServer.call(pid, {:finish, "7", first, nil})
+    assert {:ok, second, _} = GenServer.call(pid, {:reserve, "7"})
+    assert :ok = GenServer.call(pid, {:finish, "7", second, "owner_review", reviewed_handoff(second)})
+    assert GenServer.call(pid, :snapshot)["issues"]["7"]["cycle_attempts"] == 2
+    assert_rejected_without_change(pid, ctx.settings.state_path, renew(2), :pr_work_continuation_required)
+    assert GenServer.call(pid, :snapshot)["issues"]["7"]["pr_work"][@work]["head_sha"] == @head
+    assert {:error, :not_admitted} = GenServer.call(pid, {:reserve, "7"})
+    assert {:ok, _, false} = GenServer.call(pid, {:command, command("cancel", 2, "7")})
+    assert GenServer.call(pid, :snapshot)["issues"]["7"]["hold"] == "cancelled"
+    assert_rejected_without_change(pid, ctx.settings.state_path, renew(3), :pr_work_continuation_required)
+    assert GenServer.call(pid, :snapshot)["issues"]["7"]["pr_work"][@work]["phase"] == "owner_review"
+  end
+
+  test "cancelling a legacy reviewed candidate cannot hide its continuation requirement", ctx do
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    assert {:ok, _, false} = GenServer.call(pid, {:command, command("resume", 0)})
+    assert {:ok, first, _} = GenServer.call(pid, {:reserve, "7"})
+    assert :ok = GenServer.call(pid, {:finish, "7", first, nil})
+    assert {:ok, second, _} = GenServer.call(pid, {:reserve, "7"})
+    evidence = reviewed_handoff(second) |> Map.drop(~w(work_id expected_head_sha goal_revision))
+    assert :ok = GenServer.call(pid, {:finish, "7", second, "owner_review", evidence})
+    assert_rejected_without_change(pid, ctx.settings.state_path, renew(1), :pr_work_continuation_required)
+    assert {:ok, _, false} = GenServer.call(pid, {:command, command("cancel", 1, "7")})
+    before = GenServer.call(pid, :snapshot)
+    assert before["issues"]["7"]["hold"] == "cancelled"
+    assert before["issues"]["7"]["handoff"] == evidence
+    assert_rejected_without_change(pid, ctx.settings.state_path, renew(2), :pr_work_continuation_required)
+    assert GenServer.call(pid, :snapshot)["issues"]["7"]["handoff"] == evidence
+    assert {:error, :not_admitted} = GenServer.call(pid, {:reserve, "7"})
+  end
+
+  test "attempt renewal accepts only booleans on retry and rejects unrelated command fields", ctx do
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    seed_issues(pid, %{"7" => issue()})
+
+    for value <- [nil, "true", "false", 0, 1, [], %{}] do
+      assert_rejected_without_change(pid, ctx.settings.state_path, Map.put(command("retry", 0, "7"), "renew_attempts", value), :invalid_command)
+    end
+
+    for params <- [command("resume", 0), command("cancel", 0, "7"), Map.put(command("set_concurrency", 0), "limit", 2)] do
+      assert_rejected_without_change(pid, ctx.settings.state_path, Map.put(params, "renew_attempts", true), :invalid_command)
+    end
   end
 
   test "restart retains interrupted attempt and pauses before dispatch", ctx do

@@ -312,6 +312,7 @@ defmodule SymphonyElixir.ControlLedger do
       result = %{"command_id" => params["command_id"], "revision" => revision, "mode" => next.data["mode"], "action" => params["action"], "issue_id" => params["issue_id"]}
       result = if params["action"] == "set_concurrency", do: Map.put(result, "limit", params["limit"]), else: result
       result = if PRWork.command?(params), do: Map.put(result, "work_id", params["work_id"]), else: result
+      result = if params["renew_attempts"] == true, do: Map.put(result, "renew_attempts", true), else: result
       entry = %{"fingerprint" => fingerprint, "result" => result}
       data = next.data |> Map.put("revision", revision) |> put_in(["commands", params["command_id"]], entry)
       next = %{next | data: data}
@@ -361,6 +362,9 @@ defmodule SymphonyElixir.ControlLedger do
     with :ok <- routing_observation(observed, params, context), :ok <- routing_hold(current, action), do: {:ok, ledger}
   end
 
+  defp transition_settings(ledger, %{"action" => "retry", "issue_id" => id} = params, _ceiling, _context),
+    do: retry_issue(ledger, id, Map.get(params, "renew_attempts", false))
+
   defp transition_settings(ledger, params, _ceiling, _context), do: transition(ledger, params["action"], params["issue_id"])
 
   defp routing_observation(observed, params, context) do
@@ -393,7 +397,7 @@ defmodule SymphonyElixir.ControlLedger do
     if IssueAcceptance.accepted?(current), do: {:error, :task_already_accepted}, else: {:ok, put_issue(ledger, issue_id, PRWork.hold(current, "cancelled"))}
   end
 
-  defp transition(ledger, "retry", issue_id) do
+  defp retry_issue(ledger, issue_id, renew_attempts) do
     current = issue(ledger, issue_id)
 
     cond do
@@ -403,13 +407,37 @@ defmodule SymphonyElixir.ControlLedger do
       not is_nil(current["active"]) ->
         {:error, :issue_running}
 
-      budget_exhausted?(current, ledger.settings) ->
+      total_budget_exhausted?(current, ledger.settings) ->
         {:error, :budget_exhausted}
 
       true ->
-        with {:ok, current} <- PRWork.retry(current), do: {:ok, put_issue(ledger, issue_id, Map.put(current, "hold", nil))}
+        with :ok <- validate_retry_attempts(current, ledger.settings, renew_attempts),
+             {:ok, current} <- PRWork.retry(current) do
+          next = current |> renew_attempt_cycle(renew_attempts) |> Map.put("hold", nil)
+          {:ok, put_issue(ledger, issue_id, next)}
+        end
     end
   end
+
+  defp validate_retry_attempts(current, settings, true) do
+    cond do
+      current["hold"] == "owner_review" or (is_nil(PRWork.selected(current)) and is_map(current["handoff"])) ->
+        {:error, :pr_work_continuation_required}
+
+      cycle_attempts(current) < settings.max_attempts ->
+        {:error, :attempts_not_exhausted}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_retry_attempts(current, settings, false) do
+    if budget_exhausted?(current, settings), do: {:error, :budget_exhausted}, else: :ok
+  end
+
+  defp renew_attempt_cycle(current, true), do: Map.put(current, "attempt_base", current["attempts"])
+  defp renew_attempt_cycle(current, false), do: current
 
   defp budget_exhausted?(issue, settings) do
     cycle_attempts(issue) >= settings.max_attempts or total_budget_exhausted?(issue, settings)
@@ -435,6 +463,7 @@ defmodule SymphonyElixir.ControlLedger do
     do: is_binary(params["expected_updated_at"]) and match?({:ok, _, _}, DateTime.from_iso8601(params["expected_updated_at"]))
 
   defp valid_setting?("accept_task", params), do: IssueAcceptance.valid_command?(params)
+  defp valid_setting?("retry", params), do: is_boolean(Map.get(params, "renew_attempts", false))
   defp valid_setting?(action, params) when action in ["create_pr_work", "continue_pr_work"], do: PRWork.valid_command?(params)
   defp valid_setting?(_action, _params), do: true
 
@@ -445,6 +474,7 @@ defmodule SymphonyElixir.ControlLedger do
 
   defp valid_action?(_, _), do: false
   defp command_fields(action) when action in ~w(queue_task unqueue_task), do: ["expected_updated_at"]
+  defp command_fields("retry"), do: ["renew_attempts"]
   defp command_fields(action), do: PRWork.command_fields(action) ++ IssueAcceptance.command_fields(action)
 
   defp routing_intent(ledger, %{"issue_id" => id, "action" => action}, revision, context) when is_binary(id) do
