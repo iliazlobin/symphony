@@ -100,7 +100,9 @@ assert.equal(editor.changes.length,0);
 assert.equal(editor.controller.document().boards.requirements.nodes[0].text,legacy);
 editor.controller.select("data"); editor.click(editor.tools.entity);
 let doc = editor.controller.document(), node = doc.boards.data.nodes.find(n=>n.kind==="entity"); assert(node);
-editor.input(node.id,"title","Event"); editor.input(node.id,"text","id: UUID\ntitle: text");
+editor.input(node.id,"title","Event");
+assert.equal(editor.root.querySelector(`[data-canvas-text="${node.id}"]`).attributes["aria-label"], "Details of Event");
+editor.input(node.id,"text","id: UUID\ntitle: text");
 assert.equal(editor.controller.document().boards.data.nodes.find(n=>n.id===node.id).text,"id: UUID\ntitle: text");
 const beforeUndo = editor.controller.document().revision; editor.click(editor.controls.undo);
 assert.equal(editor.controller.document().boards.data.nodes.find(n=>n.id===node.id).text,"");
@@ -119,6 +121,8 @@ assert.deepEqual(plain(reload.controller.document()),preserved);
         self.run_canvas(r'''
 const editor = mount(); editor.controller.select("data"); editor.click(editor.tools.entity); editor.click(editor.tools.entity);
 const nodes = editor.controller.document().boards.data.nodes.filter(n=>n.kind==="entity");
+assert(nodes[0].x !== nodes[1].x || nodes[0].y !== nodes[1].y, "consecutive cards have separate positions");
+assert(nodes[0].x + 240 <= nodes[1].x || nodes[1].x + 240 <= nodes[0].x || nodes[0].y + 150 <= nodes[1].y || nodes[1].y + 150 <= nodes[0].y, "new cards do not cover each other");
 editor.click(editor.tools.connect);
 editor.click(editor.root.querySelector(`[data-canvas-node="${nodes[0].id}"]`));
 editor.click(editor.root.querySelector(`[data-canvas-node="${nodes[1].id}"]`));
@@ -161,6 +165,41 @@ assert.equal(editor.controller.proposal(suggestion(editor,"brief",[{op:"remove_n
 const valid = suggestion(editor,"brief",[{op:"add_node",node:{kind:"note",title:"Question",text:"Open question"}}]);
 assert(editor.controller.proposal(valid)); editor.click(editor.root.querySelector('[data-canvas-action="dismiss"]'));
 assert.deepEqual(plain(editor.controller.document()),unchanged); assert.equal(editor.suggestions.hidden,true);
+''')
+
+    def test_keyboard_delete_uses_focused_card_and_rejected_edits_restore_fields(self):
+        self.run_canvas(r'''
+const editor = mount(); editor.controller.select("data"); editor.click(editor.tools.entity); editor.click(editor.tools.entity);
+const entities=editor.controller.document().boards.data.nodes.filter(n=>n.kind==="entity");
+editor.root.dispatch("keydown",{target:editor.root.querySelector(`[data-canvas-node="${entities[0].id}"]`),key:"Delete"});
+assert(!editor.controller.document().boards.data.nodes.some(n=>n.id===entities[0].id));
+assert(editor.controller.document().boards.data.nodes.some(n=>n.id===entities[1].id));
+const doc=api.empty(project);
+for(const section of ["data","architecture"]) for(let i=0;i<28;i++) doc.boards[section].nodes.push({id:`large-${section}-${i}`,kind:"note",title:"Evidence",text:"x".repeat(12000),x:0,y:0});
+doc.boards.decisions.nodes.push({id:"extra-cap",kind:"note",title:"Evidence",text:"x".repeat(10000),x:0,y:0});
+assert(api.validate(doc,project));
+const large=mount({document:doc});
+const before=plain(large.controller.document());
+large.input("note-brief","text","x".repeat(12000));
+const value=large.fields.find(f=>f.dataset.designField==="brief").value;
+assert.equal(value,large.controller.document().boards.brief.nodes[0].text);
+assert(large.status.textContent.includes("limit")); assert.deepEqual(plain(large.controller.document()),before);
+''')
+
+    def test_partial_context_cannot_replace_or_remove_long_notes(self):
+        self.run_canvas(r'''
+const original = "Keep all evidence " + "x".repeat(2500);
+const editor = mount({fields:{brief:original}});
+const before = plain(editor.controller.document());
+assert.equal(editor.controller.proposal(suggestion(editor,"brief",[{op:"update_node",id:"note-brief",patch:{text:"Partial rewrite"}}])),false);
+assert.deepEqual(plain(editor.controller.document()),before);
+assert(editor.controller.proposal(suggestion(editor,"brief",[{op:"update_node",id:"note-brief",patch:{title:"Revised title"}}])));
+editor.click(editor.root.querySelector('[data-canvas-action="apply"]'));
+assert.equal(editor.fields[0].value,original);
+const doc = editor.controller.document(); doc.boards.brief.nodes.push({id:"long-note",kind:"note",title:"Evidence",text:original,x:400,y:0});
+const second = mount({document:doc,fields:{brief:original}});
+assert.equal(second.controller.proposal(suggestion(second,"brief",[{op:"remove_node",id:"long-note"}])),false);
+assert(second.controller.proposal(suggestion(second,"brief",[{op:"add_node",node:{kind:"note",title:"Suggestion",text:"Clarify the original evidence"}}])));
 ''')
 
     def test_camera_does_not_stale_feedback_and_drawing_is_bounded_and_undoable(self):

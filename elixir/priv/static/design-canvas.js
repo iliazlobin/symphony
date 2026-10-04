@@ -114,10 +114,10 @@
         const count = board.nodes.length;
         board.nodes.push({...change.node, id: change.node.id || uid("n"), x: change.node.x ?? count % 3 * 290, y: change.node.y ?? Math.floor(count / 3) * 230});
       } else if (change.op === "update_node") {
-        const node = board.nodes.find(node => node.id === change.id); if (!node) return null;
+        const node = board.nodes.find(node => node.id === change.id); if (!node || (change.patch.text !== undefined && node.text.length > 600)) return null;
         Object.assign(node, change.patch);
       } else if (change.op === "remove_node") {
-        const node = board.nodes.find(node => node.id === change.id); if (!node || node.field) return null;
+        const node = board.nodes.find(node => node.id === change.id); if (!node || node.field || node.text.length > 600) return null;
         board.nodes = board.nodes.filter(node => node.id !== change.id);
         board.edges = board.edges.filter(edge => edge.from !== change.id && edge.to !== change.id);
       } else if (change.op === "add_edge") {
@@ -219,7 +219,7 @@
       for (const change of pending.changes) {
         const target = doc.boards[pending.section].nodes.find(node => node.id === change.id);
         const item = element("li", "", ({add_node: "Add ", update_node: "Update ", remove_node: "Remove ", add_edge: "Connect ", remove_edge: "Remove relationship "}[change.op]) + (change.node?.title || change.patch?.title || target?.title || change.edge?.label || change.id || "cards"));
-        const excerpt = value => value.length > 240 ? value.slice(0, 240) + "…" : value || "(empty)";
+        const excerpt = value => value || "(empty)";
         if (change.op === "update_node" && target) {
           for (const key of ["title", "text"]) if (change.patch[key] !== undefined && change.patch[key] !== target[key]) {
             item.append(element("span", "design-suggestion-before", "Before: " + excerpt(target[key])), element("span", "design-suggestion-after", "After: " + excerpt(change.patch[key])));
@@ -290,6 +290,15 @@
     function add(kind) {
       const rect = stage.getBoundingClientRect(), v = board().viewport;
       const node = {id: uid("n"), kind, title: kind === "entity" ? "New entity" : kind === "component" ? "New component" : "New note", text: "", x: round(bounded((rect.width / 2 - v.x) / v.scale - 120, -10000, 10000)), y: round(bounded((rect.height / 2 - v.y) / v.scale - 60, -10000, 10000))};
+      const origin = {x: node.x, y: node.y};
+      const overlaps = candidate => board().nodes.some(other => candidate.x < other.x + nodeWidth(other) + 16 && candidate.x + nodeWidth(candidate) + 16 > other.x && candidate.y < other.y + nodeHeight(other) + 16 && candidate.y + nodeHeight(candidate) + 16 > other.y);
+      const positions = [{x: 0, y: 0}];
+      for (let ring = 1; ring <= 6; ring++) for (const [x, y] of [[ring, 0], [0, ring], [-ring, 0], [0, -ring], [ring, ring], [-ring, ring], [ring, -ring], [-ring, -ring]]) positions.push({x, y});
+      for (const position of positions) {
+        node.x = round(bounded(origin.x + position.x * (nodeWidth(node) + 32), -10000, 10000));
+        node.y = round(bounded(origin.y + position.y * (nodeHeight(node) + 32), -10000, 10000));
+        if (!overlaps(node)) break;
+      }
       mutate(() => board().nodes.push(node), "Added " + kind + " · edit its title and details"); selected = node.id; tool = "select"; render();
       const input = world.querySelector(`[data-canvas-title="${node.id}"]`); if (input) { input.focus(); input.select(); }
     }
@@ -334,10 +343,20 @@
       if (node) node[key] = value; else edge.label = value;
       if (node?.field && key === "text" && fieldMap.has(node.field)) fieldMap.get(node.field).value = value;
       const candidate = validate({...doc, revision: doc.revision + 1}, project);
-      if (!candidate) { doc = before.document; target.value = node ? before.document.boards[section].nodes.find(n => n.id === id)[key] : edge.label; status("Canvas limit reached. The previous draft is kept."); return; }
+      if (!candidate) {
+        doc = before.document;
+        for (const [field, previous] of Object.entries(before.fields)) if (fieldMap.has(field)) fieldMap.get(field).value = previous;
+        target.value = node ? doc.boards[section].nodes.find(n => n.id === id)[key] : doc.boards[section].edges.find(e => e.id === id).label;
+        status("Canvas limit reached. The previous draft is kept."); return;
+      }
       if (editGroup !== id + key) { pushUndo(before); editGroup = id + key; }
       doc = candidate; selected = id; notify(); renderSuggestions();
       if (key === "text") { target.rows = Math.max(3, Math.min(17, Math.ceil(value.length / 38) + value.split("\n").length)); const hint = target.parentElement.querySelector(".design-canvas-note-hint"); if (hint && value.trim()) hint.remove(); }
+      if (key === "title") {
+        const card = target.closest("[data-canvas-node]");
+        card?.setAttribute("aria-label", node.kind + ": " + node.title + ". Use arrow keys to move; Enter to edit.");
+        if (!node.field) card?.querySelector("textarea")?.setAttribute("aria-label", "Details of " + node.title);
+      }
       if (key !== "label") renderSelection(); status("Draft updated");
       const back = root.querySelector("[data-canvas-action='undo']"); if (back) back.disabled = false;
     }, {signal});
@@ -386,8 +405,9 @@
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !editing) { event.preventDefault(); history(event.shiftKey ? "redo" : "undo"); return; }
       if (editing) return;
       if (event.key === "Escape") { tool = "select"; connecting = null; selected = null; render(); return; }
-      if (event.key === "Delete" || event.key === "Backspace") { if (selected) { event.preventDefault(); remove(); } return; }
       const card = event.target.closest("[data-canvas-node]"), edge = event.target.closest("[data-canvas-edge]"), stroke = event.target.closest("[data-canvas-stroke]");
+      if (card || edge || stroke) selected = card?.dataset.canvasNode || edge?.dataset.canvasEdge || stroke?.dataset.canvasStroke;
+      if (event.key === "Delete" || event.key === "Backspace") { if (selected) { event.preventDefault(); remove(); } return; }
       if (edge && event.key === "Enter") { event.preventDefault(); select(edge.dataset.canvasEdge); root.querySelector("[data-canvas-edge-label]")?.focus(); return; }
       if (stroke && event.key === "Enter") { event.preventDefault(); select(stroke.dataset.canvasStroke); return; }
       if (!card) return;
@@ -407,11 +427,11 @@
         for (const part of ["data", "architecture"]) {
           const value = doc.boards[part]; if (value.nodes.some(node => !node.field) || value.edges.length || value.strokes.length) continue;
           const examples = part === "data" ? [
-            ["User preferences", "id: identifier\ninterests: topics\narea: location"],
+            ["User", "id: identifier\ninterests: topics\narea: location"],
             ["Saved choice", "id: identifier\nuser_id: reference\nevent_id: reference"],
             ["Event", "id: identifier\ntitle: text\nstarts_at: timestamp"]
           ] : [["Web client", "Collect preferences and show events"], ["Backend", "Rank discovery results and save choices"], ["Data store", "Events, sources and saved choices"]];
-          const newNodes = examples.map(([title, text], index) => ({id: uid("n"), kind: part === "data" ? "entity" : "component", title, text, x: index * 280, y: part === "data" ? 260 : 290}));
+          const newNodes = examples.map(([title, text], index) => ({id: uid("n"), kind: part === "data" ? "entity" : "component", title, text, x: index * 360, y: part === "data" ? 260 : 290}));
           value.nodes.push(...newNodes);
           for (let index = 0; index < 2; index++) value.edges.push({id: uid("e"), from: newNodes[index].id, to: newNodes[index + 1].id, label: part === "data" ? index === 0 ? "1 → many" : "many → 1" : index === 0 ? "requests" : "reads / writes"});
           added = true;
@@ -422,7 +442,7 @@
       proposal(suggestion) {
         if (!validProposal(suggestion, project)) { status("This suggestion has an unsupported format. Your draft is unchanged."); return false; }
         if ((suggestion.base_revision !== doc.revision || suggestion.base_document !== doc.document_id)) { status("The draft changed since this suggestion. Ask for a fresh suggestion."); return false; }
-        if (!applyChanges(doc, suggestion)) { status("This suggestion references unavailable cards. Your draft is unchanged."); return false; }
+        if (!applyChanges(doc, suggestion)) { status("This suggestion changes a long note or references unavailable cards. Ask for a separate note; your draft is unchanged."); return false; }
         pending = clone(suggestion); section = suggestion.section; selected = null; render(); status("Review suggested changes, then Apply or Dismiss"); return true;
       },
       destroy() { abort.abort(); world.remove(); if (selectionNode) clear(selectionNode); if (suggestionNode) clear(suggestionNode); }

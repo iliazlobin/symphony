@@ -3,62 +3,43 @@ defmodule SymphonyElixirWeb.DesignViewTest do
   import Phoenix.LiveViewTest
   alias SymphonyElixirWeb.DesignView
 
-  test "a new project starts with a brief and an accessible compact design outline" do
+  test "a new project has five vertical steps and one accessible whiteboard" do
     html = render_component(&DesignView.content/1, project: "iliazlobin/sample", project_label: "Sample")
-
-    assert Floki.attribute(find(html, "[data-design-project]"), "data-design-project") == ["iliazlobin/sample"]
     assert Floki.attribute(find(html, "[data-design-project]"), "aria-label") == ["Sample design workspace"]
     assert length(find(html, "[role=tab]")) == 5
-    assert length(find(html, "[role=tabpanel]")) == 5
-    assert Floki.attribute(find(html, "[role=tab][aria-selected=true]"), "aria-controls") == ["design-panel-brief"]
-    assert find(html, "#design-panel-brief[hidden]") == []
-    assert length(find(html, "[role=tabpanel][hidden]")) == 4
-    assert Floki.text(find(html, "#design-panel-brief h3")) == "What are we designing?"
-    assert html =~ "Publishing and task creation are separate steps"
+    assert Floki.attribute(find(html, "[role=tablist]"), "aria-orientation") == ["vertical"]
+    assert length(find(html, "[role=tabpanel]")) == 1
+    assert Floki.attribute(find(html, "[role=tabpanel]"), "aria-labelledby") == ["design-tab-brief"]
+    assert length(find(html, "[data-design-canvas]")) == 1
+    assert Floki.attribute(find(html, "[data-design-canvas]"), "tabindex") == ["0"]
     assert Floki.text(find(html, "[data-design-storage-label]")) == "Browser draft"
     refute html =~ "saved in this browser"
-    assert find(html, "[data-design-example]") == []
     assert find(html, "form") == []
 
     for tab <- find(html, "[role=tab]") do
-      [panel_id] = Floki.attribute([tab], "aria-controls")
-      [tab_id] = Floki.attribute([tab], "id")
-      assert Floki.attribute(find(html, "##{panel_id}"), "aria-labelledby") == [tab_id]
+      assert Floki.attribute([tab], "aria-controls") == ["design-canvas-panel"]
     end
   end
 
-  test "requirements, data and architecture retain a labelled editable working outline" do
+  test "existing draft fields are retained outside the visual workspace with focused editing tools" do
     html = render_component(&DesignView.content/1, project: "iliazlobin/sample")
-    fields = find(html, "textarea[data-design-field]")
-
-    assert length(fields) == 7
-    assert Floki.text(find(html, "label")) =~ "Functional requirements"
-    assert Floki.text(find(html, "label")) =~ "Quality requirements"
-    assert Floki.text(find(html, "label")) =~ "Entities and relationships"
-    assert Floki.text(find(html, "label")) =~ "Main flows"
-    assert html =~ "unknown"
-    assert html =~ "important failure path"
-
-    for field <- fields do
-      [id] = Floki.attribute([field], "id")
-      [hint_id] = Floki.attribute([field], "aria-describedby")
-      assert length(find(html, "label[for='#{id}']")) == 1
-      assert length(find(html, "##{hint_id}")) == 1
-      assert Floki.attribute([field], "maxlength") == ["12000"]
-      assert Floki.text([field]) == ""
-    end
-
+    assert length(find(html, ".design-source-fields[hidden] textarea[data-design-field]")) == 7
+    assert find(html, ".design-editor textarea") == []
+    assert length(find(html, "[data-canvas-tool]")) == 7
+    assert length(find(html, "[data-canvas-action]")) == 5
+    assert length(find(html, "[data-design-feedback]")) == 1
+    assert length(find(html, "[data-canvas-suggestions][hidden]")) == 1
     assert find(html, "[phx-click]") == []
-    assert find(html, "input[type=submit]") == []
-    assert length(find(html, "[data-design-prompt]")) == 7
+
+    for button <- find(html, "[data-canvas-tool]") do
+      assert [_] = Floki.attribute([button], "aria-label")
+      assert Floki.attribute([button], "type") == ["button"]
+    end
   end
 
   test "the Events Concierge starter is explicitly illustrative and scoped to that project" do
     html = render_component(&DesignView.content/1, project: "github:iliazlobin/events-concierge")
     assert Floki.text(find(html, "[data-design-example]")) == "Add example"
-    assert html =~ "illustrative Events Concierge assumptions"
-    assert html =~ "Fills empty fields only"
-    assert Floki.text(find(html, ".design-footnote")) =~ "not an approved design"
 
     for project <- ["iliazlobin/events-concierge-other", "iliazlobin/symphony", "other"] do
       html = render_component(&DesignView.content/1, project: project)
