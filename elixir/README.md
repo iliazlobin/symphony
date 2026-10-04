@@ -744,7 +744,8 @@ Cards show at most three PRs; **… +N** opens task details with the complete li
 Details retain their scroll position during refresh and return to the top when you open another issue. Focus a card and
 press Enter or Space to select it. Selection survives reload and browser navigation;
 dragging still moves or reorders cards. Card details and Settings open as native dialogs
-with Escape dismissal. Task details also close on an outside click; Settings retains its Close button. Settings has
+with a fixed title and close header; only their body scrolls. Escape dismisses either dialog.
+Task details also close on an outside click. Settings has
 three sections: **Execution** for native controls, concurrency and read-only budgets;
 **AI & chat** for context behavior and read-only model presets;
 and **Connections** for tracker/controller/chat storage status and operator login.

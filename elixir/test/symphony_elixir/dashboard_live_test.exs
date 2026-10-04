@@ -1735,6 +1735,13 @@ defmodule SymphonyElixir.DashboardLiveTest do
 
     :ok = BoardCache.put(BoardCache.scope(ctx.runtime), ctx.board)
     view = authorized_board_view()
+
+    # Isolate navigation reads from unrelated runtime broadcasts.
+    :sys.replace_state(view.pid, fn state ->
+      :ok = Phoenix.PubSub.unsubscribe(SymphonyElixir.PubSub, "observability:dashboard")
+      state
+    end)
+
     render_click(view, "switch-view", %{"view" => "graph"})
     assert_push_event(view, "focus-plan-task", %{id: nil, view: "graph"})
     render(view)
@@ -1776,6 +1783,12 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert_receive :board_read
     assert_receive {:chat_read, :list}
     refute_received :snapshot_read
+
+    revision = :sys.get_state(view.pid).socket.assigns.payload_revision
+    send(view.pid, :observability_updated)
+    render(view)
+    assert_receive :snapshot_read
+    assert :sys.get_state(view.pid).socket.assigns.payload_revision == revision + 1
   end
 
   defp drain_navigation_reads do
