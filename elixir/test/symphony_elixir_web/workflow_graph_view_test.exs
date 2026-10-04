@@ -45,7 +45,7 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert length(find(html, "#plan-dependencies-panel .plan-edge[data-related=true]")) == 2
     assert length(find(html, "#plan-dependencies-panel [data-filtered=true]")) == 2
     assert html =~ "Outside filters"
-    assert Floki.attribute(find(html, "[data-node-id='task:2'] .plan-node-select"), "aria-description") == ["Prerequisite GH-1: awaiting acceptance; Dependent GH-3: awaiting acceptance"]
+    assert Floki.attribute(find(html, "[data-node-id='task:2'] .plan-node-select"), "aria-description") == ["Prerequisite GH-1: awaiting acceptance (technical: Requires schema); Dependent GH-3: awaiting acceptance (technical: Requires schema)"]
     assert find(html, ".plan-inspector, [data-board-view-link]") == []
     assert length(find(html, "[data-node-id='task:1'] .plan-node-select[phx-value-id='issue:1']")) == 1
     assert length(find(html, "[data-node-id='task:3'] .plan-node-select[phx-value-id='issue:3']")) == 1
