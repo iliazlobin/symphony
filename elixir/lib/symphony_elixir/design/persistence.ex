@@ -126,7 +126,8 @@ defmodule SymphonyElixir.Design.Persistence do
   defp private_root(root, create \\ true)
 
   defp private_root(root, create) when is_binary(root) do
-    with true <- Path.type(root) == :absolute,
+    with true <- String.valid?(root),
+         true <- Path.type(root) == :absolute,
          {:ok, canonical} <- PathSafety.canonicalize(root),
          true <- canonical == root do
       root_stat(root, File.lstat(root), create)

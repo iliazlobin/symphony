@@ -471,6 +471,7 @@ defmodule SymphonyElixir.Design.StoreTest do
       assert {:error, :design_storage_unavailable} = Persistence.open(root, @project, "scope")
     end
 
+    refute File.exists?(c.root <> "-invalid")
     assert {:ok, owner, initial} = Persistence.open(c.root, @project, "scope")
     assert {:ok, owner} = Persistence.put(owner, initial)
     bytes = File.read!(journal(c))

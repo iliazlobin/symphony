@@ -123,10 +123,12 @@ Each card and task dialog shows an inline execution summary: current state, cumu
 tokens and elapsed time, plus attempts in the current correction cycle when recorded. The summary remains visible in compact
 view and after a worker exits. Exact counts are available on the metrics; missing or
 stale data is identified explicitly. A settled approved candidate says **Awaiting your
-review** and retains its PR links. **Cancel execution** appears for queued or active
-work; **Retry** appears for recoverable holds only when all reported limits permit it.
-Candidate review, closed issues and exhausted limits do not offer misleading execution
-buttons. Retrying still preserves consumed usage and requires confirmation.
+review** and retains its PR links. **Stop task** appears for queued or active work;
+**Retry** clears a recoverable hold within the remaining attempt allowance.
+**Retry cycle** offers a new configured allowance only when attempts are exhausted and
+lifetime token/time budgets remain. Both retries preserve consumed usage and require
+confirmation. Reviewed candidates, closed issues and exhausted lifetime budgets do
+not offer retry controls.
 
 To try updated web code against live work without replacing the installed controller,
 run this from the Symphony checkout with its pinned Elixir runtime and Python dependencies:
@@ -168,7 +170,7 @@ valid authorization is available. See [agent graph and delivery](../../ARCHITECT
 | Backlog | Describe the requested task to the project agent. | Creates an unqueued GitHub issue and keeps the receipt. |
 | Work | Drag from Backlog or choose **Move to Work**. | Saves routing immediately, then queues eligible work by priority, dependencies, budgets and concurrency. |
 | In progress | Inspect active sessions; stop through execution controls when needed. | Shows active Work automatically; runs a builder and independent reviewer. |
-| Review | Inspect the candidate, PRs and checks; merge code when needed. Choose **Return to Work** for corrections. | Retains the candidate and review evidence. A confirmed correction starts or continues a PR session and returns the issue to Work. |
+| Review | Inspect the candidate, PRs and checks; merge code when needed. Choose **Return with corrections**. | Retains the candidate and review evidence. A confirmed correction starts or continues a PR session and returns the issue to Work. |
 | Done | Drag from Review or choose **Accept · Done**. This directly records acceptance, without another popup. | Checks the current issue and candidate, records acceptance, and retains usage and evidence. It does not close the GitHub issue, merge or deploy. |
 
 Work retains queued, paused, blocked and failed tasks. In progress is a view of active
@@ -177,7 +179,7 @@ A merged PR or closed issue is not acceptance; existing closed issues without an
 acceptance record also appear in Review. Accepted tasks cannot be retried or requeued.
 Reopen a closed GitHub issue before returning it to Work for further corrections.
 
-**Return to Work** accepts written corrections, selected GitHub issue/PR comments, or
+**Return with corrections** accepts written corrections, selected GitHub issue/PR comments, or
 both. Continue an eligible existing PR session or start a new one from the configured
 approved baseline. The preview binds the selected text revisions and exact PR head.
 Confirmation renews the bounded attempt allowance for that correction cycle; cumulative
@@ -224,7 +226,7 @@ ordinary retry does not reset either. After resolving the failure, an explicitly
 renews only that exhausted task's configured attempt cycle. Lifetime attempts, tokens and
 runtime stay recorded; other tasks and project ceilings remain unchanged. Renewal rejects
 running or accepted tasks, exhausted lifetime budgets and candidates awaiting owner review.
-Use **Return to Work** for reviewed candidates. Never renew automatically after failure.
+Use **Return with corrections** for reviewed candidates. Never renew automatically after failure.
 
 Before resuming after `main` changes, follow [Change the baseline](#change-the-baseline).
 Both scheduler and publisher must use the reviewed current baseline. Otherwise a

@@ -93,13 +93,21 @@ commands to the native API and owns no scheduling state.
   revision and idempotency checks. The same checks apply to chat control actions.
   Backlog → Work and Review → Done execute directly from the authenticated board with
   exact-revision and replay checks. Local state appears immediately while GitHub routing
-  labels synchronize asynchronously. `TaskIntake` retains historical form receipts;
-  project chat is the visible task-intake path. Unknown outcomes require reconciliation.
+  labels synchronize asynchronously. `TaskIntake` retains Backlog preview receipts;
+  project chat and reviewed Design items are the visible intake paths. Unknown outcomes
+  require reconciliation.
   Concurrency changes persist in the ledger and affect admission only: they never
   interrupt existing work or reset budgets. The workflow's configured concurrency
   remains the ceiling and default, including after reload or restart; restoring the
   default clears only the override. The control snapshot owns the reported effective
   value and read-only budget settings, including in the read-only preview.
+- [`Design.Store`](elixir/lib/symphony_elixir/design/store.ex) owns the project draft
+  and immutable reviewed versions through the private
+  [`Design.Persistence`](elixir/lib/symphony_elixir/design/persistence.ex) journal.
+  [`DesignActions`](elixir/lib/symphony_elixir_web/design_actions.ex) binds an unchanged
+  reviewed item to the existing Backlog preview. Design review grants no execution
+  authority, and drawing relationships remain separate from task dependencies.
+  See [Design operation and recovery](elixir/README.md#multiple-project-boards).
 - [`ReadOnlyBoard`](elixir/lib/symphony_elixir_web/read_only_board.ex) supports a
   separate local UI against a configured controller. The
   [`web launcher`](tools/symphony_web.py) starts only the web dependencies and reads

@@ -784,7 +784,7 @@ Controlled boards use **Backlog → Work → Review → Done**:
   acceptance in the durable control ledger, without a second popup. Merging a PR or closing its GitHub issue
   alone does not accept it; closed issues without acceptance remain in Review.
   Acceptance does not merge, deploy, or change the GitHub issue's state.
-- **Review → Work:** select **Return to Work**, enter corrections and/or select GitHub
+- **Review → Work:** select **Return with corrections**, enter corrections and/or select GitHub
   comments, choose a retained PR session or new PR work, then confirm. A merged PR
   needs new work. Reopen a closed GitHub issue before returning it to Work. New work
   still uses the operator-approved baseline; it does not silently repin it to main.
@@ -861,16 +861,20 @@ version. Marking a design reviewed stores an immutable source; it neither accept
 nor starts work. Keep editing the next draft. **Prepare task** opens the existing Backlog
 preview from an unchanged reviewed item. This is a Backlog starting point: inspect the
 excerpt before creating it, and refine its outcome/verification before admission.
-Its **Design source** link reopens the retained version with a return link to the
-task. A cancelled preview can be explicitly prepared again; an uncertain or completed
+Drawing relationships do not automatically become task dependencies, priorities or
+estimates; set those through task planning. Its **Design source** link shows the immutable
+item excerpt beside the unchanged current canvas, with a return link to the task.
+A cancelled preview can be explicitly prepared again; an uncertain or completed
 submission reuses its durable intent.
 
 Draft edits autosave to the configured project's private journal at
 `<chat.state_path>/design/journal.json`. One supervised owner holds `.owner.lock`;
-every read/write checks fresh browser authority, the configuration scope and the exact
-durable revision. Each scene is bounded to 4 MB and 500 native elements per step; the
-journal has a 32 MB capacity, preserving reviewed history when full. Restart retains
-both the draft and all reviewed sources. Project storage is local to this workspace,
+every read/write checks fresh browser authority, the configuration scope, owner and
+journal digest. Save and review also check the caller's expected durable revision.
+Each scene is bounded to 4 MB and 500 native elements per step; the
+journal has a 32 MB capacity. When full, new saves and reviews stop; existing history
+and browser recovery remain intact, without automatic pruning. Restart retains both
+the draft and all reviewed sources. Project storage is local to this workspace,
 not cross-machine storage or independent backup. Include the Design directory in private
 state backups; retain its ownership and file permissions during recovery.
 
