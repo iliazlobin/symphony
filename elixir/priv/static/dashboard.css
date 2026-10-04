@@ -305,13 +305,11 @@ input, select {
 [data-phx-main].phx-connected .status-badge-offline { display: none; }
 .mobile-lane-control { display: none; }
 
-/* Native dialogs keep focus inside the popup while the board stays mounted. */
+/* The header stays visible while the dialog body scrolls. */
 .board-dialog {
   width: min(720px, calc(100vw - 32px));
   max-height: calc(100dvh - 40px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  overflow: hidden;
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -320,10 +318,11 @@ input, select {
   box-shadow: 0 24px 100px #0005;
 }
 .board-dialog::backdrop { background: #10172580; backdrop-filter: blur(3px); }
-.dialog-inner { padding: 22px; }
-.dialog-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
-.dialog-heading h2 { font-size: 21px; line-height: 1.35; overflow-wrap: anywhere; }
-#close-dialog { white-space: nowrap; flex-shrink: 0; }
+.board-dialog[open] { display: flex; flex-direction: column; }
+.dialog-inner { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 20px; }
+.dialog-heading { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.dialog-heading h2 { min-width: 0; font-size: 18px; font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
+#close-dialog { white-space: nowrap; flex-shrink: 0; min-height: 36px; }
 .dialog-section { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
 .dialog-section h3 { font-size: 15px; margin-bottom: 8px; }
 .dialog-section p + p { margin-top: 8px; }
@@ -373,7 +372,6 @@ summary { cursor: pointer; color: var(--accent); }
   .mobile-lane-control label { display: flex; align-items: center; gap: 8px; }
   .mobile-lane-control select { flex: 1; }
   .board-content { padding: 12px; }
-  .dialog-inner { padding: 16px; }
   input, .combo-control input, .display-field select { font-size: 16px; }
   .filter-row .filter-combo:first-child .combo-options { left: 0; right: auto; }
   .combo-options { width: 245px; }
@@ -770,9 +768,6 @@ h2, h3, strong { font-weight: 500; }
 .card-pr-summary { gap: 4px 8px; margin-top: 8px; }
 .board-notice, .board-warning { margin: 0 0 12px; }
 .board-dispatch-guidance p { margin: 0; }
-.dialog-inner { padding: 24px; }
-.dialog-heading { margin-bottom: 16px; }
-.dialog-heading h2 { font-size: 18px; font-weight: 500; }
 .field, .dialog-actions, .dialog-section { margin-top: 16px; }
 .markdown-content { line-height: 1.55; }
 .markdown-content :is(h1,h2,h3,h4,h5,h6) { font-size: 14px; font-weight: 500; margin: 16px 0 8px; }
@@ -844,9 +839,12 @@ h2, h3, strong { font-weight: 500; }
 .chat-queue ol { max-height: 120px; }
 @media (max-width: 860px) {
   .board-dialog[data-kind=task] { max-height: calc(42dvh - 24px); }
+  .dialog-heading h2 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 }
 @media (max-width: 540px) {
   .dialog-inner { padding: 16px; }
+  .dialog-heading { gap: 12px; padding: 12px 16px; }
+  .dialog-heading h2 { font-size: 16px; }
   .operator-breadcrumbs { gap: 3px; padding: 6px 8px; }
   .operator-breadcrumbs .issue-switcher > summary, .operator-breadcrumbs .issue-pr-menu > summary { padding: 4px; max-width: 100px; }
   .operator-breadcrumbs .breadcrumb-category { display: none; }

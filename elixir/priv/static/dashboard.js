@@ -466,6 +466,7 @@
       this.taskId = this.previous?.closest(".task-card[data-task-id]")?.dataset.taskId;
       this.bodyOverflow = document.body.style.overflow;
       this.contentKey = this.el.dataset.contentKey;
+      this.scrollContainer = () => this.el.querySelector("[data-dialog-scroll]") || this.el;
       this.abort = new AbortController();
       this.closeDialog = () => this.el.dataset.eventTarget ? this.pushEventTo(this.el, "close-dialog", {}) : this.pushEvent("close-dialog", {});
       document.addEventListener("focusin", event => { if (event.target !== document.body && event.target !== document.documentElement) this.lastFocused = event.target; }, {signal: this.abort.signal});
@@ -503,7 +504,7 @@
       this.focusDialog();
     },
     beforeUpdate() {
-      this.scrollPosition = this.el.scrollTop;
+      this.scrollPosition = this.scrollContainer().scrollTop;
       this.focusedControl = document.activeElement;
       const control = this.focusedControl;
       this.textSelection = typeof control?.selectionStart === "number"
@@ -518,7 +519,8 @@
         this.taskId = control.closest(".task-card[data-task-id]")?.dataset.taskId;
       }
       this.showDialog();
-      this.el.scrollTop = changed ? 0 : (this.scrollPosition ?? this.el.scrollTop);
+      const scroller = this.scrollContainer();
+      scroller.scrollTop = changed ? 0 : (this.scrollPosition ?? scroller.scrollTop);
       if (!changed && control?.isConnected && !control.disabled && control !== document.body && control !== document.documentElement && control.getClientRects().length && (this.nonmodal || this.el.contains(control))) {
         control.focus({preventScroll: true});
         if (this.textSelection) control.setSelectionRange(...this.textSelection);

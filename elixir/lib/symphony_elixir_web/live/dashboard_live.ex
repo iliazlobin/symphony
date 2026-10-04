@@ -912,8 +912,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <span>Manual order is a browser preference; scheduling follows repository policy.</span></footer>
 
       <dialog :if={@dialog} id="board-dialog" class="board-dialog" phx-hook="BoardDialog" data-kind={@dialog} aria-modal={to_string(@dialog != :task)} data-nonmodal={to_string(@dialog == :task)} data-content-key={if @dialog == :task, do: @selected.id, else: @dialog} aria-labelledby="dialog-title">
-        <div class="dialog-inner"><div class="dialog-heading"><h2 id="dialog-title" tabindex="-1" data-dialog-focus>{dialog_title(@dialog, @selected, @pending_command)}</h2>
-          <button id="close-dialog" class="button button-quiet" phx-click="close-dialog" aria-label="Close dialog">Close ×</button></div>
+        <header class="dialog-heading"><h2 id="dialog-title" tabindex="-1" data-dialog-focus title={dialog_title(@dialog, @selected, @pending_command)}>{dialog_title(@dialog, @selected, @pending_command)}</h2>
+          <button type="button" id="close-dialog" class="button button-quiet" phx-click="close-dialog" aria-label="Close dialog">Close ×</button></header>
+        <div class="dialog-inner" data-dialog-scroll>
           <p :if={@notice} class="board-notice" role="status">{@notice}</p>
           <%= case @dialog do %>
             <% :settings -> %>
