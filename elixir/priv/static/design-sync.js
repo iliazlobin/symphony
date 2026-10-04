@@ -26,8 +26,21 @@
     }
     request(event, args = {}) {
       return new Promise(resolve => {
-        const timer = setTimeout(() => resolve({ok: false, error: "design_request_unconfirmed"}), 8000);
-        this.hook.pushEvent(event, {project: this.project, ...args}, reply => { clearTimeout(timer); resolve(reply); });
+        const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
+        const unconfirmed = {ok: false, error: "design_request_unconfirmed"};
+        let settled = false;
+        const finish = reply => {
+          if (settled) return;
+          settled = true; clearTimeout(timer);
+          const data = reply?.data;
+          const validData = event === "prepare-design-task" || object(data) && (event === "design-reviewed" ? object(data.scene) :
+            Number.isInteger(data.storage_revision) && data.storage_revision >= 0 && (data.draft === null || object(data.draft)));
+          const valid = object(reply) && (reply.ok === false ? typeof reply.error === "string" && reply.error.length > 0 :
+            reply.ok === true && validData);
+          resolve(valid ? reply : unconfirmed);
+        };
+        const timer = setTimeout(() => finish(null), 8000);
+        this.hook.pushEvent(event, {project: this.project, ...args}, finish);
       });
     }
     async open(local) {
@@ -143,15 +156,18 @@
     async sourceReference() {
       if (typeof window.location === "undefined") return;
       const url = new URL(window.location.href), ref = url.searchParams.get("design_ref"), section = url.searchParams.get("design_section"), item = url.searchParams.get("design_item");
-      if (!ref || !section || !item) { if (this.sourceKey) this.panel(false); this.sourceKey = null; return; }
+      if (!ref || !section || !item) { if (this.sourceKey) this.panel(false); this.sourceKey = null; this.sourceRequest = null; return; }
       const sourceKey = [ref, section, item, url.searchParams.get("design_task")].join("/");
       if (sourceKey === this.sourceKey) return;
-      this.sourceKey = sourceKey;
+      const request = {key: sourceKey}; this.sourceKey = sourceKey; this.sourceRequest = request; this.panel(false);
       const reply = await this.request("design-reviewed", {ref});
-      if (this.abort.signal.aborted || this.sourceKey !== sourceKey) return;
-      const scene = reply.ok && this.hook.editor.validate(reply.data.scene, this.project);
-      const members = scene?.boards[section]?.elements.filter(element => !element.isDeleted && element.customData?.symphony?.id === item) || [];
-      if (!members.some(element => element.customData?.symphony?.role === "node")) { this.error("design_item_not_reviewed"); return; }
+      if (this.abort.signal.aborted || this.sourceRequest !== request) return;
+      this.sourceRequest = null;
+      if (!reply.ok) { this.sourceKey = null; this.error(reply.error); return; }
+      const scene = this.hook.editor.validate(reply.data.scene, this.project);
+      if (!scene) { this.sourceKey = null; this.error("design_scene_invalid"); return; }
+      const members = scene.boards[section]?.elements.filter(element => !element.isDeleted && element.customData?.symphony?.id === item) || [];
+      if (!members.some(element => element.customData?.symphony?.role === "node")) { this.sourceKey = null; this.error("design_item_not_reviewed"); return; }
       this.hook.select(section); this.panel(true);
       const confirm = this.el.querySelector("[data-design-confirm-review]"); if (confirm) confirm.hidden = true;
       const description = this.el.querySelector("[data-design-review-description]");
@@ -176,14 +192,14 @@
       const errors = {
         stale_design_revision: "Project draft changed elsewhere · reload; your browser copy is kept",
         design_document_mismatch: "Different design documents · open the project draft; the browser copy is kept",
-        design_request_unconfirmed: "Save not confirmed · reload to check; your browser copy is kept",
+        design_request_unconfirmed: "Design request not confirmed · reload to check; your browser copy is kept",
         design_scope_changed: "Project configuration changed · reload before saving",
         design_storage_full: "Design storage is full · history and browser edits are kept",
         design_storage_locked: "Another engine owns this design · use that engine",
         design_item_not_reviewed: "Select an item in the reviewed version, or review your changes first",
         design_task_pending: "A task preview is already pending · finish it before preparing another",
         design_item_too_large: "Shorten this item to a scoped outcome before preparing a task",
-        unauthorized: "Sign in again to save this project design"
+        unauthorized: "Sign in again to open or save this project design"
       };
       this.status(errors[code] || "Project design unavailable · your browser draft is kept");
     }
