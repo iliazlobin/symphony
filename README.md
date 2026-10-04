@@ -47,6 +47,7 @@ Card shortcuts select working sessions; linked PRs remain resources.
 The board shows Backlog, Work, In progress, Review and Done. In progress is derived from
 active execution; Work retains queued, paused, blocked and failed tasks. Compact cards
 show useful state and PR evidence; chat renders safe Markdown without duplicating the board.
+Long conversations open with recent messages; **Show earlier** retains access to the full history.
 Describe new tasks to the project agent; Backlog creation never starts coding work.
 The task agent receives worker and GitHub milestone updates and coordinates individual
 work agents. Confirmed PR work sessions retain their own

@@ -738,9 +738,27 @@
       this.localizeTimes();
       requestAnimationFrame(this.scroll);
     },
+    beforeUpdate() {
+      const scroller = this.el.querySelector("#session-chat-content");
+      const messages = this.el.querySelector("#chat-messages");
+      const top = scroller?.getBoundingClientRect().top;
+      const anchor = top === undefined ? null : Array.from(messages?.querySelectorAll(".chat-message") || []).find(message => message.getBoundingClientRect().bottom > top);
+      this.historyAnchor = anchor ? {chatId: this.el.dataset.chatId, page: Number(messages.dataset.historyPage), id: anchor.id, top: anchor.getBoundingClientRect().top - top} : null;
+    },
     updated() {
       if (this.dragScope !== this.scope()) { this.clearDrag(); this.dragScope = this.scope(); }
       if (this.chatId !== this.el.dataset.chatId) { this.chatId = this.el.dataset.chatId; this.atBottom = true; }
+      const anchor = this.historyAnchor;
+      this.historyAnchor = null;
+      const messages = this.el.querySelector("#chat-messages");
+      if (anchor && anchor.chatId === this.el.dataset.chatId && Number(messages?.dataset.historyPage) > anchor.page) {
+        const scroller = this.el.querySelector("#session-chat-content");
+        const retained = Array.from(messages.querySelectorAll(".chat-message")).find(message => message.id === anchor.id);
+        if (scroller && retained) {
+          scroller.scrollTop += retained.getBoundingClientRect().top - scroller.getBoundingClientRect().top - anchor.top;
+          this.atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 90;
+        }
+      }
       this.loadTab();
       this.acceptServerBlank();
       this.loadDraft();

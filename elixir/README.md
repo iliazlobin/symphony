@@ -343,7 +343,7 @@ The observability UI now runs on a minimal Phoenix stack:
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
 The chat panel stays open. Select a task card to open its dedicated conversation;
-closing task details keeps that conversation selected. **Project name · Project agent** in the issue picker returns to the
+closing task details keeps that conversation selected. **Project** in the issue picker returns to the
 project conversation for reports and task creation, updates or cancellation.
 The headline picker searches issue numbers, titles, categories and recent activity.
 Issues appear in Work, Ready for review, Needs attention, Backlog and Done
@@ -368,6 +368,7 @@ conversation. These bindings survive reconnects and restarts; prior free-standin
 remain available at `/chat`. Drafts and response queues stay separate when switching sessions.
 The board chat shows messages and actions directly, without a tab bar; the issue card
 shows task details and links to each PR conversation.
+Chat opens the latest 30 messages; **Show earlier** reveals older messages without changing stored history or agent context.
 The full-page chat list retains search, pins and ordering for saved conversations.
 At `/chat`, **Chat**, **Context**,
 **Outputs** and **Sources** organize the same durable conversation. Context separates

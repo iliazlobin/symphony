@@ -129,6 +129,63 @@ assert.equal(blocked.input.value, "Keep typing");
         )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
+    def test_history_prepend_keeps_reading_position_and_appends_still_follow_bottom(self):
+        script = r'''
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+const frames = [];
+const sandbox = {window: {}, AbortController, requestAnimationFrame: callback => frames.push(callback), sessionStorage: {getItem() {}, setItem() {}}};
+vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+let offset = 100, rows = [], focused = 0;
+const scroller = {scrollTop: 300, scrollHeight: 1000, clientHeight: 400, getBoundingClientRect: () => ({top: 100})};
+const message = id => ({id, getBoundingClientRect: () => ({top: offset, bottom: offset + 100})});
+const messages = {dataset: {historyPage: "0"}, querySelectorAll: () => rows};
+rows = [message("retained")];
+const input = {value: "Keep draft", dataset: {draft: "Keep draft", draftRevision: "one"}, style: {}, scrollHeight: 50, focus() {focused++;}};
+const hook = {...sandbox.window.SymphonyHooks.ChatWorkspace,
+  el: {dataset: {project: "alpha", chatId: "chat-a", eventTarget: "1", running: "false", sessionTab: "chat", workspaceView: "conversation", embedded: "true"},
+    addEventListener() {}, querySelector: selector => ({"#session-chat-content": scroller, "#chat-messages": messages, "#chat-message-input": input}[selector] || null), querySelectorAll: () => []},
+  pushEventTo() {}, handleEvent() {}};
+hook.mounted(); frames.length = 0;
+hook.atBottom = false;
+hook.beforeUpdate();
+// Show earlier prepends content above the same visible message.
+messages.dataset.historyPage = "1"; offset += 600; scroller.scrollHeight += 600;
+rows.unshift(message("older"));
+hook.updated();
+assert.equal(scroller.scrollTop, 900, "retained message stays at the same viewport offset");
+assert.equal(hook.atBottom, false);
+frames.splice(0).forEach(callback => callback());
+assert.equal(scroller.scrollTop, 900);
+assert.equal(input.value, "Keep draft");
+assert.equal(focused, 0, "history loading never steals focus");
+// Ordinary append expands the server window but has no history-page change.
+hook.atBottom = true; scroller.scrollTop = 1200; hook.beforeUpdate();
+scroller.scrollHeight += 100; rows.push(message("latest"));
+hook.updated();
+assert.equal(hook.atBottom, true, "appended streaming messages retain bottom follow");
+frames.splice(0).forEach(callback => callback());
+assert.equal(scroller.scrollTop, scroller.scrollHeight);
+// A different conversation cannot reuse the old chat's saved scroll anchor.
+hook.beforeUpdate(); hook.el.dataset.chatId = "chat-b"; messages.dataset.historyPage = "2";
+scroller.scrollTop = 0; offset += 500;
+hook.updated();
+assert.equal(scroller.scrollTop, 0);
+assert.equal(hook.atBottom, true);
+// Empty or unmounted history does not manufacture a scroll anchor.
+hook.el.querySelector = () => null;
+hook.beforeUpdate();
+assert.equal(hook.historyAnchor, null);
+hook.destroyed();
+'''
+        root = pathlib.Path(__file__).resolve().parents[2]
+        completed = subprocess.run(
+            [shutil.which("node"), "-e", script, str(root / "elixir/priv/static/dashboard.js")],
+            capture_output=True, text=True, check=False, timeout=20,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
     def test_rejoin_restores_latest_scoped_tab_without_touching_draft(self):
         script = r'''
 const assert = require("node:assert/strict");

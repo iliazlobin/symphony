@@ -419,6 +419,7 @@ summary { cursor: pointer; color: var(--accent); }
 .chat-login-form { text-align: left; width: min(360px,100%); }
 .chat-login-form .button { width: 100%; }
 .chat-messages { display: flex; flex-direction: column; gap: 28px; min-width: 0; font-size: 15px; }
+.chat-history-more { align-self: center; gap: 6px; }
 .chat-message { min-width: 0; overflow-wrap: anywhere; }
 .chat-message-user { align-self: flex-end; width: fit-content; max-width: 90%; padding: 12px 16px; background: var(--soft); border-radius: 18px 18px 5px 18px; }
 .chat-message-agent { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--tint); }
