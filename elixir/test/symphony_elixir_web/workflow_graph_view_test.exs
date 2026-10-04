@@ -1,6 +1,7 @@
 defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
   use ExUnit.Case, async: true
   import Phoenix.LiveViewTest
+  alias Phoenix.LiveView.{Diff, Socket}
   alias SymphonyElixirWeb.WorkflowGraphView
 
   test "dependency layers are independent of lifecycle and peer ordering is stable" do
@@ -96,12 +97,14 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     nodes = Enum.map(1..12, &task(&1, "work"))
     edges = Enum.map(1..5, &dep(10, &1)) ++ [dep(11, 6)]
     graph = %{"version" => 1, "nodes" => nodes, "edges" => edges}
-    assigns = %{__changed__: nil, board: %{workflow_graph: graph}, project: "p", filters: %{}, visible_task_ids: ["issue:10", "issue:11", "issue:12"]}
+    board = %{workflow_graph: graph}
+    visible_ids = ["issue:10", "issue:11", "issue:12"]
+    assigns = %{__changed__: nil, board: board, project: "p", filters: %{}, visible_task_ids: visible_ids}
     first = WorkflowGraphView.content(Map.put(assigns, :selected_id, "issue:11"))
     next = WorkflowGraphView.content(Map.put(assigns, :selected_id, "issue:10"))
-    socket = %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}}}
-    {_first_diff, prints, components} = Phoenix.LiveView.Diff.render(socket, first, Phoenix.LiveView.Diff.new_fingerprints(), Phoenix.LiveView.Diff.new_components())
-    {_next_diff, next_prints, _components} = Phoenix.LiveView.Diff.render(socket, next, prints, components)
+    socket = %Socket{assigns: %{__changed__: %{}}}
+    {_first_diff, prints, components} = Diff.render(socket, first, Diff.new_fingerprints(), Diff.new_components())
+    {_next_diff, next_prints, _components} = Diff.render(socket, next, prints, components)
     entries = task_diff_entries(prints, "task:10")
     next_entries = task_diff_entries(next_prints, "task:10")
     assert is_map(entries)
