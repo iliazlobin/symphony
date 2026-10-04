@@ -45,9 +45,10 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert length(find(html, "#plan-dependencies-panel .plan-edge[data-related=true]")) == 2
     assert length(find(html, "#plan-dependencies-panel [data-filtered=true]")) == 2
     assert html =~ "Outside filters"
+    assert Floki.attribute(find(html, "[data-node-id='task:2'] .plan-node-select"), "aria-description") == ["Prerequisite GH-1: awaiting acceptance; Dependent GH-3: awaiting acceptance"]
     assert find(html, ".plan-inspector, [data-board-view-link]") == []
-    assert length(find(html, ".plan-accessible-list [data-plan-reference='task:1']")) == 1
-    assert length(find(html, ".plan-accessible-list [data-plan-reference='task:3']")) == 1
+    assert length(find(html, "[data-node-id='task:1'] .plan-node-select[phx-value-id='issue:1']")) == 1
+    assert length(find(html, "[data-node-id='task:3'] .plan-node-select[phx-value-id='issue:3']")) == 1
     assert html =~ "phx-click=\"select-plan-task\""
     assert html =~ "phx-click=\"open-card\""
     assert html =~ "phx-value-id=\"issue:2\""
@@ -137,10 +138,11 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert find(html, "#plan-agents-panel") == []
     assert find(html, "[data-canvas-mode]") == []
     refute html =~ "data-node-id=\"work:2\""
-    assert html =~ "Text view · 0 relationships"
+    assert find(html, ".plan-accessible-list") == []
+    refute html =~ "Text view"
   end
 
-  test "unresolved dependencies remain a separate band with exact accessible evidence" do
+  test "unresolved dependencies remain a separate band with inline evidence" do
     missing = task(404, "unknown", %{"missing" => true})
     bad = task(5, "work", %{"dependency_error" => "Revise malformed prerequisites."})
     nodes = [task(1, "work"), task(2, "review"), task(3, "backlog"), missing, bad]
@@ -150,20 +152,20 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert html =~ "Unknown sequence"
     assert html =~ "Sequence unresolved"
     assert html =~ "Unavailable"
-    assert Floki.text(find(html, ".plan-accessible-list")) =~ "GH-404"
+    assert Floki.text(find(html, "[data-node-id='task:404']")) =~ "GH-404"
     refute html =~ "plan-warnings"
     refute html =~ "Dependencies require human-accepted Done"
     assert html =~ "Dependency cycle. Revise prerequisites."
     assert html =~ "Revise malformed prerequisites."
     refute html =~ "<p class=\"board-warning\""
-    assert length(find(html, "[data-dependency-status=cycle]")) == 2
-    assert length(find(html, "[data-dependency-status=missing]")) == 1
+    assert length(find(html, ".plan-edge[data-status=cycle]")) == 2
+    assert length(find(html, ".plan-edge[data-status=missing]")) == 1
     assert length(find(html, "#plan-dependencies-panel .plan-node")) == 5
   end
 
   test "selected node without relationships preserves its inline error without an inspector" do
     html = draw([task(1, "work", %{"dependency_error" => "Invalid prerequisite."})], [], selected_id: "task:1", visible_task_ids: [])
-    assert html =~ "No declared dependencies"
+    refute html =~ "Text view"
     assert html =~ "Invalid prerequisite"
     assert length(find(html, "#plan-dependencies-panel [data-selected=true]")) == 1
     assert html =~ "Outside filters"
@@ -192,7 +194,7 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
       for [x, y] <- Enum.chunk_every(coords, 2), do: assert(x <= width && y <= height)
     end
 
-    assert html =~ "GH-100"
+    assert find(html, "[data-node-id='task:100']") == []
   end
 
   test "long titles remain complete in tooltip and accessible text, never become markup" do
@@ -278,12 +280,12 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     end
   end
 
-  test "large diagrams announce truncation and preserve full relationship evidence" do
+  test "large diagrams announce truncation and explain how to focus dependencies" do
     html = draw(Enum.map(1..125, &task(&1, "work")), [dep(125, 1)])
     assert length(find(html, "#plan-dependencies-panel .plan-node")) == 120
     assert html =~ "up to 120 nodes"
-    assert Floki.text(find(html, ".plan-accessible-list")) |> String.replace(~r/\s+/, " ") =~ "GH-125 requires GH-1"
-    assert html =~ "All relationships remain available"
+    assert html =~ "Narrow filters or select a task"
+    assert find(html, ".plan-accessible-list") == []
   end
 
   test "late selected task and its direct prerequisite survive the rendering bound" do
@@ -291,7 +293,7 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert length(find(html, "#plan-dependencies-panel .plan-node")) == 120
     assert length(find(html, "#plan-dependencies-panel [data-node-id='task:125'][data-selected=true]")) == 1
     assert length(find(html, "#plan-dependencies-panel [data-node-id='task:1'][data-related=true]")) == 1
-    assert length(find(html, ".plan-accessible-list [data-plan-reference='task:1'][phx-value-id='issue:1']")) == 1
+    assert length(find(html, "[data-node-id='task:1'] .plan-node-select[phx-value-id='issue:1']")) == 1
   end
 
   test "selected work focuses its owning task without agent relationships" do
@@ -302,12 +304,9 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert length(find(html, "#plan-dependencies-panel [data-node-id='task:1'][data-selected=true]")) == 1
     assert html =~ "data-selected-task-id=\"issue:1\""
     refute html =~ "work:1"
-    assert html =~ "No declared dependencies"
+    refute html =~ "Text view"
     html = draw([project, task(1, "work")], [contains("project:p", "task:1")], selected_id: "project:p")
     assert find(html, ".plan-inspector") == []
-    assert render_component(&WorkflowGraphView.reference/1, fallback: "Unavailable") =~ "Unavailable"
-    assert render_component(&WorkflowGraphView.reference/1, node: project, fallback: "Project") =~ "Fixture"
-    refute render_component(&WorkflowGraphView.reference/1, node: work, fallback: "Work") =~ "phx-click"
   end
 
   test "fallback, empty selection and completion policies are honest" do
@@ -317,7 +316,7 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     html = draw([], [], visible_task_ids: [])
     assert html =~ "No matching tasks"
     assert find(html, "[data-plan-svg]") == []
-    assert html =~ "No declared dependencies"
+    refute html =~ "Text view"
     refute html =~ "class=\"plan-inspector\""
 
     for {policy, label} <- [{"human_acceptance", "Done records human acceptance"}, {"tracker_completion", "Done follows tracker completion"}, {nil, "Completion policy unavailable"}] do

@@ -1,7 +1,7 @@
 defmodule SymphonyElixirWeb.WorkflowGanttView do
   @moduledoc "Calendar timeline with recorded facts and explicitly estimated browser drafts."
   use Phoenix.Component
-  alias SymphonyElixirWeb.{WorkflowGraphView, WorkflowPlan}
+  alias SymphonyElixirWeb.WorkflowPlan
 
   @day_width 36
   @row_height 54
@@ -42,8 +42,6 @@ defmodule SymphonyElixirWeb.WorkflowGanttView do
         months: date_groups(days, &{&1.year, &1.month}, &Calendar.strftime(&1, "%B %Y")),
         weeks: date_groups(days, &Date.add(&1, 1 - Date.day_of_week(&1)), &Calendar.strftime(Date.add(&1, 1 - Date.day_of_week(&1)), "%b %-d")),
         paths: Enum.flat_map(dependencies, &arrow(&1, positions, start, length(days))),
-        dependencies: dependencies,
-        text_nodes: Enum.filter(plan["nodes"], &(&1["type"] == "task")),
         width: length(days) * @day_width,
         height: length(rows) * @row_height,
         clipped: Enum.any?(rows, &(is_integer(start_offset(&1, start)) and start_offset(&1, start) < 0))
@@ -67,7 +65,7 @@ defmodule SymphonyElixirWeb.WorkflowGanttView do
             <tbody><tr :for={row <- @rows} id={dom_id("gantt-row", row["id"])} data-plan-task-id={row["task_id"]} data-plan-visible={to_string(row["visible"])} data-selected={to_string(!is_nil(@selected) && @selected["id"] == row["id"])} data-lane={row["lane"]} data-timeline-kind={row["timeline"]["kind"]}>
               <th scope="row" class="plan-row-name"><div class="plan-row-heading"><button type="button" class="plan-row-title" phx-click="open-card" phx-value-id={row["task_id"]} title={row["title"]}>{row["title"] || row["identifier"]}</button><label :if={row["lane"] != "done"} class="plan-calendar-estimate"><input type="number" min="1" max="365" value={row["timeline"]["duration_days"] || 1} data-calendar-duration data-calendar-task-id={row["task_id"]} aria-label={"Estimated days for #{row["identifier"] || row["title"]}"} />d</label></div><div class="plan-node-meta"><span>{row["identifier"]}</span><span :if={row["priority"]}>P{row["priority"]}</span><span>{kind_name(row["task_kind"])}</span><span>{lane_name(row["lane"])}</span><span :if={milestone_title(row)} title={milestone_title(row)}>{milestone_title(row)}</span><span :if={row["visible"] == false} class="plan-node-context">Outside filters</span></div></th>
               <td class="plan-gantt-track">
-                <button type="button" class={if row["timeline"]["kind"] == "unscheduled", do: "plan-gantt-unresolved", else: "plan-gantt-bar"} style={bar_style(row, @start, length(@days))} phx-click="select-plan-task" phx-value-id={row["task_id"]} aria-pressed={to_string(!is_nil(@selected) && @selected["id"] == row["id"])} aria-label={bar_label(row)} title={bar_label(row)} data-planning-status={row["planning_status"]} data-timeline-kind={row["timeline"]["kind"]} data-timeline-start-offset={start_offset(row, @start)} data-timeline-days={row["timeline"]["duration_days"]}>
+                <button type="button" class={if row["timeline"]["kind"] == "unscheduled", do: "plan-gantt-unresolved", else: "plan-gantt-bar"} style={bar_style(row, @start, length(@days))} phx-click="select-plan-task" phx-value-id={row["task_id"]} aria-pressed={to_string(!is_nil(@selected) && @selected["id"] == row["id"])} aria-label={bar_label(row)} aria-description={row["dependency_description"]} title={bar_label(row)} data-planning-status={row["planning_status"]} data-timeline-kind={row["timeline"]["kind"]} data-timeline-start-offset={start_offset(row, @start)} data-timeline-days={row["timeline"]["duration_days"]}>
                   <span :if={row["timeline"]["kind"] == "running"} class="plan-gantt-recorded" style={recorded_style(row, @start)} aria-hidden="true"></span><span class="plan-gantt-label">{bar_status(row)}</span>
                 </button>
               </td>
@@ -78,7 +76,6 @@ defmodule SymphonyElixirWeb.WorkflowGanttView do
         </div>
         <p :if={@rows == []} class="plan-empty">No matching tasks. Describe a task to the project agent or adjust filters.</p>
       </div>
-      <WorkflowGraphView.relationships :if={@available} nodes={@text_nodes} edges={@dependencies} />
     </section>
     """
   end

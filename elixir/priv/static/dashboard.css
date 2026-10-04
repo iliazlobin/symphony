@@ -928,10 +928,6 @@ h2, h3, strong { font-weight: 500; }
 .plan-node[data-selected=true] .plan-node-card { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .plan-node-note { color: var(--warn); font-size: 11px; line-height: 1.3; }
 .plan-node-dependency-status { color: var(--muted); font-size: 11px; line-height: 1.3; }
-.plan-accessible-list { flex-shrink: 0; max-height: 140px; overflow: auto; color: var(--muted); }
-.plan-accessible-list summary { cursor: pointer; font-size: 11px; }
-.plan-accessible-list table { width: 100%; border-collapse: collapse; }
-.plan-accessible-list :is(th,td) { padding: 6px; border-bottom: 1px solid var(--line); text-align: left; font-weight: 400; }
 .plan-empty { display: grid; place-content: center; flex: 1; text-align: center; color: var(--muted); padding: 24px; }
 .plan-warning { margin: 0; padding: 6px 8px; border-radius: 6px; color: var(--warn); background: var(--soft); font-size: 11px; }
 @media (prefers-reduced-motion: no-preference) {
@@ -1039,9 +1035,6 @@ h2, h3, strong { font-weight: 500; }
 .card-filter-context { display: none; font-size: 10px; color: var(--muted); padding: 2px 0; }
 .task-card[data-filter-context=true] .card-filter-context { display: block; }
 .task-card[data-filter-context=true] { border-style: dashed; }
-.plan-reference { background: transparent; border: 0; padding: 0; color: var(--accent); font: inherit; cursor: pointer; text-align: left; }
-.plan-reference:hover { text-decoration: underline; }
-.plan-reference:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* Design is a working canvas; execution filters remain with the planning views. */
 .dashboard-shell[data-board-view=design] :is(#board-toolbar,#board-search,.board-summary,#board-context,.board-footer,#board-dispatch-guidance) { display: none; }
 .dashboard-shell[data-board-view=design] .board-content { padding-top: 16px; }

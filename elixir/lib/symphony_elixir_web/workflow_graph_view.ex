@@ -1,5 +1,5 @@
 defmodule SymphonyElixirWeb.WorkflowGraphView do
-  @moduledoc "Interactive read-only task dependencies with accessible relationship evidence."
+  @moduledoc "Interactive read-only task dependency diagram."
   use Phoenix.Component
   alias SymphonyElixirWeb.WorkflowPlan
 
@@ -48,8 +48,6 @@ defmodule SymphonyElixirWeb.WorkflowGraphView do
         policy: get_in(assigns.board, [:workflow_graph, "policy"]),
         selected: selected,
         related_ids: related_ids,
-        text_nodes: nodes,
-        dependencies: edges,
         task_positions: task_positions,
         diagram_width: diagram_width(layout),
         diagram_height: diagram_height(layout),
@@ -73,19 +71,19 @@ defmodule SymphonyElixirWeb.WorkflowGraphView do
       </div>
       <p class="plan-caption">Prerequisites → dependent tasks. Priority orders peers. {completion_description(@policy)}</p>
       <p :if={!@available} class="board-warning" role="status">{@reason || "Graph unavailable. The board keeps its last-known tasks."}</p>
-      <p :if={@truncated} class="board-notice" role="status">Diagram shows up to {@max_nodes} nodes, with the selected relationships first. All relationships remain available in the text view.</p>
+      <p :if={@truncated} class="board-notice" role="status">Diagram shows up to {@max_nodes} nodes, with the selected relationships first. Narrow filters or select a task to focus its dependencies.</p>
       <div :if={@available} class="plan-main">
         <div id="plan-dependencies-panel" class="plan-panel" data-plan-panel="dependencies">
           <div class="plan-canvas" data-plan-canvas tabindex="0" role="region" aria-label="Task dependencies; drag background to pan, scroll to zoom, F to fit, C to center selected">
             <svg :if={@task_positions != []} class="plan-svg" data-plan-svg data-selection-active={to_string(!is_nil(@selected))} data-content-width={@diagram_width} data-content-height={@diagram_height} viewBox={"0 0 #{@diagram_width} #{@diagram_height}"} role="group" aria-label="Task dependencies">
               <title>Task dependencies</title>
-              <desc>Arrows go from prerequisite to dependent. Select a node to open its agent; select its title for task details. The text view provides every relationship.</desc>
+              <desc>Arrows go from prerequisite to dependent. Select a node to open its agent; select its title for task details.</desc>
               <defs><marker id="dependencies-arrow" markerWidth="4" markerHeight="4" viewBox="0 0 4 4" refX="4" refY="2" markerUnits="strokeWidth" orient="auto"><path class="plan-edge-arrow" d="M0,0 L4,2 L0,4 Z" fill="context-stroke" /></marker></defs>
               <path :for={path <- @paths} :key={path.edge["id"] || dom_id("plan-edge", path.edge["source"] <> ":" <> path.edge["target"])} id={dom_id("plan-edge", path.edge["id"] || path.edge["source"] <> ":" <> path.edge["target"])} d={path.d} class="plan-edge" data-edge-source={path.edge["source"]} data-edge-target={path.edge["target"]} data-status={path.edge["status"]} data-related={to_string(related_edge?(path.edge, @selected))} vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#dependencies-arrow)" />
               <g :for={node <- @task_positions} :key={node["id"]} id={dom_id("plan-node", node["id"])} class="plan-node" transform={"translate(#{node.x},#{node.y})"} data-plan-node data-node-id={node["id"]} data-plan-task-id={node["task_id"]} data-plan-visible={to_string(node["visible"] != false)} data-node-x={node.x} data-node-y={node.y} data-node-width="260" data-node-height={node.height} data-depth={node.depth} data-lane={node["lane"]} data-selected={to_string(!is_nil(@selected) && @selected["id"] == node["id"])} data-related={to_string(MapSet.member?(@related_ids, node["id"]))} data-missing={to_string(node["missing"] == true)} data-cycle={to_string(node["cycle"] == true)} data-filtered={to_string(node["visible"] == false)}>
                 <foreignObject width="260" height={node.height}>
                   <div class="plan-node-card">
-                    <button :if={!node["missing"]} type="button" class="plan-node-select" aria-pressed={to_string(!is_nil(@selected) && @selected["id"] == node["id"])} phx-click="select-plan-task" phx-value-id={node["task_id"]} aria-label={"Open #{node_name(node)} task agent"}></button>
+                    <button :if={!node["missing"]} type="button" class="plan-node-select" aria-description={node["dependency_description"]} aria-pressed={to_string(!is_nil(@selected) && @selected["id"] == node["id"])} phx-click="select-plan-task" phx-value-id={node["task_id"]} aria-label={"Open #{node_name(node)} task agent"}></button>
                     <div class="plan-node-meta"><span>{node_name(node)}</span><span :if={node["priority"]}>P{node["priority"]}</span></div>
                     <button :if={node["task_id"] && !node["missing"]} type="button" class="plan-node-title" phx-click="open-card" phx-value-id={node["task_id"]} title={node_title(node)}>{node_title(node)}</button>
                     <span :if={!node["task_id"] || node["missing"]} class="plan-node-title" title={node_title(node)}>{node_title(node)}</span>
@@ -102,43 +100,7 @@ defmodule SymphonyElixirWeb.WorkflowGraphView do
         </div>
       </div>
       <div :if={@available} class="plan-legend"><span :for={lane <- @lanes}><span class={"lane-dot lane-dot-#{lane}"} aria-hidden="true"></span>{lane_name(lane)}</span><span>Drag to pan · Scroll to zoom</span></div>
-      <.relationships :if={@available} nodes={@text_nodes} edges={@dependencies} />
     </section>
-    """
-  end
-
-  attr(:nodes, :list, required: true)
-  attr(:edges, :list, required: true)
-
-  @spec relationships(map()) :: Phoenix.LiveView.Rendered.t()
-  def relationships(assigns) do
-    assigns = assign(assigns, by_id: Map.new(assigns.nodes, &{&1["id"], &1}))
-
-    ~H"""
-    <details class="plan-accessible-list"><summary>Text view · {length(@edges)} relationships</summary>
-      <p :if={@edges == []}>No declared dependencies.</p>
-      <ul><li :for={node <- @nodes}>{node_name(node)} · {node_title(node)} · {node_status(node)}<span :if={node_error(node)}> · {node_error(node)}</span></li></ul>
-      <ul><li :for={edge <- @edges} data-dependency-status={edge["status"]}><.reference node={@by_id[edge["source"]]} fallback={edge["source"]} /> requires <.reference node={@by_id[edge["target"]]} fallback={edge["target"]} /><span :if={edge["kind"]}> · {edge["kind"]}</span><span :if={edge["reason"]}> · {edge["reason"]}</span><span :if={edge["status"]}> · {edge_status(edge)}</span></li></ul>
-    </details>
-    """
-  end
-
-  attr(:node, :map, default: nil)
-  attr(:fallback, :string, required: true)
-  attr(:relationship, :string, default: nil)
-  attr(:description, :string, default: nil)
-
-  @spec reference(map()) :: Phoenix.LiveView.Rendered.t()
-  def reference(assigns) do
-    node = assigns.node || %{}
-
-    event = if node["type"] == "task" and is_binary(node["task_id"]) and node["missing"] != true, do: "select-plan-task"
-
-    assigns = assign(assigns, label: if(assigns.node, do: node_name(node), else: assigns.fallback), event: event, title: assigns.description || node_title(node))
-
-    ~H"""
-    <button :if={@event} type="button" class="plan-reference" phx-click={@event} phx-value-id={@node["task_id"]} data-plan-reference={@node["id"]} aria-label={if @relationship, do: @relationship <> ": " <> @label} title={@title}><span :if={@relationship} aria-hidden="true">{if @relationship == "Prerequisite", do: "↑", else: "↓"}</span> {@label}</button>
-    <span :if={!@event} title={@title}>{if @relationship, do: @relationship <> ": "}{@label}</span>
     """
   end
 
@@ -333,10 +295,6 @@ defmodule SymphonyElixirWeb.WorkflowGraphView do
   defp direction(value) when value > 0, do: 1
   defp direction(_), do: 0
   defp dom_id(prefix, id), do: prefix <> "-" <> Base.url_encode64(id, padding: false)
-  defp edge_status(%{"status" => "waiting"}), do: "Awaiting acceptance"
-  defp edge_status(%{"status" => "satisfied"}), do: "Accepted"
-  defp edge_status(%{"status" => "cycle"}), do: "Revise cycle"
-  defp edge_status(_edge), do: "Unavailable"
   defp node_name(node), do: node["identifier"] || node["name"] || node["title"] || node["id"]
   defp node_title(node), do: node["title"] || node["name"] || node["identifier"] || "Untitled"
   defp node_status(%{"missing" => true}), do: "Unavailable"
