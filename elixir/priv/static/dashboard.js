@@ -466,6 +466,7 @@
       this.taskId = this.previous?.closest(".task-card[data-task-id]")?.dataset.taskId;
       this.bodyOverflow = document.body.style.overflow;
       this.contentKey = this.el.dataset.contentKey;
+      this.scrollContainer = () => this.el.querySelector("[data-dialog-scroll]") || this.el;
       this.abort = new AbortController();
       this.closeDialog = () => this.el.dataset.eventTarget ? this.pushEventTo(this.el, "close-dialog", {}) : this.pushEvent("close-dialog", {});
       document.addEventListener("focusin", event => { if (event.target !== document.body && event.target !== document.documentElement) this.lastFocused = event.target; }, {signal: this.abort.signal});
@@ -503,7 +504,7 @@
       this.focusDialog();
     },
     beforeUpdate() {
-      this.scrollPosition = this.el.scrollTop;
+      this.scrollPosition = this.scrollContainer().scrollTop;
       this.focusedControl = document.activeElement;
       const control = this.focusedControl;
       this.textSelection = typeof control?.selectionStart === "number"
@@ -518,7 +519,8 @@
         this.taskId = control.closest(".task-card[data-task-id]")?.dataset.taskId;
       }
       this.showDialog();
-      this.el.scrollTop = changed ? 0 : (this.scrollPosition ?? this.el.scrollTop);
+      const scroller = this.scrollContainer();
+      scroller.scrollTop = changed ? 0 : (this.scrollPosition ?? scroller.scrollTop);
       if (!changed && control?.isConnected && !control.disabled && control !== document.body && control !== document.documentElement && control.getClientRects().length && (this.nonmodal || this.el.contains(control))) {
         control.focus({preventScroll: true});
         if (this.textSelection) control.setSelectionRange(...this.textSelection);
@@ -738,9 +740,27 @@
       this.localizeTimes();
       requestAnimationFrame(this.scroll);
     },
+    beforeUpdate() {
+      const scroller = this.el.querySelector("#session-chat-content");
+      const messages = this.el.querySelector("#chat-messages");
+      const top = scroller?.getBoundingClientRect().top;
+      const anchor = top === undefined ? null : Array.from(messages?.querySelectorAll(".chat-message") || []).find(message => message.getBoundingClientRect().bottom > top);
+      this.historyAnchor = anchor ? {chatId: this.el.dataset.chatId, page: Number(messages.dataset.historyPage), id: anchor.id, top: anchor.getBoundingClientRect().top - top} : null;
+    },
     updated() {
       if (this.dragScope !== this.scope()) { this.clearDrag(); this.dragScope = this.scope(); }
       if (this.chatId !== this.el.dataset.chatId) { this.chatId = this.el.dataset.chatId; this.atBottom = true; }
+      const anchor = this.historyAnchor;
+      this.historyAnchor = null;
+      const messages = this.el.querySelector("#chat-messages");
+      if (anchor && anchor.chatId === this.el.dataset.chatId && Number(messages?.dataset.historyPage) > anchor.page) {
+        const scroller = this.el.querySelector("#session-chat-content");
+        const retained = Array.from(messages.querySelectorAll(".chat-message")).find(message => message.id === anchor.id);
+        if (scroller && retained) {
+          scroller.scrollTop += retained.getBoundingClientRect().top - scroller.getBoundingClientRect().top - anchor.top;
+          this.atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 90;
+        }
+      }
       this.loadTab();
       this.acceptServerBlank();
       this.loadDraft();
@@ -824,6 +844,77 @@
       this.mode = this.el.dataset.planMode || "dependencies";
       this.selectedId = this.el.dataset.selectedId;
       this.scope = this.el.dataset.canvasScope;
+      this.pendingSelection = null;
+      this.selectionRequest = null;
+      this.pointerFocus = false;
+      this.selectionClock = () => typeof performance === "object" ? performance.now() : Date.now();
+      // LiveView replaces client-only attributes; retain the latest sample on the hook.
+      this.selectionTiming = null;
+      this.paintSelectionTiming = () => {
+        for (const [attribute, value] of [["selectionFeedbackMs", this.selectionTiming?.feedbackMs], ["selectionSettledMs", this.selectionTiming?.settledMs]]) {
+          if (value == null) delete this.el.dataset[attribute];
+          else this.el.dataset[attribute] = value;
+        }
+      };
+      const cancelQueuedSelection = () => { this.pendingSelection = null; };
+      window.addEventListener?.("popstate", cancelQueuedSelection, {signal: this.abort.signal});
+      if (typeof document === "object") {
+        document.addEventListener("click", event => {
+          const navigation = event.target.closest('[data-board-view-link],a[data-phx-link],[phx-click="select-issue"],[phx-click="select-pr-session"],[phx-click="main-chat"],[phx-click="board-link"],[phx-click="select-task"],[phx-click="open-task"]');
+          if (navigation?.tagName === "A" && (event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || navigation.target === "_blank")) return;
+          if (navigation && !this.el.contains(navigation)) cancelQueuedSelection();
+        }, {capture: true, signal: this.abort.signal});
+        document.addEventListener("keydown", () => { this.pointerFocus = false; }, {signal: this.abort.signal});
+      }
+      this.paintSelection = id => {
+        const svg = this.svg();
+        if (!svg) return;
+        const nodes = [...svg.querySelectorAll("[data-plan-node]")];
+        const selected = nodes.find(node => node.dataset.planTaskId === id);
+        const related = new Set(selected ? [selected.dataset.nodeId] : []);
+        svg.querySelectorAll("[data-edge-source]").forEach(edge => {
+          const match = !!selected && [edge.dataset.edgeSource, edge.dataset.edgeTarget].includes(selected.dataset.nodeId);
+          edge.dataset.related = String(match);
+          if (match) { related.add(edge.dataset.edgeSource); related.add(edge.dataset.edgeTarget); }
+        });
+        svg.dataset.selectionActive = String(!!selected);
+        nodes.forEach(node => {
+          node.dataset.selected = String(node === selected);
+          node.dataset.related = String(related.has(node.dataset.nodeId));
+          node.querySelector(".plan-node-select")?.setAttribute?.("aria-pressed", String(node === selected));
+        });
+        const toolbar = this.el.closest("#task-board-app")?.querySelector("#selected-task-navigation");
+        if (!selected || !toolbar) return;
+        toolbar.dataset.selectedTaskId = id;
+        const label = toolbar.querySelector("[data-task-navigation-label]");
+        if (label) {
+          label.hidden = false;
+          label.textContent = selected.querySelector(".plan-node-meta span")?.textContent || id;
+          label.title = selected.querySelector(".plan-node-title")?.textContent || "";
+        }
+        toolbar.querySelectorAll("[data-board-view-link]").forEach(link => {
+          link.dataset.boardViewTask = id;
+          link.setAttribute?.("aria-label", `${link.textContent?.trim() || "Open view"}: ${label?.textContent || id}`);
+          const target = new URL(link.href, window.location.href);
+          target.searchParams.set("chat_task", id);
+          target.searchParams.delete("chat_session"); target.searchParams.delete("task");
+          link.href = target.href;
+        });
+      };
+      this.sendSelection = () => {
+        if (this.selectionRequest || !this.pendingSelection) return;
+        const request = this.pendingSelection;
+        this.selectionRequest = request;
+        this.pushEvent("select-plan-task", {id: request.id}, reply => {
+          if (this.abort.signal.aborted || this.selectionRequest !== request) return;
+          this.selectionRequest = null;
+          if (this.pendingSelection !== request) { this.sendSelection(); return; }
+          this.pendingSelection = null;
+          request.timing.settledMs = (this.selectionClock() - request.started).toFixed(1);
+          this.paintSelectionTiming();
+          this.paintSelection(reply?.selected_task_id ?? this.el.dataset.selectedTaskId);
+        });
+      };
       if (this.mode === "timeline") this.loadCalendar();
       const on = (name, handler, options = {}) => this.el.addEventListener(name, handler, {...options, signal: this.abort.signal});
       this.canvas = () => this.el.querySelector(`[data-plan-panel="${this.mode}"] [data-plan-canvas]`);
@@ -898,6 +989,25 @@
         if (Date.now() < (this.ignoreClickUntil || 0) && event.target.closest("[data-plan-node]")) {
           event.preventDefault(); event.stopPropagation(); return;
         }
+        const selection = event.target.closest('[phx-click="select-plan-task"]');
+        if (selection && this.mode === "dependencies" && !selection.hasAttribute("phx-value-work_id")) {
+          const id = selection.getAttribute("phx-value-id");
+          if (!id || !this.pushEvent) return;
+          event.preventDefault(); event.stopPropagation();
+          const started = this.selectionClock();
+          const timing = {feedbackMs: null, settledMs: null};
+          this.selectionTiming = timing; this.paintSelectionTiming();
+          this.pendingSelection = {id, started, timing};
+          this.paintSelection(id);
+          requestAnimationFrame(() => {
+            if (!this.abort.signal.aborted && this.selectionTiming === timing) {
+              timing.feedbackMs = (this.selectionClock() - started).toFixed(1);
+              this.paintSelectionTiming();
+            }
+          });
+          this.sendSelection(); return;
+        }
+        if (event.target.closest('[phx-click="open-card"]')) this.pendingSelection = null;
         const calendar = event.target.closest("[data-calendar-action]");
         if (calendar) { this.calendarAction(calendar.dataset.calendarAction); return; }
         const button = event.target.closest("[data-canvas-action]");
@@ -907,6 +1017,7 @@
         else this.zoom(button.dataset.canvasAction === "in" ? 1.25 : 0.8);
       }, {capture: true});
       on("keydown", event => {
+        this.pointerFocus = false;
         if (event.target !== this.canvas()) return;
         const camera = this.camera();
         if (!camera) return;
@@ -937,6 +1048,7 @@
         this.saveCalendar(); this.pushCalendar();
       });
       on("focusin", event => {
+        if (this.pointerFocus || this.restoringPatchFocus) return;
         const node = event.target.closest("[data-plan-node]"), canvas = this.canvas();
         if (!node || !canvas) return;
         const rect = node.getBoundingClientRect(), bounds = canvas.getBoundingClientRect();
@@ -949,6 +1061,7 @@
         this.zoom(Math.exp(-Math.max(-400, Math.min(400, delta)) * 0.002), {x: event.clientX, y: event.clientY});
       }, {passive: false});
       on("pointerdown", event => {
+        this.pointerFocus = true;
         const canvas = event.target.closest("[data-plan-canvas]");
         if (!canvas || canvas !== this.canvas() || (event.pointerType === "mouse" && event.button !== 0)
             || event.target.closest("button,a,input,summary,[data-plan-node]")) return;
@@ -1016,18 +1129,41 @@
     beforeUpdate() {
       const scroll = this.el.querySelector(".plan-gantt-scroll");
       this.scrollPosition = scroll ? {left: scroll.scrollLeft, top: scroll.scrollTop} : null;
+      this.patchFocus = null;
+      const control = typeof document === "object" ? document.activeElement : null;
+      const node = control?.closest?.("[data-plan-node]");
+      if (this.mode === "dependencies" && node && this.el.contains(control)
+          && control.matches("button.plan-node-select, button.plan-node-title")) {
+        this.patchFocus = {control, node, scope: this.scope, nodeId: node.dataset.nodeId,
+          taskId: node.dataset.planTaskId, action: control.getAttribute("phx-click")};
+      }
     },
     updated() {
-      const selectedChanged = this.selectedId !== this.el.dataset.selectedId;
+      const focus = this.patchFocus;
+      this.patchFocus = null;
       this.selectedId = this.el.dataset.selectedId;
       if (this.scope !== this.el.dataset.canvasScope) {
+        this.pendingSelection = null; this.selectionRequest = null;
+        this.selectionTiming = null;
         this.scope = this.el.dataset.canvasScope; this.cameras.clear(); this.mode = this.el.dataset.planMode || "dependencies";
         this.scrollPosition = null;
         if (this.mode === "timeline") this.loadCalendar();
       }
+      // Restore the viewBox and local intent before the browser paints a server patch.
+      this.showMode();
+      if (this.pendingSelection) this.paintSelection(this.pendingSelection.id);
+      this.paintSelectionTiming();
+      // Morphdom can reinsert a keyed SVG group, dropping its button focus to the body.
+      if (focus && focus.scope === this.scope && this.mode === "dependencies"
+          && typeof document === "object" && [document.body, document.documentElement].includes(document.activeElement)
+          && focus.control.isConnected && this.el.contains(focus.control)
+          && focus.control.closest("[data-plan-node]") === focus.node
+          && focus.node.dataset.nodeId === focus.nodeId && focus.node.dataset.planTaskId === focus.taskId
+          && focus.control.getAttribute("phx-click") === focus.action) {
+        this.restoringPatchFocus = true;
+        try { focus.control.focus({preventScroll: true}); } finally { this.restoringPatchFocus = false; }
+      }
       requestAnimationFrame(() => {
-        this.showMode();
-        if (selectedChanged && this.mode === "dependencies") this.centerSelected();
         const scroll = this.el.querySelector(".plan-gantt-scroll");
         if (scroll && this.scrollPosition) { scroll.scrollLeft = this.scrollPosition.left; scroll.scrollTop = this.scrollPosition.top; }
         if (this.mode === "timeline") this.calendarScale(this.calendarPrefs?.scale || "day");

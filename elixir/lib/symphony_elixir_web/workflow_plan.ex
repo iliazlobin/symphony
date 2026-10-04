@@ -252,6 +252,7 @@ defmodule SymphonyElixirWeb.WorkflowPlan do
       downstream: downstream,
       nodes: by_id,
       edges: Enum.group_by(edges, & &1["source"]),
+      dependent_edges: Enum.group_by(edges, & &1["target"]),
       visible: visible
     }
 
@@ -359,6 +360,7 @@ defmodule SymphonyElixirWeb.WorkflowPlan do
     |> Map.merge(%{
       "planning_status" => context.statuses[id],
       "dependency_state" => dependency_state(task, context.edges[id] || [], context.statuses[id]),
+      "dependency_description" => dependency_description(id, context),
       "start_step" => step,
       "end_step" => if(is_integer(step), do: step + 1),
       "visible" => MapSet.member?(context.visible, task["task_id"])
@@ -366,6 +368,24 @@ defmodule SymphonyElixirWeb.WorkflowPlan do
     |> neighbor_counts("upstream", context.upstream[id] || empty_set(), context.nodes, context.visible)
     |> neighbor_counts("downstream", context.downstream[id] || empty_set(), context.nodes, context.visible)
   end
+
+  defp dependency_description(id, context) do
+    prerequisites = Enum.map(context.edges[id] || [], &describe_dependency(&1, "Prerequisite", "target", context.nodes))
+    dependents = Enum.map(context.dependent_edges[id] || [], &describe_dependency(&1, "Dependent", "source", context.nodes))
+    Enum.join(prerequisites ++ dependents, "; ")
+  end
+
+  defp describe_dependency(edge, direction, endpoint, nodes) do
+    node = nodes[edge[endpoint]]
+    name = node["identifier"] || node["title"] || node["id"]
+    detail = [edge["kind"], edge["reason"]] |> Enum.reject(&is_nil/1) |> Enum.join(": ")
+    "#{direction} #{name}: #{dependency_label(edge["status"])}" <> if(detail == "", do: "", else: " (#{detail})")
+  end
+
+  defp dependency_label("satisfied"), do: "accepted"
+  defp dependency_label("waiting"), do: "awaiting acceptance"
+  defp dependency_label("cycle"), do: "revise cycle"
+  defp dependency_label(_), do: "unavailable"
 
   @spec neighbor_counts(map(), String.t(), MapSet.t(), map(), MapSet.t()) :: map()
   defp neighbor_counts(node, direction, ids, by_id, visible) do

@@ -169,7 +169,11 @@ input, select {
 /* Columns stay side by side, with scrolling contained to the board. */
 .board-content { padding: 12px 20px 0; flex: 1; min-width: 0; }
 .board-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 0 4px 10px; color: var(--muted); font-size: 11px; }
-.summary-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.summary-right { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-left: auto; }
+.selected-task-navigation { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
+.selected-task-navigation > span { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.selected-task-navigation > span[hidden] { display: none; }
+.selected-task-navigation .button { white-space: nowrap; }
 .kanban-board { display: grid; grid-template-columns: repeat(4, minmax(240px, 1fr)); grid-auto-columns: 185px; grid-auto-flow: column; gap: 10px; align-items: stretch; overflow-x: auto; min-height: calc(100dvh - 278px); padding-bottom: 20px; }
 .kanban-lane { min-width: 0; border-radius: 5px; padding: 0 6px 12px; transition: background .15s; background: light-dark(#f8f8fa, #1b1c21); }
 .lane-heading { display: flex; align-items: center; gap: 4px; padding: 9px 4px 11px; }
@@ -301,13 +305,11 @@ input, select {
 [data-phx-main].phx-connected .status-badge-offline { display: none; }
 .mobile-lane-control { display: none; }
 
-/* Native dialogs keep focus inside the popup while the board stays mounted. */
+/* The header stays visible while the dialog body scrolls. */
 .board-dialog {
   width: min(720px, calc(100vw - 32px));
   max-height: calc(100dvh - 40px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  overflow: hidden;
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -316,10 +318,11 @@ input, select {
   box-shadow: 0 24px 100px #0005;
 }
 .board-dialog::backdrop { background: #10172580; backdrop-filter: blur(3px); }
-.dialog-inner { padding: 22px; }
-.dialog-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
-.dialog-heading h2 { font-size: 21px; line-height: 1.35; overflow-wrap: anywhere; }
-#close-dialog { white-space: nowrap; flex-shrink: 0; }
+.board-dialog[open] { display: flex; flex-direction: column; }
+.dialog-inner { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 20px; }
+.dialog-heading { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.dialog-heading h2 { min-width: 0; font-size: 18px; font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
+#close-dialog { white-space: nowrap; flex-shrink: 0; min-height: 36px; }
 .dialog-section { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
 .dialog-section h3 { font-size: 15px; margin-bottom: 8px; }
 .dialog-section p + p { margin-top: 8px; }
@@ -369,7 +372,6 @@ summary { cursor: pointer; color: var(--accent); }
   .mobile-lane-control label { display: flex; align-items: center; gap: 8px; }
   .mobile-lane-control select { flex: 1; }
   .board-content { padding: 12px; }
-  .dialog-inner { padding: 16px; }
   input, .combo-control input, .display-field select { font-size: 16px; }
   .filter-row .filter-combo:first-child .combo-options { left: 0; right: auto; }
   .combo-options { width: 245px; }
@@ -415,6 +417,7 @@ summary { cursor: pointer; color: var(--accent); }
 .chat-login-form { text-align: left; width: min(360px,100%); }
 .chat-login-form .button { width: 100%; }
 .chat-messages { display: flex; flex-direction: column; gap: 28px; min-width: 0; font-size: 15px; }
+.chat-history-more { align-self: center; gap: 6px; }
 .chat-message { min-width: 0; overflow-wrap: anywhere; }
 .chat-message-user { align-self: flex-end; width: fit-content; max-width: 90%; padding: 12px 16px; background: var(--soft); border-radius: 18px 18px 5px 18px; }
 .chat-message-agent { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--tint); }
@@ -766,9 +769,6 @@ h2, h3, strong { font-weight: 500; }
 .card-pr-summary { gap: 4px 8px; margin-top: 8px; }
 .board-notice, .board-warning { margin: 0 0 12px; }
 .board-dispatch-guidance p { margin: 0; }
-.dialog-inner { padding: 24px; }
-.dialog-heading { margin-bottom: 16px; }
-.dialog-heading h2 { font-size: 18px; font-weight: 500; }
 .field, .dialog-actions, .dialog-section { margin-top: 16px; }
 .markdown-content { line-height: 1.55; }
 .markdown-content :is(h1,h2,h3,h4,h5,h6) { font-size: 14px; font-weight: 500; margin: 16px 0 8px; }
@@ -840,9 +840,12 @@ h2, h3, strong { font-weight: 500; }
 .chat-queue ol { max-height: 120px; }
 @media (max-width: 860px) {
   .board-dialog[data-kind=task] { max-height: calc(42dvh - 24px); }
+  .dialog-heading h2 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 }
 @media (max-width: 540px) {
   .dialog-inner { padding: 16px; }
+  .dialog-heading { gap: 12px; padding: 12px 16px; }
+  .dialog-heading h2 { font-size: 16px; }
   .operator-breadcrumbs { gap: 3px; padding: 6px 8px; }
   .operator-breadcrumbs .issue-switcher > summary, .operator-breadcrumbs .issue-pr-menu > summary { padding: 4px; max-width: 100px; }
   .operator-breadcrumbs .breadcrumb-category { display: none; }
@@ -891,21 +894,19 @@ h2, h3, strong { font-weight: 500; }
 .plan-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
 .plan-title { font-size: 13px; font-weight: 600; }
 .plan-tools { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.plan-tools :is(button,.button), .plan-calendar-controls button, .plan-inspector .button { display: inline-flex; align-items: center; justify-content: center; padding: 4px 9px; font-size: 12px; min-height: var(--control-height); border-radius: var(--control-radius); }
+.plan-tools :is(button,.button), .plan-calendar-controls button { display: inline-flex; align-items: center; justify-content: center; padding: 4px 9px; font-size: 12px; min-height: var(--control-height); border-radius: var(--control-radius); }
 .plan-tools output { min-width: 40px; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
-.plan-tools button, .plan-calendar-controls button, .plan-inspector-links button { border: 1px solid var(--line); background: var(--panel); color: var(--fg); cursor: pointer; }
-.plan-tools button:hover, .plan-calendar-controls button:hover, .plan-inspector-links button:hover { border-color: var(--accent); color: var(--accent); }
-.plan-tools button:focus-visible, .plan-calendar-controls button:focus-visible, .plan-inspector-links button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.plan-tools button, .plan-calendar-controls button { border: 1px solid var(--line); background: var(--panel); color: var(--fg); cursor: pointer; }
+.plan-tools button:hover, .plan-calendar-controls button:hover { border-color: var(--accent); color: var(--accent); }
+.plan-tools button:focus-visible, .plan-calendar-controls button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .plan-caption { color: var(--muted); font-size: 11px; margin: 0; }
 .plan-main, .plan-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; }
 .plan-panel[hidden] { display: none; }
 .plan-legend { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
 .plan-legend > span { display: inline-flex; align-items: center; gap: 5px; }
-.plan-related-counts { display: flex; gap: 12px; color: var(--muted); }
 .plan-node-context { color: var(--muted); font-size: 10px; }
 .plan-node[data-filtered=true] .plan-node-card { background: var(--soft); border-style: dashed; }
 .plan-view .board-warning { max-height: 54px; overflow: auto; font-size: 11px; margin: 0; }
-.plan-inspector-links button { padding: 4px 8px; font-size: 11px; min-height: 28px; border-radius: var(--control-radius); }
 .plan-canvas { position: relative; flex: 1; min-height: 180px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background-color: var(--bg); background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 20px 20px; touch-action: none; cursor: grab; overscroll-behavior: contain; }
 .plan-canvas[data-panning=true] { cursor: grabbing; }
 .plan-svg { display: block; width: 100%; height: 100%; overflow: visible; }
@@ -927,20 +928,6 @@ h2, h3, strong { font-weight: 500; }
 .plan-node[data-selected=true] .plan-node-card { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .plan-node-note { color: var(--warn); font-size: 11px; line-height: 1.3; }
 .plan-node-dependency-status { color: var(--muted); font-size: 11px; line-height: 1.3; }
-.plan-inspector { flex-shrink: 0; max-height: 120px; overflow: auto; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); line-height: 1.4; }
-.plan-inspector-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; position: sticky; top: -8px; background: var(--panel); padding: 2px 0; }
-.plan-inspector h3 { flex: 1; min-width: 120px; font-size: 12px; margin: 0; overflow-wrap: anywhere; }
-.plan-inspector p { margin: 4px 0; }
-.plan-inspector-links { display: flex; gap: 6px; flex-wrap: wrap; margin: 0; }
-.plan-related-list { display: flex; align-items: center; gap: 4px 8px; flex-wrap: wrap; margin-top: 4px; padding: 0; list-style: none; }
-.plan-related-list button { padding: 2px 6px; min-height: 24px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--accent); font-size: 11px; cursor: pointer; }
-.plan-related-list button:hover { background: var(--tint); border-color: var(--accent); }
-.plan-inspector ul { margin: 6px 0; padding-left: 18px; }
-.plan-inspector a { overflow-wrap: anywhere; }
-.plan-accessible-list { flex-shrink: 0; max-height: 140px; overflow: auto; color: var(--muted); }
-.plan-accessible-list summary { cursor: pointer; font-size: 11px; }
-.plan-accessible-list table { width: 100%; border-collapse: collapse; }
-.plan-accessible-list :is(th,td) { padding: 6px; border-bottom: 1px solid var(--line); text-align: left; font-weight: 400; }
 .plan-empty { display: grid; place-content: center; flex: 1; text-align: center; color: var(--muted); padding: 24px; }
 .plan-warning { margin: 0; padding: 6px 8px; border-radius: 6px; color: var(--warn); background: var(--soft); font-size: 11px; }
 @media (prefers-reduced-motion: no-preference) {
@@ -973,7 +960,6 @@ h2, h3, strong { font-weight: 500; }
   .toolbar-primary { justify-content: space-between; }
   .plan-view { min-height: 300px; }
   .plan-canvas { min-height: 120px; }
-  .plan-inspector { max-height: 96px; }
 }
 @media (max-width: 540px) {
   .board-location .brand, .board-location .header-divider { display: none; }
@@ -983,7 +969,6 @@ h2, h3, strong { font-weight: 500; }
   .board-header #board-search { display: none; }
   .board-header .header-spacer { display: none; }
   .board-summary { padding-bottom: 4px; }
-  .plan-inspector { max-height: 96px; padding: 6px 8px; }
 }
 
 /* Calendar geometry is shared by table rows, bars and dependency ports. */
@@ -1050,9 +1035,6 @@ h2, h3, strong { font-weight: 500; }
 .card-filter-context { display: none; font-size: 10px; color: var(--muted); padding: 2px 0; }
 .task-card[data-filter-context=true] .card-filter-context { display: block; }
 .task-card[data-filter-context=true] { border-style: dashed; }
-.plan-reference { background: transparent; border: 0; padding: 0; color: var(--accent); font: inherit; cursor: pointer; text-align: left; }
-.plan-reference:hover { text-decoration: underline; }
-.plan-reference:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* Design is a working canvas; execution filters remain with the planning views. */
 .dashboard-shell[data-board-view=design] :is(#board-toolbar,#board-search,.board-summary,#board-context,.board-footer,#board-dispatch-guidance) { display: none; }
 .dashboard-shell[data-board-view=design] .board-content { padding-top: 16px; }

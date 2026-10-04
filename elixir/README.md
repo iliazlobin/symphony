@@ -343,7 +343,7 @@ The observability UI now runs on a minimal Phoenix stack:
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
 The chat panel stays open. Select a task card to open its dedicated conversation;
-closing task details keeps that conversation selected. **Project name · Project agent** in the issue picker returns to the
+closing task details keeps that conversation selected. **Project** in the issue picker returns to the
 project conversation for reports and task creation, updates or cancellation.
 The headline picker searches issue numbers, titles, categories and recent activity.
 Issues appear in Work, Ready for review, Needs attention, Backlog and Done
@@ -368,6 +368,7 @@ conversation. These bindings survive reconnects and restarts; prior free-standin
 remain available at `/chat`. Drafts and response queues stay separate when switching sessions.
 The board chat shows messages and actions directly, without a tab bar; the issue card
 shows task details and links to each PR conversation.
+Chat opens the latest 30 messages; **Show earlier** reveals older messages without changing stored history or agent context.
 The full-page chat list retains search, pins and ordering for saved conversations.
 At `/chat`, **Chat**, **Context**,
 **Outputs** and **Sources** organize the same durable conversation. Context separates
@@ -743,7 +744,8 @@ Cards show at most three PRs; **… +N** opens task details with the complete li
 Details retain their scroll position during refresh and return to the top when you open another issue. Focus a card and
 press Enter or Space to select it. Selection survives reload and browser navigation;
 dragging still moves or reorders cards. Card details and Settings open as native dialogs
-with Escape dismissal. Task details also close on an outside click; Settings retains its Close button. Settings has
+with a fixed title and close header; only their body scrolls. Escape dismisses either dialog.
+Task details also close on an outside click. Settings has
 three sections: **Execution** for native controls, concurrency and read-only budgets;
 **AI & chat** for context behavior and read-only model presets;
 and **Connections** for tracker/controller/chat storage status and operator login.
@@ -858,9 +860,15 @@ existing Notion record. The Events Concierge example remains illustrative.
 Kanban / Graph / Gantt share filters,
 selected task and retained Work chat. Card `↑` / `↓` counts open the focused dependency
 graph; **Show on board** returns to Kanban. Graph supports background drag, wheel/pinch
-zoom, **Fit**, **Center selected**, keyboard controls and an expandable text equivalent.
+zoom, **Fit**, **Center selected** and keyboard controls.
 Graph shows task dependencies only. Waiting is task status; malformed declarations
 and unavailable evidence remain visible beside the affected task.
+Selecting a graph node highlights it immediately without recentering or moving focus.
+Rapid selections keep the latest intent while the server validates and opens the
+conversation; rejected stale selections return to the server's current task. Server
+patches restore the viewport before painting. Only explicit Center selected, view
+navigation and offscreen keyboard focus reveal a node. Selected-task links sit at the
+top right across Kanban, Graph and Gantt. Graph and Gantt omit the duplicate Text view.
 
 Gantt uses a UTC calendar with **Day / Week**, **Today** and **Fit** controls. Solid
 segments show recorded active execution; diamonds show human acceptance. Dashed bars

@@ -6,6 +6,8 @@ defmodule SymphonyElixirWeb.ChatPanel do
   alias SymphonyElixir.ProjectDirectory
   alias SymphonyElixirWeb.{BrowserAuth, ChatNavigation, Endpoint, Markdown}
 
+  @message_page_size 30
+
   @impl true
   def mount(socket) do
     {:ok,
@@ -32,6 +34,8 @@ defmodule SymphonyElixirWeb.ChatPanel do
        chats: [],
        list_error: nil,
        chat: nil,
+       message_limit: @message_page_size,
+       history_page: 0,
        subscribed: nil,
        project_subscribed: nil,
        draft: "",
@@ -251,6 +255,27 @@ defmodule SymphonyElixirWeb.ChatPanel do
     {:noreply, if(matching_conversation?(socket, params), do: assign(socket, :draft, String.slice(text, 0, 16_000)), else: socket)}
   end
 
+  def handle_event("show-earlier-messages", %{"chat_id" => id}, socket) do
+    cond do
+      not BrowserAuth.authorized?(socket.assigns.auth) ->
+        {:noreply, show_error(socket, :unauthorized)}
+
+      is_nil(socket.assigns.unavailable) and id == chat_id(socket) and is_binary(id) ->
+        total = length(visible_messages(socket.assigns.chat, socket.assigns.design_mode))
+
+        {:noreply,
+         assign(socket,
+           message_limit: max(@message_page_size, min(socket.assigns.message_limit + @message_page_size, total)),
+           history_page: socket.assigns.history_page + 1
+         )}
+
+      true ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("show-earlier-messages", _params, socket), do: {:noreply, socket}
+
   def handle_event("send-message", %{"message" => text} = params, socket) do
     text = String.trim(text)
 
@@ -382,6 +407,12 @@ defmodule SymphonyElixirWeb.ChatPanel do
     end
   end
 
+  # Embedded task changes retain the current project's metadata. Loading the
+  # selected conversation still checks current store authorization and binding.
+  defp load_location(%{assigns: %{embedded: true, initialized: true, project: %{"id" => id}}} = socket, %{"project" => id}) do
+    load_canonical(socket)
+  end
+
   defp load_location(socket, params) do
     case call(socket, :projects, []) do
       {:ok, projects} ->
@@ -459,8 +490,22 @@ defmodule SymphonyElixirWeb.ChatPanel do
   end
 
   defp put_chat(socket, chat) do
+    socket =
+      if chat_id(socket) == chat["id"] do
+        assign(socket, :message_limit, retained_message_limit(socket.assigns, chat))
+      else
+        assign(socket, message_limit: @message_page_size, history_page: 0)
+      end
+
     socket = subscribe(socket, chat["id"])
     assign(socket, :chat, chat)
+  end
+
+  defp retained_message_limit(assigns, chat) do
+    previous = assigns.chat |> visible_messages(assigns.design_mode) |> Enum.take(-assigns.message_limit) |> List.first()
+    messages = visible_messages(chat, assigns.design_mode)
+    index = previous && Enum.find_index(messages, &(&1["id"] == previous["id"]))
+    if is_integer(index), do: max(@message_page_size, length(messages) - index), else: assigns.message_limit
   end
 
   defp clear_conversation(socket, keep_project \\ false) do
@@ -468,7 +513,16 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
     socket
     |> subscribe(nil)
-    |> assign(chat: nil, chats: [], list_error: nil, draft: "", thread_query: "", conversation_drafts: %{})
+    |> assign(
+      chat: nil,
+      chats: [],
+      list_error: nil,
+      draft: "",
+      thread_query: "",
+      conversation_drafts: %{},
+      message_limit: @message_page_size,
+      history_page: 0
+    )
     |> assign(:pr_query, "")
     |> assign(client_id: nonce(), session_tab: "chat", workspace_view: "list")
   end
@@ -873,6 +927,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
     sessions = Sessions.options(issue, [assigns.session_id | retained])
     selected_session = selected_session(sessions, assigns.session_id, assigns.chat)
     task_name = task_agent_name(issue, assigns.task_id, assigns.task_title)
+    messages = visible_messages(assigns.chat, assigns.design_mode)
 
     assigns =
       assign(assigns,
@@ -880,7 +935,8 @@ defmodule SymphonyElixirWeb.ChatPanel do
         task_agent_name: task_name,
         agent: current_agent(assigns, selected_session, issue, task_name),
         agent_progress: agent_progress(assigns.chat),
-        visible_messages: visible_messages(assigns.chat, assigns.design_mode),
+        visible_messages: Enum.take(messages, -assigns.message_limit),
+        earlier_messages: max(length(messages) - assigns.message_limit, 0),
         project_agent_title: project_agent_title(assigns.project),
         issue_groups: ChatNavigation.issues(assigns.issue_tasks, assigns.issue_activity, project, assigns.issue_query),
         issue_sessions: matching_sessions(sessions, assigns.pr_query),
@@ -1063,7 +1119,8 @@ defmodule SymphonyElixirWeb.ChatPanel do
               </div>
             </div>
 
-            <div id="chat-messages" class="chat-messages" aria-live="off">
+            <div id="chat-messages" class="chat-messages" aria-live="off" data-history-page={@history_page}>
+              <button :if={@earlier_messages > 0} id="show-earlier-messages" type="button" class="button button-quiet chat-history-more" phx-target={@myself} phx-click="show-earlier-messages" phx-value-chat_id={@chat["id"]}>Show earlier <span class="muted">({@earlier_messages})</span></button>
               <article :for={message <- @visible_messages} id={"message-#{message["id"]}"} class={"chat-message chat-message-#{message_style(message)}"}>
                 <div class="message-meta"><.message_author message={message} agent={@agent} /><span :if={message_kind(message)} class="message-kind">{message_kind(message)}</span><.message_timestamp value={message["created_at"]} label={message_time_label(message)} class="message-time" /><span :if={message["status"] == "streaming"} class="streaming-mark">Responding</span><span :if={message["role"] == "assistant" && message["status"] in ["interrupted", "error"]} class="message-outcome">{if message["status"] == "interrupted", do: "Stopped", else: "Failed"}</span></div>
                 <div :if={String.trim(text(message["text"])) != "" && message["role"] == "user"} class="message-text">{text(message["text"])}</div>

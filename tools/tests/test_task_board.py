@@ -161,16 +161,20 @@ function button(id) {
     focus(){document.activeElement=this;}};
 }
 const title=button("task-title"), graph=button("workflow-graph-button"), close=button("close-dialog");
+let scroller={scrollTop:0};
 document={activeElement:title,body:{style:{overflow:""}},documentElement:{},
   addEventListener:(event,handler)=>listeners.set(event,handler),querySelectorAll:()=>[],
   getElementById:id=>id === graph.id ? graph : null};
 const dialog={dataset:{nonmodal:"true",contentKey:"task:1"},open:false,scrollTop:0,
-  addEventListener(){},querySelector:()=>close,contains:target=>target === close,
+  addEventListener(){},querySelector:selector=>selector === "[data-dialog-scroll]" ? scroller : close,contains:target=>target === close,
   show(){this.open=true;},showModal(){this.open=true;close.focus();},close(){this.open=false;}};
 const sandbox={window:{},document,AbortController,queueMicrotask:fn=>fn()};
 vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),sandbox);
 const hook={...sandbox.window.SymphonyHooks.BoardDialog,el:dialog,pushEvent:event=>commands.push(event)};
 hook.mounted();
+// Live refresh keeps the body's position even when its DOM node is replaced.
+scroller.scrollTop=240;hook.beforeUpdate();scroller={scrollTop:0};hook.updated();
+assert.equal(scroller.scrollTop,240);assert.equal(dialog.scrollTop,0);
 listeners.get("click")({target:graph});
 assert.deepEqual(commands,[]);
 document.activeElement=graph;hook.beforeUpdate();
@@ -178,6 +182,11 @@ dialog.dataset.nonmodal="false";dialog.dataset.contentKey="graph";hook.updated()
 assert.equal(hook.previous,graph);
 assert.equal(hook.nonmodal,false);
 assert.equal(document.activeElement,close);
+assert.equal(scroller.scrollTop,0);
+// Legacy hook consumers without a body scroller retain their dialog scroll contract.
+dialog.querySelector=selector=>selector === "[data-dialog-scroll]" ? null : close;
+dialog.scrollTop=80;hook.beforeUpdate();dialog.scrollTop=0;hook.updated();
+assert.equal(dialog.scrollTop,80);
 hook.destroyed();
 assert.equal(document.activeElement,graph);
 assert.equal(document.body.style.overflow,"");

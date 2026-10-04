@@ -1224,6 +1224,96 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert {:ok, ^chat} = FixtureStore.get("alpha", "a1", nil)
   end
 
+  test "long chat opens recent messages and reveals every earlier action without changing retained history", ctx do
+    {:ok, original} = FixtureStore.get("alpha", "a1", nil)
+    history = for n <- 1..95, do: history_message(n)
+    proposal = %{"type" => "proposal", "id" => "older-action", "title" => "Earlier action", "status" => "pending"}
+    history = List.update_at(history, 0, &Map.put(&1, "widgets", [proposal]))
+    FixtureStore.put(Map.put(original, "messages", history))
+    {view, _} = chat_view(ctx, "/chat?project=alpha&chat=a1")
+    assert message_count(view) == 30
+    refute has_element?(view, "#message-history-65")
+    assert has_element?(view, "#message-history-66")
+    assert has_element?(view, "#message-history-95")
+    assert has_element?(view, "#show-earlier-messages", "65")
+
+    render_click(view, "show-earlier-messages", %{"chat_id" => "other"})
+    render_click(view, "show-earlier-messages", %{})
+    assert message_count(view) == 30
+
+    for {count, remaining} <- [{60, 35}, {90, 5}, {95, 0}] do
+      view |> element("#show-earlier-messages") |> render_click()
+      assert message_count(view) == count
+      if remaining > 0, do: assert(has_element?(view, "#show-earlier-messages", to_string(remaining)))
+    end
+
+    refute has_element?(view, "#show-earlier-messages")
+    assert has_element?(view, "#message-history-1 button[phx-value-decision=confirm][phx-value-id=older-action]")
+    assert {:ok, %{"messages" => ^history}} = FixtureStore.get("alpha", "a1", nil)
+
+    view |> element("#message-history-1 button[phx-value-decision=cancel]") |> render_click()
+    assert {:ok, updated} = FixtureStore.get("alpha", "a1", nil)
+    assert hd(updated["messages"])["widgets"] == [Map.put(proposal, "status", "cancelled")]
+  end
+
+  test "same-chat updates retain the visible history boundary and live controls while conversation changes reset it", ctx do
+    {:ok, original} = FixtureStore.get("alpha", "a1", nil)
+    history = for n <- 1..80, do: history_message(n)
+    original = Map.put(original, "messages", history)
+    FixtureStore.put(original)
+    FixtureStore.put(original |> Map.put("id", "task-7") |> Map.put("conversation_role", "task") |> Map.put("task_id", "alpha:7"))
+    view = embedded_view(ctx, view_context())
+    view |> element("#show-earlier-messages") |> render_click()
+    assert message_count(view) == 60
+    assert has_element?(view, "#message-history-21")
+
+    latest = history_message(81) |> Map.put("status", "streaming")
+    queued = %{"id" => "queued-history", "role" => "user", "text" => "Next instruction"}
+    updated = original |> Map.put("messages", history ++ [latest]) |> Map.put("status", "running") |> Map.put("queue", [queued])
+    FixtureStore.put(updated)
+    assert eventually(fn -> has_element?(view, "#message-history-81 .streaming-mark", "Responding") end)
+    assert message_count(view) == 61
+    assert has_element?(view, "#message-history-21")
+    assert has_element?(view, "#stop-response-button")
+    assert has_element?(view, "#queued-queued-history", "Next instruction")
+    assert {:ok, ^updated} = FixtureStore.get("alpha", "a1", nil)
+
+    send(view.pid, {:task, "alpha:7", "Task seven"})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-chat-id=task-7]") end)
+    assert message_count(view) == 30
+    refute has_element?(view, "#message-history-21")
+    send(view.pid, {:chat_panel, :main})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-chat-id=a1]") end)
+    assert message_count(view) == 30
+    assert has_element?(view, "#message-history-52")
+    refute has_element?(view, "#message-history-51")
+  end
+
+  test "design history is paginated after operational messages are filtered and rejects expired access", ctx do
+    {:ok, original} = FixtureStore.get("alpha", "a1", nil)
+    context = %{"version" => 1, "project_id" => "alpha", "mode" => "design"}
+    history = for n <- 1..90, do: history_message(n) |> Map.put("view_context", if(rem(n, 2) == 0, do: context, else: view_context()))
+    FixtureStore.put(Map.put(original, "messages", history))
+    view = embedded_view(ctx, view_context())
+    send(view.pid, {:design_mode, true})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-design-mode=true]") end)
+    assert message_count(view) == 30
+    assert has_element?(view, "#message-history-32")
+    refute has_element?(view, "#message-history-31")
+    refute has_element?(view, "#message-history-30")
+    assert has_element?(view, "#show-earlier-messages", "15")
+    view |> element("#show-earlier-messages") |> render_click()
+    assert message_count(view) == 45
+    assert has_element?(view, "#message-history-2")
+    refute has_element?(view, "#message-history-1")
+    refute has_element?(view, "#show-earlier-messages")
+
+    System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("revoked", 8))
+    render_click(view, "show-earlier-messages", %{"chat_id" => "a1"})
+    refute has_element?(view, "#chat-messages")
+    assert {:ok, %{"messages" => ^history}} = FixtureStore.get("alpha", "a1", nil)
+  end
+
   defp embedded_view(ctx, context, read_only \\ false) do
     session = %{BrowserAuth.session_key() => ctx.marker, "view_context" => context, "read_only" => read_only}
     {:ok, view, _html} = live_isolated(local_conn(), EmbeddedHost, session: session)
@@ -1269,6 +1359,9 @@ defmodule SymphonyElixir.ChatLiveTest do
     {:ok, view, html} = live(conn, path)
     {with_target(view, "#chat-app"), html}
   end
+
+  defp history_message(n), do: %{"id" => "history-#{n}", "role" => "assistant", "text" => "Message #{n}", "status" => "completed", "widgets" => []}
+  defp message_count(view), do: length(Regex.scan(~r/<article[^>]+class="chat-message /, render(view)))
 
   defp chat(id, project, title) do
     %{
