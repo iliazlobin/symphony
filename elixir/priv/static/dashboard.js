@@ -828,6 +828,14 @@
       this.selectionRequest = null;
       this.pointerFocus = false;
       this.selectionClock = () => typeof performance === "object" ? performance.now() : Date.now();
+      // LiveView replaces client-only attributes; retain the latest sample on the hook.
+      this.selectionTiming = null;
+      this.paintSelectionTiming = () => {
+        for (const [attribute, value] of [["selectionFeedbackMs", this.selectionTiming?.feedbackMs], ["selectionSettledMs", this.selectionTiming?.settledMs]]) {
+          if (value == null) delete this.el.dataset[attribute];
+          else this.el.dataset[attribute] = value;
+        }
+      };
       const cancelQueuedSelection = () => { this.pendingSelection = null; };
       window.addEventListener?.("popstate", cancelQueuedSelection, {signal: this.abort.signal});
       if (typeof document === "object") {
@@ -882,7 +890,8 @@
           this.selectionRequest = null;
           if (this.pendingSelection !== request) { this.sendSelection(); return; }
           this.pendingSelection = null;
-          this.el.dataset.selectionSettledMs = (this.selectionClock() - request.started).toFixed(1);
+          request.timing.settledMs = (this.selectionClock() - request.started).toFixed(1);
+          this.paintSelectionTiming();
           this.paintSelection(reply?.selected_task_id ?? this.el.dataset.selectedTaskId);
         });
       };
@@ -966,10 +975,15 @@
           if (!id || !this.pushEvent) return;
           event.preventDefault(); event.stopPropagation();
           const started = this.selectionClock();
-          this.pendingSelection = {id, started};
+          const timing = {feedbackMs: null, settledMs: null};
+          this.selectionTiming = timing; this.paintSelectionTiming();
+          this.pendingSelection = {id, started, timing};
           this.paintSelection(id);
           requestAnimationFrame(() => {
-            if (!this.abort.signal.aborted) this.el.dataset.selectionFeedbackMs = (this.selectionClock() - started).toFixed(1);
+            if (!this.abort.signal.aborted && this.selectionTiming === timing) {
+              timing.feedbackMs = (this.selectionClock() - started).toFixed(1);
+              this.paintSelectionTiming();
+            }
           });
           this.sendSelection(); return;
         }
@@ -1100,6 +1114,7 @@
       this.selectedId = this.el.dataset.selectedId;
       if (this.scope !== this.el.dataset.canvasScope) {
         this.pendingSelection = null; this.selectionRequest = null;
+        this.selectionTiming = null;
         this.scope = this.el.dataset.canvasScope; this.cameras.clear(); this.mode = this.el.dataset.planMode || "dependencies";
         this.scrollPosition = null;
         if (this.mode === "timeline") this.loadCalendar();
@@ -1107,6 +1122,7 @@
       // Restore the viewBox and local intent before the browser paints a server patch.
       this.showMode();
       if (this.pendingSelection) this.paintSelection(this.pendingSelection.id);
+      this.paintSelectionTiming();
       requestAnimationFrame(() => {
         const scroll = this.el.querySelector(".plan-gantt-scroll");
         if (scroll && this.scrollPosition) { scroll.scrollLeft = this.scrollPosition.left; scroll.scrollTop = this.scrollPosition.top; }

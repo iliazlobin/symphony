@@ -119,6 +119,25 @@ click("issue:90");click("issue:100");globalEvents.get("popstate")();replies.shif
 // A newer graph click survives an older external navigation patch still in flight.
 click("issue:40");el.dataset.selectedTaskId="issue:110";hook.updated();assert.equal(nodes[40].dataset.selected,"true");
 replies.shift()({selected_task_id:"issue:40"});assert.equal(replies.length,0);
+// LiveView removes attributes absent from its template, including after a reply.
+while(frames.length)frames.shift()();
+const feedback=el.dataset.selectionFeedbackMs,settled=el.dataset.selectionSettledMs;
+assert(Number.isFinite(Number(feedback)));assert(Number.isFinite(Number(settled)));
+hook.beforeUpdate();delete el.dataset.selectionFeedbackMs;delete el.dataset.selectionSettledMs;hook.updated();
+assert.equal(el.dataset.selectionFeedbackMs,feedback);assert.equal(el.dataset.selectionSettledMs,settled);
+while(frames.length)frames.shift()();
+// A new click clears the previous sample; a superseded RAF cannot republish it.
+click("issue:45");click("issue:46");
+assert.equal(el.dataset.selectionFeedbackMs,undefined);assert.equal(el.dataset.selectionSettledMs,undefined);
+frames.shift()();assert.equal(el.dataset.selectionFeedbackMs,undefined);
+frames.shift()();assert(Number.isFinite(Number(el.dataset.selectionFeedbackMs)));
+replies.shift()({selected_task_id:"issue:45"});replies.shift()({selected_task_id:"issue:46"});
+assert(Number.isFinite(Number(el.dataset.selectionSettledMs)));
+// Scope changes clear the sample and ignore both old frame and reply callbacks.
+click("issue:47");hook.beforeUpdate();el.dataset.canvasScope="other";
+delete el.dataset.selectionFeedbackMs;delete el.dataset.selectionSettledMs;hook.updated();
+while(frames.length)frames.shift()();replies.shift()({selected_task_id:"issue:47"});
+assert.equal(el.dataset.selectionFeedbackMs,undefined);assert.equal(el.dataset.selectionSettledMs,undefined);
 click("issue:50");hook.destroyed();replies.shift()({selected_task_id:"issue:30"});assert.equal(nodes[50].dataset.selected,"true");
 ''')
 
