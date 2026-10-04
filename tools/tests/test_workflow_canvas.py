@@ -141,6 +141,56 @@ assert.equal(el.dataset.selectionFeedbackMs,undefined);assert.equal(el.dataset.s
 click("issue:50");hook.destroyed();replies.shift()({selected_task_id:"issue:30"});assert.equal(nodes[50].dataset.selected,"true");
 ''')
 
+    def test_graph_patch_retains_only_original_control_focus_without_revealing_or_stealing_it(self):
+        self.run_hook(r'''
+const assert=require("node:assert/strict"),fs=require("node:fs"),vm=require("node:vm"),plain=x=>JSON.parse(JSON.stringify(x));
+const listeners=new Map(),focusCalls=[],body={},html={},document={body,documentElement:html,activeElement:body,addEventListener(){}};
+function node(id){
+ const n={dataset:{nodeId:"task:"+id,planTaskId:"issue:"+id,nodeX:"44",nodeY:"44",nodeWidth:"260",nodeHeight:"116"},
+  getBoundingClientRect:()=>({left:-500,right:-240,top:44,bottom:160})};
+ n.controls=["select","title"].map(kind=>({isConnected:true,action:kind==="select"?"select-plan-task":"open-card",
+  closest:s=>s==="[data-plan-node]"?n:null,matches:s=>s==="button.plan-node-select, button.plan-node-title",
+  getAttribute(){return this.action;},focus(options){focusCalls.push({control:this,options:plain(options)});document.activeElement=this;listeners.get("focusin")({target:this});}}));
+ n.querySelector=s=>s===".plan-node-select"?n.controls[0]:s===".plan-node-title"?n.controls[1]:null;
+ return n;
+}
+const nodes=[19,25,21,24].map(node),target=nodes[3];
+const svg={dataset:{contentWidth:"1284",contentHeight:"600"},attrs:{},setAttribute(k,v){this.attrs[k]=v;},querySelector:()=>null,querySelectorAll:s=>s==="[data-plan-node]"?nodes:[]};
+const canvas={getBoundingClientRect:()=>({left:0,top:0,right:1000,bottom:600,width:1000,height:600}),querySelector:()=>svg};
+const el={dataset:{canvasScope:"p",planMode:"dependencies"},addEventListener:(n,f)=>listeners.set(n,f),dispatchEvent(){},
+ contains:c=>c.isConnected&&nodes.includes(c.closest?.("[data-plan-node]")),querySelector:s=>s.includes("data-plan-panel")?canvas:null,
+ querySelectorAll:s=>s==="[data-plan-panel]"?[{dataset:{planPanel:"dependencies"}}]:[]};
+const sandbox={document,window:{},AbortController,CustomEvent:class{},requestAnimationFrame:fn=>fn()};
+vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),sandbox);
+const hook={...sandbox.window.SymphonyHooks.WorkflowCanvas,el};hook.mounted();const camera=plain(hook.camera()),viewBox=svg.attrs.viewBox;
+// Native reinsertion retains the element but drops focus during filtered 4→7 context expansion.
+for(const [i,fallback] of [body,html].entries()){
+ const control=target.controls[i];document.activeElement=control;hook.beforeUpdate();
+ if(!i)nodes.push(...[20,22,23].map(node));document.activeElement=fallback;svg.attrs.viewBox="0 0 1284 600";hook.updated();
+ assert.equal(document.activeElement,control);assert.deepEqual(focusCalls.at(-1),{control,options:{preventScroll:true}});
+ assert.deepEqual(plain(hook.camera()),camera);assert.equal(svg.attrs.viewBox,viewBox);assert.equal(hook.restoringPatchFocus,false);
+ const count=focusCalls.length;hook.updated();assert.equal(focusCalls.length,count); // A later patch cannot replay old focus.
+}
+const patch=(mutate)=>{document.activeElement=target.controls[0];hook.beforeUpdate();const count=focusCalls.length;mutate();hook.updated();assert.equal(focusCalls.length,count);};
+// Retained focus and newer user focus on inputs/navigation/viewport tools need no restoration.
+patch(()=>{});
+for(const active of [{tagName:"INPUT"},{tagName:"A"},{tagName:"BUTTON"}]){
+ patch(()=>document.activeElement=active);assert.equal(document.activeElement,active);
+}
+// Replacement, removal, or changed node/action identity must never focus a substitute control.
+patch(()=>{target.controls[0].isConnected=false;nodes.splice(nodes.indexOf(target),1,node(24));document.activeElement=body;});
+nodes.splice(nodes.findIndex(n=>n.dataset.nodeId==="task:24"),1,target);target.controls[0].isConnected=true;
+patch(()=>{target.dataset.planTaskId="issue:other";document.activeElement=body;});target.dataset.planTaskId="issue:24";
+patch(()=>{target.controls[0].action="other";document.activeElement=body;});target.controls[0].action="select-plan-task";
+patch(()=>{nodes.splice(nodes.indexOf(target),1);document.activeElement=body;});nodes.push(target);
+patch(()=>{el.dataset.canvasScope="other";document.activeElement=body;});assert.equal(document.activeElement,body);
+// No control was focused before these patches: background and another canvas are left alone.
+for(const active of [body,{isConnected:true,closest:()=>node(999),matches:()=>true}]){
+ document.activeElement=active;hook.beforeUpdate();const count=focusCalls.length;document.activeElement=body;hook.updated();assert.equal(focusCalls.length,count);
+}
+hook.destroyed();
+''')
+
     def test_sequence_refresh_preserves_scroll_and_view_switch_focuses_selected_task(self):
         self.run_hook(r'''
 const assert=require("node:assert/strict"),fs=require("node:fs"),vm=require("node:vm"),events=new Map();let scrolled=0,focused=0;

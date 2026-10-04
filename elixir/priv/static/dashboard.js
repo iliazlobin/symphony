@@ -1028,7 +1028,7 @@
         this.saveCalendar(); this.pushCalendar();
       });
       on("focusin", event => {
-        if (this.pointerFocus) return;
+        if (this.pointerFocus || this.restoringPatchFocus) return;
         const node = event.target.closest("[data-plan-node]"), canvas = this.canvas();
         if (!node || !canvas) return;
         const rect = node.getBoundingClientRect(), bounds = canvas.getBoundingClientRect();
@@ -1109,8 +1109,18 @@
     beforeUpdate() {
       const scroll = this.el.querySelector(".plan-gantt-scroll");
       this.scrollPosition = scroll ? {left: scroll.scrollLeft, top: scroll.scrollTop} : null;
+      this.patchFocus = null;
+      const control = typeof document === "object" ? document.activeElement : null;
+      const node = control?.closest?.("[data-plan-node]");
+      if (this.mode === "dependencies" && node && this.el.contains(control)
+          && control.matches("button.plan-node-select, button.plan-node-title")) {
+        this.patchFocus = {control, node, scope: this.scope, nodeId: node.dataset.nodeId,
+          taskId: node.dataset.planTaskId, action: control.getAttribute("phx-click")};
+      }
     },
     updated() {
+      const focus = this.patchFocus;
+      this.patchFocus = null;
       this.selectedId = this.el.dataset.selectedId;
       if (this.scope !== this.el.dataset.canvasScope) {
         this.pendingSelection = null; this.selectionRequest = null;
@@ -1123,6 +1133,16 @@
       this.showMode();
       if (this.pendingSelection) this.paintSelection(this.pendingSelection.id);
       this.paintSelectionTiming();
+      // Morphdom can reinsert a keyed SVG group, dropping its button focus to the body.
+      if (focus && focus.scope === this.scope && this.mode === "dependencies"
+          && typeof document === "object" && [document.body, document.documentElement].includes(document.activeElement)
+          && focus.control.isConnected && this.el.contains(focus.control)
+          && focus.control.closest("[data-plan-node]") === focus.node
+          && focus.node.dataset.nodeId === focus.nodeId && focus.node.dataset.planTaskId === focus.taskId
+          && focus.control.getAttribute("phx-click") === focus.action) {
+        this.restoringPatchFocus = true;
+        try { focus.control.focus({preventScroll: true}); } finally { this.restoringPatchFocus = false; }
+      }
       requestAnimationFrame(() => {
         const scroll = this.el.querySelector(".plan-gantt-scroll");
         if (scroll && this.scrollPosition) { scroll.scrollLeft = this.scrollPosition.left; scroll.scrollTop = this.scrollPosition.top; }
