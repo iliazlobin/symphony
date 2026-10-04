@@ -79,6 +79,39 @@ class ApplicationProbeTests(unittest.TestCase):
         self.assertEqual(page.live["id"], "phx-id")
         self.assertEqual(page.live["data-phx-session"], "session")
 
+    def test_design_package_probe_fetches_only_allowlisted_same_origin_assets(self):
+        base = "/design-editor/123456abcdef/"
+        requests = []
+        documents = {
+            base + "editor-ABC123.js": (200, 'import {e} from "./chunks/chunk-ABC.js";'),
+            base + "editor-DEF456.css": (200, 'src:url(./files/Assistant-ABC.woff2)'),
+            base + "chunks/chunk-ABC.js": (200, "export const e = {}"),
+            base + "files/Assistant-ABC.woff2": (200, "font bytes"),
+            base + "manifest.json": (404, "Not Found"),
+        }
+
+        class Browser:
+            def request(self, path):
+                requests.append(path)
+                if path.startswith("/?"):
+                    return 200, ('<section data-design-editor-assets="' + base + '" '
+                                 'data-design-editor-js="' + base + 'editor-ABC123.js" '
+                                 'data-design-editor-css="' + base + 'editor-DEF456.css"></section>')
+                return documents[path]
+
+        PROBE.design_assets(Browser())
+        self.assertIn(base + "chunks/chunk-ABC.js", requests)
+        self.assertIn(base + "files/Assistant-ABC.woff2", requests)
+        documents[base + "chunks/chunk-ABC.js"] = (404, "Not Found")
+        with self.assertRaisesRegex(RuntimeError, "chunk missing"):
+            PROBE.design_assets(Browser())
+
+    def test_design_package_probe_rejects_external_or_unversioned_bootstrap(self):
+        for base in ("https://esm.sh/", "/design-editor/", "/design-editor/123456abcdef/../"):
+            browser = SimpleNamespace(request=lambda _path: (200, '<section data-design-editor-js="external" data-design-editor-assets="' + base + '"></section>'))
+            with self.assertRaisesRegex(RuntimeError, "escaped the package"):
+                PROBE.design_assets(browser)
+
     def test_component_selection_rejects_missing_or_ambiguous_shared_panel(self):
         self.assertEqual(PROBE.chat_component({"rendered": {"c": {"2": {"s": ['<section id="chat-app">']}}}}), 2)
         for components in ({}, {"1": {"s": ["chat-app"]}, "2": {"s": ["chat-app"]}}):

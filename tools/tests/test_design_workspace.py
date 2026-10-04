@@ -9,11 +9,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 FIXTURE = r'''
 const assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
-const stored = new Map(), storage = {readFails: false, writeFails: false}, sent = [];
+const stored = new Map(), storage = {readFails: false, writeFails: false}, sent = [], windowEvents = new Map();
 const clock = {now: 1000, increment: true};
 const plain = value => JSON.parse(JSON.stringify(value));
 const sandbox = {
-  window: {}, AbortController, TextEncoder, Event,
+  window: {addEventListener(name, handler) { windowEvents.set(name, handler); }}, AbortController, TextEncoder, Event, setTimeout, clearTimeout,
   Date: class extends Date { static now() { const value = clock.now; if (clock.increment) clock.now++; return value; } },
   localStorage: {
     getItem(key) { if (storage.readFails) throw Error("private storage"); return stored.get(key) ?? null; },
@@ -95,6 +95,54 @@ class DesignWorkspaceTests(unittest.TestCase):
             capture_output=True, text=True, check=False, timeout=20,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_native_scene_debounce_flush_and_canonical_reload(self):
+        self.run_hook(r'''
+const project = "github:example/events-concierge";
+let doc = {version: 2, project, document_id: "native-test", revision: 0, boards: {}}, canSave = true, changed;
+const editor = {nativeScene: true, validate: value => value?.version === 2,
+ fields: value => ({brief: "Derived from native " + value.revision}),
+ mount(_root, options) {changed = options.onChange; if (options.document) doc = plain(options.document);
+   return {select() {}, document: () => plain(doc), canSave: () => canSave, destroy() {}}; }};
+sandbox.window.SymphonyDesignCanvas = editor;
+let current = mount(project, {visualRoot: true});
+assert.equal(stored.size, 0);
+doc.revision = 1; changed(); doc.revision = 2; changed();
+assert.equal(stored.size, 0); assert(current.hook.saveTimer !== undefined);
+windowEvents.get("pagehide")();
+let saved = JSON.parse(stored.get(key(project)));
+assert.equal(saved.version, 3); assert.equal(saved.canvas.revision, 2); assert(!("fields" in saved));
+const before = stored.get(key(project));
+canSave = false; changed(); current.hook.flush();
+assert.equal(stored.get(key(project)), before); assert.equal(current.hook.saved, false);
+current.hook.ask("Review the drawing"); assert.equal(current.input.value, "");
+assert.equal(current.status.textContent, "Undo or export the unsaved drawing before requesting feedback");
+const blankBefore = current.field("functional").value; current.hook.example();
+assert.equal(current.field("functional").value, blankBefore); assert.equal(stored.get(key(project)), before);
+canSave = true; doc.revision = 3; changed(); current.hook.destroyed();
+assert.equal(JSON.parse(stored.get(key(project))).canvas.revision, 3);
+current = mount(project, {visualRoot: true});
+assert.equal(current.field("brief").value, "Derived from native 3");
+assert.equal(stored.get(key(project)), current.hook.loadedRaw);
+current.hook.destroyed();
+''')
+
+    def test_lazy_editor_failure_and_destroy_keep_saved_draft(self):
+        self.run_hook(r'''
+(async () => {
+const project = "github:example/events-concierge", raw = JSON.stringify({version: 3, project, canvas: {version: 2}});
+stored.set(key(project), raw);
+let resolve, reject, mounted = 0;
+sandbox.window.SymphonyDesignCanvas = {load: () => new Promise((yes, no) => {resolve = yes; reject = no;})};
+const abandoned = mount(project, {visualRoot: true}); abandoned.hook.destroyed();
+resolve({mount() {mounted++;}}); await Promise.resolve();
+assert.equal(mounted, 0); assert.equal(stored.get(key(project)), raw);
+const failed = mount(project, {visualRoot: true}); reject(Error("Chunk unavailable"));
+await Promise.resolve(); await Promise.resolve();
+assert.equal(failed.status.textContent, "Whiteboard unavailable · your saved draft is kept");
+assert.equal(stored.get(key(project)), raw); failed.hook.destroyed();
+})().catch(error => {console.error(error); process.exitCode = 1;});
+''')
 
     def test_project_drafts_reload_sections_and_isolate_unrelated_projects(self):
         self.run_hook(r'''

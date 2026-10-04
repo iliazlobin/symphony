@@ -1,1 +1,3 @@
 test/fixtures/status_dashboard_snapshots/* linguist-generated=true
+priv/static/design-editor/** linguist-generated=true -whitespace
+assets/licenses/** -whitespace

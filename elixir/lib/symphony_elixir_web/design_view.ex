@@ -26,7 +26,7 @@ defmodule SymphonyElixirWeb.DesignView do
       )
 
     ~H"""
-    <section id={@workspace_id} class="design-workspace" phx-hook="DesignWorkspace" phx-update="ignore" data-design-project={@project} aria-label={"#{@label} design workspace"}>
+    <section id={@workspace_id} class="design-workspace" phx-hook="DesignWorkspace" phx-update="ignore" data-design-project={@project} data-design-editor-js={SymphonyElixirWeb.StaticAssets.design_editor_js_url()} data-design-editor-css={SymphonyElixirWeb.StaticAssets.design_editor_css_url()} data-design-editor-assets={SymphonyElixirWeb.StaticAssets.design_editor_asset_path()} aria-label={"#{@label} design workspace"}>
       <header class="design-toolbar">
         <div class="design-title"><h2>Design</h2><span class="design-draft-badge">Working draft</span></div>
         <div class="design-toolbar-meta"><span data-design-storage-label role="status" aria-live="polite">Browser draft</span><a :if={@published_url} href={@published_url} target="_blank" rel="noopener noreferrer">Published design ↗</a></div>
@@ -43,22 +43,9 @@ defmodule SymphonyElixirWeb.DesignView do
         </aside>
         <section id="design-canvas-panel" class="design-editor design-visual-editor" role="tabpanel" aria-labelledby="design-tab-brief">
           <header class="design-panel-heading"><div><h3 data-design-heading>Shape the idea</h3><p data-design-description>Write on the board. Connect ideas when it helps.</p></div><button type="button" class="design-agent-prompt" data-design-prompt="Help me brainstorm a small first version. Ask one useful clarifying question before suggesting components.">Brainstorm ↗</button></header>
-          <div class="design-canvas-tools" role="toolbar" aria-label="Whiteboard tools">
-            <div class="design-canvas-tool-group">
-              <button type="button" data-canvas-tool="select" title="Select and move" aria-label="Select and move" aria-pressed="true"><.tool_icon name="select" /></button>
-              <button type="button" data-canvas-tool="pan" title="Pan" aria-label="Pan" aria-pressed="false"><.tool_icon name="pan" /></button>
-              <button type="button" data-canvas-tool="note" title="Add note" aria-label="Add note" aria-pressed="false"><.tool_icon name="note" /><span>Note</span></button>
-              <button type="button" data-canvas-tool="component" title="Add component" aria-label="Add component" aria-pressed="false"><.tool_icon name="component" /><span>Box</span></button>
-              <button type="button" data-canvas-tool="entity" title="Add entity with fields" aria-label="Add entity" aria-pressed="false"><.tool_icon name="entity" /><span>Entity</span></button>
-              <button type="button" data-canvas-tool="connect" title="Connect two cards" aria-label="Connect two cards" aria-pressed="false"><.tool_icon name="connect" /></button>
-              <button type="button" data-canvas-tool="draw" title="Draw a sketch" aria-label="Draw a sketch" aria-pressed="false"><.tool_icon name="draw" /></button>
-            </div>
-            <div class="design-canvas-tool-group"><button type="button" data-canvas-action="undo" aria-label="Undo" title="Undo">↶</button><button type="button" data-canvas-action="redo" aria-label="Redo" title="Redo">↷</button></div>
-            <div class="design-canvas-tool-group design-canvas-zoom"><button type="button" data-canvas-action="zoom-out" aria-label="Zoom out">−</button><span data-canvas-scale>100%</span><button type="button" data-canvas-action="zoom-in" aria-label="Zoom in">+</button><button type="button" data-canvas-action="fit">Fit</button></div>
-          </div>
-          <div class="design-canvas-body"><div class="design-canvas-stage" data-design-canvas tabindex="0" aria-label="Design whiteboard"><p class="design-canvas-loading">Opening your whiteboard…</p></div><aside class="design-canvas-selection" data-canvas-selection aria-label="Selected object" hidden></aside></div>
-          <div class="design-canvas-suggestions" data-canvas-suggestions aria-live="polite" hidden></div>
-          <footer class="design-canvas-footer"><span data-canvas-status role="status">Choose a tool, then click the board.</span><span>Drag to move · Scroll to pan · Ctrl/⌘ + scroll to zoom</span></footer>
+          <div class="design-canvas-body"><div class="design-canvas-stage" data-design-canvas tabindex="0" aria-label="Design whiteboard"><p class="design-canvas-loading">Opening your whiteboard…</p></div></div>
+          <aside class="design-canvas-suggestions" data-canvas-suggestions aria-live="polite" hidden></aside>
+          <p class="design-canvas-status" data-canvas-status role="status" aria-live="polite"></p>
         </section>
       </div>
       <div class="design-source-fields" hidden aria-hidden="true">
@@ -75,22 +62,6 @@ defmodule SymphonyElixirWeb.DesignView do
   defp section_fields("data"), do: ["entities"]
   defp section_fields("architecture"), do: ["components", "flows"]
   defp section_fields("decisions"), do: ["decisions"]
-
-  attr(:name, :string, required: true)
-
-  defp tool_icon(assigns) do
-    ~H"""
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path :if={@name == "select"} d="M5 3l14 9-7 1-3 7-4-17Z" />
-      <path :if={@name == "pan"} d="M8 12V6a2 2 0 0 1 4 0v6-8a2 2 0 0 1 4 0v8-6a2 2 0 0 1 4 0v9c0 4-3 6-7 6-3 0-5-3-8-7a2 2 0 0 1 3-2l2 2" />
-      <g :if={@name == "note"}><path d="M5 3h14v14l-4 4H5Z" /><path d="M15 21v-4h4M8 8h8M8 12h6" /></g>
-      <rect :if={@name == "component"} x="3" y="5" width="18" height="14" rx="3" />
-      <g :if={@name == "entity"}><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M7 13h2M12 13h5M7 17h2M12 17h5" /></g>
-      <path :if={@name == "connect"} d="M3 6h6v12h12m-5-4 5 4-5 4" />
-      <path :if={@name == "draw"} d="m4 20 4-1L21 6l-3-3L5 16l-1 4Zm11-14 3 3" />
-    </svg>
-    """
-  end
 
   defp workspace_id(project) do
     hash = project |> then(&:crypto.hash(:sha256, &1)) |> Base.encode16(case: :lower) |> String.slice(0, 12)

@@ -838,16 +838,18 @@ Use the [workspace service](../profiles/events-concierge/README.md#workspace-ser
 for one public listener and shared sign-in. Project → Task → Work selectors navigate
 within that origin. **Design / Kanban / Graph / Gantt** sit beside the project selector.
 Design keeps five vertical steps: brief, requirements, data, architecture and decisions.
-Each step has an editable whiteboard with notes, component/entity cards, labelled
-connections and freehand sketches; pan, zoom, Fit and undo keep editing simple. Existing
-text drafts migrate onto note cards without discarding their original browser record.
-Entity fields use plain lines, and relationship labels can include `1 → many`.
+Each step embeds the self-hosted Excalidraw editor: draw shapes and text, connect arrows,
+resize, rotate, pan, zoom and undo. **Entity**, **Component** and **Note** insert editable
+groups for structured feedback. Entity fields use plain lines; relationship labels can
+include `1 → many`. Existing text, cards, arrows and sketches migrate to native scenes;
+the original browser record is preserved before the first save. Each step retains its
+own undo history while open. Images and external embeds are outside this draft format.
 
 **Get feedback** prepares project chat without submitting or replacing an unsent message.
 Structured suggestions open a change preview; **Apply** changes only the browser draft,
 with undo, after checking the project and exact draft revision. New edits invalidate old
 suggestions. Freehand strokes remain editable annotations; model feedback covers the
-structured cards and connections. Notes over 600 characters remain intact; feedback can
+inserted notes, entities, components and connections. Notes over 600 characters remain intact; feedback can
 add a separate note or adjust its title/position. Design turns cannot create tasks,
 delegate, change
 goals or propose execution actions. Each queued turn retains its mode. Operational

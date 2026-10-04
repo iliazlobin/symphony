@@ -48,6 +48,9 @@ defmodule SymphonyElixir.WorkspaceTransportTest do
     assert StaticAssets.dashboard_js_url() =~ "/projects/symphony/dashboard.js"
     assert StaticAssets.favicon_url() =~ "/projects/symphony/favicon.png"
     assert StaticAssets.browser_login_js_url() =~ "/projects/symphony/browser-login.js"
+    assert StaticAssets.design_editor_js_url() =~ "/projects/symphony/design-editor/"
+    assert StaticAssets.design_editor_css_url() =~ "/projects/symphony/design-editor/"
+    assert StaticAssets.design_editor_asset_path() =~ "/projects/symphony/design-editor/"
     assert Endpoint.session_options()[:key] == "_symphony_workspace"
   end
 
@@ -163,6 +166,15 @@ defmodule SymphonyElixir.WorkspaceTransportTest do
     assert is_nil(HttpServer.bound_port())
     assert {:ok, %{status: 200, body: javascript}} = Req.get("http://localhost/dashboard.js", unix_socket: socket_path, headers: [{"host", "localhost:8778"}], retry: false)
     assert javascript =~ "SymphonyHooks"
+
+    editor = StaticAssets.design_editor_js_url() |> WorkspacePath.relative()
+    font = Enum.find(StaticAssets.design_editor_paths(), &String.ends_with?(&1, ".woff2"))
+
+    for path <- [editor, font] do
+      assert {:ok, _type, bytes} = StaticAssets.fetch(path)
+      assert {:ok, %{status: 200, body: ^bytes}} = Req.get("http://localhost" <> path, unix_socket: socket_path, headers: [{"host", "localhost:8778"}], retry: false)
+    end
+
     assert {:ok, %{status: 302, headers: headers}} = Req.get("http://localhost/login", unix_socket: socket_path, headers: [{"host", "localhost:8778"}], retry: false, redirect: false)
     assert headers["location"] == ["/projects/symphony/?panel=settings"]
 

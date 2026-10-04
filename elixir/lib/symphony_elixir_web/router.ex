@@ -30,6 +30,7 @@ defmodule SymphonyElixirWeb.Router do
     get("/vendor/phoenix_html/phoenix_html.js", StaticAssetController, :phoenix_html_js)
     get("/vendor/phoenix/phoenix.js", StaticAssetController, :phoenix_js)
     get("/vendor/phoenix_live_view/phoenix_live_view.js", StaticAssetController, :phoenix_live_view_js)
+    get("/design-editor/*asset", StaticAssetController, :design_editor_asset)
   end
 
   scope "/", SymphonyElixirWeb do

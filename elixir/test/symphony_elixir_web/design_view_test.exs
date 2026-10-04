@@ -25,16 +25,15 @@ defmodule SymphonyElixirWeb.DesignViewTest do
     html = render_component(&DesignView.content/1, project: "iliazlobin/sample")
     assert length(find(html, ".design-source-fields[hidden] textarea[data-design-field]")) == 7
     assert find(html, ".design-editor textarea") == []
-    assert length(find(html, "[data-canvas-tool]")) == 7
-    assert length(find(html, "[data-canvas-action]")) == 5
+    assert find(html, "[data-canvas-tool]") == []
+    assert find(html, "[data-canvas-action]") == []
+    assert [url] = Floki.attribute(find(html, "[data-design-editor-js]"), "data-design-editor-js")
+    assert url =~ "/design-editor/"
+    assert [css] = Floki.attribute(find(html, "[data-design-editor-css]"), "data-design-editor-css")
+    assert css =~ ".css"
     assert length(find(html, "[data-design-feedback]")) == 1
     assert length(find(html, "[data-canvas-suggestions][hidden]")) == 1
     assert find(html, "[phx-click]") == []
-
-    for button <- find(html, "[data-canvas-tool]") do
-      assert [_] = Floki.attribute([button], "aria-label")
-      assert Floki.attribute([button], "type") == ["button"]
-    end
   end
 
   test "the Events Concierge starter is explicitly illustrative and scoped to that project" do
