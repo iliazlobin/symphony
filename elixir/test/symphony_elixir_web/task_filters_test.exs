@@ -24,6 +24,22 @@ defmodule SymphonyElixirWeb.TaskFiltersTest do
     assert TaskFilters.visible_ids(board, %{"status" => "work"}, nil) == [@project <> ":2"]
   end
 
+  test "attention includes exhausted recovery and review but excludes scheduled retries and prerequisite waiting" do
+    control = %{"enabled" => true, "revision" => 1, "settings" => %{"budgets" => %{"max_attempts" => 2, "max_total_tokens" => 100, "max_total_runtime_ms" => 100}}}
+    ledger = %{"attempts" => 2, "tokens" => 10, "runtime_ms" => 10, "active" => nil}
+
+    tasks = [
+      task("retry", %{stage: "ready", runtime: %{status: "retrying"}, ledger: ledger, attention: "Retry scheduled"}),
+      task("wait", %{stage: "ready", ledger: %{ledger | "attempts" => 0}, dependency_error: "Dependencies require human-accepted Done in this project."}),
+      task("exhausted", %{stage: "ready", ledger: ledger}),
+      task("review", %{stage: "review", ledger: ledger, tracker_state: "closed"}),
+      task("done", %{stage: "done", ledger: ledger, attention: "Old failure"})
+    ]
+
+    assert TaskFilters.visible_ids(%{tasks: tasks, control: control}, %{"status" => "attention"}, nil) ==
+             [@project <> ":exhausted", @project <> ":review"]
+  end
+
   test "metadata values use OR within a filter and AND across filters without splitting labels" do
     labels = Jason.encode!(["label:bug, ui", "label:category:performance"])
     assert ids(%{"label" => labels}) == ["1", "5"]

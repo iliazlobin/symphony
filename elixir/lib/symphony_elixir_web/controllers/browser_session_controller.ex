@@ -184,9 +184,27 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
   defp return_to(params) do
     requested = params["return_to"]
     relative = if is_binary(requested), do: SymphonyElixirWeb.WorkspacePath.relative(requested)
-    destination = if relative in ["/chat", "/?assistant=1", "/"], do: relative, else: "/?panel=settings"
+    destination = if relative in ["/chat", "/?assistant=1", "/"] or board_destination?(relative), do: relative, else: "/?panel=settings"
     SymphonyElixirWeb.WorkspacePath.path(destination)
   end
+
+  # Keep scoped operator navigation while accepting only this app's board
+  # entrypoint and its bounded state parameters, never arbitrary local paths.
+  defp board_destination?(value) when is_binary(value) and byte_size(value) <= 20_000 do
+    case URI.parse(value) do
+      %URI{scheme: nil, host: nil, path: "/", fragment: nil, query: query} when is_binary(query) ->
+        fields = ~w(project status priority kind milestone label assignee q sort view task chat_task chat_session panel design_ref design_section design_item design_task)
+        params = URI.decode_query(query)
+
+        Enum.all?(params, fn {key, item} -> key in fields and String.valid?(item) and byte_size(item) <= 2_000 and not Regex.match?(~r/[\x00-\x1f\x7f]/, item) end) and
+          params["view"] in [nil, "design", "graph", "gantt", "kanban"] and params["panel"] in [nil, "settings"]
+
+      _ ->
+        false
+    end
+  end
+
+  defp board_destination?(_value), do: false
 
   @spec delete(Conn.t(), map()) :: Conn.t()
   def delete(conn, _params) do

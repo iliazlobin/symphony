@@ -400,6 +400,17 @@ defmodule SymphonyElixir.GoogleBrowserTest do
     end
   end
 
+  test "Google sign-in completes back to the same board view, filters and task" do
+    destination = "/?" <> URI.encode_query(%{"view" => "design", "project" => "memory:default", "priority" => "P1", "chat_task" => "memory:default:2", "panel" => "settings"})
+    login = get(local_conn(), "/login")
+    started = post(browser_recycle(login), "/auth/google", %{"_csrf_token" => csrf(login), "return_to" => destination})
+    query = URI.decode_query(URI.parse(redirected_to(started)).query)
+    provider(query)
+    completed = get(browser_recycle(started), "/auth/google/callback?" <> URI.encode_query(%{"state" => query["state"], "code" => "fixture"}))
+    assert redirected_to(completed) == destination
+    assert BrowserAuth.authorized?(BrowserAuth.conn_context(completed))
+  end
+
   test "successful callback creates a revocable session without retaining Google tokens" do
     login = get(local_conn(), "/login")
     started = post(browser_recycle(login), "/auth/google", %{"_csrf_token" => csrf(login), "return_to" => "/"})

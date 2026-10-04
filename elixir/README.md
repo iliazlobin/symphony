@@ -846,7 +846,7 @@ the original browser record is preserved before the first save. Each step retain
 own undo history while open. Images and external embeds are outside this draft format.
 
 **Get feedback** prepares project chat without submitting or replacing an unsent message.
-Structured suggestions open a change preview; **Apply** changes only the browser draft,
+Structured suggestions open a change preview; **Apply** changes the working draft,
 with undo, after checking the project and exact draft revision. New edits invalidate old
 suggestions. Freehand strokes remain editable annotations; model feedback covers the
 inserted notes, entities, components and connections. Notes over 600 characters remain intact; feedback can
@@ -855,12 +855,40 @@ delegate, change
 goals or propose execution actions. Each queued turn retains its mode. Operational
 history remains in planning views, and project switching retains Design.
 
-Draft edits autosave per project in this browser. Storage failures and concurrent-tab
-changes are reported rather than overwriting another draft. Drafts are not shared or
-independently backed up and do not publish to Notion. **Published design** opens the
-existing Notion record. The Events Concierge example remains illustrative.
+**Outline** lists tagged native items and edits the same text shown on the board; it is
+not a second model. **Review changes** compares the draft with its previous reviewed
+version. Marking a design reviewed stores an immutable source; it neither accepts a task
+nor starts work. Keep editing the next draft. **Prepare task** opens the existing Backlog
+preview from an unchanged reviewed item. This is a Backlog starting point: inspect the
+excerpt before creating it, and refine its outcome/verification before admission.
+Its **Design source** link reopens the retained version with a return link to the
+task. A cancelled preview can be explicitly prepared again; an uncertain or completed
+submission reuses its durable intent.
+
+Draft edits autosave to the configured project's private journal at
+`<chat.state_path>/design/journal.json`. One supervised owner holds `.owner.lock`;
+every read/write checks fresh browser authority, the configuration scope and the exact
+durable revision. Each scene is bounded to 4 MB and 500 native elements per step; the
+journal has a 32 MB capacity, preserving reviewed history when full. Restart retains
+both the draft and all reviewed sources. Project storage is local to this workspace,
+not cross-machine storage or independent backup. Include the Design directory in private
+state backups; retain its ownership and file permissions during recovery.
+
+Browser storage keeps a recovery copy. An existing browser draft requires explicit
+import; a different saved project draft can be opened while preserving the browser
+original. Concurrent or unconfirmed saves stop instead of overwriting or retrying.
+Review and task preparation require the currently visible drawing to be saved.
+No operation publishes to Notion automatically. **Published design** opens the existing
+Notion record. The Events Concierge example remains illustrative.
 Kanban / Graph / Gantt share filters,
-selected task and retained Work chat. Card `↑` / `↓` counts open the focused dependency
+selected task and retained Work chat. Selected-task context shows the current execution,
+next safe action and readiness; the task Details panel retains limits and evidence.
+Agent replies are separate from coding execution: **Stop reply** cancels the management
+turn only. Blocked work takes precedence over an active management reply in attention
+filters. Passive dependency or capacity waits do not create another attention alert.
+**Retry cycle** previews the configured attempt bound, retains lifetime tokens/runtime,
+and forwards the exact native command ID and revision on uncertain replay. It cannot
+release other holds, bypass dependencies or change total budgets. Card `↑` / `↓` counts open the focused dependency
 graph; **Show on board** returns to Kanban. Graph supports background drag, wheel/pinch
 zoom, **Fit**, **Center selected** and keyboard controls.
 Graph shows task dependencies only. Waiting is task status; malformed declarations

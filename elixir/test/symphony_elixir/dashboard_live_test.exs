@@ -154,6 +154,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     def handle_call({:list, project}, _from, state), do: {:reply, {:ok, Enum.filter(Map.values(state.records), &(&1["project_id"] == project))}, state}
 
     def handle_call({:get, project, id}, _from, state) do
+      send(state.owner, {:intake_read, project, id})
+
       result =
         case state.records[id] do
           %{"project_id" => ^project} = record -> {:ok, record}
@@ -172,7 +174,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
           do: Map.merge(proposal, %{"queue_labels" => ["ready"], "queue_unheld" => true, "task_title" => "Fresh queue task title", "task_description" => "Current scope and acceptance"}),
           else: proposal
 
-      record = %{"id" => id, "project_id" => project, "kind" => "board_action", "title" => args["title"] || "Task", "proposals" => [proposal]}
+      record = state.records[id] || %{"id" => id, "project_id" => project, "kind" => "board_action", "title" => args["title"] || "Task", "proposals" => [proposal]}
       if Endpoint.config(:intake_revoke_on_prepare, false), do: System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("rotated-token", 4))
       {:reply, {:ok, record}, put_in(state, [:records, id], record)}
     end
@@ -208,6 +210,60 @@ defmodule SymphonyElixir.DashboardLiveTest do
       record = Map.put(record, "proposals", [proposal])
       {:reply, {:ok, record}, put_in(state, [:records, id], record)}
     end
+  end
+
+  defmodule FixtureDesign do
+    def read(project, _auth), do: call(:read, project, %{})
+    def save(project, revision, scene, _auth), do: call(:save, project, %{revision: revision, scene: scene})
+    def review(project, revision, _auth), do: call(:review, project, %{revision: revision})
+    def reviewed(project, ref, _auth), do: call(:reviewed, project, %{ref: ref})
+    def source(project, ref, _auth), do: call(:source, project, %{ref: ref})
+
+    defp call(action, project, args) do
+      Agent.get_and_update(Endpoint.config(:design_fixture), fn state ->
+        send(state.owner, {:design_call, action, project, args})
+
+        if project == state.project do
+          operate(action, args, state)
+        else
+          {{:error, :design_project_mismatch}, state}
+        end
+      end)
+    end
+
+    defp operate(action, args, state) when action in [:save, :review] do
+      if args.revision == state.revision do
+        change(action, args, state)
+      else
+        {{:error, :design_revision_conflict}, state}
+      end
+    end
+
+    defp operate(:read, _args, state), do: {{:ok, summary(state)}, state}
+
+    defp operate(action, args, state) when action in [:reviewed, :source] do
+      if state.reviewed["ref"] == args.ref do
+        {{:ok, source_data(action, state)}, state}
+      else
+        {{:error, :design_review_not_found}, state}
+      end
+    end
+
+    defp change(:save, args, state) do
+      state = %{state | draft: args.scene, revision: state.revision + 1}
+      {{:ok, summary(state)}, state}
+    end
+
+    defp change(:review, _args, state) do
+      record = %{"ref" => String.duplicate("a", 64), "document_id" => "fixture-design", "scene" => state.draft}
+      state = %{state | reviewed: record, revision: state.revision + 1}
+      {{:ok, summary(state)}, state}
+    end
+
+    defp source_data(:reviewed, state), do: state.reviewed
+    defp source_data(:source, state), do: %{"draft" => state.draft, "reviewed" => state.reviewed, "storage_revision" => state.revision}
+
+    defp summary(state), do: %{"storage_revision" => state.revision, "draft" => state.draft, "reviewed_ref" => state.reviewed["ref"]}
   end
 
   setup context do
@@ -255,6 +311,9 @@ defmodule SymphonyElixir.DashboardLiveTest do
     :ok = GenServer.call(runtime, {:board, board})
     intake = start_supervised!({IntakeApi, self()})
     threads = start_supervised!({Agent, fn -> %{} end})
+    owner = self()
+    design_state = %{owner: owner, project: "github:example/fixture", revision: 0, draft: nil, reviewed: %{}}
+    design = start_supervised!({Agent, fn -> design_state end}, id: :design_fixture)
     previous_endpoint = Application.get_env(:symphony_elixir, Endpoint, [])
 
     endpoint_config =
@@ -267,6 +326,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
         navigation_fixture_owner: if(context[:navigation_reads], do: self()),
         task_intake: IntakeApi,
         intake_fixture: intake,
+        design_store: FixtureDesign,
+        design_fixture: design,
         snapshot_timeout_ms: 100,
         board_read_only: context[:read_only] || false,
         snapshot_loader: if(context[:snapshot_fixture], do: fn -> %{error: %{code: "fixture_snapshot_unavailable"}} end),
@@ -276,7 +337,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     Application.put_env(:symphony_elixir, Endpoint, endpoint_config)
     start_supervised!({Endpoint, []})
     on_exit(fn -> Application.put_env(:symphony_elixir, Endpoint, previous_endpoint) end)
-    %{runtime: runtime, board: board, threads: threads}
+    %{runtime: runtime, board: board, threads: threads, intake: intake, design: design}
   end
 
   @tag :project_directory
@@ -764,7 +825,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#board-dialog .candidate-review a")
   end
 
-  test "recoverable hold offers retry but exhausted limits explain why another attempt is unavailable", ctx do
+  test "recoverable hold offers retry and an explicit bounded cycle while lifetime limits stay closed", ctx do
     board = execution_board(ctx.board, "2", %{"attempts" => 1, "tokens" => 250_000, "hold" => "interrupted"})
     :ok = GenServer.call(ctx.runtime, {:board, board})
     view = authorized_board_view()
@@ -775,13 +836,103 @@ defmodule SymphonyElixir.DashboardLiveTest do
     exhausted = execution_board(ctx.board, "2", %{"attempts" => 2, "tokens" => 250_000, "hold" => "interrupted"})
     refresh(view, ctx.runtime, exhausted)
     assert has_element?(view, "#board-dialog .execution-summary", "Attempts limit reached")
-    refute has_element?(view, "#board-dialog button[phx-value-action=retry]")
+    assert has_element?(view, "#board-dialog button[phx-value-action=retry][phx-value-renew_attempts=true]", "Retry cycle")
+    refute has_element?(view, "#board-dialog button[phx-value-action=retry]:not([phx-value-renew_attempts])")
 
     tokens = execution_board(ctx.board, "2", %{"attempts" => 1, "tokens" => 1_000_000, "hold" => "token_budget"})
     refresh(view, ctx.runtime, tokens)
     assert has_element?(view, "#board-dialog .execution-summary", "Token limit reached")
     refute has_element?(view, "#board-dialog button[phx-value-action=retry]")
     refute_received {:settings_command, _}
+  end
+
+  test "retry cycle preview confirms the exact bounded renewal and keeps its replay identity", ctx do
+    exhausted = execution_board(ctx.board, "2", %{"attempts" => 2, "tokens" => 250_000, "runtime_ms" => 50, "hold" => "interrupted"})
+    :ok = GenServer.call(ctx.runtime, {:board, exhausted})
+    :sys.replace_state(ctx.runtime, &Map.put(&1, :command_error, :unavailable))
+    view = authorized_board_view()
+    open_task(view, "2")
+    view |> element("#task-detail-operator button[phx-value-renew_attempts=true]") |> render_click()
+    assert has_element?(view, "#board-dialog[data-kind=confirm]", "at most 2 attempts")
+    assert has_element?(view, "#board-dialog", "Lifetime tokens, runtime and attempt history remain recorded")
+    refute_received {:settings_command, _}
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    render_click(view, "confirm-command")
+    assert_receive {:settings_command, original}
+    assert original["action"] == "retry"
+    assert original["issue_id"] == "2"
+    assert original["renew_attempts"] == true
+    assert original["expected_revision"] == 0
+    assert :sys.get_state(view.pid).socket.assigns.pending_command.submitted
+    render_async(view)
+
+    # An uncertain response may have committed; the second deliberate click
+    # repeats the retained command even after the old cycle no longer appears exhausted.
+    committed = execution_board(exhausted, "2", %{"attempts" => 2, "attempt_base" => 2, "tokens" => 250_000, "runtime_ms" => 50, "hold" => "interrupted"})
+    refresh(view, ctx.runtime, committed)
+    render_click(view, "confirm-command")
+    assert_receive {:settings_command, ^original}
+    refute_received {:settings_command, _}
+  end
+
+  test "retry renewal rejects wrong flags, unrelated actions and changed eligibility without effects", ctx do
+    exhausted = execution_board(ctx.board, "2", %{"attempts" => 2, "tokens" => 250_000, "runtime_ms" => 50, "hold" => "interrupted"})
+    :ok = GenServer.call(ctx.runtime, {:board, exhausted})
+    view = authorized_board_view()
+
+    for flag <- [nil, 1, "yes", %{}, []] do
+      render_click(view, "prepare-command", %{"action" => "retry", "id" => "github:example/fixture:2", "renew_attempts" => flag})
+      assert is_nil(:sys.get_state(view.pid).socket.assigns.pending_command)
+    end
+
+    for action <- ["pause", "cancel", "accept_task"] do
+      render_click(view, "prepare-command", %{"action" => action, "id" => "github:example/fixture:2", "renew_attempts" => true})
+      assert is_nil(:sys.get_state(view.pid).socket.assigns.pending_command)
+    end
+
+    render_click(view, "prepare-command", %{"action" => "retry", "id" => "github:example/fixture:4", "renew_attempts" => "true"})
+    assert is_nil(:sys.get_state(view.pid).socket.assigns.pending_command)
+    render_click(view, "prepare-command", %{"action" => "retry", "id" => "github:example/fixture:2", "renew_attempts" => true})
+    assert :sys.get_state(view.pid).socket.assigns.pending_command.renew_attempts
+    token_exhausted = execution_board(exhausted, "2", %{"attempts" => 2, "tokens" => 1_000_000, "runtime_ms" => 50, "hold" => "token_budget"})
+    refresh(view, ctx.runtime, token_exhausted)
+    render_click(view, "confirm-command")
+    refute_received {:settings_command, _}
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+
+    render_click(view, "cancel-command")
+    recoverable = execution_board(exhausted, "2", %{"attempts" => 1, "tokens" => 250_000, "runtime_ms" => 50, "hold" => "interrupted"})
+    refresh(view, ctx.runtime, recoverable)
+    render_click(view, "prepare-command", %{"action" => "retry", "id" => "github:example/fixture:2", "renew_attempts" => false})
+    render_click(view, "confirm-command")
+    assert_receive {:settings_command, legacy}
+    refute Map.has_key?(legacy, "renew_attempts")
+  end
+
+  test "invalid preparation preserves an existing exact confirmation without dispatching", ctx do
+    view = authorized_board_view()
+    render_click(view, "prepare-command", %{"action" => "pause"})
+    pending = :sys.get_state(view.pid).socket.assigns.pending_command
+    assert has_element?(view, "#board-dialog[data-kind=confirm] h2", "pause")
+
+    rejected = [
+      %{"action" => "retry", "id" => "github:example/fixture:2", "renew_attempts" => %{}},
+      %{"action" => "cancel", "id" => "github:example/fixture:2", "renew_attempts" => "true"},
+      %{"action" => "deploy"},
+      %{"action" => "retry", "id" => "github:example/fixture:4", "renew_attempts" => true}
+    ]
+
+    for params <- rejected do
+      render_click(view, "prepare-command", params)
+      assert :sys.get_state(view.pid).socket.assigns.pending_command == pending
+      assert has_element?(view, "#board-dialog[data-kind=confirm] h2", "pause")
+    end
+
+    refute_receive {:settings_command, _}
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    render_click(view, "cancel-command")
+    assert is_nil(:sys.get_state(view.pid).socket.assigns.pending_command)
+    refute has_element?(view, "#board-dialog")
   end
 
   test "worker failures show a concise safe reason in cards and details without raw activity", ctx do
@@ -824,7 +975,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     exhausted = execution_board(ctx.board, "2", %{"attempts" => 2, "hold" => "worker_auth_required"})
     refresh(view, ctx.runtime, exhausted)
     assert has_element?(view, "#board-dialog .execution-note", "Attempts limit reached")
-    refute has_element?(view, "#board-dialog button[phx-value-action=retry]")
+    assert has_element?(view, "#board-dialog button[phx-value-action=retry][phx-value-renew_attempts=true]", "Retry cycle")
     refute_received {:settings_command, _}
   end
 
@@ -1676,6 +1827,297 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute_receive {:settings_command, _}
   end
 
+  test "Settings unlock returns to the current planning view, filters and task", ctx do
+    {view, _html} = board_view()
+    task = "github:example/fixture:2"
+
+    for mode <- ["design", "graph", "gantt", "kanban"] do
+      filters = %{"project" => "github:example/fixture", "priority" => "P1", "chat_task" => task}
+      filters = if mode == "kanban", do: filters, else: Map.put(filters, "view", mode)
+      render_patch(view, "/?" <> URI.encode_query(filters))
+      render_click(view, "open-settings", %{"tab" => "connections"})
+      expected = "/?" <> URI.encode_query(Map.put(filters, "panel", "settings"))
+      assert has_element?(view, "#settings-connections form[action='/operator/session'] input[name=return_to][value='#{expected}']")
+      render_click(view, "close-dialog")
+      assert :sys.get_state(view.pid).socket.assigns.board_view == mode
+      assert :sys.get_state(view.pid).socket.assigns.chat_task_id == task
+    end
+
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:settings_command, _}
+  end
+
+  test "Design lifecycle uses scoped owner replies and opens the exact task preview without executing", ctx do
+    view = authorized_board_view()
+    project = "github:example/fixture"
+    scene = design_scene()
+    ref = String.duplicate("a", 64)
+    render_click(view, "switch-view", %{"view" => "design"})
+    render_hook(view, "design-load", %{"project" => project})
+    assert_reply(view, %{ok: true, data: %{"storage_revision" => 0, "draft" => nil}})
+    assert_receive {:design_call, :read, ^project, %{}}
+    render_hook(view, "design-save", %{"project" => project, "storage_revision" => 0, "scene" => scene})
+    assert_reply(view, %{ok: true, data: %{"storage_revision" => 1, "draft" => ^scene}})
+    assert_receive {:design_call, :save, ^project, %{revision: 0, scene: ^scene}}
+    render_hook(view, "design-save", %{"project" => project, "storage_revision" => 0, "scene" => scene})
+    assert_reply(view, %{ok: false, error: "design_revision_conflict"})
+    assert_receive {:design_call, :save, ^project, %{revision: 0, scene: ^scene}}
+    render_hook(view, "design-review", %{"project" => project, "storage_revision" => 1})
+    assert_reply(view, %{ok: true, data: %{"storage_revision" => 2, "reviewed_ref" => ^ref}})
+    assert_receive {:design_call, :review, ^project, %{revision: 1}}
+    render_hook(view, "design-reviewed", %{"project" => project, "ref" => ref})
+    assert_reply(view, %{ok: true, data: %{"ref" => ^ref, "scene" => ^scene}})
+    assert_receive {:design_call, :reviewed, ^project, %{ref: ^ref}}
+
+    params = %{"project" => project, "ref" => ref, "section" => "data", "item" => "event"}
+    render_hook(view, "prepare-design-task", params)
+    assert_reply(view, %{ok: true})
+    assert_receive {:design_call, :source, ^project, %{ref: ^ref}}
+    assert_receive {:intake_prepared, id, args}
+    assert_receive {:intake_read, ^project, ^id}
+    assert args["title"] == "Event"
+    assert args["body"] =~ "Design source: #{ref}/fixture-design/data/event"
+    assert args["body"] =~ "> Depends on: #99"
+    assert has_element?(view, "#board-dialog[data-kind=new_task] .intake-preview-body", "Reviewed design excerpt")
+    source_url = "/?" <> URI.encode_query(%{"project" => project, "view" => "design", "design_ref" => ref, "design_section" => "data", "design_item" => "event"})
+    assert has_element?(view, "#task-intake-panel a[href='#{source_url}']", "Reviewed design")
+    refute has_element?(view, "#task-intake-panel .intake-preview-body", "Design source:")
+    assert get_in(:sys.get_state(ctx.intake).records[id], ["proposals", Access.at(0), "args", "body"]) == args["body"]
+    assert has_element?(view, "#task-intake-panel button[phx-value-decision=confirm]", "Create task")
+    refute has_element?(view, "#task-intake-form")
+    assert :sys.get_state(view.pid).socket.assigns.intake_record_id == id
+    refute_receive {:intake_decided, _, _}
+    refute_receive {:settings_command, _}
+
+    render_click(view, "close-dialog")
+    render_hook(view, "prepare-design-task", params)
+    assert_reply(view, %{ok: true})
+    assert_receive {:design_call, :source, ^project, %{ref: ^ref}}
+    assert_receive {:intake_prepared, ^id, ^args}
+    assert_receive {:intake_read, ^project, ^id}
+    render_click(view, "close-dialog")
+
+    :sys.replace_state(ctx.intake, fn state ->
+      update_in(state, [:records, id, "proposals"], fn [proposal] ->
+        [Map.merge(proposal, %{"status" => "completed", "receipt" => %{"widgets" => [%{"type" => "receipt", "summary" => "Created from this reviewed design"}]}})]
+      end)
+    end)
+
+    render_hook(view, "prepare-design-task", params)
+    assert_reply(view, %{ok: true})
+    assert_receive {:design_call, :source, ^project, %{ref: ^ref}}
+    assert_receive {:intake_prepared, ^id, ^args}
+    assert_receive {:intake_read, ^project, ^id}
+    assert has_element?(view, "#task-intake-panel .action-receipt", "Created from this reviewed design")
+    refute has_element?(view, "#task-intake-panel button[phx-value-decision=confirm], #task-intake-form")
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:intake_decided, _, _}
+    refute_receive {:settings_command, _}
+  end
+
+  test "Design events without project return bounded errors and preserve the mounted workspace", ctx do
+    view = authorized_board_view()
+    render_click(view, "switch-view", %{"view" => "design"})
+
+    for action <- ~w(design-load design-save design-review design-reviewed prepare-design-task), params <- [%{}, %{"scene" => design_scene()}] do
+      render_hook(view, action, params)
+      assert_reply(view, %{ok: false, error: "invalid_design_request"})
+    end
+
+    assert Agent.get(ctx.design, & &1.revision) == 0
+    assert :sys.get_state(ctx.intake).records == %{}
+    refute has_element?(view, "#board-dialog")
+    refute_receive {:design_call, _, _, _}
+    refute_receive {:intake_prepared, _, _}
+    refute_receive {:settings_command, _}
+    render_hook(view, "design-load", %{"project" => "github:example/fixture"})
+    assert_reply(view, %{ok: true, data: %{"storage_revision" => 0, "draft" => nil}})
+  end
+
+  test "Design events reject foreign projects, other views and revoked operator identity without owner effects", ctx do
+    view = authorized_board_view()
+    project = "github:example/fixture"
+    actions = ~w(design-load design-save design-review design-reviewed prepare-design-task)
+    params = %{"project" => project, "storage_revision" => 0, "scene" => design_scene(), "ref" => String.duplicate("a", 64), "section" => "data", "item" => "event"}
+
+    for action <- actions do
+      render_hook(view, action, params)
+      assert_reply(view, %{ok: false, error: "design_project_mismatch"})
+    end
+
+    render_click(view, "switch-view", %{"view" => "design"})
+
+    for action <- actions do
+      render_hook(view, action, Map.put(params, "project", "github:other/project"))
+      assert_reply(view, %{ok: false, error: "design_project_mismatch"})
+    end
+
+    System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("rotated", 8))
+
+    for action <- actions do
+      render_hook(view, action, params)
+      assert_reply(view, %{ok: false, error: "unauthorized"})
+    end
+
+    assert Agent.get(ctx.design, & &1.revision) == 0
+    assert :sys.get_state(ctx.intake).records == %{}
+    refute has_element?(view, "#board-dialog")
+    refute_receive {:design_call, _, _, _}
+    refute_receive {:intake_prepared, _, _}
+    refute_receive {:settings_command, _}
+  end
+
+  @tag read_only: true
+  test "read-only Design never calls storage or task preview owners", ctx do
+    view = authorized_board_view()
+    render_click(view, "switch-view", %{"view" => "design"})
+
+    for action <- ~w(design-load design-save design-review design-reviewed prepare-design-task) do
+      render_hook(view, action, %{"project" => "github:example/fixture", "storage_revision" => 0, "scene" => design_scene()})
+      assert_reply(view, %{ok: false, error: "read_only"})
+    end
+
+    assert Agent.get(ctx.design, & &1.revision) == 0
+    assert :sys.get_state(ctx.intake).records == %{}
+    refute_receive {:design_call, _, _, _}
+    refute_receive {:intake_prepared, _, _}
+    refute_receive {:settings_command, _}
+  end
+
+  @tag :threads_fixture
+  test "Details and task conversation link to the same reviewed Design item without task scope leaking", ctx do
+    ref = String.duplicate("a", 64)
+    source = "Acceptance\n\nDesign source: #{ref}/fixture-design/data/event"
+    board = update_task(ctx.board, "2", &%{&1 | description: source})
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    render_patch(view, "/?priority=P1&chat_task=github%3Aexample%2Ffixture%3A2&task=github%3Aexample%2Ffixture%3A2")
+
+    params = %{
+      "priority" => "P1",
+      "project" => "github:example/fixture",
+      "view" => "design",
+      "design_ref" => ref,
+      "design_section" => "data",
+      "design_item" => "event",
+      "design_task" => "github:example/fixture:2"
+    }
+
+    source_path = "/?" <> URI.encode_query(params)
+    assert has_element?(view, "#board-dialog a[href='#{source_path}']", "Design source")
+    refute has_element?(view, "#board-dialog .markdown-content", "Design source:")
+    assert :sys.get_state(view.pid).socket.assigns.selected.description == source
+    assert has_element?(view, "#selected-task-context a[href='#{source_path}']", "Design source")
+    view |> element("#selected-task-context a", "Design source") |> render_click()
+    assert_patch(view, source_path)
+    assert has_element?(view, "#task-board-app[data-board-view=design]")
+    refute has_element?(view, "#board-dialog, #selected-task-context")
+    assert :sys.get_state(view.pid).socket.assigns.url_filters == Map.take(params, ~w(priority project view))
+    render_click(view, "switch-view", %{"view" => "graph"})
+    assert_patch(view, "/?" <> URI.encode_query(Map.take(params, ~w(priority project)) |> Map.put("view", "graph")))
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:settings_command, _}
+  end
+
+  @tag :threads_fixture
+  test "project overview and selected-task context guide planning without execution", ctx do
+    view = authorized_board_view()
+    refute has_element?(view, "#selected-task-navigation")
+    assert has_element?(view, "#project-state-overview [data-status-filter=in_progress]", "Running")
+    assert has_element?(view, "#project-state-overview [data-status-filter=attention]", "Needs attention")
+
+    filters = %{"project" => "github:example/fixture", "priority" => "P1"}
+    render_click(view, "board-filters", Map.put(filters, "status", "in_progress"))
+    assert :sys.get_state(view.pid).socket.assigns.url_filters == Map.put(filters, "status", "in_progress")
+    render_click(view, "select-task", %{"id" => "github:example/fixture:3"})
+    assert has_element?(view, "#selected-task-context h2", "Running fixture")
+    assert has_element?(view, "#task-chat-operator", "Running")
+    assert has_element?(view, "#selected-task-navigation a", "Details")
+    view |> element("#selected-task-context button[phx-click=open-task]") |> render_click()
+    assert has_element?(view, "#board-dialog[data-kind=task] #task-detail-operator")
+    assert has_element?(view, "#management-chat-dock #task-chat-operator")
+
+    view |> element("#settings-button") |> render_click()
+    assert has_element?(view, "#board-dialog[data-kind=settings]")
+    assert :sys.get_state(view.pid).socket.assigns.chat_task_id == "github:example/fixture:3"
+    render_click(view, "close-dialog")
+    render_click(view, "switch-view", %{"view" => "design"})
+    refute has_element?(view, "#project-state-overview, #selected-task-context, #selected-task-navigation")
+    assert has_element?(view, ".board-summary[hidden]")
+    render_click(view, "switch-view", %{"view" => "graph"})
+    assert has_element?(view, "#selected-task-context h2", "Running fixture")
+    assert :sys.get_state(view.pid).socket.assigns.chat_task_id == "github:example/fixture:3"
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:settings_command, _}
+  end
+
+  @tag :threads_fixture
+  test "closing task details keeps each planning view and its selected conversation", ctx do
+    work_id = String.duplicate("c", 32)
+    work = %{"id" => work_id, "issue_id" => "2", "phase" => "building", "instruction" => "Retained correction", "builder_thread_id" => "retained-thread"}
+    board = update_task(ctx.board, "2", &%{&1 | ledger: %{"pr_work" => %{work_id => work}}})
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    task = "github:example/fixture:2"
+
+    for mode <- ["graph", "gantt"] do
+      filters = %{"view" => mode, "project" => "github:example/fixture", "priority" => "P1"}
+
+      params =
+        Map.merge(filters, %{
+          "chat_task" => task,
+          "task" => task,
+          "chat_session" => "work:" <> work_id,
+          "design_ref" => "other-design",
+          "design_section" => "data",
+          "design_item" => "old-entity",
+          "design_task" => "old-task"
+        })
+
+      render_patch(view, "/?" <> URI.encode_query(params))
+      assert has_element?(view, "#board-dialog[data-kind=task]")
+      assert :sys.get_state(view.pid).socket.assigns.board_view == mode
+      render_click(view, "close-dialog")
+      refute has_element?(view, "#board-dialog")
+      socket = :sys.get_state(view.pid).socket
+      assert socket.assigns.board_view == mode
+      assert socket.assigns.chat_task_id == task
+      assert socket.assigns.chat_session_id == "work:" <> work_id
+      assert socket.assigns.url_filters == filters
+      assert is_nil(socket.assigns.linked_task)
+      assert has_element?(view, "#selected-task-context h2", "Ready fixture")
+    end
+
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:settings_command, _}
+  end
+
+  @tag :threads_fixture
+  test "task recovery discussion binds the task composer and never submits or executes", ctx do
+    view = authorized_board_view()
+    task = "github:example/fixture:2"
+    render_patch(view, "/?" <> URI.encode_query(%{"chat_task" => task, "chat_session" => "work:stale"}))
+    render_click(view, "operator-question", %{"id" => task, "prompt" => "Launch everything"})
+    assert_push_event(view, "task-chat-prompt", %{task_id: ^task, project_id: "github:example/fixture", prompt: prompt})
+    assert prompt =~ "Read-only: inspect GH-2"
+    refute prompt =~ "Launch everything"
+    socket = :sys.get_state(view.pid).socket
+    assert socket.assigns.chat_task_id == task
+    assert is_nil(socket.assigns.chat_session_id)
+    refute has_element?(view, "#board-dialog")
+    assert has_element?(view, "#chat-app[data-task-id='#{task}']")
+    chats = Agent.get(Endpoint.config(:thread_fixture), & &1)
+    assert Enum.all?(Map.values(chats), &(&1["messages"] == []))
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:settings_command, _}
+
+    render_click(view, "operator-question", %{"id" => "unknown"})
+    refute_push_event(view, "task-chat-prompt", %{})
+    render_click(view, "switch-view", %{"view" => "design"})
+    render_click(view, "operator-question", %{"id" => task})
+    refute_push_event(view, "task-chat-prompt", %{})
+  end
+
   test "planning views share task focus, filters and links without dispatch", ctx do
     view = authorized_board_view()
     filters = %{"project" => "github:example/fixture", "priority" => "P1"}
@@ -2070,7 +2512,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     html = html_response(get(build_conn(), "/"), 200)
     assert html =~ ~r|/dashboard\.js\?v=[0-9a-f]{12}|
     conn = get(build_conn(), "/dashboard.js")
-    expected = File.read!("priv/static/design-canvas.js") <> "\n" <> File.read!("priv/static/dashboard.js")
+    expected = Enum.map_join(["design-canvas.js", "design-sync.js", "dashboard.js"], "\n", &File.read!("priv/static/" <> &1))
     assert response(conn, 200) == expected
     assert conn.resp_body =~ "SymphonyDesignCanvas"
     assert Plug.Conn.get_resp_header(conn, "content-type") == ["application/javascript; charset=utf-8"]
@@ -2593,7 +3035,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     :ok = GenServer.call(ctx.runtime, {:board, settings_board(ctx.board)})
     view = authorized_board_view()
     open_task(view, "4")
-    view |> element("button[phx-value-action=accept_task]") |> render_click()
+    view |> element("#board-dialog button[phx-value-action=accept_task]") |> render_click()
     assert_receive {:settings_command, %{"action" => "accept_task", "issue_id" => "4"}}
     refute has_element?(view, "#board-dialog")
     assert render(view) =~ "Accepted. This issue is Done."
@@ -2606,7 +3048,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     :sys.replace_state(ctx.runtime, &Map.put(&1, :command_error, :unavailable))
     view = authorized_board_view()
     open_task(view, "4")
-    view |> element("button[phx-value-action=accept_task]") |> render_click()
+    view |> element("#board-dialog button[phx-value-action=accept_task]") |> render_click()
     assert_receive {:settings_command, original}
     assert render(view) =~ "Acceptance could not be confirmed"
     refute has_element?(view, "[phx-click=confirm-command]")
@@ -2678,6 +3120,21 @@ defmodule SymphonyElixir.DashboardLiveTest do
   defp approved_handoff do
     sha = String.duplicate("a", 40)
     %{"candidate_sha" => sha, "summary" => "Documented the unit-test command", "review" => %{"candidate_sha" => sha, "verdict" => "approve", "findings" => []}}
+  end
+
+  defp design_scene do
+    %{
+      "document_id" => "fixture-design",
+      "boards" => %{
+        "data" => %{
+          "elements" => [
+            %{"id" => "event-node", "isDeleted" => false, "customData" => %{"symphony" => %{"id" => "event", "role" => "node", "kind" => "entity"}}},
+            %{"id" => "event-title", "isDeleted" => false, "text" => "Event", "customData" => %{"symphony" => %{"id" => "event", "role" => "title"}}},
+            %{"id" => "event-body", "isDeleted" => false, "originalText" => "id: UUID\nDepends on: #99", "customData" => %{"symphony" => %{"id" => "event", "role" => "body"}}}
+          ]
+        }
+      }
+    }
   end
 
   defp intake_fields do

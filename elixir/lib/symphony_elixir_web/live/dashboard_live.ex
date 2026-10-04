@@ -9,7 +9,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixir.WorkerFailure
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, ChatPanel, Endpoint, Markdown, SettingsPanel, TaskIntakePanel}
   alias SymphonyElixirWeb.{BoardCache, ChatNavigation, ObservabilityPubSub, Presenter}
-  alias SymphonyElixirWeb.{TaskBoard, TaskExecution, TaskFilters, TaskRework, WorkflowPlan}
+  alias SymphonyElixirWeb.{TaskBoard, TaskExecution, TaskFilters, TaskOperator, TaskRework, WorkflowPlan}
 
   @lanes [{"backlog", "Backlog"}, {"work", "Work"}, {"in_progress", "In progress"}, {"review", "Review"}, {"done", "Done"}]
   @refresh_ms 30_000
@@ -28,6 +28,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:dialog, nil)
       |> assign(:selected, nil)
       |> assign(:intake_key, nil)
+      |> assign(:intake_record_id, nil)
       |> assign(:intake_task, nil)
       |> assign(:intake_subscription, nil)
       |> assign(:pending_command, nil)
@@ -244,6 +245,30 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  def handle_event(event, %{"project" => project} = params, socket)
+      when event in ~w(design-load design-save design-review design-reviewed prepare-design-task) do
+    case design_request(event, project, params, socket.assigns) do
+      {:ok, record} when event == "prepare-design-task" ->
+        socket =
+          socket
+          |> clear_intake_subscription()
+          |> assign(dialog: :new_task, intake_task: nil, notice: nil)
+          |> assign(intake_key: record["id"], intake_record_id: record["id"])
+
+        {:reply, %{ok: true}, socket}
+
+      {:ok, data} ->
+        {:reply, %{ok: true, data: data}, socket}
+
+      {:error, reason} ->
+        {:reply, %{ok: false, error: if(is_atom(reason), do: Atom.to_string(reason), else: "design_action_unavailable")}, socket}
+    end
+  end
+
+  def handle_event(event, _params, socket)
+      when event in ~w(design-load design-save design-review design-reviewed prepare-design-task),
+      do: {:reply, %{ok: false, error: "invalid_design_request"}, socket}
+
   def handle_event("select-plan-task", %{"id" => id, "work_id" => work}, socket) when is_binary(work),
     do: socket |> focus_chat_session(id, "work:" <> work, false) |> reply_plan_selection()
 
@@ -327,6 +352,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  def handle_event("operator-question", %{"id" => id}, socket) do
+    task = Enum.find(socket.assigns.board.tasks, &(&1.id == id and &1.project == socket.assigns.chat_project))
+
+    if task && socket.assigns.board_view != "design" do
+      prompt = TaskOperator.summary(task, socket.assigns.board, socket.assigns.payload).question_prompt
+      chat_id = if is_nil(socket.assigns.chat_session_id), do: socket.assigns.chat_id
+      socket = assign(socket, chat_session_id: nil, chat_id: chat_id)
+      {:noreply, socket} = handle_event("select-task", %{"id" => id}, socket)
+      {:noreply, push_event(socket, "task-chat-prompt", %{task_id: id, project_id: task.project, prompt: prompt})}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("operator-question", _params, socket), do: {:noreply, socket}
+
   def handle_event("open-settings", params, socket) do
     tab = if params["tab"] == "execution", do: "execution", else: socket.assigns.settings_tab
 
@@ -403,10 +444,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp handle_write_event("new-task", _params, socket) do
     if BrowserAuth.authorized?(socket.assigns.auth) do
+      key = System.unique_integer([:positive])
+
       socket =
         socket
         |> clear_card_context()
-        |> assign(dialog: :new_task, intake_task: nil, intake_key: System.unique_integer([:positive]))
+        |> assign(dialog: :new_task, intake_task: nil, intake_key: key, intake_record_id: nil)
 
       {:noreply, assign(socket, :notice, nil)}
     else
@@ -430,10 +473,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp handle_write_event("prepare-command", %{"action" => action} = params, socket) do
     task = Enum.find(socket.assigns.board.tasks, &(&1.id == params["id"]))
 
-    if action in ["pause", "drain", "resume"] or (action in ["cancel", "retry", "accept_task"] and task) do
-      prepare_command(socket, action, task)
+    with {:ok, renew_attempts} <- renewal_flag(params),
+         true <- not renew_attempts or action == "retry",
+         true <- action in ["pause", "drain", "resume"] or (action in ["cancel", "retry", "accept_task"] and not is_nil(task)) do
+      prepare_command(socket, action, task, renew_attempts)
     else
-      {:noreply, assign(socket, :notice, "Unsupported action.")}
+      _ -> {:noreply, assign(socket, :notice, "Unsupported action or retry-cycle option.")}
     end
   end
 
@@ -475,13 +520,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp handle_write_event("confirm-command", _params, socket) do
     pending = socket.assigns.pending_command
-
-    result =
-      cond do
-        pending.action == "set_concurrency" -> BoardActions.settings_command(pending.limit, pending.revision, pending.id, socket.assigns.auth, orchestrator())
-        pending.action in ["create_pr_work", "continue_pr_work"] -> BoardActions.pr_work_command(pending.command, socket.assigns.auth, orchestrator())
-        true -> BoardActions.command(pending.action, pending.issue_id, pending.revision, pending.id, socket.assigns.auth, orchestrator())
-      end
+    {result, socket} = forward_pending_command(pending, socket)
 
     case result do
       {:ok, _result} ->
@@ -490,7 +529,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
          |> assign(:dialog, if(pending.action == "set_concurrency", do: :settings))
          |> assign(:concurrency_draft, nil)
          |> assign(:pending_command, nil)
-         |> assign(:notice, command_receipt(pending.action))
+         |> assign(:notice, command_receipt(pending))
          |> refresh_board()}
 
       {:error, reason} ->
@@ -498,6 +537,26 @@ defmodule SymphonyElixirWeb.DashboardLive do
         {:noreply, socket |> assign(:notice, command_error(reason)) |> refresh_board()}
     end
   end
+
+  defp forward_pending_command(%{renew_attempts: true} = pending, socket) do
+    if pending[:submitted] == true or retry_renewal_available?(pending, socket.assigns) do
+      socket = assign(socket, :pending_command, Map.put(pending, :submitted, true))
+      {BoardActions.retry_command(pending.command, socket.assigns.auth, orchestrator()), socket}
+    else
+      {{:error, :task_not_retryable}, socket}
+    end
+  end
+
+  defp forward_pending_command(pending, socket), do: {forward_command(pending, socket.assigns.auth), socket}
+
+  defp forward_command(%{action: "set_concurrency"} = pending, auth),
+    do: BoardActions.settings_command(pending.limit, pending.revision, pending.id, auth, orchestrator())
+
+  defp forward_command(%{action: action} = pending, auth) when action in ["create_pr_work", "continue_pr_work"],
+    do: BoardActions.pr_work_command(pending.command, auth, orchestrator())
+
+  defp forward_command(pending, auth),
+    do: BoardActions.command(pending.action, pending.issue_id, pending.revision, pending.id, auth, orchestrator())
 
   defp move_task(socket, nil, _stage), do: {:noreply, assign(socket, :notice, "Task unavailable; refresh the board.")}
 
@@ -571,15 +630,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp routing_error(reason), do: "Task could not move to Work (#{reason})."
 
-  defp prepare_command(socket, action, task) do
+  defp prepare_command(socket, action, task, renew_attempts \\ false) do
     control = socket.assigns.board.control
 
     cond do
       not controls_available?(socket.assigns) ->
         {:noreply, socket |> assign(:dialog, :settings) |> assign(:notice, "Sign in and refresh execution status in Settings before changing execution.")}
 
-      not task_action_available?(action, task, socket.assigns) ->
-        {:noreply, socket |> assign(:pending_command, nil) |> assign(:notice, "This action is not available for the task’s current state. Review its execution summary.")}
+      not task_action_available?(action, task, socket.assigns, renew_attempts) ->
+        {:noreply, assign(socket, :notice, "This action is not available for the task’s current state. Review its execution summary.")}
 
       true ->
         pending = %{
@@ -589,6 +648,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
           revision: control["revision"],
           id: Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
         }
+
+        pending =
+          if renew_attempts do
+            command = %{"action" => "retry", "issue_id" => task.issue_id, "command_id" => pending.id, "expected_revision" => pending.revision, "renew_attempts" => true}
+            Map.merge(pending, %{renew_attempts: true, submitted: false, command: command, cycle_limit: get_in(control, ["settings", "budgets", "max_attempts"])})
+          else
+            pending
+          end
 
         if action == "accept_task",
           do: accept_task(socket, task, pending),
@@ -643,13 +710,32 @@ defmodule SymphonyElixirWeb.DashboardLive do
     }
   end
 
-  defp task_action_available?(action, nil, _assigns), do: action in ["pause", "drain", "resume"]
+  defp task_action_available?(action, nil, _assigns, false), do: action in ["pause", "drain", "resume"]
+  defp task_action_available?(_action, nil, _assigns, true), do: false
 
-  defp task_action_available?(action, task, assigns) do
+  defp task_action_available?("retry", task, assigns, true), do: execution_summary(task, assigns.board, assigns.payload).renew_attempts?
+  defp task_action_available?(_action, _task, _assigns, true), do: false
+
+  defp task_action_available?(action, task, assigns, false) do
     summary = execution_summary(task, assigns.board, assigns.payload)
 
     (action == "cancel" and summary.cancel?) or (action == "retry" and summary.retry?) or
       (action == "accept_task" and task.stage == "review" and is_nil(task.runtime) and is_nil(task.ledger["active"]))
+  end
+
+  defp renewal_flag(params) do
+    case Map.get(params, "renew_attempts", false) do
+      value when value in [true, "true"] -> {:ok, true}
+      value when value in [false, "false"] -> {:ok, false}
+      _ -> {:error, :invalid_command}
+    end
+  end
+
+  defp retry_renewal_available?(pending, assigns) do
+    case Enum.find(assigns.board.tasks, &(&1.issue_id == pending.issue_id)) do
+      nil -> false
+      task -> task_action_available?("retry", task, assigns, true)
+    end
   end
 
   defp prepare_concurrency(socket, limit) do
@@ -752,6 +838,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         visible_task_ids: visible_task_ids,
         selected_plan_id: selected_plan_id(assigns.board, assigns.chat_task_id, assigns.chat_session_id),
         navigation_task: Enum.find(assigns.board.tasks, &(&1.id == assigns.chat_task_id)),
+        project_overview: project_overview(assigns.board, assigns.payload, selected_project(assigns.board, assigns.url_filters)),
         dependency_nodes: Map.new(Enum.filter(plan["nodes"], &(&1["type"] == "task")), &{&1["task_id"], &1}),
         project_picker_label: project_picker_label(assigns.board, assigns.url_filters, project_links)
       )
@@ -791,8 +878,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
       <div id="board-toolbar" class="board-toolbar" phx-update="ignore">
         <div class="toolbar-primary">
-          <button type="button" class="button button-quiet mobile-filter-toggle" data-mobile-filter-toggle aria-expanded="false" aria-controls="board-filter-panel">Filters</button>
-          <div id="board-filter-panel" class="filter-row">
+          <button type="button" class="button button-quiet mobile-filter-toggle" data-task-filters data-mobile-filter-toggle aria-expanded="false" aria-controls="board-filter-panel">Filters</button>
+          <div id="board-filter-panel" class="filter-row" data-task-filters>
             <div :for={{key, label} <- [{"status", "Status"}, {"priority", "Priority"}, {"kind", "Kind"}, {"milestone", "Milestone"}, {"label", "Tags"}, {"assignee", "Assignee"}]} class="filter-combo" data-filter={key}>
               <div class="combo-control"><input id={"filter-#{key}"} role="combobox" aria-label={"#{label} filter"}
                 autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls={"options-#{key}"}
@@ -804,19 +891,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <details class="board-menu display-menu">
             <summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9m4 0h3M4 17h3m4 0h9M13 4v6M7 14v6" /></svg>Display</summary>
             <div class="board-menu-panel">
-              <label class="display-field"><span>Sort by</span><select data-board-sort aria-label="Sort cards">
+              <label class="display-field" data-kanban-display><span>Sort by</span><select data-board-sort aria-label="Sort cards">
                 <option value="manual">Manual order</option><option value="priority">Priority first</option>
                 <option value="updated">Recently updated</option><option value="oldest">Oldest first</option><option value="title">Title A–Z</option>
               </select></label>
-              <label class="display-field"><span>Cards</span><select data-board-density aria-label="Card details"><option value="compact">Compact</option><option value="details">Detailed</option></select></label>
+              <label class="display-field" data-kanban-display><span>Cards</span><select data-board-density aria-label="Card details"><option value="compact">Compact</option><option value="details">Detailed</option></select></label>
               <label class="display-field"><span>Appearance</span><select data-board-theme aria-label="Board appearance"><option value="light">Light</option><option value="dark">Dark</option><option value="system">System</option></select></label>
             </div>
           </details>
         </div>
-        <div data-filter-chips class="filter-chips" aria-label="Selected filters"></div>
+        <div data-filter-chips data-task-filters class="filter-chips" aria-label="Selected filters"></div>
       </div>
 
       <div class="board-content">
+        <.project_state_overview :if={@board_view != "design"} counts={@project_overview} />
         <div :if={@board_view == "design"} id="design-view" class="board-view-panel" aria-label="Design view">
           <p :if={is_nil(@chat_project)} class="design-empty">Choose a project to start its design.</p>
           <SymphonyElixirWeb.DesignView.content :if={@chat_project} project={@chat_project} project_label={@project_picker_label} notion_url={design_link(@chat_project)} />
@@ -831,9 +919,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <p>{@dispatch_guidance}</p>
           <button type="button" class="button button-small" phx-click="open-settings" phx-value-tab="execution">Execution settings</button>
         </div>
-        <div class="board-summary"><span data-result-count>{length(@board.tasks)} tasks</span>
+        <div class="board-summary" hidden={@board_view == "design"}><span data-result-count>{length(@board.tasks)} tasks</span>
           <div class="summary-right"><span :if={@loading}>Updating…</span>
-            <.task_view_navigation :if={@board_view in ["kanban", "graph", "gantt"]} task={@navigation_task} task_id={@chat_task_id} view={@board_view} filters={@url_filters} session={@chat_session_id} />
+            <.task_view_navigation :if={@navigation_task && @board_view in ["kanban", "graph", "gantt"]} task={@navigation_task} task_id={@chat_task_id} view={@board_view} filters={@url_filters} session={@chat_session_id} />
           </div>
         </div>
         <div id="kanban-view" class="board-view-panel" hidden={@board_view != "kanban"} aria-label="Kanban view">
@@ -922,26 +1010,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 execution_status={execution_status(@board, @payload)} authorized={@authorized} can_control={@controls_available}
                 can_edit={@settings_editable} settings={@settings} settings_available={settings_available?(@settings)} draft={@concurrency_draft}
                 project_id={selected_project(@board, @url_filters)} chat_health={@chat_health} source_status={source_status(@board, @loading)}
-                loading={@loading} csrf_token={@csrf_token} total_tokens={get_in(@payload, [:codex_totals, :total_tokens]) || "Unavailable"}
+                loading={@loading} csrf_token={@csrf_token} return_to={view_path(Map.put(@url_filters, "panel", "settings"), @board_view, @chat_task_id, @chat_session_id)} total_tokens={get_in(@payload, [:codex_totals, :total_tokens]) || "Unavailable"}
                 runtime_duration={runtime_duration(@payload)} rate_limits={pretty(@payload[:rate_limits])} />
             <% :task -> %>
               <p class="muted">{@selected.project_label} · {@selected.identifier} · {lane_label(task_lane(@selected))}</p>
-              <.execution_summary summary={execution_summary(@selected, @board, @payload)} routing={@selected[:routing]} hide_unused={@selected.stage == "backlog"} />
+              <TaskOperator.panel id="task-detail-operator" task={@selected} board={@board} payload={@payload} controls_available={!@read_only && @controls_available} />
               <.feedback_details task={@selected} />
-              <div :if={!@read_only && @controls_available} class="dialog-actions execution-actions">
-                <button :if={@selected.stage == "backlog" && is_nil(@selected.hold)} id="queue-task-button" class="button button-primary" phx-click="queue-task" phx-value-id={@selected.id}>Move to Work</button>
-                <button :if={@selected.stage == "review"} class="button button-primary" phx-click="prepare-command" phx-value-action="accept_task" phx-value-id={@selected.id} phx-disable-with="Accepting…">Accept · Done</button>
-                <button :if={@selected.stage == "review"} class="button" phx-click="move-task" phx-value-stage="work" phx-value-id={@selected.id}>Return to Work</button>
-                <button :if={execution_summary(@selected, @board, @payload).cancel?} class="button" phx-click="prepare-command" phx-value-action="cancel" phx-value-id={@selected.id}>Cancel execution</button>
-                <button :if={execution_summary(@selected, @board, @payload).retry?} class="button" phx-click="prepare-command" phx-value-action="retry" phx-value-id={@selected.id}>Retry</button>
-              </div>
+              <details class="dialog-section task-execution-details"><summary>Usage &amp; limits</summary>
+                <.execution_summary summary={execution_summary(@selected, @board, @payload)} routing={@selected[:routing]} hide_unused={@selected.stage == "backlog"} />
+                <p :if={blocker(@selected) && is_nil(@selected.hold)} class="attention-badge">{blocker(@selected)}</p>
+                <p :if={Map.get(@selected, :completion_evidence)} class="muted">{Map.get(@selected, :completion_evidence)}</p>
+              </details>
               <div :if={@selected.stage == "ready" && @dispatch_guidance} id="task-dispatch-guidance" class="board-notice" role="status">
                 <p>{@dispatch_guidance}</p>
                 <button type="button" class="button button-small" phx-click="open-settings" phx-value-tab="execution">Execution settings</button>
               </div>
-              <div class="task-reference-links"><.link class="button button-small agent-chat-link" patch={session_path(@url_filters, @selected.id, nil)}><ChatPanel.agent_label name={@selected.title} role="task" /><span aria-hidden="true">→</span></.link><a :for={link <- task_links(@selected, if(pull_requests(@selected) == [], do: ["issue", "repo", "pr", "checks", "candidate"], else: ["issue", "repo", "candidate"]))} class="button button-small" href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
-              <p :if={blocker(@selected) && is_nil(@selected.hold)} class="attention-badge"><strong>Needs attention:</strong> {blocker(@selected)}</p>
-              <p :if={Map.get(@selected, :completion_evidence)} class="muted">{Map.get(@selected, :completion_evidence)}</p>
+              <div class="task-reference-links"><.link :if={design_source_path(@url_filters, @selected)} class="button button-small" patch={design_source_path(@url_filters, @selected)}>Design source →</.link><.link class="button button-small agent-chat-link" patch={session_path(@url_filters, @selected.id, nil)}><ChatPanel.agent_label name={@selected.title} role="task" /><span aria-hidden="true">→</span></.link><a :for={link <- task_links(@selected, if(pull_requests(@selected) == [], do: ["issue", "repo", "pr", "checks", "candidate"], else: ["issue", "repo", "candidate"]))} class="button button-small" href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
               <section :if={pull_requests(@selected) != []} class="dialog-section"><h3>Pull requests <span class="section-count">{length(pull_requests(@selected))}</span></h3><.pull_request :for={pr <- pull_requests(@selected)} pr={pr} compact={false} chat_url={session_path(@url_filters, @selected.id, pr_session_id(@selected, pr))} /></section>
               <section :if={ChatNavigation.work_sessions(@selected) != []} class="dialog-section" aria-label="Work sessions">
                 <h3>Work sessions <span class="section-count">{ChatNavigation.work_counts(@selected).total}</span></h3>
@@ -953,7 +1037,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <div class="issue-work-meta"><span :if={work.session_retained}>Session retained</span><span :if={work.review}>Review: {String.replace(work.review, "_", " ")}</span><code :if={work.head != ""}>{work.head}</code><time :if={work.updated_at} datetime={work.updated_at} title={updated_at(work.updated_at)}>{compact_updated_at(work.updated_at)}</time></div>
                 </article>
               </section>
-              <section class="dialog-section"><h3>Scope &amp; acceptance</h3><div class="markdown-content">{Markdown.render(@selected.description)}</div></section>
+              <section class="dialog-section"><h3>Scope &amp; acceptance</h3><div class="markdown-content">{Markdown.render(SymphonyElixirWeb.DesignActions.display_body(@selected.description))}</div></section>
               <section :if={current_activity(@selected, @payload) || session_id(@selected)} class="dialog-section"><h3>Codex update</h3><p>{current_activity(@selected, @payload)}</p>
                 <button :if={session_id(@selected)} class="button button-small" data-copy={session_id(@selected)}>Copy ID</button>
               </section>
@@ -988,10 +1072,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 </div>
               </div>
               <p class="muted">{@pending_command.identifier || "Configured project"} · operator revision {@pending_command.revision}</p>
-              <div class="dialog-actions"><button :if={!@read_only} class="button button-primary" phx-click="confirm-command" phx-disable-with="Submitting…">Confirm {command_label(@pending_command.action)}</button><button class="button" phx-click="cancel-command">Cancel</button></div>
+              <div class="dialog-actions"><button :if={!@read_only} class="button button-primary" phx-click="confirm-command" phx-disable-with="Submitting…">Confirm {command_label(@pending_command)}</button><button class="button" phx-click="cancel-command">Cancel</button></div>
             <% kind when kind in [:new_task, :queue_task] -> %>
               <.live_component module={TaskIntakePanel} id="task-intake" auth={@auth} read_only={@read_only}
-                project_id={if @intake_task, do: @intake_task.project, else: selected_project(@board, @url_filters)} form_key={@intake_key} task={@intake_task} />
+                project_id={if @intake_task, do: @intake_task.project, else: selected_project(@board, @url_filters)} form_key={@intake_key} record_id={@intake_record_id} task={@intake_task} />
           <% end %>
         </div>
       </dialog>
@@ -1000,7 +1084,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <.live_component module={ChatPanel} id="management-chat" auth={@auth} csrf_token={@csrf_token}
           embedded={true} project_id={@chat_project} chat_id={@chat_id} task_id={if @board_view != "design", do: @chat_task_id} session_id={if @board_view != "design", do: @chat_session_id}
           task_title={if @board_view != "design", do: chat_task_title(@board, @chat_task_id)} issue_tasks={@board.tasks} issue_activity={@chat_activity}
-          view_context={@view_context} design_mode={@board_view == "design"} read_only={@read_only} />
+          view_context={@view_context} design_mode={@board_view == "design"} read_only={@read_only}
+          operator_design_url={design_source_path(@url_filters, @navigation_task)} operator_board={@board} operator_payload={@payload} controls_available={!@read_only && @controls_available} />
       </aside>
     </section>
     """
@@ -1505,11 +1590,58 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp design_link("github:iliazlobin/events-concierge"), do: "https://app.notion.com/p/3cfd865005a88162aa6bd4624b6a4af4"
   defp design_link(_project), do: nil
 
+  defp design_source_path(filters, %{description: body, project: project, id: task_id}) do
+    if source = SymphonyElixirWeb.DesignActions.reference(body) do
+      filters
+      |> Map.drop(~w(task chat_task chat_session panel))
+      |> Map.merge(%{"project" => project, "view" => "design", "design_ref" => source.ref, "design_section" => source.section, "design_item" => source.item, "design_task" => task_id})
+      |> board_path()
+    end
+  end
+
+  defp design_source_path(_filters, _task), do: nil
+
+  defp design_request(event, project, params, assigns) do
+    cond do
+      project != assigns.chat_project or assigns.board_view != "design" -> {:error, :design_project_mismatch}
+      read_only?(assigns.board) -> {:error, :read_only}
+      not BrowserAuth.authorized?(assigns.auth) -> {:error, :unauthorized}
+      true -> design_action(event, project, params, assigns.auth)
+    end
+  end
+
+  defp design_action("design-load", project, _params, auth), do: SymphonyElixirWeb.DesignActions.store().read(project, auth)
+  defp design_action("design-save", project, params, auth), do: SymphonyElixirWeb.DesignActions.store().save(project, params["storage_revision"], params["scene"], auth)
+  defp design_action("design-review", project, params, auth), do: SymphonyElixirWeb.DesignActions.store().review(project, params["storage_revision"], auth)
+  defp design_action("design-reviewed", project, params, auth), do: SymphonyElixirWeb.DesignActions.store().reviewed(project, params["ref"], auth)
+  defp design_action("prepare-design-task", project, params, auth), do: SymphonyElixirWeb.DesignActions.prepare(project, params, auth)
+
   defp reply_plan_selection({:noreply, socket}), do: {:reply, %{selected_task_id: socket.assigns.chat_task_id}, socket}
 
   defp navigation_focus(socket, focus_chat, view_changed, task_id, view) do
     socket = if view_changed, do: push_event(socket, "focus-plan-task", %{id: task_id, view: view}), else: socket
     if focus_chat, do: push_event(socket, "focus-chat-session", %{}), else: socket
+  end
+
+  defp project_overview(board, payload, project) do
+    tasks = if project, do: Enum.filter(board.tasks, &(&1.project == project)), else: board.tasks
+    counts = Enum.frequencies_by(tasks, &task_lane/1)
+    attention = Enum.count(tasks, &TaskOperator.summary(&1, board, payload).attention?)
+    Map.merge(counts, %{"all" => length(tasks), "attention" => attention})
+  end
+
+  attr(:counts, :map, required: true)
+
+  defp project_state_overview(assigns) do
+    ~H"""
+    <nav id="project-state-overview" class="project-state-overview" aria-label="Project task states">
+      <button :for={{status, label} <- [{"", "All"}, {"in_progress", "Running"}, {"review", "Review"}, {"attention", "Needs attention"}, {"backlog", "Backlog"}, {"work", "Work"}, {"done", "Done"}]}
+        type="button" data-status-filter={status} aria-pressed="false" title={"Filter project tasks: #{label}"}>
+        <span :if={status not in ["", "attention"]} class={"lane-dot lane-dot-#{status}"} aria-hidden="true"></span>
+        <span>{label}</span><strong>{Map.get(@counts, if(status == "", do: "all", else: status), 0)}</strong>
+      </button>
+    </nav>
+    """
   end
 
   attr(:task, :map, default: nil)
@@ -1522,6 +1654,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     ~H"""
     <nav id="selected-task-navigation" class="selected-task-navigation" aria-label="Task views" data-selected-task-id={@task_id}>
       <span data-task-navigation-label hidden={is_nil(@task)} title={@task && @task.title}>{@task && @task.identifier}</span>
+      <.link :if={@task} class="button button-small" patch={task_detail_path(@filters, @task_id, @task_id, @session)} aria-label={"Details: #{@task.identifier}"}>Details</.link>
       <.link :for={{view, label} <- [{"kanban", "Show on board"}, {"graph", "Show graph"}, {"gantt", "Show timeline"}]} :if={view != @view}
         class="button button-small" patch={view_path(@filters, view, @task_id, @session)} data-board-view-link={view} data-board-view-task={@task_id}
         aria-label={if @task, do: "#{label}: #{@task.identifier}", else: label}>{label}</.link>
@@ -1840,6 +1973,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp dialog_title(:new_task, _, _), do: "New task"
   defp dialog_title(:task, task, _), do: task.title
   defp dialog_title(:confirm, _, %{action: "set_concurrency"}), do: "Change concurrency?"
+  defp dialog_title(:confirm, _, %{action: "retry", renew_attempts: true} = pending), do: "Retry cycle #{pending.identifier}?"
   defp dialog_title(:confirm, _, pending), do: "#{command_label(pending.action)} #{pending.identifier || "project"}?"
 
   defp command_description(%{action: "set_concurrency", limit: nil}),
@@ -1847,6 +1981,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp command_description(%{action: "set_concurrency", limit: limit}),
     do: "Allow at most #{limit} concurrent tasks. Active tasks keep running; new starts respect this limit and the workflow ceiling. Cumulative budgets are unchanged."
+
+  defp command_description(%{action: "retry", renew_attempts: true, cycle_limit: limit}),
+    do:
+      "Allow a new cycle of at most #{limit} attempts for this task. Lifetime tokens, runtime and attempt history remain recorded; source scope, launch gates and project limits stay unchanged. The scheduler still checks eligibility before starting work."
 
   defp command_description(%{action: action}), do: command_description(action)
   defp command_description("drain"), do: "Finish active work, then stop taking new tasks."
@@ -1860,9 +1998,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
     do: "Return this issue to Work with the corrections below. Priority, concurrency and remaining token/time budgets still apply. Selected comments get an automatically updated GitHub status reply."
 
   defp command_description("retry"), do: "Clear this issue’s hold without resetting its budget. An eligible task can start again; this does not deliver an answer or automatically repair a candidate."
+  defp command_label(%{action: "retry", renew_attempts: true}), do: "retry cycle"
+  defp command_label(%{action: action}), do: command_label(action)
   defp command_label(action) when action in ["create_pr_work", "continue_pr_work"], do: "return to Work"
   defp command_label("set_concurrency"), do: "change"
   defp command_label(action), do: action
+  defp command_receipt(%{action: "retry", renew_attempts: true}), do: "Retry cycle accepted. Recorded usage is preserved; scheduling still checks project gates."
+  defp command_receipt(%{action: action}), do: command_receipt(action)
   defp command_receipt("accept_task"), do: "Accepted. This issue is Done."
   defp command_receipt(action) when action in ["create_pr_work", "continue_pr_work"], do: "Returned to Work with your corrections."
   defp command_receipt("set_concurrency"), do: "Concurrency saved. Refreshing the controller’s confirmed limit."

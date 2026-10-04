@@ -15,7 +15,7 @@ const vm = require("node:vm");
 const saved = new Map();
 class BrowserEvent {constructor(type, options = {}) {this.type = type; Object.assign(this, options);}}
 const sandbox = {
-  window: {}, AbortController, Event: BrowserEvent, CustomEvent: BrowserEvent, requestAnimationFrame: () => {},
+  window: {}, AbortController, Event: BrowserEvent, CustomEvent: BrowserEvent, requestAnimationFrame: callback => callback(),
   sessionStorage: {getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key)}
 };
 vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
@@ -35,7 +35,7 @@ const mount = (project, chat, value = "") => {
   const submit = () => listeners.get("submit")({target: {id: "chat-composer"}});
   const accept = (accepted_text, chat_id = hook.el.dataset.chatId, client_id = hook.pendingDraft?.revision) => events.get("chat-message-sent")({chat_id, accepted_text, client_id});
   hook.mounted();
-  return {hook, input, type, submit, accept};
+  return {hook, input, type, submit, accept, prompt: payload => events.get("task-chat-prompt")(payload)};
 };
 // Full HTTP project navigation remounts the hook but retains only this tab's storage.
 let alpha = mount("github:example/alpha", "task-1");
@@ -113,6 +113,18 @@ server.hook.el.dataset.chatId = "work-1"; server.hook.updated();
 assert.equal(server.input.value, "Work secret");
 server.type("");
 assert.equal(saved.has(key("github:example/alpha", "work-1")), false);
+// A recovery affordance fills the scoped task composer, preserving the unsent draft and never submitting.
+const recovery=mount("github:example/alpha", "recover-chat", "  Keep my draft  ");
+recovery.hook.el.dataset.taskId="task:1";
+const prompt={task_id:"task:1",project_id:"github:example/alpha",prompt:"Read-only: explain recovery."};
+recovery.prompt(prompt);
+assert.equal(recovery.input.value,"  Keep my draft  \n\nRead-only: explain recovery.");
+assert.equal(recovery.hook.pendingDraft,undefined);
+assert.equal(saved.get(key("github:example/alpha","recover-chat")),recovery.input.value);
+recovery.prompt(prompt);assert.equal(recovery.input.value.split(prompt.prompt).length,2);
+for (const wrong of [{...prompt,task_id:"other"},{...prompt,project_id:"github:example/beta"},{...prompt,prompt:"x".repeat(8001)}]) {recovery.prompt(wrong);assert.equal(recovery.input.value,"  Keep my draft  \n\nRead-only: explain recovery.");}
+recovery.hook.el.dataset.designMode="true";recovery.type("Design draft");recovery.prompt(prompt);assert.equal(recovery.input.value,"Design draft");
+recovery.hook.el.dataset.designMode="false";recovery.type("x".repeat(15999));recovery.prompt(prompt);assert.equal(recovery.input.value.length,15999);
 // Anonymous state and blocked browser storage keep the composer usable.
 delete server.hook.el.dataset.project; server.type("Unscoped text");
 assert.equal([...saved.values()].includes("Unscoped text"), false);

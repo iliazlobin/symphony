@@ -12,7 +12,7 @@ defmodule SymphonyElixirWeb.DesignViewTest do
     assert Floki.attribute(find(html, "[role=tabpanel]"), "aria-labelledby") == ["design-tab-brief"]
     assert length(find(html, "[data-design-canvas]")) == 1
     assert Floki.attribute(find(html, "[data-design-canvas]"), "tabindex") == ["0"]
-    assert Floki.text(find(html, "[data-design-storage-label]")) == "Browser draft"
+    assert Floki.text(find(html, "[data-design-storage-label]")) == "Opening saved design…"
     refute html =~ "saved in this browser"
     assert find(html, "form") == []
 

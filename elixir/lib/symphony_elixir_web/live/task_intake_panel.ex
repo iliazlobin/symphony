@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
   use Phoenix.LiveComponent
 
   alias SymphonyElixir.TaskDraft
-  alias SymphonyElixirWeb.{BrowserAuth, Endpoint, Markdown, TaskIntake}
+  alias SymphonyElixirWeb.{BrowserAuth, DesignActions, Endpoint, Markdown, TaskIntake}
 
   @fields ~w(title description verification)
 
@@ -19,6 +19,7 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
        draft: %{},
        submission_id: nonce(),
        record: nil,
+       record_id: nil,
        records: [],
        notice: nil,
        subscribed: nil
@@ -46,8 +47,8 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
 
   def update(assigns, socket) do
     task = Map.get(assigns, :task)
-    location = {assigns.project_id, assigns.form_key, task && task.id}
-    socket = socket |> assign(Map.take(assigns, [:id, :project_id, :auth, :read_only])) |> assign(:task, task)
+    location = {assigns.project_id, assigns.form_key, task && task.id, assigns[:record_id]}
+    socket = socket |> assign(Map.take(assigns, [:id, :project_id, :auth, :read_only])) |> assign(task: task, record_id: assigns[:record_id])
 
     socket =
       if location != socket.assigns.location do
@@ -142,6 +143,8 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
   end
 
   defp initial_draft, do: Map.new(@fields, &{&1, ""})
+
+  defp open_intake(%{assigns: %{record_id: id}} = socket) when is_binary(id), do: socket |> load_record(id) |> refresh_history()
 
   defp open_intake(%{assigns: %{task: nil}} = socket), do: refresh_history(socket, true)
 
@@ -258,6 +261,7 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
       assign(assigns,
         proposal: proposal,
         args: proposal["args"] || %{},
+        design_source_url: DesignActions.source_url(assigns.project_id, get_in(proposal, ["args", "body"])),
         receipt: receipt(proposal),
         authorized: BrowserAuth.authorized?(assigns.auth) and not assigns.read_only,
         can_start: proposal["status"] in [nil, "completed", "cancelled", "failed"]
@@ -282,8 +286,9 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
         <h4 :if={@args["title"]}>{@args["title"]}</h4>
         <p :if={@proposal["action"] == "queue_task"}>Task: {@args["task_id"]}</p>
         <h4 :if={@proposal["task_title"]}>{@proposal["task_title"]}</h4>
-        <div :if={@proposal["task_description"]} class="markdown-content intake-preview-body">{Markdown.render(@proposal["task_description"])}</div>
-        <div :if={@args["body"] && @proposal["status"] == "pending"} class="markdown-content intake-preview-body">{Markdown.render(@args["body"])}</div>
+        <div :if={@proposal["task_description"]} class="markdown-content intake-preview-body">{Markdown.render(DesignActions.display_body(@proposal["task_description"]))}</div>
+        <div :if={@args["body"] && @proposal["status"] == "pending"} class="markdown-content intake-preview-body">{Markdown.render(DesignActions.display_body(@args["body"]))}</div>
+        <.link :if={@design_source_url && @proposal["status"] == "pending"} class="button button-small" patch={@design_source_url}>Reviewed design →</.link>
         <div :if={@proposal["action"] == "queue_task" && @proposal["status"] == "pending"} class="queue-preview">
           <p>Move this task to Work. GitHub routing labels synchronize in the background.</p>
           <p>This makes the task eligible for work. When the controller is running, Symphony can start it after checking dependencies, budget and capacity. A paused controller stays paused.</p>

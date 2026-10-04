@@ -29,6 +29,50 @@ defmodule SymphonyElixir.TaskExecutionTest do
     end
   end
 
+  test "cycle recovery requires exhausted attempts and known remaining lifetime usage" do
+    exhausted = task(%{hold: "interrupted"})
+    summary = TaskExecution.summary(exhausted, control())
+    assert summary.renew_attempts?
+    refute summary.retry?
+    assert metric(summary, "Tokens").used == 517_755
+    assert metric(summary, "Time").used == 189_000
+
+    for update <- [
+          %{ledger: %{"tokens" => 10, "attempts" => 1, "runtime_ms" => 10}},
+          %{ledger: %{"tokens" => 1_000_000, "attempts" => 2, "runtime_ms" => 10}},
+          %{ledger: %{"tokens" => 10, "attempts" => 2, "runtime_ms" => 3_600_000}},
+          %{ledger: %{"tokens" => 10, "attempts" => 2}},
+          %{stage: "done"},
+          %{stage: "review"},
+          %{source_missing: true},
+          %{hold: "input_required"},
+          %{hold: "approval_required"},
+          %{hold: "unknown_recovery"},
+          %{runtime: %{status: "running"}},
+          %{runtime: %{status: "retrying"}},
+          %{ledger: Map.put(exhausted.ledger, "active", %{})}
+        ] do
+      refute TaskExecution.summary(Map.merge(exhausted, update), control()).renew_attempts?, inspect(update)
+    end
+
+    refute TaskExecution.summary(exhausted, control(), true).renew_attempts?
+    refute TaskExecution.summary(exhausted, %{"enabled" => false}).renew_attempts?
+    refute TaskExecution.summary(exhausted, put_in(control(), ["settings", "budgets", "max_attempts"], 0)).renew_attempts?
+    assert TaskExecution.summary(task(%{hold: "worker_auth_required", runtime: %{status: "blocked"}}), control()).renew_attempts?
+  end
+
+  test "cycle recovery never substitutes for exact reviewed-work continuation" do
+    legacy = task(%{hold: "cancelled", handoff: %{"candidate_sha" => String.duplicate("a", 40)}})
+    refute TaskExecution.summary(legacy, control()).renew_attempts?
+    refute TaskExecution.summary(put_in(legacy, [:ledger, "handoff"], legacy.handoff) |> Map.put(:handoff, nil), control()).renew_attempts?
+
+    id = String.duplicate("a", 32)
+    work = %{"id" => id, "phase" => "owner_review"}
+    native = task(%{hold: "cancelled", ledger: Map.merge(task().ledger, %{"selected_work_id" => id, "pr_work" => %{id => work}})})
+    refute TaskExecution.summary(native, control()).renew_attempts?
+    assert TaskExecution.summary(put_in(native, [:ledger, "pr_work", id, "phase"], "paused"), control()).renew_attempts?
+  end
+
   test "settled candidate shows retained totals and owner review without worker controls" do
     task = task(%{hold: "owner_review", handoff: %{"review" => %{"verdict" => "approve"}}})
     summary = TaskExecution.summary(task, control())

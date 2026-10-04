@@ -6,7 +6,7 @@ defmodule SymphonyElixirWeb.SettingsPanel do
 
   @spec content(map()) :: Phoenix.LiveView.Rendered.t()
   def content(assigns) do
-    assigns = assign(assigns, :google_auth, BrowserAuth.google_enabled?())
+    assigns = assigns |> assign(:google_auth, BrowserAuth.google_enabled?()) |> assign(:return_to, assigns[:return_to] || SymphonyElixirWeb.WorkspacePath.path("/?panel=settings"))
 
     ~H"""
     <div class="settings-scope">
@@ -23,10 +23,10 @@ defmodule SymphonyElixirWeb.SettingsPanel do
         <p :if={@read_only} class="settings-help">This board is read-only. Controller changes are unavailable here.</p>
         <p :if={!@read_only && !@authorized} class="settings-help">{if @google_auth, do: "Sign in through Connections to make changes.", else: "Unlock operator controls in Connections to make changes."}</p>
         <div :if={!@read_only} class="dialog-actions">
-          <button :for={{action, label} <- [{"drain", "Drain"}, {"pause", "Pause"}, {"resume", "Resume"}]}
+          <button :for={{action, label} <- [{"drain", "Finish current work"}, {"pause", "Pause now"}, {"resume", "Resume"}]}
             class="button" disabled={!@can_control} phx-click="prepare-command" phx-value-action={action}>{label}</button>
         </div>
-        <p class="settings-help">Drain finishes active work. Pause interrupts it. Resume keeps existing launch gates and budgets.</p>
+        <p class="settings-help">Finish current work stops new starts after active tasks finish. Pause now interrupts active tasks. Resume keeps existing launch gates and budgets.</p>
       </div>
       <div class="settings-section"><div class="settings-section-title"><h3>Concurrent tasks</h3><span class="settings-badge">New starts</span></div>
         <dl class="settings-values">
@@ -48,10 +48,10 @@ defmodule SymphonyElixirWeb.SettingsPanel do
       </div>
       <div class="settings-section"><div class="settings-section-title"><h3>Per-task limits</h3><span class="settings-badge">Read-only</span></div>
         <dl class="settings-values">
-          <div><dt>Attempts</dt><dd>{number(value(@settings, ["budgets", "max_attempts"]))}</dd></div>
+          <div><dt>Attempts per work cycle</dt><dd>{number(value(@settings, ["budgets", "max_attempts"]))}</dd></div>
           <div><dt>Total runtime</dt><dd>{duration(value(@settings, ["budgets", "max_total_runtime_ms"]))}</dd></div>
           <div><dt>Total tokens</dt><dd>{number(value(@settings, ["budgets", "max_total_tokens"]))}</dd></div>
-        </dl><p class="settings-help">Cumulative per task, including retries. Budget changes need a reviewed configuration change and restart.</p>
+        </dl><p class="settings-help">Tokens and runtime are cumulative per task. A confirmed Retry cycle renews exhausted attempts only; lifetime usage and launch gates stay unchanged. Limit changes need a reviewed configuration change and restart.</p>
       </div>
     </section>
 
@@ -90,11 +90,11 @@ defmodule SymphonyElixirWeb.SettingsPanel do
             <form action="/operator/session/logout" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} /><button class="button button-quiet">{if @google_auth, do: "Sign out", else: "Lock controls"}</button></form>
           <% @google_auth -> %>
             <p class="settings-help">Sign in with an authorized Google account to manage work.</p>
-            <form action="/auth/google" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value="/?panel=settings" />
+            <form action="/auth/google" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={@return_to} />
               <button class="button button-primary">Sign in with Google</button></form>
           <% true -> %>
             <p class="settings-help">Unlock controls on this local host with your existing operator token.</p>
-            <form action="/operator/session" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} />
+            <form action="/operator/session" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={@return_to} />
               <label class="field">Operator token<input type="password" name="operator_token" autocomplete="off" required /></label>
               <button class="button button-primary">Unlock local controls</button></form>
         <% end %>

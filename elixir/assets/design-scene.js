@@ -531,5 +531,47 @@ export function createSceneModel(convert) {
     return validate(next, next.project);
   }
 
-  return {empty, migrate, validate, projection, fields, fingerprint, normalizeElements, proposal, add, withFields, example};
+  // Human edits use the full retained text, independently of the bounded agent
+  // excerpt. The native scene remains the only model; the outline edits it.
+  function edit(source, section, semanticId, patch) {
+    try {
+      if (!validate(source, source.project) || !SECTION_IDS.includes(section) || !strict(patch, ["title", "text"]) ||
+          typeof patch.title !== "string" || bytes(patch.title) > 160 || typeof patch.text !== "string" || patch.text.length > SCENE_LIMITS.text) return null;
+      const node = projection(source, section).nodes.find(item => item.id === semanticId);
+      if (!node) return null;
+      const next = clone(source), board = next.boards[section];
+      const shape = board.elements.find(element => active(element) && tag(element)?.role === "node" && tag(element).id === semanticId);
+      const before = new Map([[shape.id, clone(shape)]]);
+      for (const [key, role] of [["title", "title"], ["text", "body"]]) {
+        const index = board.elements.findIndex(element => active(element) && tag(element)?.id === semanticId && tag(element).role === role);
+        if (index >= 0) board.elements[index] = reviseText(board.elements[index], patch[key]);
+        else {
+          const member = nodeElements({...node, ...patch}).find(element => tag(element)?.role === role);
+          member.groupIds = shape.groupIds; board.elements.push(member);
+        }
+      }
+      fitNode(board, semanticId); updateBoundArrows(board, before);
+      if (stampElements(source.boards[section].elements, board.elements)) next.revision++;
+      return validate(next, next.project);
+    } catch (_) { return null; }
+  }
+  function changes(source, baseline) {
+    return SECTION_IDS.flatMap(section => {
+      const current = projection(source, section), previous = baseline ? projection(baseline, section) : {nodes: [], edges: []};
+      const rows = [];
+      for (const name of ["nodes", "edges"]) {
+        const before = new Map(previous[name].map(item => [item.id, item]));
+        for (const item of current[name]) {
+          const old = before.get(item.id); before.delete(item.id);
+          const signature = value => JSON.stringify(name === "nodes" ? [value.kind, value.title, value.text] : [value.from, value.to, value.label]);
+          if (!old || signature(old) !== signature(item)) rows.push({section, id: item.id, change: old ? "Change" : "Add", title: item.title || item.label || "Relationship"});
+        }
+        for (const item of before.values()) rows.push({section, id: item.id, change: "Remove", title: item.title || item.label || "Relationship"});
+      }
+      if (fingerprint(source.boards[section].elements) !== fingerprint(baseline?.boards[section]?.elements || []) && !rows.length)
+        rows.push({section, change: "Update", title: "Drawing or layout"});
+      return rows;
+    });
+  }
+  return {empty, migrate, validate, projection, fields, fingerprint, normalizeElements, proposal, add, withFields, example, edit, changes};
 }

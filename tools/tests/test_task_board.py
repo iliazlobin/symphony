@@ -14,6 +14,7 @@ const source = fs.readFileSync(process.argv[1], "utf8");
 const plain = value => JSON.parse(JSON.stringify(value));
 function mount(savedPrefs = {}, urlFilters = {}, projects = [{id:"github:example/repo",label:"Example"}], projectLinks = []) {
   const navigations = [], sent = [], listeners = new Map(), elements = new Map(), timers = new Map();
+  const kanbanDisplay = [{hidden:false}], taskFilters = [{hidden:false}], overviewButtons = ["", "in_progress", "attention"].map(status => ({dataset:{statusFilter:status}, attributes:{}, setAttribute(key,value){this.attributes[key]=value;}}));
   const saved = new Map([["symphony.board.v1:fixture", JSON.stringify(savedPrefs)]]);
   let timerId = 0;
   const classes = () => {const values = new Set(); return {add: (...names) => names.forEach(name => values.add(name)), remove: (...names) => names.forEach(name => values.delete(name)), contains: name => values.has(name)};};
@@ -36,7 +37,7 @@ function mount(savedPrefs = {}, urlFilters = {}, projects = [{id:"github:example
   const backlog=add("backlog","backlog"), queued=add("queued","ready",["bug, ui"],["alice","bob"],{id:"7",title:"Launch"}), running=add("running","running",["backend"],["bob"]), reviewed=add("reviewed","review"), done=add("done","done");
   queued.dataset.kind="bug"; running.dataset.kind="operations";
   const el = {dataset:{scope:"fixture",taskKinds:JSON.stringify(["feature","bug","testing","operations","general","invalid"]),projects:JSON.stringify(projects),projectLinks:JSON.stringify(projectLinks),urlFilters:JSON.stringify(urlFilters)},style:{},addEventListener:(name,handler)=>listeners.set(name,handler),
-    querySelectorAll(selector) {if(["[data-task-id]",".task-card[data-task-id]"].includes(selector))return allCards();if(selector==="[data-stage]")return [...lanes.values()];if(selector===".drop-target,.drop-before,.drop-after")return [...lanes.values(),...allCards()];return [];},
+    querySelectorAll(selector) {if(["[data-task-id]",".task-card[data-task-id]"].includes(selector))return allCards();if(selector==="[data-kanban-display]")return kanbanDisplay;if(selector==="[data-task-filters]")return taskFilters;if(selector==="[data-status-filter]")return overviewButtons;if(selector==="[data-stage]")return [...lanes.values()];if(selector===".drop-target,.drop-before,.drop-after")return [...lanes.values(),...allCards()];return [];},
     querySelector(selector) {
       if(selector.startsWith('[data-stage="')) {const lane=lanes.get(selector.match(/="([^"]+)"/)[1]);if(selector.includes("[data-lane-count]"))return lane.count;if(selector.includes(".task-card"))return lane.querySelector(".task-card:not([hidden])");return lane;}
       if(selector==="#board-dialog[open]")return null;
@@ -48,7 +49,7 @@ function mount(savedPrefs = {}, urlFilters = {}, projects = [{id:"github:example
   vm.runInNewContext(source,sandbox);
   const hook={...sandbox.window.SymphonyHooks.TaskBoard,el,pushEvent:(event,payload)=>sent.push({event,payload})};
   hook.mounted();
-  return {hook,el,navigations,sent,saved,listeners,lanes,queued,running,backlog,done,elements,visible:()=>allCards().filter(card=>!card.hidden).map(card=>card.dataset.taskId),flush:()=>{const jobs=[...timers.values()];timers.clear();jobs.forEach(fn=>fn());}};
+  return {hook,el,navigations,sent,saved,listeners,lanes,queued,running,backlog,done,elements,kanbanDisplay,taskFilters,overviewButtons,visible:()=>allCards().filter(card=>!card.hidden).map(card=>card.dataset.taskId),flush:()=>{const jobs=[...timers.values()];timers.clear();jobs.forEach(fn=>fn());}};
 }
 // A single selector combines local scope and trusted remote boards without mixing their state.
 const projects = [{id:"github:example/repo",label:"example/repo"},{id:"github:example/other",label:"Other"}];
@@ -77,11 +78,44 @@ assert.equal(JSON.stringify(picker.hook.prefs),beforeRemote);assert.equal(picker
 assert.deepEqual(plain(picker.hook.filterValues("project", ["github:example/remote"])),[]);
 picker.elements.get("#filter-project").value = "example/remote";
 assert.deepEqual(plain(picker.hook.drawOptions("project")),[["github:example/remote","Remote project","http://localhost:8779/"]]);
-// Design project navigation keeps Design selected without carrying another project's task focus.
+// Each project navigation keeps the selected view without carrying another project's task focus.
 picker.el.dataset.boardView="design";
 assert.deepEqual(plain(picker.hook.drawOptions("project")),[["github:example/remote","Remote project","http://localhost:8779/?view=design"]]);
 picker.hook.toggle("project","github:example/remote");
 assert.equal(picker.navigations.at(-1),"http://localhost:8779/?view=design");
+for (const view of ["graph","gantt","kanban"]) {
+  picker.el.dataset.boardView=view;
+  picker.hook.toggle("project","github:example/remote");
+  assert.equal(picker.navigations.at(-1),"http://localhost:8779/" + (view === "kanban" ? "" : "?view=" + view));
+}
+const scopedLink=mount({}, {}, [projects[0]], [{id:"github:example/remote",label:"Remote",url:"http://localhost:8778/projects/remote/?view=graph&chat_task=old&chat_session=work%3Aold&task=old&priority=P1&panel=settings&design_ref=reviewed&design_section=data&design_item=entity&design_task=old"}]);
+scopedLink.el.dataset.boardView="gantt";
+scopedLink.hook.toggle("project","github:example/remote");
+assert.equal(scopedLink.navigations.at(-1),"http://localhost:8778/projects/remote/?view=gantt");
+// Display preferences affect the current view; task filters do not appear in Design.
+for (const view of ["design","graph","gantt","kanban"]) {
+  picker.el.dataset.boardView=view;picker.hook.apply();
+  assert.equal(picker.kanbanDisplay[0].hidden,view!=="kanban");
+  assert.equal(picker.taskFilters[0].hidden,view==="design");
+}
+const filters=mount({}, {project:"github:example/repo",status:"in_progress",priority:"P2",q:"running"},projects,projectLinks);
+const clickButton=(fixture,attributes,dataset={})=>{
+  const button={dataset,hasAttribute:key=>attributes.includes(key),closest:selector=>selector==="button"?button:null};
+  fixture.listeners.get("click")({target:button,button:0});
+};
+clickButton(filters,["data-clear-filters"]);filters.flush();
+assert.deepEqual(plain(filters.hook.prefs.project),["github:example/repo"]);
+assert.deepEqual(plain(filters.hook.prefs.status),[]);assert.equal(filters.hook.prefs.query,"");
+assert.equal(filters.sent.at(-1).payload.project,"github:example/repo");
+clickButton(filters,["data-status-filter"],{statusFilter:"in_progress"});filters.flush();
+assert.deepEqual(plain(filters.hook.prefs.status),["in_progress"]);
+assert.deepEqual(filters.visible(),["running"]);
+assert.equal(filters.overviewButtons[1].attributes["aria-pressed"],"true");
+assert.equal(filters.sent.at(-1).payload.status,"in_progress");
+clickButton(filters,["data-status-filter"],{statusFilter:""});
+assert.deepEqual(plain(filters.hook.prefs.status),[]);
+assert.equal(filters.overviewButtons[0].attributes["aria-pressed"],"true");
+
 const single = mount({}, {}, [projects[0]], projectLinks);
 assert.equal(single.elements.get("#filter-project").placeholder,"Example project");
 const multi = mount({project:projects.map(project=>project.id)}, {}, projects, projectLinks);
@@ -150,17 +184,18 @@ const snapshot=b.sent.at(-1).payload;assert.deepEqual(plain(snapshot.hidden_colu
         )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
-    def test_graph_switch_avoids_close_race_and_restores_opener_focus(self):
+    def test_details_navigation_avoids_close_races_and_restores_opener_focus(self):
         script = r'''
 const assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
 const listeners = new Map(), commands = [];
 let document;
 function button(id) {
-  return {id, isConnected:true, disabled:false, dataset:{}, getClientRects:()=>[{}],
-    closest:selector=>selector.includes("#workflow-graph-button") && id === "workflow-graph-button" ? graph : null,
+  const element={id, isConnected:true, disabled:false, dataset:{}, getClientRects:()=>[{}],
+    closest:selector=>selector.split(", ").includes(id) ? element : null,
     focus(){document.activeElement=this;}};
+  return element;
 }
-const title=button("task-title"), graph=button("workflow-graph-button"), close=button("close-dialog");
+const title=button("task-title"), graph=button("[data-board-view-link]"), close=button("close-dialog");
 let scroller={scrollTop:0};
 document={activeElement:title,body:{style:{overflow:""}},documentElement:{},
   addEventListener:(event,handler)=>listeners.set(event,handler),querySelectorAll:()=>[],
@@ -175,8 +210,11 @@ hook.mounted();
 // Live refresh keeps the body's position even when its DOM node is replaced.
 scroller.scrollTop=240;hook.beforeUpdate();scroller={scrollTop:0};hook.updated();
 assert.equal(scroller.scrollTop,240);assert.equal(dialog.scrollTop,0);
-listeners.get("click")({target:graph});
-assert.deepEqual(commands,[]);
+for (const destination of ["a[data-phx-link]", "[data-board-view-link]", "#board-project-picker", "#board-toolbar", "#board-search", "[data-status-filter]", "#operator-scope", ".task-card[data-task-id]", "[data-plan-task-id]", '[phx-click="open-settings"]', '[phx-click="open-task"]', '[phx-click="select-task"]', '[phx-click="main-chat"]', '[phx-click="select-issue"]', '[phx-click="select-pr-session"]', '[phx-click="operator-question"]']) {
+  listeners.get("click")({target:button(destination)});
+  assert.deepEqual(commands,[],destination+" emitted a competing close patch");
+}
+listeners.get("click")({target:button("outside-background")});assert.deepEqual(commands,["close-dialog"]);commands.length=0;
 document.activeElement=graph;hook.beforeUpdate();
 dialog.dataset.nonmodal="false";dialog.dataset.contentKey="graph";hook.updated();
 assert.equal(hook.previous,graph);

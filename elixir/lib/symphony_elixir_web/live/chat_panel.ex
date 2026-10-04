@@ -4,7 +4,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
   alias SymphonyElixir.Chat.{Artifacts, Sessions, ViewContext}
   alias SymphonyElixir.ProjectDirectory
-  alias SymphonyElixirWeb.{BrowserAuth, ChatNavigation, Endpoint, Markdown}
+  alias SymphonyElixirWeb.{BrowserAuth, ChatNavigation, Endpoint, Markdown, TaskOperator}
 
   @message_page_size 30
 
@@ -24,6 +24,10 @@ defmodule SymphonyElixirWeb.ChatPanel do
        task_title: nil,
        issue_tasks: [],
        issue_activity: %{},
+       operator_board: %{},
+       operator_payload: %{},
+       operator_design_url: nil,
+       controls_available: false,
        issue_query: "",
        pr_query: "",
        conversation_drafts: %{},
@@ -65,7 +69,26 @@ defmodule SymphonyElixirWeb.ChatPanel do
     socket =
       assign(
         socket,
-        Map.take(assigns, [:id, :auth, :csrf_token, :embedded, :project_id, :chat_id, :task_id, :session_id, :task_title, :issue_tasks, :issue_activity, :view_context, :read_only, :design_mode])
+        Map.take(assigns, [
+          :id,
+          :auth,
+          :csrf_token,
+          :embedded,
+          :project_id,
+          :chat_id,
+          :task_id,
+          :session_id,
+          :task_title,
+          :issue_tasks,
+          :issue_activity,
+          :view_context,
+          :read_only,
+          :design_mode,
+          :operator_board,
+          :operator_payload,
+          :operator_design_url,
+          :controls_available
+        ])
       )
 
     location = location(socket.assigns)
@@ -920,7 +943,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
   @impl true
   def render(assigns) do
-    project = assigns.project && assigns.project["id"]
+    project = (assigns.project && assigns.project["id"]) || if(assigns.embedded, do: assigns.project_id)
     issue = Enum.find(assigns.issue_tasks, &(&1.id == assigns.task_id and &1.project == project))
     prs = if issue, do: ChatNavigation.pull_requests(issue), else: []
     retained = assigns.chats |> Enum.filter(&(&1["task_id"] == assigns.task_id)) |> Enum.map(& &1["session_id"])
@@ -956,7 +979,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
       )
 
     ~H"""
-    <section id="chat-app" class={"chat-shell chat-panel #{if @embedded, do: "embedded-chat", else: ""}"} phx-hook="ChatWorkspace" data-embedded={to_string(@embedded)} data-design-mode={to_string(@design_mode)} data-chat-id={@chat && @chat["id"]} data-project={@project && @project["id"]} data-event-target={@myself} data-running={to_string(@running)} data-session-tab={@session_tab} data-workspace-view={@workspace_view}>
+    <section id="chat-app" class={"chat-shell chat-panel #{if @embedded, do: "embedded-chat", else: ""}"} phx-hook="ChatWorkspace" data-embedded={to_string(@embedded)} data-design-mode={to_string(@design_mode)} data-chat-id={@chat && @chat["id"]} data-project={@project && @project["id"]} data-task-id={@task_id} data-event-target={@myself} data-running={to_string(@running)} data-session-tab={@session_tab} data-workspace-view={@workspace_view}>
       <header :if={!@embedded || !@authorized || !is_nil(@unavailable)} class="board-header chat-header">
         <a :if={!@embedded} href={SymphonyElixirWeb.WorkspacePath.path("/")} class="brand">∿ Symphony</a>
         <nav :if={!@embedded} class="workspace-tabs" aria-label="Workspace"><a href={board_path(@project && @project["id"])}>Board</a><a href={chat_path(@project && @project["id"])} aria-current="page">Chat</a></nav>
@@ -1045,6 +1068,13 @@ defmodule SymphonyElixirWeb.ChatPanel do
         <span :if={@issue} class="operator-task-state" data-task-stage={task_stage(@issue)}>{task_stage(@issue)}</span>
         <span :if={@work_counts.working > 0} class="operator-working-count" data-working-count={@work_counts.working}>{@work_counts.working} active</span>
       </nav>
+      <section :if={@embedded && @authorized && !@design_mode && @issue} id="selected-task-context" class="selected-task-context" aria-label="Selected task">
+        <header class="selected-task-heading"><div><span>{@issue.identifier}</span><h2 title={@issue.title}>{@issue.title}</h2></div>
+          <div class="selected-task-links"><.link :if={@operator_design_url} class="button button-small" patch={@operator_design_url}>Design source</.link><button type="button" class="button button-small" phx-click="open-task" phx-value-id={@issue.id} aria-label={"Details: #{@issue.identifier}"}>Details</button></div>
+        </header>
+        <TaskOperator.panel id="task-chat-operator" compact={true} task={@issue} board={@operator_board} payload={@operator_payload} controls_available={@controls_available} />
+      </section>
+
 
       <div :if={!@embedded && !@loading && @authorized && is_nil(@unavailable)} hidden={@workspace_view == "list"} class="chat-session-tabs workspace-tabs" role="tablist" aria-label="Conversation workspace">
         <button :for={{tab, label} <- [{"chat", "Chat"}, {"context", "Context"}, {"outputs", "Outputs"}, {"sources", "Sources"}]} id={"session-#{tab}-tab"} role="tab" aria-selected={to_string(@session_tab == tab)} aria-controls={"session-#{tab}-content"} tabindex={if @session_tab == tab, do: "0", else: "-1"} phx-target={@myself} phx-click="session-tab" phx-value-tab={tab}>{label}<span :if={tab == "outputs" && @artifacts != []} class="chat-tab-count">{length(@artifacts)}</span><span :if={tab == "sources" && context_items(@chat) != []} class="chat-tab-count">{length(context_items(@chat))}</span></button>
@@ -1181,7 +1211,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
               <label for="chat-message-input" class="visually-hidden">Message {if @issue, do: if(@selected_session, do: @selected_session.name <> " work agent", else: @task_agent_name <> " task agent"), else: project_label(@project)}</label>
               <textarea id="chat-message-input" name="message" data-draft={@draft} data-draft-revision={@client_id} placeholder={if @design_mode, do: "Brainstorm an idea or ask about this design…", else: if(@issue, do: if(@selected_session, do: "Message work agent…", else: "Message task agent…"), else: "Describe a task or ask #{project_label(@project)}…")} rows="2" maxlength="16000" disabled={is_nil(@project)}>{@draft}</textarea>
               <div class="composer-bottom"><span class="composer-project">{project_label(@project)}</span>
-                <button :if={@running} id="stop-response-button" type="button" class="button" phx-target={@myself} phx-click="stop-response" phx-value-chat_id={@chat["id"]} title="Stop this response; coding tasks keep running">■ Stop</button>
+                <button :if={@running} id="stop-response-button" type="button" class="button" phx-target={@myself} phx-click="stop-response" phx-value-chat_id={@chat["id"]} title="Stop this reply; coding work continues">■ Stop reply</button>
                 <button id="send-message-button" class="button button-primary" disabled={is_nil(@project)} phx-disable-with="Sending…" aria-label={if @queueing, do: "Queue message", else: "Send message"}>{if @queueing, do: "Queue ↑", else: "Send ↑"}</button>
               </div>
             </form>

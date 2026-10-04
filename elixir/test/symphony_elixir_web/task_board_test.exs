@@ -164,7 +164,8 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     assert task(tasks, "2").stage == "ready"
     assert task(tasks, "3").stage == "ready"
     assert task(tasks, "3").lane == "work"
-    assert task(tasks, "3").attention =~ "human-accepted Done"
+    assert task(tasks, "3").attention == nil
+    assert task(tasks, "3").dependency_error =~ "human-accepted Done"
     assert task(tasks, "4").attention =~ "Depends on:"
 
     tasks = TaskBoard.project([%{backlog | state: "closed"}, waiting], %{}, %{}, settings()).tasks
@@ -181,7 +182,7 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     assert task(tasks, "1").stage == "running"
     assert task(tasks, "1").runtime.status == "running"
     assert task(tasks, "2").stage == "ready"
-    assert task(tasks, "2").attention == "Retry scheduled"
+    assert task(tasks, "2").attention == nil
     assert task(tasks, "3").attention == "Worker needs input"
     assert task(tasks, "4").stage == "review"
     assert task(tasks, "4").handoff == handoff
@@ -511,7 +512,7 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     board = TaskBoard.project(issues, runtime, control, settings())
     assert task(board.tasks, "1").blocker_reason == "codex turn requires operator input"
     assert task(board.tasks, "1").execution_status == "blocked"
-    assert task(board.tasks, "2").blocker_reason == "Worker response timed out; retry scheduled"
+    assert task(board.tasks, "2").blocker_reason == nil
     assert task(board.tasks, "3").blocker_reason == "Token budget"
     assert task(board.tasks, "3").execution_status == "held"
     assert task(board.tasks, "4").execution_status == "unknown"
@@ -534,10 +535,9 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     failed = task(board.tasks, "1")
     blocked = task(board.tasks, "2")
 
-    refute failed.blocker_reason =~ "private-secret"
-    refute failed.blocker_reason =~ "RuntimeError"
-    refute failed.blocker_reason =~ "private/config.ex"
-    assert String.length(failed.blocker_reason) < 240
+    assert failed.blocker_reason == nil
+    assert failed.attention == nil
+    assert failed.runtime.error == private
     assert blocked.stage == "ready"
     assert blocked.lane == "work"
     assert blocked.execution_status == "blocked"

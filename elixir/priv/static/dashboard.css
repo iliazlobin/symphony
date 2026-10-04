@@ -58,6 +58,8 @@ input, select {
 .dashboard-shell {
   --control-height: 32px;
   --control-radius: 6px;
+  --board-pane-height: 56dvh;
+  --chat-pane-height: 44dvh;
   color-scheme: light;
   --bg: light-dark(#fcfcfc, #17181c);
   --panel: light-dark(#fff, #202126);
@@ -545,10 +547,10 @@ summary { cursor: pointer; color: var(--accent); }
   .board-dialog[data-nonmodal=true] { right: 380px; }
 }
 @media (max-width: 860px) {
-  .dashboard-shell[data-chat-open=true] { height: 100dvh; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 42dvh) minmax(0, 58dvh); overflow: hidden; }
+  .dashboard-shell[data-chat-open=true] { height: 100dvh; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, var(--board-pane-height)) minmax(0, var(--chat-pane-height)); overflow: hidden; }
   .dashboard-shell[data-chat-open=true] .board-main { height: 100%; min-height: 0; overflow-y: auto; }
   .management-chat-dock { position: relative; inset: auto; width: 100%; height: 100%; border-left: 0; border-top: 1px solid var(--line); }
-  .board-dialog[data-nonmodal=true] { inset: 12px 12px auto; width: calc(100% - 24px); max-height: calc(42dvh - 24px); }
+  .board-dialog[data-nonmodal=true] { inset: 12px 12px auto; width: calc(100% - 24px); max-height: calc(var(--board-pane-height) - 24px); }
 }
 
 .settings-scope, .settings-section-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
@@ -839,7 +841,7 @@ h2, h3, strong { font-weight: 500; }
 .chat-queue { border-radius: 8px; }
 .chat-queue ol { max-height: 120px; }
 @media (max-width: 860px) {
-  .board-dialog[data-kind=task] { max-height: calc(42dvh - 24px); }
+  .board-dialog[data-kind=task] { max-height: calc(var(--board-pane-height) - 24px); }
   .dialog-heading h2 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 }
 @media (max-width: 540px) {
@@ -941,7 +943,7 @@ h2, h3, strong { font-weight: 500; }
   #board-search { flex-basis: 150px; min-width: 100px; }
 }
 @media (max-width: 860px) {
-  .dashboard-shell[data-chat-open=true] { grid-template-rows: minmax(0, 56dvh) minmax(0, 44dvh); }
+  .dashboard-shell[data-chat-open=true] { grid-template-rows: minmax(0, var(--board-pane-height)) minmax(0, var(--chat-pane-height)); }
   .dashboard-shell .board-main, .dashboard-shell[data-chat-open=true] .board-main { overflow: visible; z-index: 22; }
   .board-header { min-height: 44px; padding: 6px 12px; }
   .board-location { flex: 1; }
@@ -1036,7 +1038,7 @@ h2, h3, strong { font-weight: 500; }
 .task-card[data-filter-context=true] .card-filter-context { display: block; }
 .task-card[data-filter-context=true] { border-style: dashed; }
 /* Design is a working canvas; execution filters remain with the planning views. */
-.dashboard-shell[data-board-view=design] :is(#board-toolbar,#board-search,.board-summary,#board-context,.board-footer,#board-dispatch-guidance) { display: none; }
+.dashboard-shell[data-board-view=design] :is(#board-search,.board-summary,#board-context,.board-footer,#board-dispatch-guidance,[data-task-filters]) { display: none; }
 .dashboard-shell[data-board-view=design] .board-content { padding-top: 16px; }
 .design-workspace { display: flex; flex-direction: column; gap: 16px; min-height: 0; flex: 1; color: var(--fg); }
 .design-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
@@ -1089,3 +1091,55 @@ h2, h3, strong { font-weight: 500; }
 }
 
 .design-chat-mode { color: var(--accent); background: var(--tint); border-radius: 5px; padding: 3px 7px; font-size: 11px; margin-left: auto; }
+
+/* Project overview and task context use the same task authority as the board. */
+[data-task-filters][hidden], [data-kanban-display][hidden], .board-summary[hidden] { display: none; }
+.project-state-overview { display: flex; gap: 6px; align-items: center; flex-shrink: 0; overflow-x: auto; padding: 0 0 10px; scrollbar-width: thin; }
+.project-state-overview button { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; min-height: var(--control-height); padding: 4px 9px; border: 1px solid var(--line); border-radius: var(--control-radius); color: var(--muted); background: var(--panel); font: inherit; font-size: 11px; cursor: pointer; }
+.project-state-overview button strong { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--fg); }
+.project-state-overview button:hover { color: var(--fg); border-color: var(--accent); }
+.project-state-overview button[aria-pressed=true] { color: var(--accent); background: var(--tint); border-color: var(--accent); }
+.project-state-overview button[aria-pressed=true] strong { color: inherit; }
+.project-state-overview button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.selected-task-context { flex-shrink: 0; max-height: 38%; overflow-y: auto; overscroll-behavior: contain; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--bg); }
+.selected-task-heading { display: flex; align-items: start; gap: 10px; margin-bottom: 8px; }
+.selected-task-heading > div { flex: 1; min-width: 0; }
+.selected-task-heading > div > span { color: var(--muted); font-size: 10px; }
+.selected-task-heading h2 { margin: 3px 0 0; font-size: 13px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.selected-task-heading > .button { flex-shrink: 0; }
+.task-operator { display: flex; flex-direction: column; gap: 8px; font-size: 12px; line-height: 1.45; }
+.task-operator p { margin: 0; }
+.task-operator .task-operator-state, .task-operator .task-operator-evidence, .task-operator .task-operator-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.task-operator .task-operator-outcome { color: var(--muted); }
+.task-operator .task-operator-blocker { color: var(--warn); background: var(--warn-bg); padding: 6px 8px; border-radius: var(--control-radius); }
+.task-operator .task-operator-actions .button { min-height: var(--control-height); padding: 5px 9px; font-size: 11px; }
+.task-operator[data-compact=true] { gap: 6px; font-size: 11px; }
+.task-operator[data-compact=true] .task-operator-outcome { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.task-operator code { font-size: 10px; overflow-wrap: anywhere; }
+@media (max-width: 860px) {
+  .selected-task-context { padding: 8px 12px; max-height: 36%; }
+  .project-state-overview { padding-bottom: 6px; gap: 4px; }
+  .project-state-overview button { padding: 3px 7px; font-size: 10px; }
+  .dashboard-shell[data-board-view=design] .board-content { padding-top: 8px; }
+}
+@media (pointer: coarse) {
+  .board-view-picker { height: auto; }
+  .board-view-picker a { min-height: 40px; }
+  .project-state-overview button, .selected-task-context .button, .task-operator .task-operator-actions .button { min-height: 40px; }
+}
+
+.task-operator-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.task-operator-heading strong { font-weight: 600; }
+.task-operator-blocker > strong, .task-operator-blocker > span { display: block; }
+.task-operator .task-operator-evidence { display: grid; margin: 0; gap: 4px; }
+.task-operator-evidence > div { display: grid; grid-template-columns: 125px minmax(0, 1fr); align-items: baseline; gap: 8px; }
+.task-operator-evidence dt { color: var(--muted); font-size: 11px; }
+.task-operator-evidence dd { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px; margin: 0; font-size: 11px; }
+.task-operator-help { font-size: 10px; }
+.task-operator-compact .task-operator-evidence > div { grid-template-columns: 100px minmax(0, 1fr); gap: 6px; }
+
+.selected-task-links { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; flex-shrink: 0; }
+.selected-task-links .button { padding: 4px 7px; font-size: 10px; }
+
+.task-execution-details > summary { color: var(--muted); font-size: 12px; cursor: pointer; }
+.task-execution-details[open] > summary { margin-bottom: 12px; }

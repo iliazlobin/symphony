@@ -2,6 +2,7 @@ defmodule SymphonyElixirWeb.TaskFilters do
   @moduledoc "Read-only task visibility shared by the board's planning views."
 
   alias SymphonyElixir.TaskKind
+  alias SymphonyElixirWeb.TaskOperator
 
   @filters ~w(project status priority kind milestone label assignee)
   @metadata ~w(milestone label assignee)
@@ -17,7 +18,7 @@ defmodule SymphonyElixirWeb.TaskFilters do
     board
     |> Map.get(:tasks, [])
     |> tasks()
-    |> Enum.filter(&visible?(&1, selections, query, project))
+    |> Enum.filter(&visible?(&1, selections, query, project, board[:control] || %{}))
     |> Enum.map(&field(&1, :id))
     |> Enum.uniq()
   end
@@ -27,14 +28,14 @@ defmodule SymphonyElixirWeb.TaskFilters do
   defp tasks(tasks) when is_list(tasks), do: Enum.filter(tasks, &(is_map(&1) and is_binary(field(&1, :id))))
   defp tasks(_tasks), do: []
 
-  defp visible?(task, selections, query, project) do
-    card = card(task)
+  defp visible?(task, selections, query, project, control) do
+    card = card(task, control)
 
     in_project?(card.project, project) and
       filters_match?(card, selections) and search?(task, card.kind, card.metadata, query)
   end
 
-  defp card(task) do
+  defp card(task, control) do
     stage = field(task, :stage)
 
     %{
@@ -43,7 +44,7 @@ defmodule SymphonyElixirWeb.TaskFilters do
       lane: if(stage in ["ready", "running"], do: lane(stage), else: field(task, :lane) || stage),
       priority: priority(field(task, :priority)),
       kind: field(task, :task_kind) || TaskKind.from_labels(list(field(task, :labels))),
-      attention: field(task, :attention),
+      attention: TaskOperator.attention?(task, control),
       metadata: metadata(task)
     }
   end
@@ -64,7 +65,7 @@ defmodule SymphonyElixirWeb.TaskFilters do
     valid_metadata?(key, value) and metadata_matches?(card.metadata[key], value)
   end
 
-  defp status_matches?(card, "attention"), do: not is_nil(card.attention)
+  defp status_matches?(card, "attention"), do: card.attention
   defp status_matches?(card, value), do: value in [card.stage, card.lane]
   defp metadata_matches?(values, "__none__"), do: values == []
   defp metadata_matches?(values, value), do: value in values

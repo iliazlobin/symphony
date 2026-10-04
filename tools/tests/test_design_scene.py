@@ -42,6 +42,19 @@ function legacy() {
 
 @unittest.skipUnless(shutil.which("node"), "Node is required for scene contract tests")
 class DesignSceneTests(unittest.TestCase):
+    def test_human_outline_edits_full_text_in_the_native_scene_and_keeps_review_history(self):
+        self.run_scene(r'''
+const baseline=model.migrate(legacy(),project), text="Field and invariant\n".repeat(90);
+const next=model.edit(baseline,"data","note-entities",{title:"Domain entities",text});
+assert(next); assert.equal(next.document_id,baseline.document_id); assert.equal(next.revision,baseline.revision+1);
+assert.equal(model.fields(next).entities,text); assert.equal(model.fields(baseline).entities,"Original entities");
+assert.deepEqual(model.changes(next,baseline).map(row=>[row.change,row.section,row.id]),[["Change","data","note-entities"]]);
+assert(model.changes(next,null).length>0); assert.equal(model.changes(baseline,baseline).length,0);
+assert.equal(model.edit(next,"data","missing",{title:"Missing",text}),null);
+assert.equal(model.edit(next,"data","note-entities",{title:"x".repeat(161),text}),null);
+assert.equal(model.edit(next,"data","note-entities",{title:"Entities",text:"x".repeat(12001)}),null);
+''')
+
     def run_scene(self, script):
         result = subprocess.run(
             [shutil.which("node"), "--input-type=module", "-e", FIXTURE + script,

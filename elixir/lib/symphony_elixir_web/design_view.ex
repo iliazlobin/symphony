@@ -26,11 +26,12 @@ defmodule SymphonyElixirWeb.DesignView do
       )
 
     ~H"""
-    <section id={@workspace_id} class="design-workspace" phx-hook="DesignWorkspace" phx-update="ignore" data-design-project={@project} data-design-editor-js={SymphonyElixirWeb.StaticAssets.design_editor_js_url()} data-design-editor-css={SymphonyElixirWeb.StaticAssets.design_editor_css_url()} data-design-editor-assets={SymphonyElixirWeb.StaticAssets.design_editor_asset_path()} aria-label={"#{@label} design workspace"}>
+    <section id={@workspace_id} class="design-workspace" phx-hook="DesignWorkspace" phx-update="ignore" data-design-durable="true" data-design-project={@project} data-design-editor-js={SymphonyElixirWeb.StaticAssets.design_editor_js_url()} data-design-editor-css={SymphonyElixirWeb.StaticAssets.design_editor_css_url()} data-design-editor-assets={SymphonyElixirWeb.StaticAssets.design_editor_asset_path()} aria-label={"#{@label} design workspace"}>
       <header class="design-toolbar">
         <div class="design-title"><h2>Design</h2><span class="design-draft-badge">Working draft</span></div>
-        <div class="design-toolbar-meta"><span data-design-storage-label role="status" aria-live="polite">Browser draft</span><a :if={@published_url} href={@published_url} target="_blank" rel="noopener noreferrer">Published design ↗</a></div>
+        <div class="design-toolbar-meta"><span data-design-storage-label role="status" aria-live="polite">Opening saved design…</span><button type="button" class="button button-small" data-design-review>Review changes</button><a :if={@published_url} href={@published_url} target="_blank" rel="noopener noreferrer">Published design ↗</a></div>
       </header>
+      <div class="design-recovery" data-design-recovery hidden role="status"><span data-design-recovery-message></span><button type="button" class="button button-small" data-design-use-saved>Open project draft</button><button type="button" class="button button-small" data-design-import>Save browser draft to project</button></div>
       <div class="design-layout">
         <aside class="design-guidance">
           <nav class="design-outline" role="tablist" aria-label="Design steps" aria-orientation="vertical">
@@ -42,8 +43,9 @@ defmodule SymphonyElixirWeb.DesignView do
           <div class="design-starting-points"><button :if={@example_available} type="button" data-design-example>Add example</button></div>
         </aside>
         <section id="design-canvas-panel" class="design-editor design-visual-editor" role="tabpanel" aria-labelledby="design-tab-brief">
-          <header class="design-panel-heading"><div><h3 data-design-heading>Shape the idea</h3><p data-design-description>Write on the board. Connect ideas when it helps.</p></div><button type="button" class="design-agent-prompt" data-design-prompt="Help me brainstorm a small first version. Ask one useful clarifying question before suggesting components.">Brainstorm ↗</button></header>
-          <div class="design-canvas-body"><div class="design-canvas-stage" data-design-canvas tabindex="0" aria-label="Design whiteboard"><p class="design-canvas-loading">Opening your whiteboard…</p></div></div>
+          <header class="design-panel-heading"><div><h3 data-design-heading>Shape the idea</h3><p data-design-description>Write on the board. Connect ideas when it helps.</p></div><div class="design-heading-actions"><button type="button" class="button button-small" data-design-outline-toggle aria-expanded="false" aria-controls="design-item-outline">Outline</button><button type="button" class="design-agent-prompt" data-design-prompt="Help me brainstorm a small first version. Ask one useful clarifying question before suggesting components.">Brainstorm ↗</button></div></header>
+          <div class="design-canvas-body"><div class="design-canvas-stage" data-design-canvas tabindex="0" aria-label="Design whiteboard"><p class="design-canvas-loading">Opening your whiteboard…</p></div><aside id="design-item-outline" class="design-item-outline" data-design-outline hidden aria-label="Structured design items"><header><strong>Outline</strong><button type="button" data-design-outline-toggle aria-label="Close outline">×</button></header><div data-design-items></div><div data-design-inspector></div></aside></div>
+          <section class="design-review-panel" data-design-review-panel hidden role="region" aria-label="Review design changes"><header><h3>Review changes</h3><button type="button" class="button button-small" data-design-review-close aria-label="Close design review">Close ×</button></header><div class="design-review-body"><p data-design-review-description>Save this version as the design baseline. You can keep editing a new draft.</p><ul data-design-change-list></ul><div class="design-review-actions"><button type="button" class="button button-primary" data-design-confirm-review>Mark design reviewed</button><span data-design-review-label></span></div></div></section>
           <aside class="design-canvas-suggestions" data-canvas-suggestions aria-live="polite" hidden></aside>
           <p class="design-canvas-status" data-canvas-status role="status" aria-live="polite"></p>
         </section>

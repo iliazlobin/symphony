@@ -394,6 +394,7 @@ defmodule SymphonyElixirWeb.TaskBoard do
   defp controlled_stage(_runtime, "worker_auth_required", _handoff, _terminal, _queued, false), do: "ready"
   defp controlled_stage(_runtime, hold, handoff, _terminal, queued, false), do: stage(nil, hold, handoff, false, queued)
 
+  defp blocker_reason(_runtime, _hold, nil), do: nil
   defp blocker_reason(_runtime, "worker_auth_required", _attention), do: "Worker sign-in required"
   defp blocker_reason(%{error: error}, _hold, _attention) when is_binary(error) and error != "", do: WorkerFailure.summary(error)
   defp blocker_reason(_runtime, hold, attention) when is_binary(hold), do: attention || humanize_hold(hold)
@@ -451,15 +452,17 @@ defmodule SymphonyElixirWeb.TaskBoard do
   defp attention(%{status: status} = runtime, _hold, _admitted, _issue, _tracker, _terminal, _ledger) when status in ["blocked", "retrying"] do
     if WorkerFailure.authentication_required?(runtime[:error]),
       do: "Worker sign-in required",
-      else: if(status == "blocked", do: "Worker needs input", else: "Retry scheduled")
+      else: if(status == "blocked", do: "Worker needs input", else: nil)
   end
 
   defp attention(_runtime, hold, _admitted, _issue, _tracker, _terminal, _ledger) when is_binary(hold), do: humanize_hold(hold)
 
   defp attention(_runtime, _hold, admitted, issue, tracker, false, ledger) do
-    if active?(issue, tracker) and TaskRouting.routable?(issue, ledger, tracker),
-      do: get_in(admitted.native_ref || %{}, ["admission_reason"]),
-      else: nil
+    reason =
+      if active?(issue, tracker) and TaskRouting.routable?(issue, ledger, tracker),
+        do: get_in(admitted.native_ref || %{}, ["admission_reason"])
+
+    if reason == "Dependencies require human-accepted Done in this project.", do: nil, else: reason
   end
 
   defp attention(_runtime, _hold, _admitted, _issue, _tracker, _terminal, _ledger), do: nil

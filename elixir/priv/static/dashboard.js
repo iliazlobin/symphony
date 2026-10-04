@@ -86,7 +86,7 @@
           const directory = parse(this.el.dataset.projectLinks, []);
           return parse(this.el.dataset.projects, []).map(p => [p.id, directory.find(link => link.id === p.id)?.label || p.label]);
         }
-        if (key === "status") return [...lanes, ["ready", "Queued"], ["running", "Running"], ["attention", "Needs input"]];
+        if (key === "status") return [...lanes, ["ready", "Queued"], ["running", "Running"], ["attention", "Needs attention"]];
         if (key === "priority") return [["P1", "P1 · High"], ["P2", "P2 · Normal"], ["P3", "P3 · Low"], ["P4", "P4 · Lowest"], ["—", "Unspecified"]];
         if (key === "kind") return parse(this.el.dataset.taskKinds, []).filter(value => typeof value === "string").map(value => [value, value === "invalid" ? "Needs classification" : value[0].toUpperCase() + value.slice(1)]);
         const options = new Map(this.metadataOptions?.[key] || []);
@@ -97,9 +97,10 @@
         const local = this.options("project");
         const remote = parse(this.el.dataset.projectLinks, []).filter(link => !local.some(([id]) => id === link.id));
         return [["", "All projects"], ...local, ...remote.map(link => {
-          if (this.el.dataset.boardView !== "design") return [link.id, link.label, link.url];
           const target = new URL(link.url, window.location.href);
-          target.searchParams.set("view", "design");
+          for (const key of [...boardFilters, "q", "sort", "task", "chat_task", "chat_session", "panel", "chat", "design_ref", "design_section", "design_item", "design_task"]) target.searchParams.delete(key);
+          if (["design", "graph", "gantt"].includes(this.el.dataset.boardView)) target.searchParams.set("view", this.el.dataset.boardView);
+          else target.searchParams.delete("view");
           return [link.id, link.label, target.href];
         })];
       };
@@ -208,6 +209,10 @@
         if (density) density.value = this.prefs.density;
         if (selection) selection.value = this.prefs.theme;
         this.el.querySelector("[data-board-sort]").value = this.prefs.sort;
+        const view = this.el.dataset.boardView || "kanban";
+        this.el.querySelectorAll("[data-kanban-display]").forEach(control => control.hidden = view !== "kanban");
+        this.el.querySelectorAll("[data-task-filters]").forEach(control => control.hidden = view === "design");
+        this.el.querySelectorAll("[data-status-filter]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.statusFilter ? this.prefs.status.length === 1 && this.prefs.status[0] === button.dataset.statusFilter : !this.prefs.status.length)));
       };
       this.drawOptions = key => {
         const input = this.el.querySelector("#filter-" + key), list = this.el.querySelector("#options-" + key);
@@ -403,7 +408,8 @@
         else if (button.dataset.filterToggle) { const key = button.dataset.filterToggle; if (this.popup === key) this.closeFilter(); else { this.openFilter(key); this.el.querySelector("#filter-" + key).focus(); } }
         else if (button.dataset.key) this.toggle(button.dataset.key, button.dataset.value);
         else if (button.dataset.removeKey) { this.prefs[button.dataset.removeKey] = this.prefs[button.dataset.removeKey].filter(v => v !== button.dataset.removeValue); this.apply(); this.save(); }
-        else if (button.hasAttribute("data-clear-filters")) { for (const key of boardFilters) this.prefs[key] = []; this.prefs.query = ""; this.el.querySelector("[data-board-search]").value = ""; this.closeFilter(); this.apply(); this.save(); }
+        else if (button.hasAttribute("data-status-filter")) { this.prefs.status = button.dataset.statusFilter ? [button.dataset.statusFilter] : []; this.closeFilter(); this.apply(); this.save(); }
+        else if (button.hasAttribute("data-clear-filters")) { for (const key of boardFilters.filter(key => key !== "project")) this.prefs[key] = []; this.prefs.query = ""; this.el.querySelector("[data-board-search]").value = ""; this.closeFilter(); this.apply(); this.save(); }
         else if (button.dataset.copy) navigator.clipboard?.writeText(button.dataset.copy).then(() => { button.textContent = "Copied"; }).catch(() => { button.textContent = "Copy unavailable"; });
       });
       on("change", event => {
@@ -480,8 +486,8 @@
       this.closeSelector = this.el.dataset.closeSelector || "#close-dialog";
       this.focusDialog = () => (this.el.querySelector(this.closeSelector) || this.el.querySelector("[data-dialog-focus]"))?.focus({preventScroll: true});
       document.addEventListener("click", event => {
-        // Links and Graph handle their own navigation; closing details here can overwrite it.
-        if (event.target.closest("a[data-phx-link], #workflow-graph-button")) return;
+        // Scope and task navigation replace details themselves. An extra close patch can overwrite their destination.
+        if (event.target.closest("a[data-phx-link], [data-board-view-link], #board-project-picker, #board-toolbar, #board-search, [data-status-filter], #operator-scope, .task-card[data-task-id], [data-plan-task-id], [phx-click=\"open-settings\"], [phx-click=\"open-task\"], [phx-click=\"select-task\"], [phx-click=\"main-chat\"], [phx-click=\"select-issue\"], [phx-click=\"select-pr-session\"], [phx-click=\"operator-question\"]")) return;
         if (this.nonmodal && this.el.open && !this.el.contains(event.target)) this.closeDialog();
       }, {capture: true, signal: this.abort.signal});
       document.addEventListener("keydown", event => {
@@ -547,6 +553,16 @@
     mounted() {
       this.abort = new AbortController();
       this.handleEvent("focus-chat-session", () => requestAnimationFrame(() => this.el.querySelector("#chat-message-input")?.focus({preventScroll: true})));
+      this.handleEvent("task-chat-prompt", ({task_id, project_id, prompt}) => requestAnimationFrame(() => {
+        const input = this.el.querySelector("#chat-message-input");
+        if (!input || input.disabled || this.el.dataset.designMode === "true" || this.el.dataset.project !== project_id || this.el.dataset.taskId !== task_id || typeof prompt !== "string" || !prompt || prompt.length > 8000) return;
+        const draft = input.value;
+        const next = draft === prompt || draft.endsWith("\n\n" + prompt) ? draft : draft.trim() ? draft + "\n\n" + prompt : prompt;
+        if (next.length > 16000) { input.focus({preventScroll: true}); return; }
+        input.value = next;
+        input.dispatchEvent(new Event("input", {bubbles: true}));
+        input.focus({preventScroll: true}); this.resizeComposer();
+      }));
       this.chatId = this.el.dataset.chatId;
       this.atBottom = true;
       this.running = this.el.dataset.running === "true";
@@ -1248,7 +1264,7 @@
       if (this.el.querySelector("[data-design-canvas]") && window.SymphonyDesignCanvas?.load) {
         this.status("Opening your whiteboard…");
         window.SymphonyDesignCanvas.load(this.el.dataset.designEditorJs, this.el.dataset.designEditorCss, this.el.dataset.designEditorAssets)
-          .then(editor => { if (!this.abort.signal.aborted) this.initialize(editor); })
+          .then(editor => { if (!this.abort.signal.aborted) return this.initialize(editor); })
           .catch(() => { if (!this.abort.signal.aborted) {
             this.status("Whiteboard unavailable · your saved draft is kept");
             const message = this.el.querySelector(".design-canvas-loading");
@@ -1256,14 +1272,21 @@
           } });
       } else this.initialize(window.SymphonyDesignCanvas);
     },
-    initialize(editor) {
+    async initialize(editor) {
       this.editor = editor;
       this.load();
+      if (window.SymphonyDesignSync && this.el.dataset.designDurable === "true") {
+        this.sync = new window.SymphonyDesignSync(this);
+        this.initialCanvas = await this.sync.open(this.initialCanvas);
+        if (this.abort.signal.aborted) return;
+      }
       if (editor && this.el.querySelector("[data-design-canvas]")) {
         this.canvas = editor.mount(this.el, {
           fields: this.fields, document: this.initialCanvas,
           onChange: () => { this.saveSoon(); this.progress(); }, ask: instruction => this.ask(instruction),
+          plan: (section, item) => this.sync?.plan(section, item),
           canApply: () => {
+            if (this.sync && !this.sync.canWrite()) return false;
             try {
               if (localStorage.getItem(this.key) !== this.loadedRaw) { this.status("Draft changed in another tab · reload before applying"); return false; }
               return true;
@@ -1274,6 +1297,7 @@
         if (this.loadedVersion < 3) this.recoveryRaw = this.loadedRaw;
       }
       window.addEventListener?.("pagehide", () => this.flush(), {signal: this.abort.signal});
+      window.addEventListener?.("phx:page-loading-stop", () => this.sync?.sourceReference(), {signal: this.abort.signal});
       if (typeof document !== "undefined") document.addEventListener?.("click", event => {
         const button = event.target.closest?.("[data-review-design]");
         if (!button || !this.canvas) return;
@@ -1296,6 +1320,10 @@
         const tab = event.target.closest("[data-design-section]");
         if (tab) { this.select(tab.dataset.designSection); this.save(); }
         if (event.target.closest("[data-design-example]")) this.example();
+        if (event.target.closest("[data-design-outline-toggle]")) {
+          const panel = this.el.querySelector("[data-design-outline]");
+          if (panel) { panel.hidden = !panel.hidden; for (const button of this.el.querySelectorAll("[data-design-outline-toggle]")) button.setAttribute("aria-expanded", String(!panel.hidden)); }
+        }
         if (event.target.closest("[data-design-feedback]")) this.ask("Review the current design step. Suggest at most three focused improvements. For concrete corrections to structured cards or connectors, call symphony_propose_design with the supplied project, section, base_document and base_revision. Do not treat a freehand sketch as modelled structure.");
         const prompt = event.target.closest("[data-design-prompt]");
         if (prompt) this.ask(prompt.dataset.designPrompt);
@@ -1308,6 +1336,7 @@
           (index + (["ArrowDown", "ArrowRight"].includes(event.key) ? 1 : -1) + this.tabs.length) % this.tabs.length;
         this.select(this.tabs[next].dataset.designSection); this.tabs[next].focus(); this.save();
       }, {signal: this.abort.signal});
+      this.sync?.sourceReference();
     },
     load() {
       let draft = null, invalid = false, raw = null;
@@ -1387,6 +1416,7 @@
       }
       catch { this.saved = false; }
       this.status(this.saved ? "Draft · saved in this browser" : "Draft · not saved; keep this tab open");
+      this.sync?.save(canvas);
     },
     status(text) { const label = this.el.querySelector("[data-design-storage-label]"); if (label) label.textContent = text; },
     progress() {
@@ -1456,7 +1486,7 @@
       input.dispatchEvent(new Event("input", {bubbles: true})); input.focus();
       this.status("Question ready in project chat · review and send");
     },
-    destroyed() { this.flush(); this.canvas?.destroy(); this.abort.abort(); }
+    destroyed() { this.flush(); this.canvas?.destroy(); this.sync?.destroy(); this.abort.abort(); }
   };
   window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace, IssueSwitcher, IssuePRMenu, WorkflowCanvas, DesignWorkspace};
 })();

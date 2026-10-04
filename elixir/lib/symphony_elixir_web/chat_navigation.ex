@@ -170,9 +170,10 @@ defmodule SymphonyElixirWeb.ChatNavigation do
 
     cond do
       lane == "done" -> "done"
-      field(task, :stage) == "running" or field(runtime, :status) == "running" or chat_running?(activity) -> "work"
+      field(task, :stage) == "running" or field(runtime, :status) == "running" -> "work"
       lane == "review" -> "review"
       attention?(task, activity) -> "attention"
+      chat_running?(activity) -> "work"
       lane == "work" -> "work"
       true -> "backlog"
     end

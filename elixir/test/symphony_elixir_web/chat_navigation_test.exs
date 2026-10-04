@@ -108,6 +108,14 @@ defmodule SymphonyElixirWeb.ChatNavigationTest do
     assert List.last(groups).issues |> hd() |> Map.fetch!(:id) == id("done")
   end
 
+  test "a responding management chat never hides execution blockers or a candidate needing review" do
+    tasks = [task("held", "ready", attention: "Worker sign-in required"), task("review", "review", attention: "Awaiting acceptance")]
+    activities = Map.new(["held", "review"], &{id(&1), activity(&1, status: "running")})
+    groups = ChatNavigation.issues(tasks, activities, @project)
+    assert Enum.map(groups, & &1.id) == ["review", "attention"]
+    assert hd(List.last(groups).issues).id == id("held")
+  end
+
   test "Work combines queued and running tasks without changing execution stages" do
     tasks = [task("queued", "ready"), task("active", "running")]
     assert [%{id: "work", issues: issues}] = ChatNavigation.issues(tasks, %{}, @project, "work")

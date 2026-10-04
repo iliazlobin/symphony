@@ -1,7 +1,7 @@
 defmodule SymphonyElixirWeb.TaskExecution do
   @moduledoc "Presents recorded execution progress without inferring worker or review completion."
 
-  alias SymphonyElixir.WorkerFailure
+  alias SymphonyElixir.{IssueAcceptance, PRWork, WorkerFailure}
 
   @type metric :: %{label: String.t(), value: String.t(), title: String.t(), used: non_neg_integer() | nil}
   @type summary :: %{
@@ -9,7 +9,8 @@ defmodule SymphonyElixirWeb.TaskExecution do
           metrics: [metric()],
           note: String.t() | nil,
           cancel?: boolean(),
-          retry?: boolean()
+          retry?: boolean(),
+          renew_attempts?: boolean()
         }
 
   @spec summary(map(), map(), boolean()) :: summary()
@@ -24,7 +25,8 @@ defmodule SymphonyElixirWeb.TaskExecution do
       metrics: uncontrolled_metrics(task, available?),
       note: note,
       cancel?: false,
-      retry?: false
+      retry?: false,
+      renew_attempts?: false
     }
   end
 
@@ -40,7 +42,8 @@ defmodule SymphonyElixirWeb.TaskExecution do
       metrics: metrics(usage, budgets, available?),
       note: note,
       cancel?: cancel?,
-      retry?: retry?
+      retry?: retry?,
+      renew_attempts?: renewable_attempts?(task, usage, budgets, available?)
     }
   end
 
@@ -50,6 +53,43 @@ defmodule SymphonyElixirWeb.TaskExecution do
   end
 
   defp no_control_error?(control), do: is_nil(control["fault"]) and is_nil(control["error"])
+
+  # This is an affordance, never admission authority. The native ledger rechecks
+  # cycle exhaustion, lifetime usage, retained review and active ownership.
+  defp renewable_attempts?(task, usage, budgets, true) do
+    ledger = task[:ledger] || %{}
+    hold = task[:hold] || ledger["hold"]
+
+    renewable_task?(task, ledger) and renewable_runtime?(task[:runtime], hold) and
+      hold in [nil, "cancelled", "interrupted", "worker_auth_required", "worker_failed", "budget_exhausted"] and
+      renewable_work?(PRWork.selected(ledger), task[:handoff] || ledger["handoff"]) and renewable_budget?(usage, budgets)
+  end
+
+  defp renewable_attempts?(_task, _usage, _budgets, _available?), do: false
+
+  defp renewable_task?(task, ledger) do
+    task[:stage] not in ["done", "review"] and not IssueAcceptance.accepted?(ledger) and
+      is_nil(ledger["active"])
+  end
+
+  defp renewable_runtime?(nil, _hold), do: true
+
+  defp renewable_runtime?(runtime, "worker_auth_required") when is_map(runtime),
+    do: runtime[:status] in ["retrying", "blocked"]
+
+  defp renewable_runtime?(_runtime, _hold), do: false
+  defp renewable_work?(nil, handoff), do: not is_map(handoff)
+  defp renewable_work?(work, _handoff), do: work["phase"] in ["queued", "paused"]
+
+  defp renewable_budget?(usage, budgets) do
+    attempts = {"Attempts", usage.attempts, number(budgets["max_attempts"])}
+
+    known_limit?(attempts) and limit_reached?(attempts) and
+      remaining_limit?(usage.tokens, number(budgets["max_total_tokens"])) and
+      remaining_limit?(usage.runtime_ms, number(budgets["max_total_runtime_ms"]))
+  end
+
+  defp remaining_limit?(used, limit), do: is_integer(used) and is_integer(limit) and limit > 0 and used < limit
 
   defp usage(ledger, runtime) do
     active = ledger["active"]
