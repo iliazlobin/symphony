@@ -833,6 +833,7 @@
       if (typeof document === "object") {
         document.addEventListener("click", event => {
           const navigation = event.target.closest('[data-board-view-link],a[data-phx-link],[phx-click="select-issue"],[phx-click="select-pr-session"],[phx-click="main-chat"],[phx-click="board-link"],[phx-click="select-task"],[phx-click="open-task"]');
+          if (navigation?.tagName === "A" && (event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || navigation.target === "_blank")) return;
           if (navigation && !this.el.contains(navigation)) cancelQueuedSelection();
         }, {capture: true, signal: this.abort.signal});
         document.addEventListener("keydown", () => { this.pointerFocus = false; }, {signal: this.abort.signal});

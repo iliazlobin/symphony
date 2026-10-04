@@ -111,6 +111,7 @@ while(frames.length)frames.shift()();assert(Number.isFinite(Number(el.dataset.se
 click("issue:40");replies.shift()({selected_task_id:"issue:30"});assert.equal(nodes[40].dataset.selected,"false");assert.equal(nodes[30].dataset.selected,"true");
 // A newer picker selection or browser history navigation cancels unsent graph intent.
 click("issue:60");click("issue:70");const sentBefore=sent.length;
+globalEvents.get("document:click")({button:0,metaKey:true,target:{closest:()=>({tagName:"A"})}});assert.equal(hook.pendingSelection.id,"issue:70");
 globalEvents.get("document:click")({target:{closest:()=>({})}});
 el.dataset.selectedTaskId="issue:80";nodes.forEach(n=>n.dataset.selected=String(n===nodes[80]));hook.updated();
 replies.shift()({selected_task_id:"issue:60"});assert.equal(sent.length,sentBefore);assert.equal(nodes[80].dataset.selected,"true");
