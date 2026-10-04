@@ -36,9 +36,8 @@ defmodule SymphonyElixirWeb.WorkflowGanttViewTest do
     refute html =~ "data-task-id="
     assert html =~ "phx-click=\"select-plan-task\""
     assert html =~ "phx-click=\"open-card\""
-    assert html =~ "Show graph"
-    assert html =~ "Show on board"
-    assert length(find(html, ".plan-inspector [data-plan-reference='task:1'][phx-value-id='issue:1']")) == 1
+    assert find(html, ".plan-inspector, [data-board-view-link]") == []
+    assert length(find(html, ".plan-accessible-list [data-plan-reference='task:1'][phx-value-id='issue:1']")) == 2
     assert html =~ "Awaiting acceptance"
     refute html =~ "dependency notice"
   end
@@ -48,7 +47,7 @@ defmodule SymphonyElixirWeb.WorkflowGanttViewTest do
     assert length(find(html, "tbody tr")) == 1
     assert html =~ "data-timeline-start-offset=\"8\""
     assert find(html, ".plan-gantt-arrows .plan-edge") == []
-    assert length(find(html, ".plan-related-list [data-plan-reference='task:1']")) == 1
+    assert length(find(html, ".plan-accessible-list [data-plan-reference='task:1']")) == 1
   end
 
   test "selected filtered task stays visible and expands the calendar bounds without changing filters" do
@@ -81,12 +80,12 @@ defmodule SymphonyElixirWeb.WorkflowGanttViewTest do
 
     edges = Enum.map([dep(1, 2), dep(2, 1)], &Map.put(&1, "status", "cycle"))
     html = draw([task(1, "work"), task(2, "work")], edges, selected_id: "issue:1")
-    assert Floki.text(find(html, ".plan-related-list")) =~ "Revise cycle"
+    assert Floki.text(find(html, ".plan-accessible-list")) =~ "Revise cycle"
     assert find(html, ".plan-gantt-arrows .plan-edge") == []
 
     missing = task(999, "unknown", %{"missing" => true})
     html = draw([task(1, "work"), missing], [Map.put(dep(1, 999), "status", "unknown")], selected_id: "issue:1")
-    assert Floki.text(find(html, ".plan-related-list")) =~ "Unavailable"
+    assert Floki.text(find(html, ".plan-accessible-list")) =~ "Unavailable"
     assert find(html, ".plan-gantt-arrows .plan-edge") == []
   end
 
@@ -135,9 +134,8 @@ defmodule SymphonyElixirWeb.WorkflowGanttViewTest do
     assert html =~ "No declared dependencies"
     assert html =~ "General"
     assert html =~ "Unknown"
-    assert Floki.text(find(html, ".plan-inspector-heading h3")) == "GH-1"
-    assert Floki.attribute(find(html, ".plan-inspector-heading h3"), "title") == [title]
-    assert length(find(html, ".plan-inspector-heading [data-board-view-link]")) == 2
+    assert Floki.attribute(find(html, ".plan-row-title"), "title") == [title]
+    assert find(html, ".plan-inspector, [data-board-view-link]") == []
     html = draw([task(1, "work"), task(2, "review")], [Map.merge(dep(2, 1), %{"reason" => "<img onerror=bad()>", "kind" => "technical", "status" => "satisfied"})], selected_id: "issue:1")
     assert html =~ "&lt;img"
     assert html =~ "Accepted"

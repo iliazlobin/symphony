@@ -36,6 +36,9 @@ the local ledger saves task transitions immediately and mirrors routing labels t
 in the background. GitHub retains issue content and publication evidence. See the
 [operator guide](profiles/events-concierge/README.md#operate) for setup and limits.
 
+Graph selection highlights immediately while the conversation loads, preserving pan,
+zoom and focus. Kanban, Graph and Gantt keep selected-task view links at the top right.
+
 Each issue has one task agent responsible for the entire task, with a searchable activity-grouped issue picker
 showing concise titles, priority and available PR evidence. The embedded chat uses Project → Task → Work navigation without repeating the selected project name. Card titles open details;
 click outside or press Escape to dismiss them. Card bodies select chat without opening details. The Work selector lists

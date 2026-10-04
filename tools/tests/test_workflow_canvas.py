@@ -67,10 +67,58 @@ const key=k=>listeners.get("keydown")({target:scenes[0].canvas,key:k,preventDefa
 events.get("focus-plan-task")({id:"issue:2",view:"graph"});assert.equal(focusCount,1);assert.equal(hook.camera().x+size.width/(2*hook.camera().scale),478);
 const camera=plain(hook.camera());events.get("focus-plan-task")({id:"issue:2",view:"kanban"});assert.deepEqual(plain(hook.camera()),camera);
 el.dataset.selectedId="work:1";hook.updated();assert.equal(hook.mode,"dependencies");assert.equal(scenes[0].panel.hidden,false);
+assert.deepEqual(plain(hook.camera()),camera); // Selection never recenters the user's viewport.
 hook.updated();assert.equal(hook.mode,"dependencies"); // Work selection stays in task dependencies.
+hook.pointerFocus=true;listeners.get("focusin")({target:{closest:()=>selected}});assert.deepEqual(plain(hook.camera()),camera);
+hook.pointerFocus=false;
 listeners.get("focusin")({target:{closest:()=>selected}});assert.equal(hook.camera().x+size.width/(2*hook.camera().scale),478);
 el.dataset.canvasScope="other";hook.updated();assert.equal(hook.cameras.size,1);assert.notDeepEqual(plain(hook.camera()),camera);
 assert(viewportEvents>8);hook.destroyed();assert.equal(hook.abort.signal.aborted,true);assert.equal(hook.pointers.size,0);
+''')
+
+    def test_selection_is_immediate_coalesced_and_survives_stale_patches_without_camera_or_focus_changes(self):
+        self.run_hook(r'''
+const assert=require("node:assert/strict"),fs=require("node:fs"),vm=require("node:vm");
+const listeners=new Map(),globalEvents=new Map(),replies=[],sent=[],frames=[];let focused=0;
+const plain=x=>JSON.parse(JSON.stringify(x));
+const nodes=Array.from({length:120},(_,i)=>({dataset:{planTaskId:"issue:"+i,nodeId:"task:"+i,nodeX:String(i*10),nodeY:"100",nodeWidth:"260",nodeHeight:"116",selected:"false",related:"false"},
+ querySelector:s=>s===".plan-node-select"?{setAttribute(){},focus(){focused++;}}:s===".plan-node-meta span"?{textContent:"GH-"+i}:{textContent:"Task "+i}}));
+const edges=nodes.slice(1).map((n,i)=>({dataset:{edgeSource:n.dataset.nodeId,edgeTarget:nodes[i].dataset.nodeId}}));
+const svg={dataset:{contentWidth:"1600",contentHeight:"600"},attrs:{},setAttribute(k,v){this.attrs[k]=v;},querySelector:()=>nodes[0],querySelectorAll:s=>s==="[data-plan-node]"?nodes:s==="[data-edge-source]"?edges:[]};
+const canvas={getBoundingClientRect:()=>({left:0,top:0,width:1000,height:600}),querySelector:()=>svg};
+const label={hidden:true},links=[{dataset:{},textContent:"Show timeline",setAttribute(k,v){this[k]=v;},href:"http://localhost/?view=gantt&chat_session=work:old"}];
+const toolbar={dataset:{},querySelector:()=>label,querySelectorAll:()=>links};
+const el={dataset:{canvasScope:"p",planMode:"dependencies",selectedTaskId:"issue:0"},addEventListener:(n,f)=>listeners.set(n,f),dispatchEvent(){},
+ contains:()=>false,closest:()=>({querySelector:()=>toolbar}),querySelector:s=>s.includes("data-plan-panel")?canvas:null,querySelectorAll:s=>s==="[data-plan-panel]"?[{dataset:{planPanel:"dependencies"}}]:[]};
+const sandbox={document:{addEventListener:(n,f)=>globalEvents.set("document:"+n,f)},window:{location:{href:"http://localhost/"},addEventListener:(n,f)=>globalEvents.set(n,f)},URL,AbortController,CustomEvent:class{},requestAnimationFrame:fn=>frames.push(fn)};
+vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),sandbox);
+const hook={...sandbox.window.SymphonyHooks.WorkflowCanvas,el,pushEvent:(name,payload,reply)=>{sent.push({name,payload:plain(payload)});replies.push(reply);}};hook.mounted();
+while(frames.length)frames.shift()();const camera=plain(hook.camera()),viewBox=svg.attrs.viewBox;
+const click=id=>{const button={hasAttribute:()=>false,getAttribute:()=>id};let stopped=false;
+ listeners.get("click")({target:{closest:s=>s==='[phx-click="select-plan-task"]'?button:null},preventDefault(){},stopPropagation(){stopped=true;}});assert(stopped);};
+click("issue:10");assert.equal(nodes[10].dataset.selected,"true");assert.equal(nodes[9].dataset.related,"true");assert.equal(edges[9].dataset.related,"true");
+assert.equal(replies.length,1);assert.equal(label.textContent,"GH-10");assert.equal(label.hidden,false);assert.equal(links[0].dataset.boardViewTask,"issue:10");assert(!links[0].href.includes("chat_session"));
+assert.equal(links[0]["aria-label"],"Show timeline: GH-10");
+click("issue:20");click("issue:30");assert.equal(replies.length,1);assert.equal(nodes[30].dataset.selected,"true");assert.equal(nodes[10].dataset.selected,"false");
+// An earlier server response must not flash its selection or reset the viewBox.
+hook.beforeUpdate();el.dataset.selectedTaskId="issue:10";svg.attrs.viewBox="0 0 1600 600";nodes.forEach(n=>n.dataset.selected="false");hook.updated();
+assert.equal(svg.attrs.viewBox,viewBox);assert.equal(nodes[30].dataset.selected,"true");assert.equal(label.textContent,"GH-30");
+replies.shift()({selected_task_id:"issue:10"});assert.equal(replies.length,1);assert.deepEqual(sent.map(s=>s.payload.id),["issue:10","issue:30"]);
+assert.equal(nodes[30].dataset.selected,"true");replies.shift()({selected_task_id:"issue:30"});assert.equal(hook.pendingSelection,null);
+assert.deepEqual(plain(hook.camera()),camera);assert.equal(focused,0);
+while(frames.length)frames.shift()();assert(Number.isFinite(Number(el.dataset.selectionFeedbackMs)));assert(Number.isFinite(Number(el.dataset.selectionSettledMs)));
+// A rejected stale card rolls back to the canonical selection; destroyed hooks ignore late replies.
+click("issue:40");replies.shift()({selected_task_id:"issue:30"});assert.equal(nodes[40].dataset.selected,"false");assert.equal(nodes[30].dataset.selected,"true");
+// A newer picker selection or browser history navigation cancels unsent graph intent.
+click("issue:60");click("issue:70");const sentBefore=sent.length;
+globalEvents.get("document:click")({target:{closest:()=>({})}});
+el.dataset.selectedTaskId="issue:80";nodes.forEach(n=>n.dataset.selected=String(n===nodes[80]));hook.updated();
+replies.shift()({selected_task_id:"issue:60"});assert.equal(sent.length,sentBefore);assert.equal(nodes[80].dataset.selected,"true");
+click("issue:90");click("issue:100");globalEvents.get("popstate")();replies.shift()({selected_task_id:"issue:90"});assert.equal(hook.pendingSelection,null);assert.equal(replies.length,0);
+// A newer graph click survives an older external navigation patch still in flight.
+click("issue:40");el.dataset.selectedTaskId="issue:110";hook.updated();assert.equal(nodes[40].dataset.selected,"true");
+replies.shift()({selected_task_id:"issue:40"});assert.equal(replies.length,0);
+click("issue:50");hook.destroyed();replies.shift()({selected_task_id:"issue:30"});assert.equal(nodes[50].dataset.selected,"true");
 ''')
 
     def test_sequence_refresh_preserves_scroll_and_view_switch_focuses_selected_task(self):

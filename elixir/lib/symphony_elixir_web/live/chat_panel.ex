@@ -382,6 +382,12 @@ defmodule SymphonyElixirWeb.ChatPanel do
     end
   end
 
+  # Embedded task changes retain the current project's metadata. Loading the
+  # selected conversation still checks current store authorization and binding.
+  defp load_location(%{assigns: %{embedded: true, initialized: true, project: %{"id" => id}}} = socket, %{"project" => id}) do
+    load_canonical(socket)
+  end
+
   defp load_location(socket, params) do
     case call(socket, :projects, []) do
       {:ok, projects} ->

@@ -824,6 +824,67 @@
       this.mode = this.el.dataset.planMode || "dependencies";
       this.selectedId = this.el.dataset.selectedId;
       this.scope = this.el.dataset.canvasScope;
+      this.pendingSelection = null;
+      this.selectionRequest = null;
+      this.pointerFocus = false;
+      this.selectionClock = () => typeof performance === "object" ? performance.now() : Date.now();
+      const cancelQueuedSelection = () => { this.pendingSelection = null; };
+      window.addEventListener?.("popstate", cancelQueuedSelection, {signal: this.abort.signal});
+      if (typeof document === "object") {
+        document.addEventListener("click", event => {
+          const navigation = event.target.closest('[data-board-view-link],a[data-phx-link],[phx-click="select-issue"],[phx-click="select-pr-session"],[phx-click="main-chat"],[phx-click="board-link"],[phx-click="select-task"],[phx-click="open-task"]');
+          if (navigation && !this.el.contains(navigation)) cancelQueuedSelection();
+        }, {capture: true, signal: this.abort.signal});
+        document.addEventListener("keydown", () => { this.pointerFocus = false; }, {signal: this.abort.signal});
+      }
+      this.paintSelection = id => {
+        const svg = this.svg();
+        if (!svg) return;
+        const nodes = [...svg.querySelectorAll("[data-plan-node]")];
+        const selected = nodes.find(node => node.dataset.planTaskId === id);
+        const related = new Set(selected ? [selected.dataset.nodeId] : []);
+        svg.querySelectorAll("[data-edge-source]").forEach(edge => {
+          const match = !!selected && [edge.dataset.edgeSource, edge.dataset.edgeTarget].includes(selected.dataset.nodeId);
+          edge.dataset.related = String(match);
+          if (match) { related.add(edge.dataset.edgeSource); related.add(edge.dataset.edgeTarget); }
+        });
+        svg.dataset.selectionActive = String(!!selected);
+        nodes.forEach(node => {
+          node.dataset.selected = String(node === selected);
+          node.dataset.related = String(related.has(node.dataset.nodeId));
+          node.querySelector(".plan-node-select")?.setAttribute?.("aria-pressed", String(node === selected));
+        });
+        const toolbar = this.el.closest("#task-board-app")?.querySelector("#selected-task-navigation");
+        if (!selected || !toolbar) return;
+        toolbar.dataset.selectedTaskId = id;
+        const label = toolbar.querySelector("[data-task-navigation-label]");
+        if (label) {
+          label.hidden = false;
+          label.textContent = selected.querySelector(".plan-node-meta span")?.textContent || id;
+          label.title = selected.querySelector(".plan-node-title")?.textContent || "";
+        }
+        toolbar.querySelectorAll("[data-board-view-link]").forEach(link => {
+          link.dataset.boardViewTask = id;
+          link.setAttribute?.("aria-label", `${link.textContent?.trim() || "Open view"}: ${label?.textContent || id}`);
+          const target = new URL(link.href, window.location.href);
+          target.searchParams.set("chat_task", id);
+          target.searchParams.delete("chat_session"); target.searchParams.delete("task");
+          link.href = target.href;
+        });
+      };
+      this.sendSelection = () => {
+        if (this.selectionRequest || !this.pendingSelection) return;
+        const request = this.pendingSelection;
+        this.selectionRequest = request;
+        this.pushEvent("select-plan-task", {id: request.id}, reply => {
+          if (this.abort.signal.aborted || this.selectionRequest !== request) return;
+          this.selectionRequest = null;
+          if (this.pendingSelection !== request) { this.sendSelection(); return; }
+          this.pendingSelection = null;
+          this.el.dataset.selectionSettledMs = (this.selectionClock() - request.started).toFixed(1);
+          this.paintSelection(reply?.selected_task_id ?? this.el.dataset.selectedTaskId);
+        });
+      };
       if (this.mode === "timeline") this.loadCalendar();
       const on = (name, handler, options = {}) => this.el.addEventListener(name, handler, {...options, signal: this.abort.signal});
       this.canvas = () => this.el.querySelector(`[data-plan-panel="${this.mode}"] [data-plan-canvas]`);
@@ -898,6 +959,20 @@
         if (Date.now() < (this.ignoreClickUntil || 0) && event.target.closest("[data-plan-node]")) {
           event.preventDefault(); event.stopPropagation(); return;
         }
+        const selection = event.target.closest('[phx-click="select-plan-task"]');
+        if (selection && this.mode === "dependencies" && !selection.hasAttribute("phx-value-work_id")) {
+          const id = selection.getAttribute("phx-value-id");
+          if (!id || !this.pushEvent) return;
+          event.preventDefault(); event.stopPropagation();
+          const started = this.selectionClock();
+          this.pendingSelection = {id, started};
+          this.paintSelection(id);
+          requestAnimationFrame(() => {
+            if (!this.abort.signal.aborted) this.el.dataset.selectionFeedbackMs = (this.selectionClock() - started).toFixed(1);
+          });
+          this.sendSelection(); return;
+        }
+        if (event.target.closest('[phx-click="open-card"]')) this.pendingSelection = null;
         const calendar = event.target.closest("[data-calendar-action]");
         if (calendar) { this.calendarAction(calendar.dataset.calendarAction); return; }
         const button = event.target.closest("[data-canvas-action]");
@@ -907,6 +982,7 @@
         else this.zoom(button.dataset.canvasAction === "in" ? 1.25 : 0.8);
       }, {capture: true});
       on("keydown", event => {
+        this.pointerFocus = false;
         if (event.target !== this.canvas()) return;
         const camera = this.camera();
         if (!camera) return;
@@ -937,6 +1013,7 @@
         this.saveCalendar(); this.pushCalendar();
       });
       on("focusin", event => {
+        if (this.pointerFocus) return;
         const node = event.target.closest("[data-plan-node]"), canvas = this.canvas();
         if (!node || !canvas) return;
         const rect = node.getBoundingClientRect(), bounds = canvas.getBoundingClientRect();
@@ -949,6 +1026,7 @@
         this.zoom(Math.exp(-Math.max(-400, Math.min(400, delta)) * 0.002), {x: event.clientX, y: event.clientY});
       }, {passive: false});
       on("pointerdown", event => {
+        this.pointerFocus = true;
         const canvas = event.target.closest("[data-plan-canvas]");
         if (!canvas || canvas !== this.canvas() || (event.pointerType === "mouse" && event.button !== 0)
             || event.target.closest("button,a,input,summary,[data-plan-node]")) return;
@@ -1018,16 +1096,17 @@
       this.scrollPosition = scroll ? {left: scroll.scrollLeft, top: scroll.scrollTop} : null;
     },
     updated() {
-      const selectedChanged = this.selectedId !== this.el.dataset.selectedId;
       this.selectedId = this.el.dataset.selectedId;
       if (this.scope !== this.el.dataset.canvasScope) {
+        this.pendingSelection = null; this.selectionRequest = null;
         this.scope = this.el.dataset.canvasScope; this.cameras.clear(); this.mode = this.el.dataset.planMode || "dependencies";
         this.scrollPosition = null;
         if (this.mode === "timeline") this.loadCalendar();
       }
+      // Restore the viewBox and local intent before the browser paints a server patch.
+      this.showMode();
+      if (this.pendingSelection) this.paintSelection(this.pendingSelection.id);
       requestAnimationFrame(() => {
-        this.showMode();
-        if (selectedChanged && this.mode === "dependencies") this.centerSelected();
         const scroll = this.el.querySelector(".plan-gantt-scroll");
         if (scroll && this.scrollPosition) { scroll.scrollLeft = this.scrollPosition.left; scroll.scrollTop = this.scrollPosition.top; }
         if (this.mode === "timeline") this.calendarScale(this.calendarPrefs?.scale || "day");

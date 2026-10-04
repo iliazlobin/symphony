@@ -849,6 +849,12 @@ graph; **Show on board** returns to Kanban. Graph supports background drag, whee
 zoom, **Fit**, **Center selected**, keyboard controls and an expandable text equivalent.
 Graph shows task dependencies only. Waiting is task status; malformed declarations
 and unavailable evidence remain visible beside the affected task.
+Selecting a graph node highlights it immediately without recentering or moving focus.
+Rapid selections keep the latest intent while the server validates and opens the
+conversation; rejected stale selections return to the server's current task. Server
+patches restore the viewport before painting. Only explicit Center selected, view
+navigation and offscreen keyboard focus reveal a node. Selected-task links sit at the
+top right across Kanban, Graph and Gantt; relationship details remain in Text view.
 
 Gantt uses a UTC calendar with **Day / Week**, **Today** and **Fit** controls. Solid
 segments show recorded active execution; diamonds show human acceptance. Dashed bars

@@ -74,6 +74,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     chat_session = if Sessions.valid_id?(params["chat_session"]), do: params["chat_session"]
     previous_selection = {socket.assigns.chat_project, socket.assigns.chat_task_id, socket.assigns.chat_session_id}
     selection_changed = {project, chat_task, chat_session} != previous_selection
+    project_changed = project != socket.assigns.chat_project
     focus_chat = focus_session_navigation?(socket, params)
     socket = if selection_changed || filters != socket.assigns.url_filters, do: clear_view_context(socket), else: socket
 
@@ -92,8 +93,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
       socket
       |> open_linked_task()
       |> sync_chat_selection()
-      |> refresh_chat_activity()
       |> navigation_focus(focus_chat, view_changed, chat_task, board_view)
+
+    # Task/view navigation uses the already projected board and activity. The
+    # project subscription and periodic refresh supply fresh activity without
+    # serializing every selection behind a conversation-store list read.
+    socket = refresh_chat_activity(socket, project_changed)
 
     {:noreply, socket}
   end
@@ -138,7 +143,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   def handle_info({:chat_panel, :navigate, %{project_id: project, chat_id: id}}, socket) do
     if project == socket.assigns.chat_project do
-      {:noreply, socket |> assign(:chat_id, bounded_chat_id(id)) |> refresh_chat_activity()}
+      {:noreply, assign(socket, :chat_id, bounded_chat_id(id))}
     else
       {:noreply, socket}
     end
@@ -240,18 +245,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   def handle_event("select-plan-task", %{"id" => id, "work_id" => work}, socket) when is_binary(work),
-    do: socket |> focus_chat_session(id, "work:" <> work) |> focus_plan_selection()
+    do: socket |> focus_chat_session(id, "work:" <> work, false) |> reply_plan_selection()
 
   def handle_event("select-plan-task", %{"id" => id} = params, socket) when is_binary(id) do
-    same_thread = socket.assigns.chat_task_id == id and is_nil(socket.assigns.chat_session_id)
-    chat_id = if same_thread, do: socket.assigns.chat_id
+    if Enum.any?(socket.assigns.board.tasks, &(&1.id == id)) do
+      same_thread = socket.assigns.chat_task_id == id and is_nil(socket.assigns.chat_session_id)
+      chat_id = if same_thread, do: socket.assigns.chat_id
 
-    "select-task"
-    |> handle_event(params, assign(socket, chat_session_id: nil, chat_id: chat_id))
-    |> focus_plan_selection()
+      "select-task"
+      |> handle_event(params, assign(socket, chat_session_id: nil, chat_id: chat_id))
+      |> reply_plan_selection()
+    else
+      reply_plan_selection({:noreply, socket})
+    end
   end
 
-  def handle_event("select-plan-task", _params, socket), do: {:noreply, socket}
+  def handle_event("select-plan-task", _params, socket), do: reply_plan_selection({:noreply, socket})
 
   def handle_event("open-card", %{"id" => id} = params, socket) when is_binary(id),
     do: handle_event("open-task", params, socket)
@@ -742,6 +751,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         project_links: project_links,
         visible_task_ids: visible_task_ids,
         selected_plan_id: selected_plan_id(assigns.board, assigns.chat_task_id, assigns.chat_session_id),
+        navigation_task: Enum.find(assigns.board.tasks, &(&1.id == assigns.chat_task_id)),
         dependency_nodes: Map.new(Enum.filter(plan["nodes"], &(&1["type"] == "task")), &{&1["task_id"], &1}),
         project_picker_label: project_picker_label(assigns.board, assigns.url_filters, project_links)
       )
@@ -822,7 +832,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <button type="button" class="button button-small" phx-click="open-settings" phx-value-tab="execution">Execution settings</button>
         </div>
         <div class="board-summary"><span data-result-count>{length(@board.tasks)} tasks</span>
-          <span class="summary-right"><span :if={@loading}>Updating…</span></span></div>
+          <div class="summary-right"><span :if={@loading}>Updating…</span>
+            <.task_view_navigation :if={@board_view in ["kanban", "graph", "gantt"]} task={@navigation_task} task_id={@chat_task_id} view={@board_view} filters={@url_filters} session={@chat_session_id} />
+          </div>
+        </div>
         <div id="kanban-view" class="board-view-panel" hidden={@board_view != "kanban"} aria-label="Kanban view">
         <div id="mobile-lane-control" class="mobile-lane-control" phx-update="ignore"><label>Lane <select data-mobile-lane aria-label="Board lane">
           <option :for={{id, label} <- @lanes} value={id}>{label}</option>
@@ -1491,13 +1504,28 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp design_link("github:iliazlobin/events-concierge"), do: "https://app.notion.com/p/3cfd865005a88162aa6bd4624b6a4af4"
   defp design_link(_project), do: nil
 
-  defp focus_plan_selection({:noreply, socket}) do
-    {:noreply, push_event(socket, "focus-plan-task", %{id: socket.assigns.chat_task_id, view: socket.assigns.board_view})}
-  end
+  defp reply_plan_selection({:noreply, socket}), do: {:reply, %{selected_task_id: socket.assigns.chat_task_id}, socket}
 
   defp navigation_focus(socket, focus_chat, view_changed, task_id, view) do
     socket = if view_changed, do: push_event(socket, "focus-plan-task", %{id: task_id, view: view}), else: socket
     if focus_chat, do: push_event(socket, "focus-chat-session", %{}), else: socket
+  end
+
+  attr(:task, :map, default: nil)
+  attr(:task_id, :string, default: nil)
+  attr(:view, :string, required: true)
+  attr(:filters, :map, required: true)
+  attr(:session, :string, default: nil)
+
+  defp task_view_navigation(assigns) do
+    ~H"""
+    <nav id="selected-task-navigation" class="selected-task-navigation" aria-label="Task views" data-selected-task-id={@task_id}>
+      <span data-task-navigation-label hidden={is_nil(@task)} title={@task && @task.title}>{@task && @task.identifier}</span>
+      <.link :for={{view, label} <- [{"kanban", "Show on board"}, {"graph", "Show graph"}, {"gantt", "Show timeline"}]} :if={view != @view}
+        class="button button-small" patch={view_path(@filters, view, @task_id, @session)} data-board-view-link={view} data-board-view-task={@task_id}
+        aria-label={if @task, do: "#{label}: #{@task.identifier}", else: label}>{label}</.link>
+    </nav>
+    """
   end
 
   defp selected_plan_id(board, task_id, "work:" <> work_id) do
@@ -1561,7 +1589,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     Enum.any?(Sessions.options(task), &(&1.id == session or (&1.pr && "pr:#{&1.pr.number}" == session)))
   end
 
-  defp focus_chat_session(socket, task_id, session) do
+  defp focus_chat_session(socket, task_id, session, focus? \\ true) do
     task = Enum.find(socket.assigns.board.tasks, &(&1.id == task_id and &1.project == socket.assigns.chat_project))
 
     if (BrowserAuth.authorized?(socket.assigns.auth) and task) && (is_nil(session) or session_option?(task, session)) do
@@ -1570,7 +1598,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
         |> clear_card_context()
         |> assign(chat_task_id: task_id, chat_session_id: session, chat_id: nil, selected: nil)
 
-      {:noreply, socket |> push_patch(to: board_location(socket)) |> push_event("focus-chat-session", %{})}
+      socket = push_patch(socket, to: board_location(socket))
+      {:noreply, if(focus?, do: push_event(socket, "focus-chat-session", %{}), else: socket)}
     else
       {:noreply, socket}
     end
@@ -1639,6 +1668,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
       task -> "#{task.identifier} · #{task.title}"
     end
   end
+
+  defp refresh_chat_activity(socket, false), do: socket
+  defp refresh_chat_activity(socket, true), do: refresh_chat_activity(socket)
 
   defp refresh_chat_activity(socket) do
     project = socket.assigns.chat_project

@@ -44,14 +44,52 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert length(find(html, "#plan-dependencies-panel .plan-edge[data-related=true]")) == 2
     assert length(find(html, "#plan-dependencies-panel [data-filtered=true]")) == 2
     assert html =~ "Outside filters"
-    assert html =~ "Show on board"
-    assert html =~ "Show timeline"
-    assert length(find(html, ".plan-inspector-heading .plan-inspector-links button")) == 2
-    assert length(find(html, ".plan-related-list button[aria-label='Prerequisite: GH-1']")) == 1
-    assert length(find(html, ".plan-related-list button[aria-label='Dependent: GH-3']")) == 1
+    assert find(html, ".plan-inspector, [data-board-view-link]") == []
+    assert length(find(html, ".plan-accessible-list [data-plan-reference='task:1']")) == 1
+    assert length(find(html, ".plan-accessible-list [data-plan-reference='task:3']")) == 1
     assert html =~ "phx-click=\"select-plan-task\""
     assert html =~ "phx-click=\"open-card\""
     assert html =~ "phx-value-id=\"issue:2\""
+  end
+
+  test "selection preserves node identity and geometry while changing highlights" do
+    nodes = Enum.map(1..10, &task(&1, "work"))
+    edges = [dep(5, 1), dep(6, 2), dep(10, 5)]
+    first = draw(nodes, edges, selected_id: "issue:1")
+    second = draw(nodes, edges, selected_id: "issue:10")
+    assert positions(first) == positions(second)
+    assert Floki.attribute(find(first, "[data-plan-node]"), "id") == Floki.attribute(find(second, "[data-plan-node]"), "id")
+    assert Floki.attribute(find(first, ".plan-edge"), "id") == Floki.attribute(find(second, ".plan-edge"), "id")
+    assert Floki.attribute(find(first, ".plan-edge"), "d") == Floki.attribute(find(second, ".plan-edge"), "d")
+    assert length(find(second, ".plan-edge[data-edge-source='task:10'][data-edge-target='task:5'][data-related=true]")) == 1
+    assert find(second, ".plan-inspector") == []
+  end
+
+  test "filtered context selection leaves every common card and content bound unchanged" do
+    nodes = Enum.map(1..12, &task(&1, "work"))
+    edges = Enum.map(1..5, &dep(10, &1)) ++ [dep(11, 6)]
+    filters = [visible_task_ids: ["issue:10", "issue:11", "issue:12"]]
+    first = draw(nodes, edges, Keyword.put(filters, :selected_id, "issue:10"))
+    second = draw(nodes, edges, Keyword.put(filters, :selected_id, "issue:11"))
+    context = draw(nodes, edges, Keyword.put(filters, :selected_id, "issue:6"))
+    first_positions = positions(first)
+    second_positions = positions(second)
+    context_positions = positions(context)
+
+    for id <- ["task:10", "task:11", "task:12"] do
+      assert first_positions[id] == second_positions[id]
+      assert second_positions[id] == context_positions[id]
+    end
+
+    assert second_positions["task:6"] == context_positions["task:6"]
+    assert length(find(context, "[data-node-id='task:6'][data-plan-visible=false][data-selected=true] .plan-node-select[aria-pressed=true]")) == 1
+    edge_selector = ".plan-edge[data-edge-source='task:11'][data-edge-target='task:6']"
+    assert Floki.attribute(find(second, edge_selector), "d") == Floki.attribute(find(context, edge_selector), "d")
+
+    for attribute <- ["data-content-width", "data-content-height", "viewbox"] do
+      assert Floki.attribute(find(first, "[data-plan-svg]"), attribute) == Floki.attribute(find(second, "[data-plan-svg]"), attribute)
+      assert Floki.attribute(find(second, "[data-plan-svg]"), attribute) == Floki.attribute(find(context, "[data-plan-svg]"), attribute)
+    end
   end
 
   test "dependency diagram omits agent ownership while retaining task navigation" do
@@ -88,7 +126,7 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert html =~ "Unknown sequence"
     assert html =~ "Sequence unresolved"
     assert html =~ "Unavailable"
-    assert html =~ "Prerequisite: GH-404"
+    assert Floki.text(find(html, ".plan-accessible-list")) =~ "GH-404"
     refute html =~ "plan-warnings"
     refute html =~ "Dependencies require human-accepted Done"
     assert html =~ "Dependency cycle. Revise prerequisites."
@@ -99,7 +137,7 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert length(find(html, "#plan-dependencies-panel .plan-node")) == 5
   end
 
-  test "selected node without relationships shows concise empty inspector and short error" do
+  test "selected node without relationships preserves its inline error without an inspector" do
     html = draw([task(1, "work", %{"dependency_error" => "Invalid prerequisite."})], [], selected_id: "task:1", visible_task_ids: [])
     assert html =~ "No declared dependencies"
     assert html =~ "Invalid prerequisite"
@@ -220,7 +258,7 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     html = draw(Enum.map(1..125, &task(&1, "work")), [dep(125, 1)])
     assert length(find(html, "#plan-dependencies-panel .plan-node")) == 120
     assert html =~ "up to 120 nodes"
-    assert html =~ "GH-125 requires GH-1"
+    assert Floki.text(find(html, ".plan-accessible-list")) |> String.replace(~r/\s+/, " ") =~ "GH-125 requires GH-1"
     assert html =~ "All relationships remain available"
   end
 
@@ -229,7 +267,7 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert length(find(html, "#plan-dependencies-panel .plan-node")) == 120
     assert length(find(html, "#plan-dependencies-panel [data-node-id='task:125'][data-selected=true]")) == 1
     assert length(find(html, "#plan-dependencies-panel [data-node-id='task:1'][data-related=true]")) == 1
-    assert length(find(html, ".plan-inspector [data-plan-reference='task:1'][phx-value-id='issue:1']")) == 1
+    assert length(find(html, ".plan-accessible-list [data-plan-reference='task:1'][phx-value-id='issue:1']")) == 1
   end
 
   test "selected work focuses its owning task without agent relationships" do

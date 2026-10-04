@@ -169,7 +169,11 @@ input, select {
 /* Columns stay side by side, with scrolling contained to the board. */
 .board-content { padding: 12px 20px 0; flex: 1; min-width: 0; }
 .board-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 0 4px 10px; color: var(--muted); font-size: 11px; }
-.summary-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.summary-right { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-left: auto; }
+.selected-task-navigation { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
+.selected-task-navigation > span { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.selected-task-navigation > span[hidden] { display: none; }
+.selected-task-navigation .button { white-space: nowrap; }
 .kanban-board { display: grid; grid-template-columns: repeat(4, minmax(240px, 1fr)); grid-auto-columns: 185px; grid-auto-flow: column; gap: 10px; align-items: stretch; overflow-x: auto; min-height: calc(100dvh - 278px); padding-bottom: 20px; }
 .kanban-lane { min-width: 0; border-radius: 5px; padding: 0 6px 12px; transition: background .15s; background: light-dark(#f8f8fa, #1b1c21); }
 .lane-heading { display: flex; align-items: center; gap: 4px; padding: 9px 4px 11px; }
@@ -891,21 +895,19 @@ h2, h3, strong { font-weight: 500; }
 .plan-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
 .plan-title { font-size: 13px; font-weight: 600; }
 .plan-tools { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.plan-tools :is(button,.button), .plan-calendar-controls button, .plan-inspector .button { display: inline-flex; align-items: center; justify-content: center; padding: 4px 9px; font-size: 12px; min-height: var(--control-height); border-radius: var(--control-radius); }
+.plan-tools :is(button,.button), .plan-calendar-controls button { display: inline-flex; align-items: center; justify-content: center; padding: 4px 9px; font-size: 12px; min-height: var(--control-height); border-radius: var(--control-radius); }
 .plan-tools output { min-width: 40px; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
-.plan-tools button, .plan-calendar-controls button, .plan-inspector-links button { border: 1px solid var(--line); background: var(--panel); color: var(--fg); cursor: pointer; }
-.plan-tools button:hover, .plan-calendar-controls button:hover, .plan-inspector-links button:hover { border-color: var(--accent); color: var(--accent); }
-.plan-tools button:focus-visible, .plan-calendar-controls button:focus-visible, .plan-inspector-links button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.plan-tools button, .plan-calendar-controls button { border: 1px solid var(--line); background: var(--panel); color: var(--fg); cursor: pointer; }
+.plan-tools button:hover, .plan-calendar-controls button:hover { border-color: var(--accent); color: var(--accent); }
+.plan-tools button:focus-visible, .plan-calendar-controls button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .plan-caption { color: var(--muted); font-size: 11px; margin: 0; }
 .plan-main, .plan-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; }
 .plan-panel[hidden] { display: none; }
 .plan-legend { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
 .plan-legend > span { display: inline-flex; align-items: center; gap: 5px; }
-.plan-related-counts { display: flex; gap: 12px; color: var(--muted); }
 .plan-node-context { color: var(--muted); font-size: 10px; }
 .plan-node[data-filtered=true] .plan-node-card { background: var(--soft); border-style: dashed; }
 .plan-view .board-warning { max-height: 54px; overflow: auto; font-size: 11px; margin: 0; }
-.plan-inspector-links button { padding: 4px 8px; font-size: 11px; min-height: 28px; border-radius: var(--control-radius); }
 .plan-canvas { position: relative; flex: 1; min-height: 180px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background-color: var(--bg); background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 20px 20px; touch-action: none; cursor: grab; overscroll-behavior: contain; }
 .plan-canvas[data-panning=true] { cursor: grabbing; }
 .plan-svg { display: block; width: 100%; height: 100%; overflow: visible; }
@@ -927,16 +929,6 @@ h2, h3, strong { font-weight: 500; }
 .plan-node[data-selected=true] .plan-node-card { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .plan-node-note { color: var(--warn); font-size: 11px; line-height: 1.3; }
 .plan-node-dependency-status { color: var(--muted); font-size: 11px; line-height: 1.3; }
-.plan-inspector { flex-shrink: 0; max-height: 120px; overflow: auto; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); line-height: 1.4; }
-.plan-inspector-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; position: sticky; top: -8px; background: var(--panel); padding: 2px 0; }
-.plan-inspector h3 { flex: 1; min-width: 120px; font-size: 12px; margin: 0; overflow-wrap: anywhere; }
-.plan-inspector p { margin: 4px 0; }
-.plan-inspector-links { display: flex; gap: 6px; flex-wrap: wrap; margin: 0; }
-.plan-related-list { display: flex; align-items: center; gap: 4px 8px; flex-wrap: wrap; margin-top: 4px; padding: 0; list-style: none; }
-.plan-related-list button { padding: 2px 6px; min-height: 24px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--accent); font-size: 11px; cursor: pointer; }
-.plan-related-list button:hover { background: var(--tint); border-color: var(--accent); }
-.plan-inspector ul { margin: 6px 0; padding-left: 18px; }
-.plan-inspector a { overflow-wrap: anywhere; }
 .plan-accessible-list { flex-shrink: 0; max-height: 140px; overflow: auto; color: var(--muted); }
 .plan-accessible-list summary { cursor: pointer; font-size: 11px; }
 .plan-accessible-list table { width: 100%; border-collapse: collapse; }
@@ -973,7 +965,6 @@ h2, h3, strong { font-weight: 500; }
   .toolbar-primary { justify-content: space-between; }
   .plan-view { min-height: 300px; }
   .plan-canvas { min-height: 120px; }
-  .plan-inspector { max-height: 96px; }
 }
 @media (max-width: 540px) {
   .board-location .brand, .board-location .header-divider { display: none; }
@@ -983,7 +974,6 @@ h2, h3, strong { font-weight: 500; }
   .board-header #board-search { display: none; }
   .board-header .header-spacer { display: none; }
   .board-summary { padding-bottom: 4px; }
-  .plan-inspector { max-height: 96px; padding: 6px 8px; }
 }
 
 /* Calendar geometry is shared by table rows, bars and dependency ports. */

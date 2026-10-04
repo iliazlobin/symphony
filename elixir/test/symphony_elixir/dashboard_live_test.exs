@@ -67,13 +67,26 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   defmodule ThreadsChatApi do
-    def projects(_auth), do: {:ok, [%{"id" => "github:example/fixture", "label" => "Fixture"}]}
+    def projects(_auth) do
+      record_read(:projects)
+      {:ok, [%{"id" => "github:example/fixture", "label" => "Fixture"}]}
+    end
 
     def list(project, _auth) do
+      record_read(:list)
       {:ok, Agent.get(Endpoint.config(:thread_fixture), fn chats -> Enum.filter(Map.values(chats), &(&1["project_id"] == project)) end)}
     end
 
     def ensure_conversation(project, task, _auth) do
+      record_read(:ensure_conversation)
+
+      case Endpoint.config(:navigation_fixture_error) do
+        nil -> ensure_fixture_conversation(project, task)
+        reason -> {:error, reason}
+      end
+    end
+
+    defp ensure_fixture_conversation(project, task) do
       id = :crypto.hash(:md5, project <> (task || "main")) |> Base.encode16(case: :lower)
 
       chat =
@@ -117,6 +130,10 @@ defmodule SymphonyElixir.DashboardLiveTest do
         %{"project_id" => ^project} = chat -> {:ok, chat}
         _ -> {:error, :chat_not_found}
       end
+    end
+
+    defp record_read(operation) do
+      if owner = Endpoint.config(:navigation_fixture_owner), do: send(owner, {:chat_read, operation})
     end
   end
 
@@ -247,6 +264,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
         orchestrator: runtime,
         chat_store: if(context[:threads_fixture], do: ThreadsChatApi, else: UnavailableChatApi),
         thread_fixture: threads,
+        navigation_fixture_owner: if(context[:navigation_reads], do: self()),
         task_intake: IntakeApi,
         intake_fixture: intake,
         snapshot_timeout_ms: 100,
@@ -1666,19 +1684,30 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#board-project-picker + #board-view-picker")
     assert has_element?(view, "[data-mobile-filter-toggle][aria-expanded=false][aria-controls=board-filter-panel]")
     assert has_element?(view, "#view-kanban[aria-current=page]")
+    assert has_element?(view, ".board-summary #selected-task-navigation[data-selected-task-id='github:example/fixture:2'] [data-task-navigation-label]", "GH-2")
+    assert has_element?(view, "#selected-task-navigation [data-board-view-link=graph][data-board-view-task='github:example/fixture:2']")
+    assert has_element?(view, "#selected-task-navigation [data-board-view-link=gantt]")
+    refute has_element?(view, "#selected-task-navigation [data-board-view-link=kanban]")
     refute has_element?(view, "#workflow-graph-button, #new-task-button, .lane-add")
 
-    view |> element("#view-graph") |> render_click()
+    view |> element("#selected-task-navigation [data-board-view-link=graph]") |> render_click()
     assert has_element?(view, "#task-board-app[data-board-view=graph]")
     assert has_element?(view, "#graph-view #workflow-graph")
+    refute has_element?(view, ".plan-inspector")
+    refute has_element?(view, "#selected-task-navigation [data-board-view-link=graph]")
+    assert has_element?(view, "#selected-task-navigation [data-board-view-link=kanban]")
+    assert has_element?(view, "#selected-task-navigation [data-board-view-link=gantt]")
     assert has_element?(view, "#kanban-view[hidden] .task-card")
     refute has_element?(view, "#board-dialog")
     assert :sys.get_state(view.pid).socket.assigns.chat_task_id == "github:example/fixture:2"
     assert :sys.get_state(view.pid).socket.assigns.url_filters == Map.put(filters, "view", "graph")
 
-    view |> element("#view-gantt") |> render_click()
+    view |> element("#selected-task-navigation [data-board-view-link=gantt]") |> render_click()
     assert has_element?(view, "#task-board-app[data-board-view=gantt]")
     assert has_element?(view, "#gantt-view")
+    refute has_element?(view, ".plan-inspector, #selected-task-navigation [data-board-view-link=gantt]")
+    assert has_element?(view, "#selected-task-navigation [data-board-view-link=graph]")
+    assert has_element?(view, "#selected-task-navigation [data-board-view-link=kanban]")
     assert :sys.get_state(view.pid).socket.assigns.chat_task_id == "github:example/fixture:2"
     render_click(view, "switch-view", %{"view" => "kanban", "id" => "github:example/fixture:2"})
     assert has_element?(view, "#view-kanban[aria-current=page]")
@@ -1686,6 +1715,122 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert :sys.get_state(view.pid).socket.assigns.url_filters == filters
     assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
     refute_receive {:settings_command, _}
+  end
+
+  @tag :threads_fixture
+  @tag :navigation_reads
+  test "planning selection reuses board and project activity while refreshes remain authoritative", ctx do
+    owner = self()
+
+    configure_board_loaders(
+      fn server, _ ->
+        send(owner, :board_read)
+        GenServer.call(server, :board)
+      end,
+      fn ->
+        send(owner, :snapshot_read)
+        ctx.board.runtime
+      end
+    )
+
+    :ok = BoardCache.put(BoardCache.scope(ctx.runtime), ctx.board)
+    view = authorized_board_view()
+    render_click(view, "switch-view", %{"view" => "graph"})
+    assert_push_event(view, "focus-plan-task", %{id: nil, view: "graph"})
+    render(view)
+    drain_navigation_reads()
+
+    for id <- ["1", "2", "3", "2"] do
+      task_id = "github:example/fixture:#{id}"
+      render_click(view, "select-plan-task", %{"id" => task_id})
+      assert :sys.get_state(view.pid).socket.assigns.chat_task_id == task_id
+      assert_receive {:chat_read, :ensure_conversation}
+      refute_push_event(view, "focus-plan-task", %{id: ^task_id, view: "graph"})
+      refute_push_event(view, "focus-chat-session", %{})
+    end
+
+    render_patch(view, "/?" <> URI.encode_query(%{"view" => "gantt", "chat_task" => "github:example/fixture:2"}))
+    assert_push_event(view, "focus-plan-task", %{id: "github:example/fixture:2", view: "gantt"})
+    refute_received {:chat_read, :projects}
+    refute_received {:chat_read, :list}
+    refute_received :board_read
+    refute_received :snapshot_read
+    assert :sys.get_state(view.pid).socket.assigns.board == ctx.board
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+
+    # Both live list notifications and the periodic/explicit refresh retain
+    # their reads; only navigation is removed from the refresh path.
+    send(view.pid, {:chat_list_updated, "github:example/fixture"})
+    render(view)
+    assert_receive {:chat_read, :list}
+    drain_navigation_reads()
+
+    send(view.pid, :refresh_board)
+    render_async(view)
+    assert_receive :board_read
+    assert_receive {:chat_read, :list}
+    drain_navigation_reads()
+
+    render_click(view, "refresh")
+    render_async(view)
+    assert_receive :board_read
+    assert_receive {:chat_read, :list}
+    refute_received :snapshot_read
+  end
+
+  defp drain_navigation_reads do
+    receive do
+      {:chat_read, _} -> drain_navigation_reads()
+      :board_read -> drain_navigation_reads()
+      :snapshot_read -> drain_navigation_reads()
+    after
+      0 -> :ok
+    end
+  end
+
+  @tag :threads_fixture
+  @tag :navigation_reads
+  test "cached project metadata cannot bypass a removed project or expired identity" do
+    view = authorized_board_view()
+    render_click(view, "select-plan-task", %{"id" => "github:example/fixture:1"})
+    assert :sys.get_state(view.pid).socket.assigns.chat_id
+    drain_navigation_reads()
+
+    configured = Application.get_env(:symphony_elixir, Endpoint)
+    updates = Keyword.put(configured, :navigation_fixture_error, :unknown_project)
+    Application.put_env(:symphony_elixir, Endpoint, updates)
+    Endpoint.config_change([{Endpoint, updates}], [])
+
+    render_click(view, "select-plan-task", %{"id" => "github:example/fixture:2"})
+    assert_receive {:chat_read, :ensure_conversation}
+    assert has_element?(view, ".chat-notice", "not available in the selected project")
+    refute has_element?(view, ".message-body", "Fixture")
+    refute_received {:chat_read, :projects}
+    refute_received {:chat_read, :list}
+
+    System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("rotated-token", 4))
+    render_click(view, "select-plan-task", %{"id" => "github:example/fixture:3"})
+    assert has_element?(view, ".chat-login", "Unlock chat")
+    refute_received {:chat_read, :ensure_conversation}
+  end
+
+  test "plan selection acknowledges the canonical task after accepting or rejecting an ID" do
+    view = authorized_board_view()
+    socket = :sys.get_state(view.pid).socket
+    task_id = "github:example/fixture:2"
+
+    assert {:reply, %{selected_task_id: ^task_id}, selected} =
+             SymphonyElixirWeb.DashboardLive.handle_event("select-plan-task", %{"id" => task_id}, socket)
+
+    assert {:reply, %{selected_task_id: ^task_id}, _} =
+             SymphonyElixirWeb.DashboardLive.handle_event("select-plan-task", %{"id" => "github:other/project:99"}, selected)
+
+    assert {:reply, %{selected_task_id: ^task_id}, _} = SymphonyElixirWeb.DashboardLive.handle_event("select-plan-task", %{}, selected)
+
+    retained = Phoenix.Component.assign(selected, chat_session_id: "work:current", chat_id: "retained-conversation")
+
+    assert {:reply, %{selected_task_id: ^task_id}, ^retained} =
+             SymphonyElixirWeb.DashboardLive.handle_event("select-plan-task", %{"id" => "github:other/project:99"}, retained)
   end
 
   test "graph refresh preserves focus and title details return to the same view" do
@@ -1735,8 +1880,11 @@ defmodule SymphonyElixir.DashboardLiveTest do
     :ok = GenServer.call(ctx.runtime, {:board, board})
     view = authorized_board_view()
     render_click(view, "switch-view", %{"view" => "graph", "id" => task_id})
+    assert_push_event(view, "focus-plan-task", %{id: ^task_id, view: "graph"})
     render_click(view, "select-plan-task", %{"id" => task_id, "work_id" => work_id})
     assert :sys.get_state(view.pid).socket.assigns.chat_session_id == "work:" <> work_id
+    refute_push_event(view, "focus-chat-session", %{})
+    refute_push_event(view, "focus-plan-task", %{id: ^task_id, view: "graph"})
     assert has_element?(view, ".plan-node[data-node-id='task:#{task_id}'][data-selected=true]")
     refute has_element?(view, ".plan-node[data-node-id='#{node_id}'], #plan-agents-panel, [data-canvas-mode]")
     assert has_element?(view, "#workflow-graph[data-plan-mode=dependencies]")

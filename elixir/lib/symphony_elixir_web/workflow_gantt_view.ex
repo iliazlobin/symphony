@@ -43,8 +43,7 @@ defmodule SymphonyElixirWeb.WorkflowGanttView do
         weeks: date_groups(days, &Date.add(&1, 1 - Date.day_of_week(&1)), &Calendar.strftime(Date.add(&1, 1 - Date.day_of_week(&1)), "%b %-d")),
         paths: Enum.flat_map(dependencies, &arrow(&1, positions, start, length(days))),
         dependencies: dependencies,
-        related: Enum.filter(dependencies, &related?(&1, selected)),
-        by_id: Map.new(plan["nodes"], &{&1["id"], &1}),
+        text_nodes: Enum.filter(plan["nodes"], &(&1["type"] == "task")),
         width: length(days) * @day_width,
         height: length(rows) * @row_height,
         clipped: Enum.any?(rows, &(is_integer(start_offset(&1, start)) and start_offset(&1, start) < 0))
@@ -65,21 +64,21 @@ defmodule SymphonyElixirWeb.WorkflowGanttView do
           <table class="plan-gantt-table">
             <caption class="sr-only">Dates are UTC. Dashed bars are editable draft estimates, not execution promises. Solid segments show recorded active execution; diamonds show human acceptance. Arrows point from prerequisite to dependent.</caption>
             <thead><tr><th scope="col" class="plan-row-name">Task <span class="plan-caption">· estimate</span></th><th scope="col" class="plan-calendar-header"><div class="plan-calendar-months"><span :for={group <- @months} style={group_style(group)}>{group.title}</span></div><div class="plan-calendar-weeks"><span :for={group <- @weeks} style={group_style(group)}>Week of {group.title}</span></div><div class="plan-calendar-days"><span :for={day <- @days} data-calendar-date={Date.to_iso8601(day)} data-today={to_string(Date.to_iso8601(day) == @calendar["today_on"])} title={Calendar.strftime(day, "%A, %B %-d, %Y")}>{day.day}</span></div></th></tr></thead>
-            <tbody><tr :for={row <- @rows} data-plan-task-id={row["task_id"]} data-plan-visible={to_string(row["visible"])} data-selected={to_string(!is_nil(@selected) && @selected["id"] == row["id"])} data-lane={row["lane"]} data-timeline-kind={row["timeline"]["kind"]}>
+            <tbody><tr :for={row <- @rows} id={dom_id("gantt-row", row["id"])} data-plan-task-id={row["task_id"]} data-plan-visible={to_string(row["visible"])} data-selected={to_string(!is_nil(@selected) && @selected["id"] == row["id"])} data-lane={row["lane"]} data-timeline-kind={row["timeline"]["kind"]}>
               <th scope="row" class="plan-row-name"><div class="plan-row-heading"><button type="button" class="plan-row-title" phx-click="open-card" phx-value-id={row["task_id"]} title={row["title"]}>{row["title"] || row["identifier"]}</button><label :if={row["lane"] != "done"} class="plan-calendar-estimate"><input type="number" min="1" max="365" value={row["timeline"]["duration_days"] || 1} data-calendar-duration data-calendar-task-id={row["task_id"]} aria-label={"Estimated days for #{row["identifier"] || row["title"]}"} />d</label></div><div class="plan-node-meta"><span>{row["identifier"]}</span><span :if={row["priority"]}>P{row["priority"]}</span><span>{kind_name(row["task_kind"])}</span><span>{lane_name(row["lane"])}</span><span :if={milestone_title(row)} title={milestone_title(row)}>{milestone_title(row)}</span><span :if={row["visible"] == false} class="plan-node-context">Outside filters</span></div></th>
               <td class="plan-gantt-track">
-                <button type="button" class={if row["timeline"]["kind"] == "unscheduled", do: "plan-gantt-unresolved", else: "plan-gantt-bar"} style={bar_style(row, @start, length(@days))} phx-click="select-plan-task" phx-value-id={row["task_id"]} aria-label={bar_label(row)} title={bar_label(row)} data-planning-status={row["planning_status"]} data-timeline-kind={row["timeline"]["kind"]} data-timeline-start-offset={start_offset(row, @start)} data-timeline-days={row["timeline"]["duration_days"]}>
+                <button type="button" class={if row["timeline"]["kind"] == "unscheduled", do: "plan-gantt-unresolved", else: "plan-gantt-bar"} style={bar_style(row, @start, length(@days))} phx-click="select-plan-task" phx-value-id={row["task_id"]} aria-pressed={to_string(!is_nil(@selected) && @selected["id"] == row["id"])} aria-label={bar_label(row)} title={bar_label(row)} data-planning-status={row["planning_status"]} data-timeline-kind={row["timeline"]["kind"]} data-timeline-start-offset={start_offset(row, @start)} data-timeline-days={row["timeline"]["duration_days"]}>
                   <span :if={row["timeline"]["kind"] == "running"} class="plan-gantt-recorded" style={recorded_style(row, @start)} aria-hidden="true"></span><span class="plan-gantt-label">{bar_status(row)}</span>
                 </button>
               </td>
             </tr></tbody>
           </table>
           <div class="plan-calendar-today" style={"left:calc(var(--timeline-name-width, 260px) + var(--timeline-day-width, 36px) * #{@today_offset})"} aria-hidden="true"><span>Today</span></div>
-          <svg class="plan-gantt-arrows" width={@width} height={@height} viewBox={"0 0 #{@width} #{@height}"} preserveAspectRatio="none" aria-hidden="true"><defs><marker id="gantt-arrow" markerWidth="4" markerHeight="4" refX="3" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4" /></marker></defs><path :for={path <- @paths} d={path.d} class="plan-edge" data-status={path.edge["status"]} data-related={to_string(related?(path.edge, @selected))} vector-effect="non-scaling-stroke" marker-end="url(#gantt-arrow)" /></svg>
+          <svg class="plan-gantt-arrows" width={@width} height={@height} viewBox={"0 0 #{@width} #{@height}"} preserveAspectRatio="none" aria-hidden="true"><defs><marker id="gantt-arrow" markerWidth="4" markerHeight="4" refX="3" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4" /></marker></defs><path :for={path <- @paths} id={dom_id("gantt-edge", path.edge["id"] || path.edge["source"] <> ":" <> path.edge["target"])} data-edge-source={path.edge["source"]} data-edge-target={path.edge["target"]} d={path.d} class="plan-edge" data-status={path.edge["status"]} data-related={to_string(related?(path.edge, @selected))} vector-effect="non-scaling-stroke" marker-end="url(#gantt-arrow)" /></svg>
         </div>
         <p :if={@rows == []} class="plan-empty">No matching tasks. Describe a task to the project agent or adjust filters.</p>
       </div>
-      <aside :if={@available && @selected} class="plan-inspector" aria-label="Selected task dependencies"><div class="plan-inspector-heading"><h3 title={@selected["title"]} aria-label={"#{@selected["identifier"]}: #{@selected["title"]}"}>{@selected["identifier"]}</h3><div class="plan-inspector-links"><button type="button" phx-click="switch-view" phx-value-view="kanban" phx-value-id={@selected["task_id"]} data-board-view-link="kanban" data-board-view-task={@selected["task_id"]}>Show on board</button><button type="button" phx-click="switch-view" phx-value-view="graph" phx-value-id={@selected["task_id"]} data-board-view-link="graph" data-board-view-task={@selected["task_id"]}>Show graph</button></div></div><p>{@selected["upstream_count"]} prerequisites · {@selected["downstream_count"]} dependents</p><p :if={@selected["timeline"]["reason"]} class="plan-caption">{@selected["timeline"]["reason"]}</p><ul class="plan-related-list"><li :for={edge <- @related} title={edge["reason"]}><span>{if edge["source"] == @selected["id"], do: "↑", else: "↓"}</span><WorkflowGraphView.reference node={@by_id[neighbor_id(edge, @selected)]} fallback={neighbor_id(edge, @selected)} /><span class="plan-caption">{edge_status(edge)}</span></li></ul><p :if={@related == []} class="plan-caption">No declared dependencies.</p></aside>
+      <WorkflowGraphView.relationships :if={@available} nodes={@text_nodes} edges={@dependencies} />
     </section>
     """
   end
@@ -141,11 +140,7 @@ defmodule SymphonyElixirWeb.WorkflowGanttView do
   defp timing_label(%{"kind" => "draft"} = timing), do: "Estimated #{timing["start_on"]} → #{timing["end_on"]} (exclusive)"
   defp timing_label(timing), do: timing["reason"]
 
-  defp edge_status(%{"status" => "waiting"}), do: "Awaiting acceptance"
-  defp edge_status(%{"status" => "satisfied"}), do: "Accepted"
-  defp edge_status(%{"status" => "cycle"}), do: "Revise cycle"
-  defp edge_status(_edge), do: "Unavailable"
-  defp neighbor_id(edge, selected), do: if(edge["source"] == selected["id"], do: edge["target"], else: edge["source"])
+  defp dom_id(prefix, id), do: prefix <> "-" <> Base.url_encode64(id, padding: false)
   defp related?(_edge, nil), do: false
   defp related?(edge, selected), do: selected["id"] in [edge["source"], edge["target"]]
 
