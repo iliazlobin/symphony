@@ -11,6 +11,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, ChatPanel, Endpoint, Markdown, SettingsPanel, TaskIntakePanel}
   alias SymphonyElixirWeb.{BoardCache, ChatNavigation, ObservabilityPubSub, Presenter}
   alias SymphonyElixirWeb.SpecificationEditor
+  alias SymphonyElixirWeb.StatusIndicator
   alias SymphonyElixirWeb.{TaskBoard, TaskExecution, TaskFilters, TaskOperator, TaskPresentation, TaskRework}
 
   alias SymphonyElixir.Assurance.{GraphSnapshot, Store}
@@ -1108,7 +1109,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <.card_chat_status activity={Map.get(@chat_activity, task.id)} />
                 <span class="card-filter-context">Outside filters</span>
                 <.feedback_summary task={task} />
-                <.execution_summary summary={execution_summary(task, @board, @payload)} routing={task[:routing]} compact={true} />
+                <.execution_summary id={card_id(task) <> "-execution"} summary={execution_summary(task, @board, @payload)} routing={task[:routing]} compact={true} />
                 <.card_work_status task={task} filters={@url_filters} />
                 <span :if={blocker(task) && is_nil(task.hold)} class="attention-badge">{blocker(task)}</span>
                 <div :if={pull_requests(task) != []} class="card-pr-summary"><span :for={pr <- Enum.take(pull_requests(task), 3)}>
@@ -1186,7 +1187,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <TaskOperator.panel id="task-detail-operator" task={@selected} board={@board} payload={@payload} controls_available={!@read_only && @controls_available} />
               <.feedback_details task={@selected} />
               <details class="dialog-section task-execution-details"><summary>Usage &amp; limits</summary>
-                <.execution_summary summary={execution_summary(@selected, @board, @payload)} routing={@selected[:routing]} hide_unused={@selected.stage == "backlog"} />
+                <.execution_summary id="task-detail-usage" summary={execution_summary(@selected, @board, @payload)} routing={@selected[:routing]} hide_unused={@selected.stage == "backlog"} />
                 <p :if={blocker(@selected) && is_nil(@selected.hold)} class="attention-badge">{blocker(@selected)}</p>
                 <p :if={Map.get(@selected, :completion_evidence)} class="muted">{Map.get(@selected, :completion_evidence)}</p>
               </details>
@@ -1622,6 +1623,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     TaskExecution.summary(task, board.control, unavailable)
   end
 
+  attr(:id, :string, required: true)
   attr(:summary, :map, required: true)
   attr(:compact, :boolean, default: false)
   attr(:hide_unused, :boolean, default: false)
@@ -1636,13 +1638,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     ~H"""
     <div class={["execution-summary", @compact && "compact"]} aria-label="Execution summary">
-      <p class="execution-state">{@summary.status}<small :if={@sync_label} class="routing-sync muted" title="Saved locally. GitHub routing labels synchronize automatically; failed attempts retry."> · {@sync_label}</small></p>
+      <p class="execution-state">{@summary.status}<StatusIndicator.indicator :if={@summary.note} id={@id <> "-note"} title="Execution details" detail={@summary.note} detail_class="execution-note" /><small :if={@sync_label} class="routing-sync muted" title="Saved locally. GitHub routing labels synchronize automatically; failed attempts retry."> · {@sync_label}</small></p>
       <dl :if={@metrics != []} class="execution-metrics">
         <div :for={metric <- @metrics}>
           <dt>{metric.label}</dt><dd title={metric.title}>{metric.value}</dd>
         </div>
       </dl>
-      <p :if={@summary.note} class="execution-note">{@summary.note}</p>
     </div>
     """
   end

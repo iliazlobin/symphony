@@ -354,6 +354,13 @@ Work names use the PR title or the first line of the work instruction before pub
 Long names truncate while the role stays visible; hover reveals the full label. Search
 matches names, PR numbers, status, review or CI. Incomplete GitHub evidence stays labeled.
 Named agent links in task details focus the corresponding conversation.
+Task status and action buttons stay visible. Compact indicators disclose outcomes,
+blockers and action guidance on hover or keyboard focus; click or tap keeps the
+explanation open. Escape or an outside click dismisses it. Waiting indicators are
+neutral; blockers requiring action are amber. Popovers stay within the viewport,
+including inside task dialogs and the chat dock. Card execution notes use the same
+indicators. Retry, stop and acceptance actions retain their existing confirmations
+and native execution gates.
 Filter **Kind** separates features, bugs, testing, security, releases, operations and other task intents. Classification grants no execution tools. The selected session is retained in the board URL across reloads. Project → Task → Work breadcrumbs return to the supervising conversation. Work cards and chat show retained session counts, recorded execution phases separately from chat activity.
 Describe a new task in project chat. Only a title is required; description and verification
 may be empty. Enable `chat.auto_create_backlog: true` to let the authenticated project

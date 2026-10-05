@@ -986,6 +986,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     :ok = GenServer.call(ctx.runtime, {:board, board})
     view = authorized_board_view()
     assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:2'] .execution-summary", "Worker sign-in required")
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:2'] [data-indicator-trigger][popovertarget]")
+    assert has_element?(view, "#lane-work [data-task-id='github:example/fixture:2'] .execution-note[popover=auto]", "coding worker's Codex sign-in")
     open_task(view, "2")
     assert has_element?(view, "#board-dialog .execution-note", "coding worker's Codex sign-in")
     assert has_element?(view, "#board-dialog .execution-note", "Project chat remains available")

@@ -509,11 +509,13 @@
       this.focusDialog = () => (this.el.querySelector(this.closeSelector) || this.el.querySelector("[data-dialog-focus]"))?.focus({preventScroll: true});
       document.addEventListener("click", event => {
         // Scope and task navigation replace details themselves. An extra close patch can overwrite their destination.
-        if (event.target.closest("a[data-phx-link], [data-board-view-link], #board-project-picker, #board-toolbar, #board-search, [data-status-filter], #operator-scope, .task-card[data-task-id], [data-plan-task-id], [phx-click=\"open-settings\"], [phx-click=\"open-task\"], [phx-click=\"select-task\"], [phx-click=\"main-chat\"], [phx-click=\"select-issue\"], [phx-click=\"select-pr-session\"], [phx-click=\"operator-question\"]")) return;
+        if (event.target.closest("a[data-phx-link], [data-board-view-link], [data-indicator-trigger], [data-indicator-detail], #board-project-picker, #board-toolbar, #board-search, [data-status-filter], #operator-scope, .task-card[data-task-id], [data-plan-task-id], [phx-click=\"open-settings\"], [phx-click=\"open-task\"], [phx-click=\"select-task\"], [phx-click=\"main-chat\"], [phx-click=\"select-issue\"], [phx-click=\"select-pr-session\"], [phx-click=\"operator-question\"]")) return;
         if (this.nonmodal && this.el.open && !this.el.contains(event.target)) this.closeDialog();
       }, {capture: true, signal: this.abort.signal});
       document.addEventListener("keydown", event => {
         if (this.nonmodal && this.el.open && event.key === "Escape") {
+          // The first Escape dismisses the explanation without closing its task details.
+          if (event.defaultPrevented || document.querySelectorAll('.status-indicator[data-indicator-open="true"]').length) return;
           event.preventDefault(); event.stopPropagation();
           if (!event.repeat) this.closeDialog();
         }
@@ -570,6 +572,125 @@
         [target, replacement, document.getElementById("settings-button"), document.getElementById("filter-status")].find(visible)?.focus({preventScroll: true});
       });
     }
+  };
+  const StatusIndicator = {
+    mounted() {
+      this.abort = new AbortController();
+      this.open = false;
+      this.pinned = false;
+      this.hovered = false;
+      this.dismissed = false;
+      this.trigger = () => this.el.querySelector("[data-indicator-trigger]");
+      this.detail = () => this.el.querySelector("[data-indicator-detail]");
+      this.clearClose = () => { clearTimeout(this.closeTimer); this.closeTimer = null; };
+      this.sync = () => {
+        this.el.dataset.indicatorOpen = String(this.open);
+        this.trigger()?.setAttribute("aria-expanded", String(this.open));
+      };
+      this.fit = () => {
+        if (!this.open) return;
+        const trigger = this.trigger(), detail = this.detail();
+        if (!trigger || !detail) return;
+        const viewport = window.visualViewport;
+        const left = viewport?.offsetLeft || 0, top = viewport?.offsetTop || 0;
+        const width = viewport?.width || window.innerWidth, height = viewport?.height || window.innerHeight;
+        const anchor = trigger.getBoundingClientRect();
+        if (anchor.bottom < top || anchor.top > top + height || anchor.right < left || anchor.left > left + width) { this.hide(); return; }
+        detail.style.inset = "auto";
+        detail.style.margin = "0";
+        detail.style.maxWidth = Math.min(340, Math.max(0, width - 24)) + "px";
+        detail.style.maxHeight = Math.max(0, height - 24) + "px";
+        const bounds = detail.getBoundingClientRect();
+        const x = Math.max(left + 12, Math.min(anchor.left, left + width - bounds.width - 12));
+        const below = anchor.bottom + 8;
+        const y = below + bounds.height <= top + height - 12 ? below : anchor.top - bounds.height - 8;
+        detail.style.left = Math.round(x) + "px";
+        detail.style.top = Math.round(Math.max(top + 12, Math.min(y, top + height - bounds.height - 12))) + "px";
+      };
+      this.show = () => {
+        this.clearClose();
+        const detail = this.detail();
+        if (this.dismissed || !detail?.isConnected || typeof detail.showPopover !== "function") return;
+        if (!detail.matches(":popover-open")) detail.showPopover();
+        this.open = true;
+        this.sync();
+        this.fit();
+      };
+      this.hide = () => {
+        this.clearClose();
+        this.pinned = false;
+        this.dismissed = true;
+        const detail = this.detail();
+        if (typeof detail?.hidePopover === "function" && detail.matches(":popover-open")) detail.hidePopover();
+        this.open = false;
+        this.sync();
+      };
+      this.scheduleClose = () => {
+        this.clearClose();
+        if (this.pinned || this.hovered) return;
+        this.closeTimer = setTimeout(() => {
+          this.closeTimer = null;
+          if (!this.pinned && !this.hovered && !this.el.contains(document.activeElement)) this.hide();
+        }, 120);
+      };
+      this.bindDetail = () => {
+        const detail = this.detail();
+        if (this.boundDetail === detail) return;
+        this.detailAbort?.abort();
+        this.boundDetail = detail;
+        this.detailAbort = new AbortController();
+        detail?.addEventListener("beforetoggle", event => {
+          this.open = event.newState === "open";
+          if (!this.open) { this.clearClose(); this.pinned = false; this.dismissed = true; }
+          this.sync();
+        }, {signal: this.detailAbort.signal});
+      };
+      const on = (name, handler) => this.el.addEventListener(name, handler, {signal: this.abort.signal});
+      on("pointerover", event => {
+        if (event.pointerType === "touch" || this.el.contains(event.relatedTarget)) return;
+        this.hovered = true; this.dismissed = false; this.show();
+      });
+      on("pointerout", event => {
+        if (this.el.contains(event.relatedTarget)) return;
+        this.hovered = false; this.scheduleClose();
+      });
+      on("focusin", event => {
+        if (!this.el.contains(event.relatedTarget)) this.dismissed = false;
+        this.show();
+      });
+      on("focusout", () => this.scheduleClose());
+      on("click", event => {
+        event.stopPropagation();
+        if (!event.target.closest("[data-indicator-trigger]")) return;
+        // Leave the native invoker's default behavior intact when the enhancement is unavailable.
+        if (typeof this.detail()?.showPopover !== "function" || typeof this.detail()?.hidePopover !== "function") return;
+        event.preventDefault();
+        if (this.open && this.pinned) this.hide();
+        else { this.pinned = true; this.dismissed = false; this.show(); }
+      });
+      document.addEventListener("keydown", event => {
+        if (event.key !== "Escape" || !this.open) return;
+        event.preventDefault(); event.stopPropagation(); this.hide();
+      }, {capture: true, signal: this.abort.signal});
+      document.addEventListener("scroll", this.fit, {capture: true, passive: true, signal: this.abort.signal});
+      window.addEventListener("resize", this.fit, {signal: this.abort.signal});
+      window.visualViewport?.addEventListener("resize", this.fit, {signal: this.abort.signal});
+      window.visualViewport?.addEventListener("scroll", this.fit, {signal: this.abort.signal});
+      this.bindDetail();
+      this.sync();
+    },
+    beforeUpdate() { this.retained = {open: this.open, pinned: this.pinned, dismissed: this.dismissed}; },
+    updated() {
+      this.bindDetail();
+      if (this.retained) {
+        this.pinned = this.retained.pinned;
+        this.dismissed = this.retained.dismissed;
+        if (this.retained.open) this.show();
+        else { this.open = false; this.sync(); }
+        this.retained = null;
+      } else { this.sync(); this.fit(); }
+    },
+    destroyed() { this.hide(); this.detailAbort?.abort(); this.abort.abort(); }
   };
   const ChatWorkspace = {
     mounted() {
@@ -1563,5 +1684,5 @@
     updated() { this.renderer?.update(); },
     destroyed() { this.active = false; this.renderer?.destroy(); }
   };
-  window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace, IssueSwitcher, IssuePRMenu, WorkflowCanvas, DesignWorkspace, SpecificationWorkspace, SpecificationDiagram};
+  window.SymphonyHooks = {TaskBoard, BoardDialog, StatusIndicator, ChatWorkspace, IssueSwitcher, IssuePRMenu, WorkflowCanvas, DesignWorkspace, SpecificationWorkspace, SpecificationDiagram};
 })();
