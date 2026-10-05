@@ -62,6 +62,30 @@ defmodule SymphonyElixirWeb.SpecificationViewTest do
     assert Floki.text(find(html, ".specification-criterion select")) =~ "Analysis"
     assert find(html, "a[href='/\?view=kanban&task=one']") != []
 
+    [item] = document["sections"]["requirements"]["items"]
+    item = Map.update!(item, "criteria", &(&1 ++ [%{"id" => "latency", "statement" => "p95 < 500ms", "method" => "analysis"}]))
+
+    other = %{
+      "id" => "freshness",
+      "kind" => "nonfunctional",
+      "title" => "Catalog freshness",
+      "body" => "Keep events current",
+      "criteria" => [%{"id" => "refresh", "statement" => "Refresh within an hour", "method" => "test"}]
+    }
+
+    multiple = put_in(document, ["sections", "requirements", "items"], [item, other])
+    rendered = view_html(section: "requirements", draft: multiple)
+
+    assert Floki.attribute(find(rendered, "[phx-click=spec-remove-criterion]"), "aria-label") == [
+             "Remove criterion 1 from Relevant search",
+             "Remove criterion 2 from Relevant search",
+             "Remove criterion 1 from Catalog freshness"
+           ]
+
+    untitled = put_in(multiple, ["sections", "requirements", "items", Access.at(1), "title"], "")
+    rendered = view_html(section: "requirements", draft: untitled)
+    assert Floki.attribute(find(rendered, "[data-spec-item-id=freshness] [phx-click=spec-remove-criterion]"), "aria-label") == ["Remove criterion 1 from requirement freshness"]
+
     for status <- ~w(missing changed pending unknown incomplete) do
       coverage = %{"search" => %{status: status, criteria_count: 1, links: []}}
       rendered = view_html(section: "requirements", draft: document, state: state, coverage: coverage)
