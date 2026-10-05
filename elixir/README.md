@@ -913,6 +913,10 @@ next safe action and readiness; the task Details panel retains limits and eviden
 Agent replies are separate from coding execution: **Stop reply** cancels the management
 turn only. Blocked work takes precedence over an active management reply in attention
 filters. Passive dependency or capacity waits do not create another attention alert.
+Queued Work cards show the remaining prerequisite task IDs and the required acceptance,
+or a declaration/cycle correction. Running work, recovery holds, exhausted limits and
+unavailable observations retain precedence. A complete refresh clears prerequisite
+waiting only after the native ledger confirms acceptance in the current project.
 **Retry cycle** previews the configured attempt bound, retains lifetime tokens/runtime,
 and forwards the exact native command ID and revision on uncertain replay. It cannot
 release other holds, bypass dependencies or change total budgets. Card `↑` / `↓` counts open the focused dependency

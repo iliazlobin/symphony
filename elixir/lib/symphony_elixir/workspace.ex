@@ -595,7 +595,14 @@ defmodule SymphonyElixir.Workspace do
 
     Logger.warning("Workspace hook failed hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} status=#{status} output=#{inspect(sanitized_output)}")
 
-    {:error, {:workspace_hook_failed, hook_name, status, output}}
+    # Only the trusted controlled preflight may report this permanent prerequisite.
+    # Other stages, exit statuses and task/provider prose retain ordinary failures.
+    if Config.control_settings().enabled and hook_name == "before_run" and status == 78 and
+         output == "SYMPHONY_WORKSPACE_BASELINE_CHANGED\n" do
+      {:error, :workspace_baseline_changed}
+    else
+      {:error, {:workspace_hook_failed, hook_name, status, output}}
+    end
   end
 
   defp sanitize_hook_output_for_log(output, max_bytes \\ 2_048) do

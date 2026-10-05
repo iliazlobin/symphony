@@ -87,6 +87,40 @@ defmodule SymphonyElixir.ControlledWorkerTest do
     end
   end
 
+  test "controlled before-run prerequisite is typed before any model starts", %{root: root} do
+    workspace = Path.join(root, issue().identifier)
+    init_repo(workspace)
+    fake = fake_server(root, "candidate")
+    controlled_workflow(root, fake, hook_before_run: "printf 'SYMPHONY_WORKSPACE_BASELINE_CHANGED\\n'; exit 78")
+
+    exception = assert_raise SymphonyElixir.WorkerFailure, "Workspace baseline needs recovery", fn -> AgentRunner.run(issue(), self(), run_id: "baseline-run") end
+    assert exception.reason == :workspace_baseline_changed
+    assert SymphonyElixir.WorkerFailure.hold_reason(exception) == "workspace_baseline_changed"
+    refute File.exists?(Path.join(root, "fake-server.pid"))
+    refute_receive {:worker_candidate_ready, _, _}
+  end
+
+  test "prerequisite contract rejects other statuses, stages and extra prose", %{root: root} do
+    workspace = Path.join(root, issue().identifier)
+    init_repo(workspace)
+
+    for {output, status} <- [{"SYMPHONY_WORKSPACE_BASELINE_CHANGED\\n", 1}, {"Workspace baseline needs recovery\\n", 78}, {"SYMPHONY_WORKSPACE_BASELINE_CHANGED\\nextra\\n", 78}] do
+      controlled_workflow(root, "false", hook_before_run: "printf '#{output}'; exit #{status}")
+      assert {:error, {:workspace_hook_failed, "before_run", ^status, _}} = Workspace.run_before_run_hook(workspace, issue())
+    end
+
+    controlled_workflow(root, "false", hook_after_create: "printf 'SYMPHONY_WORKSPACE_BASELINE_CHANGED\\n'; exit 78")
+    assert {:error, {:workspace_hook_failed, "after_create", 78, "SYMPHONY_WORKSPACE_BASELINE_CHANGED\n"}} = Workspace.create_for_issue("new-fixture")
+  end
+
+  test "uncontrolled prerequisite marker preserves upstream hook failure", %{root: root} do
+    workspace = Path.join(root, issue().identifier)
+    init_repo(workspace)
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: root, hook_before_run: "printf 'SYMPHONY_WORKSPACE_BASELINE_CHANGED\\n'; exit 78")
+    WorkflowStore.force_reload()
+    assert {:error, {:workspace_hook_failed, "before_run", 78, "SYMPHONY_WORKSPACE_BASELINE_CHANGED\n"}} = Workspace.run_before_run_hook(workspace, issue())
+  end
+
   test "guardian kills same-group children and grandchildren after its Erlang owner dies", %{root: root} do
     pid_file = Path.join(root, "pids")
     caller = self()
@@ -384,8 +418,8 @@ defmodule SymphonyElixir.ControlledWorkerTest do
   defp init_repo(workspace) do
     File.mkdir_p!(workspace)
 
-    for args <- [["init", "-b", "codex/fixture"], ["config", "user.name", "Fixture"], ["config", "user.email", "fixture@example.invalid"]] do
-      {_output, 0} = System.cmd("git", args, cd: workspace, stderr_to_stdout: true)
+    for args <- [["init", "-b", "codex/fixture"], ["config", "core.hooksPath", "/dev/null"], ["config", "user.name", "Fixture"], ["config", "user.email", "fixture@example.invalid"]] do
+      {_output, 0} = System.cmd("git", ["-c", "core.hooksPath=/dev/null" | args], cd: workspace, stderr_to_stdout: true, env: [{"GIT_CONFIG_GLOBAL", "/dev/null"}, {"GIT_CONFIG_NOSYSTEM", "1"}])
     end
 
     File.write!(Path.join(workspace, "source"), "base\n")

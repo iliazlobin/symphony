@@ -576,9 +576,11 @@ defmodule SymphonyElixir.Chat.Tools do
 
   defp dispatch("symphony_task_details", args, context, _settings, board) do
     with :ok <- complete_board(board), {:ok, task} <- find_task(args["task_id"], context, board) do
+      observed = task_view(task, board)
+
       details =
-        task_view(task, board)
-        |> Map.put("blocker_reason", task_blocker_reason(task))
+        observed
+        |> Map.put("blocker_reason", task_blocker_reason(task, observed["execution_status"]))
         |> Map.put("github_status", task[:github_status])
         |> Map.put("description", truncate(task[:description], 32_000))
         |> Map.put("labels", task[:labels] || [])
@@ -724,9 +726,11 @@ defmodule SymphonyElixir.Chat.Tools do
   defp task_lane(%{stage: stage}) when stage in ~w(ready running), do: scheduler_lane(stage)
   defp task_lane(task), do: task[:lane] || scheduler_lane(task.stage)
 
-  defp task_blocker_reason(%{hold: "worker_auth_required"}), do: "Worker sign-in required"
+  defp task_blocker_reason(%{hold: "workspace_baseline_changed"}, "Workspace baseline needs recovery"), do: "Workspace baseline needs recovery"
+  defp task_blocker_reason(%{hold: "workspace_baseline_changed"}, _status), do: nil
+  defp task_blocker_reason(%{hold: "worker_auth_required"}, _status), do: "Worker sign-in required"
 
-  defp task_blocker_reason(task) do
+  defp task_blocker_reason(task, _status) do
     case get_in(task, [:runtime, :error]) do
       error when is_binary(error) and error != "" -> WorkerFailure.summary(error)
       _ -> task[:blocker_reason]

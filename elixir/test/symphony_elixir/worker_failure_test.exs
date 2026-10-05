@@ -36,6 +36,31 @@ defmodule SymphonyElixir.WorkerFailureTest do
     end
   end
 
+  test "only the typed retained-baseline failure requires workspace recovery" do
+    failure = WorkerFailure.exception(reason: :workspace_baseline_changed)
+
+    for reason <- [:workspace_baseline_changed, failure, {failure, [:private_stack]}] do
+      assert WorkerFailure.hold_reason(reason) == "workspace_baseline_changed"
+      assert WorkerFailure.summary(reason) == "Workspace baseline needs recovery"
+      refute WorkerFailure.authentication_required?(reason)
+    end
+
+    for reason <- [
+          "workspace_baseline_changed",
+          "Workspace baseline needs recovery",
+          "SYMPHONY_WORKSPACE_BASELINE_CHANGED\n",
+          {:workspace_hook_failed, "before_run", 78, "SYMPHONY_WORKSPACE_BASELINE_CHANGED\n"},
+          {:turn_failed, %{"error" => %{"code" => "workspace_baseline_changed"}}},
+          {:response_error, %{"message" => "Workspace baseline needs recovery"}}
+        ] do
+      assert WorkerFailure.hold_reason(reason) == nil
+    end
+
+    assert WorkerFailure.summary("Workspace baseline needs recovery") == "Workspace baseline needs recovery"
+
+    assert WorkerFailure.hold_reason({:response_error, %{"code" => "unauthorized"}}) == "worker_auth_required"
+  end
+
   test "malformed turn and error payloads cannot crash failure handling" do
     for turn <- ["invalid", [], 1, nil, %{"error" => "invalid"}] do
       reason = {:turn_failed, %{"turn" => turn}}

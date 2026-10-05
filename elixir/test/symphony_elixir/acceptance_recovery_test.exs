@@ -201,7 +201,10 @@ defmodule SymphonyElixir.AcceptanceRecoveryTest do
   test "bare subprocess CLI ignores invalid live configuration and scrubs every inherited lock environment variable", c do
     binary_dir = c.root <> "/bin"
     File.mkdir_p!(binary_dir)
-    real_python = System.find_executable("python3")
+    # The macOS /usr/bin launcher adds SDK variables after the port clears its
+    # environment. Observe the inherited environment with the interpreter itself.
+    {interpreter, 0} = System.cmd(System.find_executable("python3"), ["-I", "-c", "import sys; print(sys.executable)"])
+    real_python = String.trim(interpreter)
     report = c.root <> "/lock-environment.json"
     python = binary_dir <> "/python3"
 

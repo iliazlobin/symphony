@@ -430,6 +430,61 @@ defmodule SymphonyElixir.ControlOrchestratorTest do
     assert get_in(File.read!(path <> ".saved") |> Jason.decode!(), ["issues", "7", "active", "run_id"]) != nil
   end
 
+  test "baseline preflight settles its counted attempt and holds dispatch across restart", ctx do
+    {worker, _run} = seed_owned_worker(ctx)
+    Process.exit(worker, baseline_failure())
+    wait_for(fn -> Orchestrator.control_snapshot(ctx.pid)["issues"]["7"]["hold"] == "workspace_baseline_changed" end)
+    snapshot = Orchestrator.control_snapshot(ctx.pid)
+    retained = snapshot["issues"]["7"]
+    assert %{"attempts" => 1, "tokens" => 0, "active" => nil, "hold" => "workspace_baseline_changed"} = retained
+    assert retained["runtime_ms"] >= 0
+    assert :sys.get_state(ctx.pid).retry_attempts == %{}
+    assert :sys.get_state(ctx.pid).blocked["7"].error == "Workspace baseline needs recovery"
+    assert :sys.get_state(ctx.pid).blocked["7"].last_codex_event == :workspace_baseline_changed
+
+    path = :sys.get_state(ctx.pid).control.path
+    persisted = File.read!(path) |> Jason.decode!() |> get_in(["issues", "7"])
+    assert persisted["active"] == nil
+    assert persisted["hold"] == "workspace_baseline_changed"
+    stop_supervised!(Orchestrator)
+    pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, "BaselineRecovered#{System.unique_integer([:positive])}"), task_supervisor: ctx.supervisor})
+    assert Orchestrator.control_snapshot(pid)["issues"]["7"] == retained
+    resume = %{"command_id" => "resume-baseline-held", "expected_revision" => snapshot["revision"], "action" => "resume"}
+    assert {:ok, _} = Orchestrator.control_command(resume, pid)
+    send(pid, :run_poll_cycle)
+    assert Orchestrator.control_snapshot(pid)["issues"]["7"] == retained
+    assert :sys.get_state(pid).running == %{}
+    assert :sys.get_state(pid).retry_attempts == %{}
+  end
+
+  test "late baseline failures cannot overwrite cancellation or a current reservation", ctx do
+    {worker, run} = seed_owned_worker(ctx)
+    ref = :sys.get_state(ctx.pid).running["7"].ref
+    send(ctx.pid, {:DOWN, make_ref(), :process, worker, baseline_failure()})
+    assert Orchestrator.control_snapshot(ctx.pid)["issues"]["7"]["active"]["run_id"] == run
+    assert :sys.get_state(ctx.pid).running["7"].ref == ref
+    cancel = %{"command_id" => "cancel-before-baseline", "expected_revision" => 1, "action" => "cancel", "issue_id" => "7"}
+    assert {:ok, _} = Orchestrator.control_command(cancel, ctx.pid)
+    send(ctx.pid, {:DOWN, ref, :process, worker, baseline_failure()})
+    assert Orchestrator.control_snapshot(ctx.pid)["issues"]["7"]["hold"] == "cancelled"
+    assert :sys.get_state(ctx.pid).retry_attempts == %{}
+    assert :sys.get_state(ctx.pid).blocked == %{}
+  end
+
+  test "baseline hold persistence failure closes admission and retains recovery evidence", ctx do
+    {worker, run} = seed_owned_worker(ctx)
+    path = :sys.get_state(ctx.pid).control.path
+    File.rename!(path, path <> ".saved")
+    File.mkdir!(path)
+    Process.exit(worker, baseline_failure())
+    wait_for(fn -> not is_nil(Orchestrator.control_snapshot(ctx.pid)["fault"]) end)
+    assert :sys.get_state(ctx.pid).running == %{}
+    assert :sys.get_state(ctx.pid).retry_attempts == %{}
+    assert :sys.get_state(ctx.pid).blocked == %{}
+    assert {:error, :control_unavailable} = Orchestrator.control_command(%{"command_id" => "blocked-baseline-resume", "expected_revision" => 1, "action" => "resume"}, ctx.pid)
+    assert get_in(File.read!(path <> ".saved") |> Jason.decode!(), ["issues", "7", "active", "run_id"]) == run
+  end
+
   test "fresh reviewer thread totals accumulate toward one token ceiling", ctx do
     {worker, run} = seed_owned_worker(ctx)
     monitor = Process.monitor(worker)
@@ -557,6 +612,10 @@ defmodule SymphonyElixir.ControlOrchestratorTest do
   end
 
   defp stop_with_auth_failure(worker), do: Process.exit(worker, auth_failure())
+
+  defp baseline_failure do
+    {SymphonyElixir.WorkerFailure.exception(reason: :workspace_baseline_changed), [:private_stack]}
+  end
 
   defp await_auth_hold(pid) do
     wait_for(fn -> Orchestrator.control_snapshot(pid)["issues"]["7"]["hold"] == "worker_auth_required" end)
