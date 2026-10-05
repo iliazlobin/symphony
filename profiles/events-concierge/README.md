@@ -517,7 +517,9 @@ If both supervisors die together, a surviving engine retains the lock and replac
 fails closed. Settle its ownership manually before restarting; never delete the lock
 or unlink its socket to force a replacement.
 An engine failure returns an unavailable
-response until its supervised restart. Broker failure denies authorization. Logout
+response until its supervised restart. Startup waits up to 180 seconds for real engine
+health; each health request is bounded by five seconds and the remaining deadline.
+Broker failure denies authorization. Logout
 revokes the shared grant; each active view rechecks it. Workspace restart signs out
 browsers; durable project conversations remain.
 
