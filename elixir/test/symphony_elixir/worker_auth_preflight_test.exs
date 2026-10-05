@@ -151,13 +151,24 @@ defmodule SymphonyElixir.WorkerAuthPreflightTest do
     end
   end
 
-  test "preflight deadline includes a silent provider and guardian cleanup", ctx do
-    configure(ctx, "timeout", read_timeout_ms: 500)
-    started = System.monotonic_time(:millisecond)
-    assert {:error, {:startup_failed, :worker_auth, :response_timeout}} = AppServer.start_session(ctx.workspace)
-    assert System.monotonic_time(:millisecond) - started < 2_000
-    refute Enum.any?(trace(ctx), &(&1["method"] in ["thread/start", "turn/start"]))
-    assert_stopped(ctx)
+  test "silent provider RPC times out and cleans up its guardian", ctx do
+    configure(ctx, "timeout")
+    startup = Task.async(fn -> AppServer.start_session(ctx.workspace) end)
+
+    try do
+      # Interpreter/guardian startup keeps its normal allowance. The fixture
+      # pauses the last successful auth reply so only the silent RPC gets 500ms.
+      wait_for_file(ctx.root <> "/auth-ready", 100)
+      configure(ctx, "timeout", read_timeout_ms: 500)
+      started = System.monotonic_time(:millisecond)
+      File.write!(ctx.root <> "/auth-continue", "ready")
+      assert {:error, {:startup_failed, :worker_auth, :response_timeout}} = Task.await(startup, 5_000)
+      assert Enum.map(trace(ctx), & &1["method"]) == ["initialize", "initialized", "account/read", "getAuthStatus", "account/rateLimits/read"]
+      assert_stopped(ctx)
+      assert System.monotonic_time(:millisecond) - started < 2_000
+    after
+      Task.shutdown(startup, :brutal_kill)
+    end
   end
 
   test "opt-in is disabled by default and does not affect uncontrolled clients", ctx do
@@ -209,6 +220,15 @@ defmodule SymphonyElixir.WorkerAuthPreflightTest do
     wait_for_exit(pid)
   end
 
+  defp wait_for_file(path, 0), do: assert(File.exists?(path))
+
+  defp wait_for_file(path, attempts) do
+    unless File.exists?(path) do
+      Process.sleep(50)
+      wait_for_file(path, attempts - 1)
+    end
+  end
+
   defp wait_for_exit(pid, attempts \\ 40)
 
   defp wait_for_exit(pid, 0) do
@@ -250,6 +270,9 @@ defmodule SymphonyElixir.WorkerAuthPreflightTest do
             if mode == 'malformed_account': result = []
             send({'id': msg['id'], 'result': result})
         elif method == 'getAuthStatus':
+            if mode == 'timeout':
+                open(root + '/auth-ready', 'w').close()
+                while not os.path.exists(root + '/auth-continue'): time.sleep(0.01)
             result = {'authMethod': 'chatgpt', 'requiresOpenaiAuth': True, 'authToken': None}
             if mode.startswith('external_'): result['authMethod'] = 'chatgptAuthTokens'
             if mode == 'wrong_auth_method': result['authMethod'] = 'apiKey'
