@@ -1,6 +1,6 @@
 githubConfigUrl: https://github.com/iliazlobin/symphony
 githubConfigSecret: symphony-ci-github-app
-runnerScaleSetName: symphony-ci
+runnerScaleSetName: symphony-linux
 minRunners: 0
 maxRunners: 1
 controllerServiceAccount:
@@ -46,11 +46,11 @@ template:
     activeDeadlineSeconds: 3600
     terminationGracePeriodSeconds: 30
     nodeSelector:
-      node-restriction.kubernetes.io/workload: symphony-ci
+      node-restriction.kubernetes.io/workload: platform-ci
     tolerations:
       - key: workload
         operator: Equal
-        value: symphony-ci
+        value: platform-ci
         effect: NoSchedule
       - key: sandbox.gke.io/runtime
         operator: Equal

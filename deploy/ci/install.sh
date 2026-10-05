@@ -2,15 +2,20 @@
 # Explicit operator apply: CI resources only; never reads credential values.
 set -eu
 if [ "$#" -ne 1 ]; then
-  echo 'usage: deploy/ci/install.sh us-west1-docker.pkg.dev/iz27-platform-dev/symphony/ci-runner@sha256:<digest>' >&2
+  echo 'usage: deploy/ci/install.sh --prepare | us-west1-docker.pkg.dev/iz27-platform-dev/symphony/ci-runner@sha256:<digest>' >&2
   exit 2
 fi
-ci_image=$1
-python3 - "$ci_image" <<'PY'
+ci_prepare=false
+if [ "$1" = --prepare ]; then
+  ci_prepare=true
+else
+  ci_image=$1
+  python3 - "$ci_image" <<'PY'
 import re, sys
 if not re.fullmatch(r'us-west1-docker\.pkg\.dev/iz27-platform-dev/symphony/ci-runner@sha256:[0-9a-f]{64}', sys.argv[1]):
     raise SystemExit('A reviewed private CI image digest is required.')
 PY
+fi
 ci_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # A fork can edit workflow routing. Check GitHub-side approval before touching GKE.
 # Use existing operator gh authentication only; it is never delivered to job Pods.
@@ -42,17 +47,27 @@ if hashlib.sha256(pathlib.Path(sys.argv[3]).read_bytes()).hexdigest() != expecte
     raise SystemExit('ARC chart archive does not match reviewed checksum.')
 PY
 done
+# Foundation owns the cluster-wide CRDs. Never install or upgrade them per repo.
+helm show crds "$ci_charts/gha-runner-scale-set-controller-$ci_version.tgz" > "$ci_charts/crds.yaml"
+kubectl create --dry-run=client --validate=false -f "$ci_charts/crds.yaml" -o json > "$ci_charts/expected-crds.json"
+kubectl get -f "$ci_charts/crds.yaml" -o json > "$ci_charts/live-crds.json"
+python3 "$ci_dir/verify_arc_crds.py" "$ci_charts/expected-crds.json" "$ci_charts/live-crds.json"
 kubectl apply -f "$ci_dir/foundation.yaml"
+if [ "$ci_prepare" = true ]; then
+  exit 0
+fi
 test "$(kubectl -n symphony-ci-runners get secret symphony-ci-github-app -o jsonpath='{.metadata.name}')" = symphony-ci-github-app
 helm upgrade --install symphony-ci-controller \
   "$ci_charts/gha-runner-scale-set-controller-$ci_version.tgz" \
   --namespace symphony-ci-system --values "$ci_dir/controller-values.yaml" \
-  --wait --atomic --timeout 5m
-helm upgrade --install symphony-ci \
+  --post-renderer "$ci_dir/controller-post-renderer.sh" \
+  --post-renderer-args symphony-ci-controller --post-renderer-args symphony-ci-system \
+  --skip-crds --wait --atomic --timeout 5m
+helm upgrade --install symphony-linux \
   "$ci_charts/gha-runner-scale-set-$ci_version.tgz" \
   --namespace symphony-ci-runners --values "$ci_dir/runner-values.yaml" \
   --set-string "template.spec.initContainers[0].image=$ci_image" \
   --set-string "template.spec.containers[0].image=$ci_image" \
-  --wait --atomic --timeout 5m
+  --skip-crds --wait --atomic --timeout 5m
 kubectl -n symphony-ci-system get deployments,pods
 kubectl -n symphony-ci-runners get autoscalingrunnersets,pods
