@@ -30,6 +30,8 @@ from symphony_control import ControlError, load_config, read_private
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_BODY = 1_048_576
+ENGINE_STARTUP_TIMEOUT = 180
+ENGINE_HEALTHCHECK_TIMEOUT = 5
 HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"}
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,79}")
 
@@ -407,11 +409,14 @@ class Workspace:
             delay = 1 if time.monotonic() - started > 60 else min(delay * 2, 30)
 
     async def wait_ready(self, slug):
-        until = time.monotonic() + 45
+        # Cold BEAM/application startup can exceed 45s on a busy developer host.
+        # Retain a finite deadline and expose the gateway only after real health.
+        until = time.monotonic() + ENGINE_STARTUP_TIMEOUT
         project = self.config["projects"][slug]
-        while time.monotonic() < until:
+        while (remaining := until - time.monotonic()) > 0:
             try:
-                async with self.clients[slug].get("http://localhost/api/v1/control", auto_decompress=True, headers={"Host": "127.0.0.1:" + str(self.config["listen_port"]), "Authorization": "Bearer " + project["_token"]}) as response:
+                timeout = ClientTimeout(total=min(ENGINE_HEALTHCHECK_TIMEOUT, remaining))
+                async with self.clients[slug].get("http://localhost/api/v1/control", auto_decompress=True, timeout=timeout, headers={"Host": "127.0.0.1:" + str(self.config["listen_port"]), "Authorization": "Bearer " + project["_token"]}) as response:
                     if response.status == 200 and isinstance(await response.json(), dict):
                         return
             except (ClientError, OSError, asyncio.TimeoutError, ValueError):

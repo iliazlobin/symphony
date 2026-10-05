@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
 
 from aiohttp import ClientSession, web
@@ -22,6 +22,7 @@ from yarl import URL
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from symphony_workspace import ROOT, OwnedProcess, SessionBroker, Workspace, clean_headers, valid_value, load_workspace
 from symphony_control import valid_api_prefix, ControlError
+import symphony_workspace as workspace_module
 
 
 class BrokerTest(unittest.TestCase):
@@ -52,6 +53,44 @@ class BrokerTest(unittest.TestCase):
         self.assertFalse(valid_api_prefix("/projects/symphony", None))
         headers = dict(clean_headers({"Connection": "X-Untrusted", "X-Untrusted": "secret", "Upgrade": "websocket", "Host": "localhost:8778", "Authorization": "Bearer project-token"}))
         self.assertEqual(headers, {"Host": "localhost:8778", "Authorization": "Bearer project-token"})
+
+
+class WorkspaceReadinessTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.workspace = Workspace({"projects": {"fixture": {"_token": "fixture-only"}}, "listen_port": 8778})
+        self.observed_timeouts = []
+
+    def client(self, statuses):
+        test = self
+        class Response:
+            def __init__(self, status):
+                self.status = status
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                return None
+            async def json(self):
+                return {"mode": "paused", "revision": 0}
+        class Client:
+            def get(self, url, **kwargs):
+                test.observed_timeouts.append(kwargs["timeout"].total)
+                return Response(statuses.pop(0))
+        self.workspace.clients["fixture"] = Client()
+
+    async def test_cold_engine_can_become_healthy_after_previous_startup_deadline(self):
+        self.client([503, 200])
+        with patch.object(workspace_module.time, "monotonic", side_effect=[0, 44, 100]), \
+                patch.object(workspace_module.asyncio, "sleep", new_callable=AsyncMock):
+            await self.workspace.wait_ready("fixture")
+        self.assertEqual(self.observed_timeouts, [5, 5])
+
+    async def test_unhealthy_engine_still_fails_at_finite_deadline(self):
+        self.client([503])
+        with patch.object(workspace_module.time, "monotonic", side_effect=[0, 179, 181]), \
+                patch.object(workspace_module.asyncio, "sleep", new_callable=AsyncMock):
+            with self.assertRaisesRegex(ControlError, "did not become ready"):
+                await self.workspace.wait_ready("fixture")
+        self.assertEqual(self.observed_timeouts, [1])
 
 
 class WorkspaceConfigurationTest(unittest.TestCase):
