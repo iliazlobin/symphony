@@ -4,8 +4,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
   alias Plug.Conn.Query
-  alias SymphonyElixir.Specification.Document
   alias SymphonyElixir.Assurance.Store
+  alias SymphonyElixir.Specification.Document
   alias SymphonyElixirWeb.{BoardCache, BrowserAuth, Endpoint, Presenter, TaskBoard}
   @endpoint Endpoint
 
@@ -2120,6 +2120,79 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute_receive {:settings_command, _}
   end
 
+  @tag :assurance_fixture
+  test "a signed-out historical graph keeps its requested version through both unlock forms and real sign-in", ctx do
+    owner = authorized_board_view()
+    render_click(owner, "open-assurance")
+    baseline = assurance_baseline(owner)
+    refresh(owner, ctx.runtime, changed_graph_title(ctx.board, "2", "Current title after review"))
+    task = "github:example/fixture:2"
+    params = %{"view" => "graph", "baseline" => baseline["ref"], "chat_task" => task, "graph_anchor" => task}
+    destination = "/?" <> URI.encode_query(params)
+    {signed_out, _} = board_view()
+    render_patch(signed_out, destination)
+    assigns = :sys.get_state(signed_out.pid).socket.assigns
+    assert assigns.assurance_snapshot == %{}
+    assert is_nil(assigns.graph_baseline)
+    assert assigns.graph_requested_baseline == baseline["ref"]
+    assert has_element?(signed_out, ".graph-version-notice", "Reviewed graph unavailable")
+    refute has_element?(signed_out, "#workflow-graph")
+    assert has_element?(signed_out, "#management-chat-dock input[name=return_to][value='#{destination}']")
+    render_click(signed_out, "open-settings", %{"tab" => "connections"})
+    settings_destination = "/?" <> URI.encode_query(Map.put(params, "panel", "settings"))
+    assert has_element?(signed_out, "#settings-connections input[name=return_to][value='#{settings_destination}']")
+
+    conn = %{build_conn() | host: "localhost"} |> Plug.Conn.put_private(:plug_skip_csrf_protection, false) |> get(destination)
+    [csrf] = conn.resp_body |> Floki.parse_document!() |> Floki.find("meta[name=csrf-token]") |> Floki.attribute("content")
+
+    logged_in =
+      conn
+      |> recycle()
+      |> Plug.Conn.put_private(:plug_skip_csrf_protection, false)
+      |> post("/operator/session", %{"_csrf_token" => csrf, "operator_token" => System.get_env("SYMPHONY_CONTROL_TOKEN"), "return_to" => destination})
+
+    assert redirected_to(logged_in) == destination
+    {:ok, resumed, _} = live(recycle(logged_in), destination)
+    render_async(resumed)
+    assert :sys.get_state(resumed.pid).socket.assigns.graph_baseline["ref"] == baseline["ref"]
+    assert has_element?(resumed, "[data-plan-task-id='#{task}'] .plan-node-title", "Ready fixture")
+    refute has_element?(resumed, "[data-plan-task-id='#{task}'] .plan-node-title", "Current title after review")
+    render_click(resumed, "live-graph")
+    assert is_nil(:sys.get_state(resumed.pid).socket.assigns.graph_requested_baseline)
+    assert has_element?(resumed, "[data-plan-task-id='#{task}'] .plan-node-title", "Current title after review")
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
+  end
+
+  @tag :assurance_fixture
+  test "unavailable version references restrict writes until explicit live navigation without granting access", ctx do
+    view = authorized_board_view()
+    before = :sys.get_state(ctx.assurance).journal
+    ref = String.duplicate("a", 64)
+    render_patch(view, "/?" <> URI.encode_query(%{"view" => "graph", "baseline" => ref}))
+    assert :sys.get_state(view.pid).socket.assigns.graph_requested_baseline == ref
+    assert is_nil(:sys.get_state(view.pid).socket.assigns.graph_baseline)
+    assert has_element?(view, ".graph-version-notice", "unavailable")
+    render_click(view, "prepare-command", %{"action" => "pause"})
+    assert render(view) =~ "This board is read-only"
+    render_click(view, "open-card", %{"id" => "github:example/fixture:2"})
+    refute has_element?(view, "#board-dialog[data-kind=task]")
+    assurance_submit(view, "save-requirement", %{"title" => "Forged historical write", "kind" => "functional"})
+    assert :sys.get_state(ctx.assurance).journal == before
+    render_click(view, "live-graph")
+    assert is_nil(:sys.get_state(view.pid).socket.assigns.graph_requested_baseline)
+    assert has_element?(view, "#workflow-graph[data-graph-historical=false]")
+
+    for malformed <- ["bad", String.duplicate("A", 64)] do
+      render_patch(view, "/?" <> URI.encode_query(%{"view" => "graph", "baseline" => malformed}))
+      assert is_nil(:sys.get_state(view.pid).socket.assigns.graph_requested_baseline)
+      refute has_element?(view, ".graph-version-notice")
+    end
+
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
+  end
+
   @tag :specification_fixture
   test "a failed specification reload preserves unsaved edits and disables writes until storage recovers", ctx do
     view = authorized_board_view()
@@ -2774,7 +2847,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     render_click(view, "assurance-compare", %{"ref" => baseline["ref"]})
     difference = :sys.get_state(view.pid).socket.assigns.assurance_difference
     assert ("task:" <> task_id) in difference["graph"]["nodes"]["changed"]
-    assert has_element?(view, ".assurance-difference", "graph.nodes")
+    assert has_element?(view, ".assurance-difference", "task GH-2 · Ready fixture revised")
+    assert difference["compared_ref"] == baseline["ref"]
 
     render_click(view, "assurance-view-baseline", %{"ref" => baseline["ref"]})
     assert has_element?(view, "#task-board-app[data-board-view=graph]")
@@ -3048,7 +3122,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert requirement["id"] in difference["requirements"]["changed"]
     assert difference["graph"] == %{}
     assert difference["graph_unavailable"] == true
-    assert has_element?(view, ".assurance-difference", requirement["id"])
+    assert has_element?(view, ".assurance-difference", "requirement Changed agreed scope")
     assert has_element?(view, ".assurance-difference", "unavailable")
     assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
     refute_received {:settings_command, _}
@@ -4250,4 +4324,3 @@ defmodule SymphonyElixir.DashboardLiveTest do
     }
   end
 end
-

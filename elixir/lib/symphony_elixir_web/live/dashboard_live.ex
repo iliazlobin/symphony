@@ -62,6 +62,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:graph_index_key, nil)
       |> assign(:graph_board, board)
       |> assign(:graph_baseline, nil)
+      |> assign(:graph_requested_baseline, nil)
       |> assign(:graph_history_task, nil)
       |> assign(:assurance_project, nil)
       |> assign(:assurance_snapshot, %{})
@@ -277,7 +278,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   @impl true
   def handle_event(action, params, socket)
       when action in ["new-task", "queue-task", "move-task", "prepare-rework", "prepare-command", "confirm-command", "save-concurrency", "reset-concurrency"] do
-    if read_only?(socket.assigns.board) or not is_nil(socket.assigns.graph_baseline) do
+    if read_only?(socket.assigns.board) or historical_graph?(socket.assigns) do
       dialog = if socket.assigns.dialog in [:confirm, :new_task, :queue_task, :rework], do: nil, else: socket.assigns.dialog
       {:noreply, socket |> assign(:pending_command, nil) |> assign(:dialog, dialog) |> assign(:notice, "This board is read-only. Execution and tracker changes are unavailable here.")}
     else
@@ -336,7 +337,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   def handle_event("live-graph", _params, socket) do
-    socket = socket |> assign(:graph_baseline, nil) |> refresh_graph_index()
+    socket = socket |> select_graph_baseline(nil) |> refresh_graph_index()
     {:noreply, push_patch(socket, to: board_location(socket), replace: true)}
   end
 
@@ -358,7 +359,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         baseline = Enum.find(socket.assigns.assurance_snapshot["baselines"] || [], &(&1["ref"] == ref))
 
         graph_difference = current_graph_difference(socket, baseline)
-        difference = Map.merge(difference, graph_difference)
+        difference = difference |> Map.merge(graph_difference) |> Map.put("compared_ref", ref)
         {:noreply, assign(socket, assurance_difference: difference, assurance_page: 0)}
 
       {:error, reason} ->
@@ -428,7 +429,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   def handle_event("select-plan-task", _params, socket), do: reply_plan_selection({:noreply, socket})
 
-  def handle_event("open-card", _params, %{assigns: %{graph_baseline: %{}}} = socket),
+  def handle_event("open-card", _params, %{assigns: %{graph_requested_baseline: ref}} = socket) when is_binary(ref),
     do: {:noreply, assign(socket, :notice, "This is a reviewed snapshot. Return to the live graph to open current task controls.")}
 
   def handle_event("open-card", %{"id" => id} = params, socket) when is_binary(id),
@@ -927,7 +928,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp controls_available?(assigns) do
     board = assigns.board
 
-    is_nil(assigns.graph_baseline) and not read_only?(board) and BrowserAuth.authorized?(assigns.auth) and not runtime_unavailable?(board, assigns.payload) and
+    not historical_graph?(assigns) and not read_only?(board) and BrowserAuth.authorized?(assigns.auth) and not runtime_unavailable?(board, assigns.payload) and
       board.control["enabled"] == true and is_nil(board.control["fault"]) and is_integer(board.control["revision"])
   end
 
@@ -974,7 +975,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       assign(assigns,
         authorized: BrowserAuth.authorized?(assigns.auth),
         chat_activity: if(BrowserAuth.authorized?(assigns.auth), do: assigns.chat_activity, else: %{}),
-        read_only: read_only?(assigns.board) or not is_nil(assigns.graph_baseline),
+        read_only: read_only?(assigns.board) or (historical_graph?(assigns) and BrowserAuth.authorized?(assigns.auth)),
         settings: reported_settings(assigns.board),
         settings_editable: settings_editable?(assigns),
         controls_available: controls_available?(assigns),
@@ -1139,7 +1140,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <p :if={@graph_baseline} class="board-notice graph-version-notice">Reviewed graph <code>{String.slice(@graph_baseline["ref"], 0, 12)}</code> · captured {@graph_baseline["graph_snapshot"]["captured_at"]}. Status is from this snapshot.
             <button type="button" class="button button-small" phx-click="live-graph">Live graph</button>
           </p>
-          <SymphonyElixirWeb.WorkflowGraphView.content board={@graph_board} project={@chat_project} filters={@url_filters} selected_id={@graph_history_task || @selected_plan_id} visible_task_ids={@visible_task_ids} graph_index={@graph_index} graph_options={@graph_options} />
+          <p :if={@graph_requested_baseline && !@graph_baseline} class="board-notice graph-version-notice">Reviewed graph unavailable. Sign in to load this version, or return to the live graph.
+            <button type="button" class="button button-small" phx-click="live-graph">Live graph</button>
+          </p>
+          <SymphonyElixirWeb.WorkflowGraphView.content :if={!@graph_requested_baseline || @graph_baseline} board={@graph_board} project={@chat_project} filters={@url_filters} selected_id={@graph_history_task || @selected_plan_id} visible_task_ids={@visible_task_ids} graph_index={@graph_index} graph_options={@graph_options} />
         </div>
         <div :if={@board_view == "gantt"} id="gantt-view" class="board-view-panel" aria-label="Gantt view">
           <SymphonyElixirWeb.WorkflowGanttView.content board={@board} project={@chat_project} filters={@url_filters} selected_id={@chat_task_id} visible_task_ids={@visible_task_ids} plan_options={@calendar_plan} />
@@ -1419,12 +1423,21 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp plan_selection_focus(socket, _id, _params), do: socket
 
   defp select_graph_baseline(socket, nil) do
-    socket |> clear_graph_pending(nil) |> assign(graph_baseline: nil, graph_history_task: nil)
+    socket
+    |> clear_graph_pending(nil)
+    |> assign(graph_requested_baseline: nil, graph_baseline: nil, graph_history_task: nil)
   end
 
   defp select_graph_baseline(socket, ref) do
+    ref = if is_binary(ref) and Regex.match?(~r/\A[a-f0-9]{64}\z/, ref), do: ref
+    select_requested_graph_baseline(socket, ref)
+  end
+
+  defp select_requested_graph_baseline(socket, nil), do: select_graph_baseline(socket, nil)
+
+  defp select_requested_graph_baseline(socket, ref) do
     baseline = Enum.find(socket.assigns.assurance_snapshot["baselines"] || [], &(&1["ref"] == ref and is_map(&1["graph_snapshot"])))
-    socket = clear_graph_pending(socket, baseline)
+    socket = socket |> clear_graph_pending(ref) |> assign(:graph_requested_baseline, ref)
 
     case baseline do
       nil ->
@@ -1436,8 +1449,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  defp clear_graph_pending(socket, baseline) do
-    if get_in(socket.assigns, [:graph_baseline, "ref"]) != get_in(baseline, ["ref"]) do
+  defp historical_graph?(assigns), do: is_binary(assigns.graph_requested_baseline)
+
+  defp clear_graph_pending(socket, ref) do
+    if socket.assigns.graph_requested_baseline != ref do
       current_dialog = socket.assigns.dialog
       dialog = if current_dialog in [:confirm, :new_task, :queue_task, :rework], do: nil, else: current_dialog
       assign(socket, pending_command: nil, dialog: dialog)
@@ -1453,7 +1468,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       server: assurance_server(),
       board: socket.assigns.board,
       loading: socket.assigns.loading,
-      read_only: read_only?(socket.assigns.board) or not is_nil(socket.assigns.assurance_baseline_ref) or not is_nil(socket.assigns.graph_baseline)
+      read_only: read_only?(socket.assigns.board) or not is_nil(socket.assigns.assurance_baseline_ref) or historical_graph?(socket.assigns)
     }
 
     AssuranceWorkspace.mutate(context, action, params)
@@ -2003,7 +2018,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp design_request(event, project, params, assigns) do
     cond do
       project != assigns.chat_project or assigns.board_view != "idea" -> {:error, :design_project_mismatch}
-      read_only?(assigns.board) -> {:error, :read_only}
+      read_only?(assigns.board) or historical_graph?(assigns) -> {:error, :read_only}
       not BrowserAuth.authorized?(assigns.auth) -> {:error, :unauthorized}
       true -> design_action(event, project, params, assigns.auth)
     end
@@ -2022,7 +2037,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       BrowserAuth.authorized?(assigns.auth) and (not specification_read_only?(assigns) or event in ~w(spec-section spec-open-version spec-return-draft spec-reload spec-cancel-review))
   end
 
-  defp specification_read_only?(assigns), do: read_only?(assigns.board) or not is_nil(assigns.graph_baseline)
+  defp specification_read_only?(assigns), do: read_only?(assigns.board) or historical_graph?(assigns)
 
   defp maybe_load_specification(%{assigns: %{board_view: "design", chat_project: project, specification_project: opened}} = socket) when project != opened,
     do: load_specification(socket)
@@ -2313,7 +2328,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp board_location_params(assigns) do
     params = assigns.url_filters |> Map.merge(retained_design_source(assigns)) |> Map.merge(GraphNavigation.params(assigns.graph_options))
-    params = if assigns.graph_baseline, do: Map.put(params, "baseline", assigns.graph_baseline["ref"]), else: params
+    params = graph_location_params(params, assigns)
     params = if assigns.chat_task_id, do: Map.put(params, "chat_task", assigns.chat_task_id), else: params
     params = if assigns.chat_session_id, do: Map.put(params, "chat_session", assigns.chat_session_id), else: params
     params = if assigns.dialog == :task && assigns.linked_task, do: Map.put(params, "task", assigns.linked_task), else: params
@@ -2324,6 +2339,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
       true -> params
     end
   end
+
+  defp graph_location_params(params, %{url_filters: %{"view" => "graph"}, graph_requested_baseline: ref}) when is_binary(ref), do: Map.put(params, "baseline", ref)
+  defp graph_location_params(params, _assigns), do: params
 
   defp retained_design_source(%{url_filters: %{"view" => "idea"} = filters, design_source_context: %{project: project, params: params}} = assigns) do
     if selected_project(assigns.board, filters) == project, do: params, else: %{}
@@ -2592,4 +2610,3 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp safe_uri(%URI{scheme: scheme, host: host, userinfo: nil}, url) when scheme in ["http", "https"] and is_binary(host) and host != "", do: url
   defp safe_uri(_uri, _url), do: nil
 end
-

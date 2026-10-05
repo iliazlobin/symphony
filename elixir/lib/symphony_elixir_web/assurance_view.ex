@@ -55,7 +55,7 @@ defmodule SymphonyElixirWeb.AssuranceView do
             <h3>Changes compared with draft</h3>
             <p :if={@difference["graph_unavailable"] == true} class="muted">Current graph comparison unavailable; showing draft scope changes.</p>
             <p :if={@changes == []} class="muted">No changes in requirements or links.</p>
-            <ul><li :for={change <- Enum.slice(@changes, max(@page, 0) * 40, 40)}><span class="assurance-state">{change.change}</span> {change.kind} <code>{change.id}</code>
+            <ul><li :for={change <- Enum.slice(@changes, max(@page, 0) * 40, 40)} title={change.id}><span class="assurance-state">{String.capitalize(change.change)}</span> {change.label}
               <button :if={change.task_id} type="button" class="assurance-task-link" phx-click="select-task" phx-value-id={change.task_id}>Open task</button>
             </li></ul>
             <.pages page={@page} count={length(@changes)} />
@@ -214,7 +214,7 @@ defmodule SymphonyElixirWeb.AssuranceView do
       baselines: records(assigns.snapshot["baselines"]),
       releases: records(assigns.snapshot["releases"]),
       release_receipts: release_receipts(assigns.board),
-      changes: changes(assigns.difference, assigns.board),
+      changes: changes(assigns.difference, comparison_context(assigns)),
       current_baseline: current_baseline(assigns.snapshot),
       dependency_rows: dependency_rows(assigns.board, document, assigns.selected_task_id)
     )
@@ -318,30 +318,72 @@ defmodule SymphonyElixirWeb.AssuranceView do
   defp short(value) when is_binary(value), do: String.slice(value, 0, 12)
   defp short(_), do: "Unavailable"
 
-  defp changes(difference, board, prefix \\ "") do
-    difference |> Enum.flat_map(&change_group(&1, board, prefix)) |> Enum.sort_by(&{&1.kind, &1.change, &1.id})
+  defp comparison_context(assigns) do
+    baseline = Enum.find(records(assigns.snapshot["baselines"]), &(&1["ref"] == assigns.difference["compared_ref"])) || %{}
+
+    %{
+      current: comparison_records(document(assigns.snapshot["draft"]), assigns.board[:workflow_graph] || %{}, assigns.board[:tasks] || []),
+      previous: comparison_records(document(baseline), get_in(baseline, ["graph_snapshot", "graph"]) || %{}, [])
+    }
   end
 
-  defp change_group({kind, value}, board, prefix) when is_map(value) do
+  defp comparison_records(doc, graph, tasks) do
+    nodes = graph["nodes"] || []
+
+    %{
+      "requirements" => Map.new(doc["requirements"], &{&1["id"], &1}),
+      "task_links" => Map.new(doc["task_links"], &{&1["task_id"] <> "/" <> &1["criterion_id"], &1}),
+      "dependencies" => Map.new(doc["dependencies"], &{&1["task_id"] <> "/" <> &1["depends_on"], &1}),
+      "graph.nodes" => Map.new(nodes, &{&1["id"], &1}),
+      "graph.edges" => Map.new(graph["edges"] || [], &{&1["id"], &1}),
+      tasks: Map.merge(Map.new(nodes, &{&1["task_id"], &1}), Map.new(tasks, &{&1[:id], Map.new(&1, fn {key, value} -> {to_string(key), value} end)})),
+      criteria: Map.new(Enum.flat_map(doc["requirements"], &(&1["criteria"] || [])), &{&1["id"], &1})
+    }
+  end
+
+  defp changes(difference, context, prefix \\ "") do
+    difference |> Enum.flat_map(&change_group(&1, context, prefix)) |> Enum.sort_by(&{&1.kind, &1.change, &1.id})
+  end
+
+  defp change_group({kind, value}, context, prefix) when is_map(value) do
     name = prefix <> to_string(kind)
 
     if Enum.any?(~w(added removed changed), &Map.has_key?(value, &1)),
-      do: Enum.flat_map(~w(added removed changed), &change_rows(value, &1, name, board)),
-      else: changes(value, board, name <> ".")
+      do: Enum.flat_map(~w(added removed changed), &change_rows(value, &1, name, context)),
+      else: changes(value, context, name <> ".")
   end
 
   defp change_group(_, _, _), do: []
-  defp change_rows(value, change, name, board), do: Enum.map(value[change] || [], &change_row(&1, change, name, board))
-  defp change_row(id, change, name, board), do: %{kind: name, change: change, id: if(is_binary(id), do: id, else: inspect(id)), task_id: change_task(name, id, board)}
+  defp change_rows(value, change, name, context), do: Enum.map(value[change] || [], &change_row(&1, change, name, context))
 
-  defp change_task("graph.nodes", "task:" <> id, _board), do: id
-
-  defp change_task(kind, id, board) when kind in ["task_links", "dependencies"] and is_binary(id) do
-    case Enum.find(board[:tasks] || [], &String.starts_with?(id, &1.id <> "/")) do
-      nil -> if kind == "task_links", do: id |> String.split("/") |> Enum.drop(-1) |> Enum.join("/"), else: nil
-      task -> task.id
-    end
+  defp change_row(id, change, name, context) do
+    source = if change == "removed", do: context.previous, else: context.current
+    record = get_in(source, [name, id]) || %{}
+    {label, task_id} = change_label(name, record, source)
+    %{kind: name, change: change, id: if(is_binary(id), do: id, else: inspect(id)), label: label, task_id: task_id}
   end
 
-  defp change_task(_kind, _id, _board), do: nil
+  defp change_label("requirements", %{"title" => title}, _source), do: {"requirement " <> compact(title), nil}
+  defp change_label("graph.nodes", %{"task_id" => id} = task, _source), do: {"task " <> named_task(task), id}
+
+  defp change_label("graph.edges", %{"source" => from, "target" => to}, source) do
+    dependent = get_in(source, ["graph.nodes", from]) || %{}
+    prerequisite = get_in(source, ["graph.nodes", to]) || %{}
+    {"dependency " <> task_identifier(prerequisite) <> " → " <> task_identifier(dependent), dependent["task_id"]}
+  end
+
+  defp change_label("dependencies", %{"task_id" => id, "depends_on" => prerequisite}, source),
+    do: {"prerequisite annotation " <> task_identifier(source.tasks[prerequisite] || %{}) <> " → " <> task_identifier(source.tasks[id] || %{}), id}
+
+  defp change_label("task_links", %{"task_id" => id, "criterion_id" => criterion}, source),
+    do: {"coverage " <> task_identifier(source.tasks[id] || %{}) <> " → " <> compact(get_in(source, [:criteria, criterion, "text"]) || "Unavailable criterion"), id}
+
+  defp change_label(name, _record, _source) do
+    label = %{"graph.nodes" => "task", "graph.edges" => "dependency", "requirements" => "requirement", "task_links" => "coverage link", "dependencies" => "prerequisite annotation"}
+    {"Unavailable " <> (label[name] || "item"), nil}
+  end
+
+  defp named_task(task), do: task_identifier(task) <> " · " <> compact(task["title"] || "Unavailable title")
+  defp task_identifier(task), do: task["identifier"] || "Unavailable task"
+  defp compact(text), do: String.slice(text, 0, 120)
 end

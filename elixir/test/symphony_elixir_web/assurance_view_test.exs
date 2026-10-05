@@ -61,11 +61,18 @@ defmodule SymphonyElixirWeb.AssuranceViewTest do
       "graph" => %{"nodes" => %{"added" => ["task:" <> @task], "changed" => [], "removed" => []}}
     }
 
-    html = render(snapshot(), tab: "versions", difference: difference)
+    snap = put_in(snapshot(), ["draft", "task_links"], Enum.map(1..55, &%{"task_id" => @task, "criterion_id" => "crit-#{&1}"}))
+
+    board = %{
+      tasks: [%{id: @task, identifier: "GH-1", title: "Reset tokens"}],
+      workflow_graph: %{"nodes" => [%{"id" => "task:" <> @task, "task_id" => @task, "identifier" => "GH-1", "title" => "Reset tokens"}]}
+    }
+
+    html = render(snap, tab: "versions", difference: difference, board: board)
     assert length(find(html, ".assurance-difference li")) == 40
     assert Floki.attribute(find(html, ".assurance-difference [phx-click=select-task]"), "phx-value-id") |> Enum.all?(&(&1 == @task))
     assert html =~ "Show graph" and html =~ "of 56"
-    html = render(snapshot(), tab: "versions", difference: difference, page: 1)
+    html = render(snap, tab: "versions", difference: difference, board: board, page: 1)
     assert length(find(html, ".assurance-difference li")) == 16
   end
 
@@ -95,12 +102,75 @@ defmodule SymphonyElixirWeb.AssuranceViewTest do
       "graph_unavailable" => true
     }
 
+    old_doc = document() |> Map.put("task_links", [%{"task_id" => removed, "criterion_id" => "crit-1"}]) |> Map.put("dependencies", [%{"task_id" => removed, "depends_on" => "github:owner/repo:2"}])
+    baselines = put_in(baselines, ["older", "document"], old_doc)
+    difference = Map.put(difference, "compared_ref", older)
     html = render(Map.put(snapshot(), "baselines", baselines), tab: "versions", difference: difference, read_only: true)
     assert Floki.attribute(find(html, ".assurance-version [phx-click=assurance-select-baseline]"), "phx-value-ref") == [@ref, older]
-    assert Floki.attribute(find(html, ".assurance-difference [phx-click=select-task]"), "phx-value-id") == [removed]
+    assert Floki.attribute(find(html, ".assurance-difference [phx-click=select-task]"), "phx-value-id") == [removed, removed]
     assert html =~ "Current graph comparison unavailable; showing draft scope changes."
     assert length(find(html, ".assurance-difference li")) == 2
     assert find(html, "form") == []
+  end
+
+  test "comparison labels use current records and the exact saved version for removed tasks and dependencies" do
+    task2 = "github:owner/repo:2"
+    task3 = "github:owner/repo:3"
+    node = fn id, identifier, title -> %{"id" => "task:" <> id, "task_id" => id, "identifier" => identifier, "title" => title} end
+    current_nodes = [node.(@task, "GH-1", "Current reset flow"), node.(task2, "GH-2", "<script>New contract</script>"), node.(task3, "GH-33", "Current renamed task")]
+    old_nodes = [node.(@task, "GH-1", "Original reset flow"), node.(task3, "GH-3", "Original removed task")]
+    edge = fn id, from -> %{"id" => id, "type" => "depends_on", "source" => "task:" <> @task, "target" => "task:" <> from} end
+    old_doc = document() |> Map.put("dependencies", [%{"task_id" => @task, "depends_on" => task3}])
+    current_doc = document() |> Map.put("dependencies", [%{"task_id" => @task, "depends_on" => task2}])
+    older = String.duplicate("b", 64)
+    saved = %{"ref" => older, "document" => old_doc, "graph_snapshot" => %{"graph" => %{"nodes" => old_nodes, "edges" => [edge.("removed-edge", task3)]}}}
+    unrelated = %{"ref" => @ref, "graph_snapshot" => %{"graph" => %{"nodes" => [node.(task3, "GH-300", "Wrong version")], "edges" => []}}}
+    snap = snapshot() |> Map.put("draft", current_doc) |> Map.put("baselines", [unrelated, saved])
+    board = %{tasks: [], workflow_graph: %{"nodes" => current_nodes, "edges" => [edge.("added-edge", task2), edge.("changed-edge", task2)]}}
+
+    difference = %{
+      "compared_ref" => older,
+      "requirements" => %{"changed" => ["req-1"], "removed" => ["req-1"]},
+      "task_links" => %{"changed" => [@task <> "/crit-1"]},
+      "dependencies" => %{"added" => [@task <> "/" <> task2], "removed" => [@task <> "/" <> task3]},
+      "graph" => %{
+        "nodes" => %{"added" => ["task:" <> task2], "changed" => ["task:" <> @task], "removed" => ["task:" <> task3]},
+        "edges" => %{"added" => ["added-edge"], "changed" => ["changed-edge"], "removed" => ["removed-edge"]}
+      }
+    }
+
+    html = render(snap, tab: "versions", board: board, difference: difference)
+    text = find(html, ".assurance-difference li") |> Floki.text()
+    assert text =~ "Added dependency GH-2 → GH-1"
+    assert text =~ "Changed dependency GH-2 → GH-1"
+    assert text =~ "Removed dependency GH-3 → GH-1"
+    assert text =~ "Changed task GH-1 · Current reset flow"
+    assert text =~ "Removed task GH-3 · Original removed task"
+    assert text =~ "coverage GH-1 → Reject expired tokens"
+    assert text =~ "prerequisite annotation GH-3 → GH-1"
+    assert text =~ "requirement Reset password"
+    refute text =~ "Wrong version" or text =~ "Current renamed task" or text =~ "graph.edges"
+    assert html =~ "&lt;script&gt;New contract&lt;/script&gt;"
+    assert find(html, "script") == []
+    assert "removed-edge" in Floki.attribute(find(html, ".assurance-difference li"), "title")
+  end
+
+  test "unknown diff IDs remain hints and never imply task identities or dependency endpoints" do
+    difference = %{
+      "graph" => %{"nodes" => %{"added" => ["task:" <> @task]}, "edges" => %{"removed" => ["pretend-edge"]}},
+      "requirements" => %{"changed" => ["missing-requirement"]},
+      "task_links" => %{"added" => [@task <> "/unknown-criterion"]},
+      "dependencies" => %{"added" => [@task <> "/pretend-prerequisite"]},
+      "other" => %{"changed" => [123]}
+    }
+
+    html = render(snapshot(), tab: "versions", difference: difference)
+    text = find(html, ".assurance-difference li") |> Floki.text()
+    assert text =~ "Unavailable task" and text =~ "Unavailable dependency" and text =~ "Unavailable requirement"
+    assert text =~ "Unavailable coverage link" and text =~ "Unavailable prerequisite annotation" and text =~ "Unavailable item"
+    refute text =~ "pretend-edge" or text =~ "pretend-prerequisite" or text =~ "github:"
+    assert find(html, ".assurance-difference [phx-click=select-task]") == []
+    assert "123" in Floki.attribute(find(html, ".assurance-difference li"), "title")
   end
 
   test "excluded quality requirements remain explicit and read-only with map-backed criterion status" do

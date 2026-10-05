@@ -90,7 +90,7 @@ defmodule SymphonyElixir.Chat.OpenRouterTest do
     {:ok, {_, port}} = ThousandIsland.listener_info(server)
     request = fn options -> Req.request(Keyword.put(options, :url, "http://127.0.0.1:#{port}/fixture")) end
 
-    assert {:ok, %{status: :completed}} = OpenRouter.run(opts(%{request: request}), &send(owner, {:event, &1}), fn _, _ -> %{} end)
+    assert {:ok, %{status: :completed}} = OpenRouter.run(opts(%{request: request, timeout_ms: 10_000}), &send(owner, {:event, &1}), fn _, _ -> %{} end)
     assert_received {:http_request, "POST", "/fixture"}
     assert_received {:event, {:delta, "Answer"}}
   end

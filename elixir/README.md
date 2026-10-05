@@ -1002,6 +1002,9 @@ links and dependencies, and shows task/edge additions, removals and changes agai
 current loaded graph. A saved graph opens with its own navigation camera; historical
 selection leaves the live task/chat selection intact. Versions without a graph snapshot
 report that limitation rather than inventing historical tracker state.
+Comparisons use current task names for additions/changes and saved names for removals.
+Historical links retain their version through sign-in. An unavailable version stays
+read-only until **Live graph** is selected; it never substitutes current task controls.
 
 A criterion is covered only when its reviewed text, links and dependency annotations
 still match, every linked task revision/subject is current, and every required check has
