@@ -4,11 +4,14 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, ProcessGroup, SSH}
+  alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, ProcessGroup, SSH, WorkerFailure}
 
   @initialize_id 1
   @thread_start_id 2
   @turn_start_id 3
+  @account_read_id 4
+  @auth_status_id 5
+  @rate_limits_id 6
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
   @type session :: %{
@@ -151,6 +154,7 @@ defmodule SymphonyElixir.Codex.AppServer do
                }}
 
             {:error, reason} ->
+              reason = if Map.get(session, :controlled, false), do: controlled_worker_failure(reason), else: reason
               Logger.warning("Codex session ended with error for #{issue_context(issue)} session_id=#{session_id}: #{inspect(reason)}")
 
               emit_message(
@@ -297,7 +301,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp tracker_secret_unset_command(dynamic_tool_binding) do
-    names = dynamic_tool_binding.secret_environment_names ++ Config.browser_auth_secret_environment_names()
+    names = dynamic_tool_binding.secret_environment_names ++ Config.process_secret_environment_names()
 
     "unset " <> Enum.join(names |> valid_environment_names() |> Enum.uniq(), " ")
   end
@@ -379,7 +383,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp controlled_policies(result, _profile, _controlled), do: result
 
   defp do_start_session(port, workspace, session_policies, dynamic_tool_binding, context) do
-    with :ok <- startup_phase(context, :initialize, fn -> send_initialize(port) end) do
+    with :ok <- startup_phase(context, :initialize, fn -> send_initialize(port) end),
+         :ok <- verify_worker_auth(port, context) do
       phase = if context.thread_id, do: :thread_resume, else: :thread_start
 
       startup_phase(context, phase, fn ->
@@ -387,6 +392,71 @@ defmodule SymphonyElixir.Codex.AppServer do
       end)
     end
   end
+
+  defp verify_worker_auth(port, %{controlled: true} = context) do
+    if Config.codex_auth_preflight?() do
+      startup_phase(context, :worker_auth, fn -> subscription_preflight(port) end)
+    else
+      :ok
+    end
+  end
+
+  defp verify_worker_auth(_port, _context), do: :ok
+
+  defp subscription_preflight(port) do
+    # account/read may return a cached account after refresh fails. Token-free
+    # auth status and a provider-backed rate-limit read are both required.
+    with {:ok, account} <- auth_request(port, @account_read_id, "account/read", %{"refreshToken" => true}),
+         :ok <- verify_subscription_account(account),
+         {:ok, status} <- auth_request(port, @auth_status_id, "getAuthStatus", %{"includeToken" => false, "refreshToken" => false}),
+         :ok <- verify_subscription_status(status),
+         {:ok, limits} <- auth_request(port, @rate_limits_id, "account/rateLimits/read", nil) do
+      verify_subscription_limits(limits)
+    end
+  end
+
+  defp auth_request(port, id, method, params) do
+    send_message(port, %{"id" => id, "method" => method, "params" => params})
+
+    case await_response(port, id) do
+      {:error, reason} ->
+        if WorkerFailure.authentication_required?(reason) or provider_auth_rejected?(method, reason),
+          do: {:error, :worker_auth_required},
+          else: {:error, reason}
+
+      response ->
+        response
+    end
+  end
+
+  # Codex 0.153.4 serializes this provider HTTP status as -32603, without data.
+  # Scope compatibility to its rate-limit transport envelope, before body text.
+  defp provider_auth_rejected?("account/rateLimits/read", {:response_error, %{"code" => -32_603, "message" => message}})
+       when is_binary(message) and byte_size(message) <= 16_384 do
+    Regex.match?(
+      ~r"""
+      \Afailed\x20to\x20fetch\x20codex\x20rate\x20limits:\x20GET\x20
+      https:\/\/[^\s?#;]+\/(?:wham|api\/codex)\/usage\x20
+      failed:\x20401\x20Unauthorized;\x20content-type=
+      """x,
+      message
+    )
+  end
+
+  defp provider_auth_rejected?(_method, _reason), do: false
+
+  defp verify_subscription_account(%{"account" => %{"type" => "chatgpt"}, "requiresOpenaiAuth" => true}), do: :ok
+  defp verify_subscription_account(_account), do: {:error, :worker_auth_required}
+
+  defp verify_subscription_status(%{"authMethod" => method, "requiresOpenaiAuth" => true} = status)
+       when method in ["chatgpt", "chatgptAuthTokens"] do
+    if is_nil(status["authToken"]), do: :ok, else: {:error, :worker_auth_required}
+  end
+
+  defp verify_subscription_status(_status), do: {:error, :worker_auth_required}
+
+  defp verify_subscription_limits(%{"rateLimits" => limits}) when is_map(limits) and map_size(limits) > 0, do: :ok
+  defp verify_subscription_limits(_limits), do: {:error, :worker_auth_required}
 
   defp startup_phase(%{controlled: true} = context, phase, operation) do
     started = System.monotonic_time(:millisecond)
@@ -396,6 +466,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     case result do
       {:error, reason} ->
+        reason = controlled_worker_failure(reason)
         Logger.warning("Codex startup failed #{fields} reason=#{startup_reason(reason)}")
         {:error, {:startup_failed, phase, reason}}
 
@@ -406,6 +477,14 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp startup_phase(_context, _phase, operation), do: operation.()
+
+  # Dedicated subscription wrappers reserve these statuses for unsafe/missing
+  # credentials (78) and unavailable exclusive auth ownership (79).
+  defp controlled_worker_failure({:port_exit, status} = reason) when status in [78, 79] do
+    if Config.codex_auth_preflight?(), do: :worker_auth_required, else: reason
+  end
+
+  defp controlled_worker_failure(reason), do: reason
 
   defp startup_thread(%{thread_id: thread_id}) when is_binary(thread_id), do: " thread_id=#{thread_id}"
   defp startup_thread(_context), do: ""
@@ -1083,6 +1162,14 @@ defmodule SymphonyElixir.Codex.AppServer do
     payload = to_string(data)
 
     case Jason.decode(payload) do
+      {:ok, %{"method" => "account/chatgptAuthTokens/refresh"}} ->
+        # The host auth adapter owns this callback and its private response.
+        # Match it before response IDs: server request IDs can overlap ours.
+        # Never log its payload or start controlled work without its owner.
+        if Config.control_settings().enabled,
+          do: {:error, :worker_auth_required},
+          else: with_timeout_response(port, request_id, timeout_ms, "")
+
       {:ok, %{"id" => ^request_id, "error" => error}} ->
         {:error, {:response_error, error}}
 

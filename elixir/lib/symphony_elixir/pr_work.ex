@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.PRWork do
   @moduledoc "Durable PR-work identities and transitions, written only through the native control owner."
 
+  alias SymphonyElixir.{AgentProtocol, Feedback}
   alias SymphonyElixir.GitHub.Client
 
   @actions ~w(create_pr_work continue_pr_work)
@@ -12,22 +13,27 @@ defmodule SymphonyElixir.PRWork do
   def command?(params), do: params["action"] in @actions
 
   @spec command_fields(String.t()) :: [String.t()]
-  def command_fields("create_pr_work"), do: ~w(work_id instruction base_sha)
-  def command_fields("continue_pr_work"), do: ~w(work_id instruction expected_head_sha)
+  def command_fields("create_pr_work"), do: ~w(work_id instruction base_sha feedback purpose)
+  def command_fields("continue_pr_work"), do: ~w(work_id instruction expected_head_sha feedback purpose)
   def command_fields(_), do: []
 
   @spec valid_command?(map()) :: boolean()
   def valid_command?(params) do
-    command?(params) and id?(params["work_id"]) and issue_id?(params["issue_id"]) and text?(params["instruction"], 16_000) and
-      case params["action"] do
-        "create_pr_work" -> sha?(params["base_sha"])
-        "continue_pr_work" -> Map.has_key?(params, "expected_head_sha") and optional_sha?(params["expected_head_sha"])
-      end
+    command?(params) and coding_purpose?(params) and valid_command_identity?(params) and valid_command_revision?(params)
   end
+
+  defp valid_command_identity?(params) do
+    id?(params["work_id"]) and issue_id?(params["issue_id"]) and text?(params["instruction"], 16_000) and
+      Feedback.valid_items?(Map.get(params, "feedback", []))
+  end
+
+  defp valid_command_revision?(%{"action" => "create_pr_work"} = params), do: sha?(params["base_sha"])
+  defp valid_command_revision?(params), do: Map.has_key?(params, "expected_head_sha") and optional_sha?(params["expected_head_sha"])
 
   @spec transition(map(), map(), map()) :: {:ok, map()} | {:error, atom()}
   def transition(issue, params, context) do
     cond do
+      not coding_purpose?(params) -> {:error, :unsupported_work_purpose}
       not is_nil(issue["active"]) -> {:error, :issue_running}
       not text?(context[:tracker_fingerprint], 256) -> {:error, :tracker_changed}
       true -> change(issue, params, context)
@@ -68,6 +74,9 @@ defmodule SymphonyElixir.PRWork do
           "working_head_sha" => nil,
           "published_head_sha" => nil,
           "instruction" => params["instruction"],
+          "purpose" => "coding",
+          "goal_revision" => 1,
+          "feedback" => Map.get(params, "feedback", []),
           "phase" => "queued",
           "created_at" => timestamp(),
           "updated_at" => timestamp()
@@ -97,8 +106,20 @@ defmodule SymphonyElixir.PRWork do
       work["head_sha"] != params["expected_head_sha"] ->
         {:error, :pr_head_changed}
 
+      not Feedback.history_capacity?(work, Map.get(params, "feedback", [])) ->
+        {:error, :feedback_history_full}
+
       true ->
-        updated = Map.merge(work, %{"instruction" => params["instruction"], "phase" => "queued", "updated_at" => timestamp()})
+        updated =
+          Map.merge(work, %{
+            "purpose" => "coding",
+            "goal_revision" => Map.get(work, "goal_revision", 1) + 1,
+            "instruction" => params["instruction"],
+            "feedback" => Map.get(params, "feedback", []),
+            "phase" => "queued",
+            "updated_at" => timestamp()
+          })
+
         next = issue |> put_in(["pr_work", work["id"]], updated) |> Map.put("selected_work_id", work["id"])
         {:ok, release_review_hold(next)}
     end
@@ -117,7 +138,7 @@ defmodule SymphonyElixir.PRWork do
   def selected(issue), do: get_in(issue, ["pr_work", issue["selected_work_id"]])
 
   @spec dispatchable?(map()) :: boolean()
-  def dispatchable?(issue), do: is_nil(issue["pr_work"]) or match?(%{"phase" => "queued"}, selected(issue))
+  def dispatchable?(issue), do: is_nil(issue["pr_work"]) or (match?(%{"phase" => "queued"}, selected(issue)) and coding_purpose?(selected(issue)))
 
   defp pending?(issue), do: match?(%{"phase" => phase} when phase in ["queued", "building", "reviewing"], selected(issue))
 
@@ -187,7 +208,11 @@ defmodule SymphonyElixir.PRWork do
         {:ok, update_work(issue, id, %{"phase" => if(hold || issue["hold"], do: "paused", else: "queued")})}
 
       valid_evidence?(get_in(issue, ["pr_work", id]), evidence) and evidence["run_id"] == issue["active"]["run_id"] ->
-        {:ok, update_work(issue, id, %{"phase" => "owner_review", "head_sha" => evidence["candidate_sha"], "handoff" => evidence})}
+        history = Feedback.history(get_in(issue, ["pr_work", id]), evidence)
+
+        if Feedback.valid_history?(history),
+          do: {:ok, update_work(issue, id, %{"phase" => "owner_review", "head_sha" => evidence["candidate_sha"], "handoff" => evidence, "feedback_history" => history})},
+          else: {:error, :feedback_history_full}
 
       true ->
         {:error, :invalid_pr_handoff}
@@ -232,7 +257,7 @@ defmodule SymphonyElixir.PRWork do
       not is_nil(issue["active"]) -> {:error, :issue_running}
       issue["hold"] != "owner_review" -> {:error, :pr_work_pending}
       work["phase"] != "owner_review" -> {:error, :pr_work_pending}
-      not same_handoff?(work["handoff"], receipt) -> {:error, :pr_head_changed}
+      not publication_handoff?(work, receipt) -> {:error, :pr_head_changed}
       true -> accept_publication(issue, work, receipt)
     end
   end
@@ -255,6 +280,8 @@ defmodule SymphonyElixir.PRWork do
         {:ok, update_work(issue, work["id"], attrs), false}
     end
   end
+
+  defp publication_handoff?(work, receipt), do: same_handoff?(work["handoff"], receipt) and current_handoff?(work)
 
   defp same_handoff?(handoff, receipt) when is_map(handoff) do
     Enum.all?(~w(work_id run_id candidate_sha expected_head_sha branch base_sha), &(handoff[&1] == receipt[&1])) and
@@ -386,18 +413,29 @@ defmodule SymphonyElixir.PRWork do
   end
 
   defp valid_description?(work) do
-    text?(work["instruction"], 16_000) and work["phase"] in @phases and
-      text?(work["created_at"], 64) and text?(work["updated_at"], 64)
+    coding_purpose?(work) and is_integer(Map.get(work, "goal_revision", 1)) and Map.get(work, "goal_revision", 1) > 0 and
+      text?(work["instruction"], 16_000) and work["phase"] in @phases and
+      text?(work["created_at"], 64) and text?(work["updated_at"], 64) and Feedback.valid_items?(Map.get(work, "feedback", [])) and Feedback.valid_history?(work["feedback_history"])
   end
 
   defp valid_stored_handoff?(work) do
     (work["phase"] != "owner_review" or is_map(work["handoff"])) and
-      is_nil(work["head_sha"]) == is_nil(work["handoff"]) and stored_handoff_matches?(work)
+      is_nil(work["head_sha"]) == is_nil(work["handoff"]) and
+      (work["phase"] != "owner_review" or current_handoff?(work)) and stored_handoff_matches?(work)
+  end
+
+  defp current_handoff?(work) do
+    handoff = work["handoff"]
+    is_map(handoff) and Map.get(handoff, "goal_revision", 1) == Map.get(work, "goal_revision", 1)
   end
 
   defp stored_handoff_matches?(%{"handoff" => handoff} = work) when is_map(handoff) do
     Map.has_key?(handoff, "expected_head_sha") and optional_sha?(handoff["expected_head_sha"]) and
-      valid_evidence?(work, Map.put(handoff, "expected_head_sha", work["head_sha"])) and
+      is_integer(Map.get(handoff, "goal_revision", 1)) and Map.get(handoff, "goal_revision", 1) in 1..Map.get(work, "goal_revision", 1) and
+      valid_evidence?(
+        work |> Map.put("feedback", Map.get(handoff, "feedback_items", [])) |> Map.put("goal_revision", Map.get(handoff, "goal_revision", 1)),
+        Map.put(handoff, "expected_head_sha", work["head_sha"])
+      ) and
       handoff["candidate_sha"] == work["head_sha"]
   end
 
@@ -420,13 +458,16 @@ defmodule SymphonyElixir.PRWork do
   defp valid_stored_publication?(_), do: false
 
   defp valid_evidence?(work, evidence) when is_map(work) and is_map(evidence) do
-    evidence_identity?(work, evidence) and evidence_review?(evidence) and evidence_sessions?(work, evidence)
+    evidence_identity?(work, evidence) and evidence_review?(evidence) and evidence_sessions?(work, evidence) and
+      Map.get(evidence, "feedback_items", []) == Map.get(work, "feedback", []) and
+      Feedback.valid_results?(Map.get(work, "feedback", []), Map.get(evidence, "feedback_results", []))
   end
 
   defp valid_evidence?(_, _), do: false
 
   defp evidence_identity?(work, evidence) do
     evidence["work_id"] == work["id"] and evidence["expected_head_sha"] == work["head_sha"] and
+      Map.get(evidence, "goal_revision", 1) == Map.get(work, "goal_revision", 1) and
       evidence["base_sha"] == work["base_sha"] and evidence["branch"] == work["branch"] and sha?(evidence["candidate_sha"])
   end
 
@@ -442,6 +483,8 @@ defmodule SymphonyElixir.PRWork do
       String.starts_with?(evidence["builder_session_id"], work["builder_thread_id"] <> "-") and
       text?(evidence["reviewer_session_id"], 256) and not String.starts_with?(evidence["reviewer_session_id"], work["builder_thread_id"] <> "-")
   end
+
+  defp coding_purpose?(record), do: AgentProtocol.executable_purpose?(Map.get(record, "purpose", "coding"))
 
   defp update_work(issue, id, attrs), do: update_in(issue, ["pr_work", id], &Map.merge(&1, Map.put(attrs, "updated_at", timestamp())))
   defp branch(issue, id), do: "codex/gh-#{issue}-#{id}"

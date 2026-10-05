@@ -66,6 +66,22 @@ defmodule SymphonyElixir.BrowserSignInUITest do
     refute preview =~ ~s(action="/operator/session/logout")
   end
 
+  test "both Settings providers submit the current scoped return location" do
+    historical =
+      "/projects/events-concierge/?view=design&design_ref=" <>
+        String.duplicate("a", 64) <>
+        "&design_section=data&design_item=event&panel=settings"
+
+    destinations =
+      [historical | Enum.map(~w(idea design), &("/projects/events-concierge/?view=" <> &1 <> "&priority=P1&chat_task=task&panel=settings"))]
+
+    for {provider, action} <- [{"google", "/auth/google"}, {"local_token", "/operator/session"}], destination <- destinations do
+      configure(provider)
+      document = settings_html(return_to: destination) |> Floki.parse_document!()
+      assert Floki.attribute(document, "form[action='#{action}'] input[name='return_to']", "value") == [destination]
+    end
+  end
+
   test "the legacy local provider retains its token forms and labels" do
     configure("local_token")
     chat = chat_html(false)

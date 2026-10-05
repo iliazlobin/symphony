@@ -9,6 +9,8 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("container_worker", ROOT / "tools/container_worker.py")
@@ -17,6 +19,243 @@ SPEC.loader.exec_module(WORKER)
 
 
 class ContainerWorkerTests(unittest.TestCase):
+    def test_credential_failures_have_safe_machine_exit_codes_without_false_startup_claims(self):
+        for error, expected in ((WORKER.AuthLeaseError("PRIVATE INTERNAL MESSAGE"), 78),
+                                (WORKER.AuthLeaseBusy("PRIVATE INTERNAL MESSAGE"), 79),
+                                (WORKER.LocalCodexAuthError("PRIVATE INTERNAL MESSAGE"), 78)):
+            with self.subTest(expected=expected), patch.object(WORKER, "main", side_effect=error), \
+                    patch.object(WORKER, "print") as output:
+                self.assertEqual(WORKER.entrypoint(), expected)
+                self.assertNotIn("PRIVATE", str(output.call_args))
+                if isinstance(error, WORKER.LocalCodexAuthError):
+                    self.assertNotIn("no model turn", str(output.call_args))
+
+    def test_local_bridge_failure_exit_does_not_discard_success_or_failure_status(self):
+        with patch.object(WORKER, "main", return_value=17):
+            self.assertEqual(WORKER.entrypoint(), 17)
+
+    def test_local_auth_is_explicit_and_keeps_credentials_ephemeral_without_new_mounts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace, home = root / "workspace", root / "dedicated-codex"
+            workspace.mkdir()
+            home.mkdir()
+            (home / "config.toml").write_text('model="fixture"\n')
+            args = (workspace, home, "sha256:" + "a" * 64, "reviewer", root / "private.cid", "b" * 32, "/docker")
+            dedicated = WORKER.create_command(*args)
+            local = WORKER.create_command(*args, external_auth=True)
+            self.assertEqual(dedicated[:-1], local[:-1])
+            self.assertNotIn("ephemeral", dedicated[-1])
+            self.assertIn('cli_auth_credentials_store="ephemeral"', local[-1])
+            self.assertIn(f"type=bind,src={workspace},dst={workspace},readonly", local)
+            self.assertIn("no-new-privileges", local)
+            for value in (None, "true", 1):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    WORKER.create_command(*args, external_auth=value)
+
+    def test_local_entrypoint_keeps_guardian_intent_without_claiming_dedicated_auth(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "workspaces").mkdir(mode=0o700)
+            workspace, home, local_home, client = (root / name for name in ("workspaces/GH-1", "codex", ".codex", "auth-client"))
+            for path in (workspace, home, local_home, client):
+                path.mkdir(mode=0o700)
+            binary = root / "local-cli"
+            binary.write_text("fixture executable")
+            binary.chmod(0o700)
+            (home / "config.toml").write_text('model="fixture"\n')
+            cidfile = root / "private.cid"
+            owner, cid = "b" * 32, "c" * 64
+            argv = ["worker", "--workspace", str(workspace), "--codex-home", str(home),
+                    "--image", "sha256:" + "a" * 64, "--auth-source", "local_codex",
+                    "--local-codex-binary", str(binary), "--local-codex-home", str(local_home),
+                    "--auth-cwd", str(client)]
+
+            def docker(command, **kwargs):
+                if "context" in command:
+                    return SimpleNamespace(stdout="unix:///private/fixture.sock\n")
+                self.assertIn("create", command)
+                self.assertIn('cli_auth_credentials_store="ephemeral"', command[-1])
+                self.assertNotIn(str(local_home), " ".join(command))
+                cidfile.write_text(cid)
+                return SimpleNamespace(returncode=0, stdout=cid + "\n", stderr="")
+
+            environment = {"SYMPHONY_CONTAINER_CIDFILE": str(cidfile), "SYMPHONY_CONTAINER_OWNER": owner,
+                           "SYMPHONY_WORKER_ROLE": "builder", "DOCKER_HOST": "untrusted"}
+            with patch.object(sys, "argv", argv), patch.dict(os.environ, environment, clear=True), \
+                    patch.object(WORKER.Path, "home", return_value=root), \
+                    patch.object(WORKER.shutil, "which", return_value="/docker"), \
+                    patch.object(WORKER.subprocess, "run", side_effect=docker), \
+                    patch.object(WORKER, "prepare_marker") as marker, patch.object(WORKER, "AuthLease") as lease, \
+                    patch.object(WORKER, "LocalCodexAuth") as auth, patch.object(WORKER, "bridge", return_value=7) as proxy, \
+                    patch.object(WORKER.os, "execve") as execute:
+                self.assertEqual(WORKER.main(), 7)
+                marker.assert_not_called()
+                lease.assert_not_called()
+                execute.assert_not_called()
+                auth.assert_called_once_with(binary=str(binary), home=str(local_home), cwd=str(client))
+                command, env, client_auth = proxy.call_args.args
+                self.assertEqual(command, ["/docker", "--host", "unix:///private/fixture.sock", "start", "--attach", "--interactive", cid])
+                self.assertNotIn("DOCKER_HOST", env)
+                self.assertIs(client_auth, auth.return_value.__enter__.return_value)
+                self.assertEqual(json.loads(Path(str(cidfile) + ".intent").read_text()),
+                                 {"owner": owner, "docker_host": "unix:///private/fixture.sock"})
+                self.assertFalse(Path(str(cidfile) + ".auth").exists())
+                self.assertFalse((WORKER.stage_path(home, owner, "builder") / "auth.json").exists())
+
+    def test_auth_client_never_uses_the_checkout_or_runtime_home_as_its_host_cwd(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "workspaces").mkdir(mode=0o700)
+            workspace, home, local, client = (root / name for name in ("workspaces/GH-1", "codex", ".codex", "auth-client"))
+            for path in (workspace, home, local, client):
+                path.mkdir(mode=0o700)
+            binary = root / "local-cli"
+            binary.write_text("fixture executable")
+            binary.chmod(0o700)
+            with patch.object(WORKER.Path, "home", return_value=root):
+                WORKER.validate_local_auth_paths(workspace, home, local, client, binary)
+                for cwd in (workspace, home, local, root):
+                    with self.subTest(cwd=cwd.name), self.assertRaises(WORKER.LocalCodexAuthError):
+                        WORKER.validate_local_auth_paths(workspace, home, local, cwd, binary)
+                (workspace / "inside").mkdir(mode=0o700)
+                with self.assertRaises(WORKER.LocalCodexAuthError):
+                    WORKER.validate_local_auth_paths(workspace, home, local, workspace / "inside", binary)
+
+    def test_local_personal_home_accepts_standard_mode_without_relaxing_private_client(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "workspaces").mkdir(mode=0o700)
+            workspace, runtime, home, client = (root / name for name in ("workspaces/GH-1", "codex", ".codex", "auth-client"))
+            for path in (workspace, runtime, home, client):
+                path.mkdir(mode=0o700)
+            binary = root / "local-cli"
+            binary.write_text("fixture executable")
+            binary.chmod(0o700)
+            args = (workspace, runtime, home, client, binary)
+            with patch.object(WORKER.Path, "home", return_value=root):
+                home.chmod(0o755)
+                self.assertEqual(WORKER.validate_local_auth_paths(*args), str(binary))
+                self.assertEqual(home.stat().st_mode & 0o777, 0o755)
+                for mode in (0o775, 0o777):
+                    home.chmod(mode)
+                    with self.subTest(mode=mode), self.assertRaises(WORKER.LocalCodexAuthError):
+                        WORKER.validate_local_auth_paths(*args)
+                home.chmod(0o755)
+                client.chmod(0o755)
+                with self.assertRaises(WORKER.LocalCodexAuthError):
+                    WORKER.validate_local_auth_paths(*args)
+
+    def test_local_personal_auth_leaf_is_checked_by_metadata_without_reading_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "workspaces").mkdir(mode=0o700)
+            workspace, runtime, home, client = (root / name for name in ("workspaces/GH-1", "codex", ".codex", "auth-client"))
+            for path in (workspace, runtime, home, client):
+                path.mkdir(mode=0o700)
+            home.chmod(0o755)
+            binary = root / "local-cli"
+            binary.write_text("fixture executable")
+            binary.chmod(0o700)
+            credential = home / "auth.json"
+            credential.write_text("FAKE AUTH MUST NOT BE READ")
+            credential.chmod(0o600)
+            args = (workspace, runtime, home, client, binary)
+            with patch.object(WORKER.Path, "home", return_value=root), \
+                    patch.object(WORKER.Path, "read_text", side_effect=AssertionError("Credential read")), \
+                    patch.object(WORKER.Path, "read_bytes", side_effect=AssertionError("Credential read")):
+                self.assertEqual(WORKER.validate_local_auth_paths(*args), str(binary))
+                for mode in (0o640, 0o604):
+                    credential.chmod(mode)
+                    with self.subTest(mode=mode), self.assertRaises(WORKER.LocalCodexAuthError):
+                        WORKER.validate_local_auth_paths(*args)
+                credential.chmod(0o600)
+                os.link(credential, root / "linked-auth")
+                with self.assertRaises(WORKER.LocalCodexAuthError):
+                    WORKER.validate_local_auth_paths(*args)
+                credential.unlink()
+                credential.symlink_to(root / "linked-auth")
+                with self.assertRaises(WORKER.LocalCodexAuthError):
+                    WORKER.validate_local_auth_paths(*args)
+
+    def test_local_executable_rejects_worker_trees_unsafe_modes_and_foreign_owners(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            paths = {name: root / name for name in ("workspaces", "codex", ".codex", "auth-client", "source", "stage-state", "pr-work-state")}
+            for path in paths.values():
+                path.mkdir(mode=0o700)
+            workspace = paths["workspaces"] / "GH-1"
+            workspace.mkdir(mode=0o700)
+            binary = root / "local-cli"
+            binary.write_text("fixture executable")
+            binary.chmod(0o700)
+            args = (workspace, paths["codex"], paths[".codex"], paths["auth-client"])
+            with patch.object(WORKER.Path, "home", return_value=root):
+                link = root / "cli-link"
+                link.symlink_to(binary)
+                self.assertEqual(WORKER.validate_local_auth_paths(*args, link), str(binary))
+                for tree in ("workspaces", "codex", "source", "stage-state", "pr-work-state", "auth-client"):
+                    supplied = paths[tree] / "worker-cli"
+                    supplied.write_text("worker controlled")
+                    supplied.chmod(0o700)
+                    with self.subTest(tree=tree), self.assertRaises(WORKER.LocalCodexAuthError):
+                        WORKER.validate_local_auth_paths(*args, supplied, paths["source"])
+                for mode in (0o770, 0o707, 0o777):
+                    binary.chmod(mode)
+                    with self.subTest(mode=mode), self.assertRaises(WORKER.LocalCodexAuthError):
+                        WORKER.validate_local_auth_paths(*args, binary)
+                binary.chmod(0o700)
+                with patch.object(WORKER.os, "getuid", return_value=os.getuid() + 1), \
+                        self.assertRaises(WORKER.LocalCodexAuthError):
+                    WORKER.validate_local_auth_paths(*args, binary)
+
+    def test_local_retained_stage_refuses_auth_files_and_dangling_links_before_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace, home = root / "workspace", root / "codex"
+            workspace.mkdir(mode=0o700)
+            home.mkdir(mode=0o700)
+            (home / "config.toml").write_text('model="fixture"\n')
+            work_id, owner = "a" * 32, "b" * 32
+            stage = WORKER.prepare_stage_home(workspace, home, owner, "builder", work_id)
+            argv = ["worker", "--workspace", str(workspace), "--codex-home", str(home),
+                    "--image", "sha256:" + "a" * 64, "--auth-source", "local_codex",
+                    "--local-codex-binary", "/fixture/codex", "--local-codex-home", str(root / ".codex"),
+                    "--auth-cwd", str(root / "auth-client")]
+            environment = {"SYMPHONY_CONTAINER_CIDFILE": str(root / "private.cid"),
+                           "SYMPHONY_CONTAINER_OWNER": owner, "SYMPHONY_WORKER_ROLE": "builder",
+                           "SYMPHONY_PR_WORK_ID": work_id, "SYMPHONY_PR_WORK_RESUME": "true"}
+            credential = stage / "auth.json"
+            for symlink in (False, True):
+                if symlink:
+                    credential.symlink_to(root / "absent-auth")
+                else:
+                    credential.write_text("FAKE PRIVATE AUTH")
+                with self.subTest(symlink=symlink), patch.object(sys, "argv", argv), \
+                        patch.dict(os.environ, environment, clear=True), \
+                        patch.object(WORKER.shutil, "which", return_value="/docker"), \
+                        patch.object(WORKER.subprocess, "run") as docker, \
+                        patch.object(WORKER, "LocalCodexAuth") as auth, \
+                        patch.object(WORKER, "AuthLease") as lease, self.assertRaises(WORKER.LocalCodexAuthError):
+                    WORKER.main()
+                docker.assert_not_called()
+                auth.assert_not_called()
+                lease.assert_not_called()
+                self.assertTrue(credential.is_symlink() or credential.exists())
+                credential.unlink()
+
+    def test_auth_source_and_local_arguments_cannot_be_implicitly_selected(self):
+        arguments = ["worker", "--workspace", "/fixture/work", "--codex-home", "/fixture/codex",
+                     "--image", "sha256:" + "a" * 64]
+        for extra in (["--auth-source", "unknown"], ["--auth-source", "local_codex"],
+                      ["--local-codex-home", "/private/local"], ["--auth-source-path", "/private/source"]):
+            with self.subTest(extra=extra), patch.object(sys, "argv", arguments + extra), \
+                    patch.object(WORKER.shutil, "which") as docker, patch.object(WORKER, "LocalCodexAuth") as auth, \
+                    patch.object(WORKER.sys, "stderr"), self.assertRaises(SystemExit):
+                WORKER.main()
+            docker.assert_not_called()
+            auth.assert_not_called()
+
     def test_canary_retains_recovery_markers_when_container_cleanup_is_unverified(self):
         spec = importlib.util.spec_from_file_location("probe_cancellation", ROOT / "tools/probe_cancellation.py")
         probe = importlib.util.module_from_spec(spec)
@@ -158,6 +397,24 @@ os.killpg=signal_unreaped
                 WORKER.prepare_stage_home(workspace, home, "d" * 32, "builder", work_id)
             self.assertEqual((stage / "retained-session").read_text(), "native-history")
 
+    def test_authentication_is_writable_only_in_the_owned_stage_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace, home = root / "workspace", root / "dedicated-codex"
+            workspace.mkdir()
+            home.mkdir(mode=0o700)
+            (home / "config.toml").write_text('model="fixture"\n')
+            (home / "auth.json").write_text("FAKE AUTH")
+            (home / "auth.json").chmod(0o600)
+            for role in ("builder", "reviewer"):
+                command = WORKER.create_command(workspace, home, "sha256:" + "a" * 64, role,
+                                                root / "unused.cid", "b" * 32, "/docker")
+                mounts = [command[index + 1] for index, value in enumerate(command) if value == "--mount"]
+                self.assertFalse(any("dst=/codex-home/auth.json" in mount for mount in mounts))
+                self.assertIn("dst=/codex-home", mounts[1])
+                self.assertFalse(mounts[1].endswith(",readonly"))
+                self.assertFalse(any(f"src={home}," in mount for mount in mounts))
+
     def test_retained_state_rejects_missing_or_foreign_scope_and_unsafe_markers(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -214,6 +471,27 @@ os.killpg=signal_unreaped
                 WORKER.create_command(workspace, home, "sha256:" + "a" * 64, "builder", workspace / "a.cid", "b" * 32, "/docker")
             with self.assertRaises(ValueError):
                 WORKER.create_command(workspace, home, "sha256:" + "a" * 64, "builder", root / "a.cid", "not-an-owner", "/docker")
+
+    def test_personal_codex_home_and_descendant_mounts_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace = root / "workspace"
+            workspace.mkdir(mode=0o700)
+            personal = root / ".codex"
+            personal.mkdir(mode=0o700)
+            nested = personal / "nested-worker-home"
+            nested.mkdir(mode=0o700)
+            sibling = root / ".codex-runtime"
+            sibling.mkdir(mode=0o700)
+            for home in (personal, nested, sibling):
+                (home / "config.toml").write_text('model="fixture"\n')
+            with patch.object(WORKER.Path, "home", return_value=root):
+                for home in (personal, nested):
+                    with self.subTest(home=home.name), self.assertRaisesRegex(ValueError, "personal Codex home"):
+                        WORKER.create_command(workspace, home, "sha256:" + "a" * 64, "builder",
+                                              root / "unused.cid", "b" * 32, "/docker")
+                self.assertIn("create", WORKER.create_command(workspace, sibling, "sha256:" + "a" * 64,
+                                                               "builder", root / "unused.cid", "b" * 32, "/docker"))
 
     def test_apparmor_candidate_never_disables_outer_isolation(self):
         with tempfile.TemporaryDirectory() as directory:

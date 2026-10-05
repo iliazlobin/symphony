@@ -2,6 +2,7 @@ defmodule SymphonyElixir.ChatLiveTest do
   use SymphonyElixir.TestSupport
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
+  alias SymphonyElixir.Chat.Tools
   alias SymphonyElixirWeb.{BrowserAuth, Endpoint}
   @endpoint Endpoint
 
@@ -13,7 +14,15 @@ defmodule SymphonyElixir.ChatLiveTest do
     def start_link(chats), do: GenServer.start_link(__MODULE__, chats, name: __MODULE__)
     def init(chats), do: {:ok, chats}
 
-    def projects(_auth), do: {:ok, [%{"id" => "alpha", "label" => "Alpha project"}, %{"id" => "beta", "label" => "Beta project"}]}
+    def projects(_auth),
+      do:
+        {:ok,
+         [
+           %{"id" => "alpha", "label" => "Alpha project"},
+           %{"id" => "beta", "label" => "Beta project"},
+           %{"id" => "github:example/repo", "label" => "example/repo"},
+           %{"id" => "github:example/fallback"}
+         ]}
 
     def list(project, _auth),
       do:
@@ -101,7 +110,7 @@ defmodule SymphonyElixir.ChatLiveTest do
       update(project, id, auth, fn chat ->
         chat = if (chat["queue"] || []) == [], do: Map.put(chat, "queue_paused", false), else: chat
         user = %{"id" => client_id, "role" => "user", "text" => text, "widgets" => [], "view_context" => context}
-        assistant = %{"id" => "response-" <> client_id, "role" => "assistant", "text" => "", "status" => "streaming", "widgets" => []}
+        assistant = %{"id" => "response-" <> client_id, "role" => "assistant", "text" => "", "status" => "streaming", "widgets" => [], "view_context" => context}
 
         if chat["status"] == "running" or chat["queue_paused"] == true or Enum.any?(chat["proposals"] || [], &(&1["status"] == "executing")) do
           Map.update(chat, "queue", [user], &(&1 ++ [user]))
@@ -148,6 +157,7 @@ defmodule SymphonyElixir.ChatLiveTest do
          task_title: nil,
          view_context: session["view_context"],
          read_only: session["read_only"] || false,
+         design_mode: false,
          board_link: nil,
          closed: false
        )}
@@ -157,6 +167,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     def handle_info({:chat_panel, :main}, socket), do: {:noreply, assign(socket, task_id: nil, task_title: nil)}
     def handle_info({:view_context, context}, socket), do: {:noreply, assign(socket, :view_context, context)}
     def handle_info({:project, project}, socket), do: {:noreply, assign(socket, project_id: project, chat_id: nil)}
+    def handle_info({:design_mode, value}, socket), do: {:noreply, assign(socket, :design_mode, value)}
     def handle_info({:read_only, value}, socket), do: {:noreply, assign(socket, :read_only, value)}
 
     def handle_info({:chat_updated, id}, socket) do
@@ -179,7 +190,7 @@ defmodule SymphonyElixir.ChatLiveTest do
       ~H"""
       <main id="board-host" data-board-link={@board_link} data-closed={to_string(@closed)}>
         <.live_component module={ChatPanel} id="management-chat" auth={@auth} csrf_token="fixture-only"
-          embedded={true} project_id={@project_id} chat_id={@chat_id} task_id={@task_id} task_title={@task_title} view_context={@view_context} read_only={@read_only} />
+          embedded={true} project_id={@project_id} chat_id={@chat_id} task_id={@task_id} task_title={@task_title} view_context={@view_context} read_only={@read_only} design_mode={@design_mode} />
       </main>
       """
     end
@@ -208,7 +219,7 @@ defmodule SymphonyElixir.ChatLiveTest do
       if previous_token, do: System.put_env("SYMPHONY_CONTROL_TOKEN", previous_token), else: System.delete_env("SYMPHONY_CONTROL_TOKEN")
     end)
 
-    %{marker: marker, token: token}
+    %{marker: marker, token: token, config: config}
   end
 
   test "anonymous browsers cannot load messages or project history" do
@@ -254,7 +265,11 @@ defmodule SymphonyElixir.ChatLiveTest do
 
   test "new chats stream owner updates and resume after browser reconnect", ctx do
     {view, _} = chat_view(ctx, "/chat?project=alpha")
+    accepted_client = view |> render() |> Floki.parse_fragment!() |> Floki.find("#chat-message-input") |> Floki.attribute("data-draft-revision") |> List.first()
     render_submit(view, "send-message", %{"message" => "What is blocked?"})
+    assert_push_event(view, "chat-message-sent", %{client_id: ^accepted_client, accepted_text: "What is blocked?"})
+    refute has_element?(view, "#chat-message-input[data-draft-revision='#{accepted_client}']")
+    assert has_element?(view, "#chat-message-input[data-draft='']")
     assert has_element?(view, "#stop-response-button")
     assert has_element?(view, "#chat-app[data-running=true]")
     assert render(view) =~ "What is blocked?"
@@ -439,6 +454,146 @@ defmodule SymphonyElixir.ChatLiveTest do
     refute Enum.any?(Registry.lookup(SymphonyElixir.PubSub, "chat_project:alpha"), &(elem(&1, 0) == view.pid))
   end
 
+  test "agent reports instructions and evidence retain their sources in history and the queue", ctx do
+    report = %{
+      "id" => "feature-report",
+      "role" => "user",
+      "origin" => "agent_message",
+      "agent_kind" => "report",
+      "source_name" => "README checks feature agent",
+      "text" => "All checks passed",
+      "created_at" => "2026-09-23T15:00:00Z"
+    }
+
+    instruction = %{
+      "id" => "project-instruction",
+      "role" => "user",
+      "origin" => "agent_message",
+      "agent_kind" => "instruction",
+      "source_name" => "Alpha project project agent",
+      "text" => "Prioritize the release"
+    }
+
+    evidence = %{"id" => "host-evidence", "role" => "user", "origin" => "agent_evidence", "text" => "Current PR evidence"}
+    user = %{"id" => "human-message", "role" => "user", "source_name" => "Forged author", "text" => "My request"}
+    assistant = %{"id" => "project-response", "role" => "assistant", "text" => "I will coordinate the next step"}
+    update = %{"id" => "host-update", "role" => "assistant", "origin" => "pr_update", "text" => "PR #7 checks passed"}
+    queued = Enum.map([report, instruction, evidence, user], &Map.update!(&1, "id", fn id -> "queued-" <> id end))
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    FixtureStore.put(chat |> Map.put("messages", [report, instruction, evidence, user, assistant, update]) |> Map.put("queue", queued))
+    view = embedded_view(ctx, view_context())
+
+    assert has_element?(view, "#message-feature-report.chat-message-agent .agent-label[title='README checks work agent']")
+    assert has_element?(view, "#message-feature-report .message-kind", "Report")
+    assert has_element?(view, "#message-feature-report time[data-time-label=Received]")
+    assert has_element?(view, "#message-project-instruction .agent-label[title='Alpha project project agent']")
+    assert has_element?(view, "#message-project-instruction .message-kind", "Instruction")
+    assert has_element?(view, "#message-host-evidence .message-author", "Work reports")
+    assert has_element?(view, "#message-host-evidence .message-kind", "Evidence")
+    assert has_element?(view, "#message-human-message.chat-message-user .message-author", "You")
+    refute has_element?(view, "#message-human-message", "Forged author")
+    assert has_element?(view, "#message-project-response .agent-label[title='Alpha project project agent']")
+    assert has_element?(view, "#message-host-update .message-author", "PR update")
+
+    for id <- ~w(feature-report project-instruction host-evidence) do
+      refute has_element?(view, "#message-#{id} .message-meta", "You")
+      assert has_element?(view, "#queued-queued-#{id} .chat-queued-source .message-kind")
+    end
+
+    assert has_element?(view, "#queued-queued-feature-report .agent-label[title='README checks work agent']")
+    assert has_element?(view, "#queued-queued-project-instruction .agent-label[title='Alpha project project agent']")
+    assert has_element?(view, "#queued-queued-host-evidence .message-author", "Work reports")
+    assert has_element?(view, "#queued-queued-human-message .message-author", "You")
+    assert has_element?(view, "#agent-progress [data-queued-reports='1']", "1 report queued for review")
+    refute has_element?(view, "#agent-progress .agent-goal")
+    refute has_element?(view, ".chat-session-tabs")
+  end
+
+  test "goal and pending delivery status update inline and clear on authorization loss", ctx do
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    goal = %{"text" => "Ship the verified documentation update", "status" => "active"}
+
+    outbox = [
+      %{"id" => "one", "kind" => "report", "status" => "pending"},
+      %{"id" => "two", "kind" => "report", "status" => "pending"},
+      %{"id" => "three", "kind" => "instruction", "status" => "pending"},
+      %{"id" => "delivered", "kind" => "report", "status" => "delivered"}
+    ]
+
+    FixtureStore.put(chat |> Map.put("agent_goal", goal) |> Map.put("agent_outbox", outbox))
+    view = embedded_view(ctx, view_context())
+    assert has_element?(view, "#agent-progress .agent-goal-text[title='Ship the verified documentation update']", goal["text"])
+    assert has_element?(view, "#agent-progress [data-goal-status=active]", "Active goal")
+    assert has_element?(view, "#agent-progress [data-pending-reports='2']", "2 reports pending")
+    assert has_element?(view, "#agent-progress [data-pending-instructions='1']", "1 instruction pending")
+    refute has_element?(view, "#agent-progress details, #agent-progress [hidden]")
+
+    for status <- ~w(blocked achieved) do
+      FixtureStore.put(chat |> Map.put("agent_goal", Map.put(goal, "status", status)) |> Map.put("agent_outbox", Enum.map(outbox, &Map.put(&1, "status", "delivered"))))
+      assert eventually(fn -> has_element?(view, "#agent-progress [data-goal-status=#{status}]") end)
+      refute has_element?(view, "#agent-progress .agent-report-status")
+    end
+
+    System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("revoked", 8))
+    send(view.pid, {:chat_updated, "a1"})
+    assert eventually(fn -> render(view) =~ "Unlock chat" end)
+    refute has_element?(view, "#agent-progress")
+    refute render(view) =~ goal["text"]
+  end
+
+  test "pending delivery badges use aggregate alias counts without double counting the local outbox", ctx do
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+
+    chat =
+      chat
+      |> Map.put("agent_outbox", [
+        %{"id" => "local-report", "kind" => "report", "status" => "pending"},
+        %{"id" => "local-instruction", "kind" => "instruction", "status" => "pending"}
+      ])
+      |> Map.put("agent_delivery_counts", %{"report" => 3, "instruction" => 2})
+
+    FixtureStore.put(chat)
+    view = embedded_view(ctx, view_context())
+    assert has_element?(view, "#agent-progress [data-pending-reports='3']", "3 reports pending")
+    assert has_element?(view, "#agent-progress [data-pending-instructions='2']", "2 instructions pending")
+    refute has_element?(view, "#agent-progress [data-pending-reports='1'], #agent-progress [data-pending-reports='4']")
+    refute has_element?(view, "#agent-progress .agent-goal, #agent-progress details, #agent-progress [hidden]")
+
+    FixtureStore.put(Map.put(chat, "agent_delivery_counts", %{"report" => 1, "instruction" => 0}))
+    assert eventually(fn -> has_element?(view, "#agent-progress [data-pending-reports='1']", "1 report pending") end)
+    refute has_element?(view, "#agent-progress [data-pending-instructions]")
+
+    FixtureStore.put(Map.put(chat, "agent_delivery_counts", %{"report" => 0, "instruction" => 0}))
+    assert eventually(fn -> not has_element?(view, "#agent-progress") end)
+    assert has_element?(view, "#chat-app[data-chat-id=a1]")
+    assert has_element?(view, "#chat-message-input")
+  end
+
+  test "agent recovery notices stay visible without other progress and clear after recovery or authorization loss", ctx do
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    notice = Tools.error_message(:agent_chain_limit)["message"]
+    FixtureStore.put(Map.put(chat, "agent_notice", notice))
+    view = embedded_view(ctx, view_context())
+
+    assert has_element?(view, "#agent-progress > p[role=status]", notice)
+    assert has_element?(view, "#agent-progress", "Send a new message to continue with a fresh goal.")
+    refute has_element?(view, "#agent-progress .agent-goal, #agent-progress [data-pending-reports], #agent-progress [data-pending-instructions]")
+    refute has_element?(view, "#agent-progress details, #agent-progress [hidden], .chat-session-tabs")
+    assert has_element?(view, "#chat-message-input:not([disabled])")
+
+    FixtureStore.put(chat)
+    assert eventually(fn -> not has_element?(view, "#agent-progress") end)
+    refute render(view) =~ notice
+
+    FixtureStore.put(Map.put(chat, "agent_notice", notice))
+    assert eventually(fn -> has_element?(view, "#agent-progress > p[role=status]", notice) end)
+    System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("revoked", 8))
+    send(view.pid, {:chat_updated, "a1"})
+    assert eventually(fn -> render(view) =~ "Unlock chat" end)
+    refute has_element?(view, "#agent-progress")
+    refute render(view) =~ notice
+  end
+
   test "message times retain their original instant through streaming and queue dispatch with safe legacy fallbacks", ctx do
     user = %{"id" => "timed-user", "role" => "user", "text" => "Original request", "created_at" => "2026-09-22T16:05:00+02:00"}
     assistant = %{"id" => "timed-assistant", "role" => "assistant", "text" => "Working", "status" => "streaming", "created_at" => "2026-09-22T14:06:01Z"}
@@ -491,7 +646,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert has_element?(view, "#message-stopped .message-outcome", "Stopped")
     assert has_element?(view, "#message-failed .message-outcome", "Failed")
     assert has_element?(view, "#message-tools .chat-widget-receipt", "Task updated")
-    assert has_element?(view, "#message-text .message-text", "A useful response")
+    assert has_element?(view, "#message-text .message-markdown", "A useful response")
   end
 
   test "typed widgets link filters and tasks while proposals require explicit confirmation", ctx do
@@ -502,7 +657,7 @@ defmodule SymphonyElixir.ChatLiveTest do
         "url" => "/?project=alpha&status=ready",
         "filters" => %{"status" => "ready"}
       },
-      %{"type" => "status", "summary" => "Two tasks", "counts" => %{"ready" => 2}},
+      %{"type" => "status", "summary" => "Three tasks", "counts" => %{"ready" => 2, "in_progress" => 1}},
       %{"type" => "proposal", "id" => "p1", "title" => "Create a task", "action" => "create_task", "details" => %{"title" => "Review setup"}, "status" => "pending"},
       %{"type" => "receipt", "summary" => "Task updated", "url" => "https://github.com/example/alpha/issues/7"}
     ]
@@ -513,6 +668,8 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert has_element?(view, ".chat-widget-tasks a[href='/?project=alpha&status=ready']")
     assert has_element?(view, ".widget-task a[href='/?project=alpha&status=ready&task=alpha%3A7']")
     assert has_element?(view, ".status-counts dd", "2")
+    assert has_element?(view, ".observation-counts", "In progress 1")
+    assert has_element?(view, ".status-counts dt", "In progress")
     assert has_element?(view, "button[phx-value-decision=confirm]")
     render_click(view, "decide", %{"id" => "p1", "decision" => "confirm"})
     refute has_element?(view, "button[phx-value-decision=confirm]")
@@ -546,8 +703,8 @@ defmodule SymphonyElixir.ChatLiveTest do
     message = %{"id" => "pr-preview", "role" => "assistant", "text" => "", "widgets" => widgets}
     FixtureStore.put(Map.put(chat, "messages", [message]))
     {view, _} = chat_view(ctx, "/chat?project=alpha&chat=a1")
-    assert has_element?(view, ".chat-widget-proposal", "Create a PR work session for issue #7")
-    assert has_element?(view, ".chat-widget-proposal", "Continue PR work aaaaaaaa for issue #7")
+    assert has_element?(view, ".chat-widget-proposal", "Create a work agent for issue #7")
+    assert has_element?(view, ".chat-widget-proposal", "Continue work agent aaaaaaaa for issue #7")
     assert has_element?(view, ".chat-widget-proposal", "Build the scoped implementation")
     assert has_element?(view, ".chat-widget-proposal", "Fix the failing test")
     assert has_element?(view, ".chat-widget-proposal", "Uses the issue's remaining budget")
@@ -563,7 +720,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     message = %{"id" => "unsafe", "role" => "assistant", "text" => "<script>bad()</script>", "widgets" => widgets}
     FixtureStore.put(%{chat | "messages" => [message], "context" => [%{"title" => "Malicious source", "url" => "//evil.example"}]})
     {view, html} = chat_view(ctx, "/chat?project=alpha&chat=a1")
-    assert html =~ "&lt;script&gt;bad()&lt;/script&gt;"
+    refute html =~ "<script>bad()</script>"
     refute has_element?(view, ".chat-message script")
     refute has_element?(view, ".chat-widget img")
     refute has_element?(view, "a[href^='javascript:']")
@@ -805,7 +962,8 @@ defmodule SymphonyElixir.ChatLiveTest do
   test "embedded chat stays open and selects one retained conversation per task and main", ctx do
     view = embedded_view(ctx, view_context())
     assert has_element?(view, "#chat-app[data-chat-id=a1][data-embedded=true]")
-    assert has_element?(view, ".chat-header", "Main chat")
+    assert has_element?(view, "#project-agent-breadcrumb[aria-label='Open Alpha project project agent conversation']", "Project")
+    refute has_element?(view, "#operator-scope", "Alpha project")
     refute has_element?(view, "#new-chat-button")
     refute has_element?(view, "button[phx-click=close-panel]")
     refute has_element?(view, "#back-to-chats")
@@ -813,14 +971,14 @@ defmodule SymphonyElixir.ChatLiveTest do
     draft_message(view, "Main draft")
     render_click(view, "session-tab", %{"tab" => "context"})
     send(view.pid, {:task, "alpha:7", "First task"})
-    assert has_element?(view, "#issue-switcher summary", "First task")
+    assert has_element?(view, "#issue-switcher summary[title='First task']")
     refute render(view) =~ "Main draft"
     task_chat = GenServer.call(FixtureStore, :all) |> Map.values() |> Enum.find(&(&1["task_id"] == "alpha:7"))
     assert has_element?(view, "#chat-composer-wrap-#{task_chat["id"]}")
     draft_message(view, "First task draft")
     render_click(view, "session-tab", %{"tab" => "sources"})
     send(view.pid, {:task, "alpha:8", "Second task"})
-    assert has_element?(view, "#issue-switcher summary", "Second task")
+    assert has_element?(view, "#issue-switcher summary[title='Second task']")
     refute render(view) =~ "First task draft"
     draft_message(view, "Second task draft")
     send(view.pid, {:task, "alpha:7", "First task"})
@@ -840,6 +998,30 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert has_element?(view, "#chat-app[data-chat-id=a1]")
     assert has_element?(view, "#chat-message-input", "Main draft")
     assert has_element?(view, "#session-chat-content:not([hidden])")
+  end
+
+  test "compact project navigation keeps configured identity accessible and searchable", ctx do
+    config = Map.put(ctx.config, :server, %{project_links: [%{id: "github:example/repo", label: "Friendly project", url: "http://localhost:8778"}]})
+    File.write!(Workflow.workflow_file_path(), "---\n" <> Jason.encode!(config) <> "\n---\nFixture")
+    :ok = WorkflowStore.force_reload()
+    view = embedded_view(ctx, view_context())
+    send(view.pid, {:project, "github:example/repo"})
+    assert has_element?(view, "#project-agent-breadcrumb[aria-label='Open Friendly project project agent conversation']", "Project")
+    assert has_element?(view, "#issue-option-main[aria-label='Friendly project project agent conversation']", "Project conversation")
+    refute has_element?(view, "#operator-scope", "Friendly project")
+    render_change(view, "search-issues", %{"query" => "friendly"})
+    assert has_element?(view, "#issue-option-main")
+    render_change(view, "search-issues", %{"query" => "Project agent"})
+    assert has_element?(view, "#issue-option-main")
+    render_change(view, "search-issues", %{"query" => "Project conversation"})
+    assert has_element?(view, "#issue-option-main")
+    render_change(view, "search-issues", %{"query" => "unrelated"})
+    refute has_element?(view, "#issue-option-main")
+    send(view.pid, {:project, "github:example/fallback"})
+    assert has_element?(view, "#project-agent-breadcrumb[aria-label='Open github:example/fallback project agent conversation']", "Project")
+    send(view.pid, {:read_only, true})
+    assert has_element?(view, ".chat-header", "Project agent")
+    refute has_element?(view, "#issue-switcher")
   end
 
   test "queued messages stay separate from history and can be reordered removed and resumed", ctx do
@@ -875,7 +1057,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     {:ok, main} = FixtureStore.get("alpha", "a1", nil)
     [queued] = main["queue"]
     send(view.pid, {:task, "alpha:7", "Task seven"})
-    assert has_element?(view, "#issue-switcher summary", "Task seven")
+    assert has_element?(view, "#issue-switcher summary[title='Task seven']")
     render_submit(view, "send-message", %{"message" => "Late main message", "chat_id" => "a1"})
     render_submit(view, "send-message", %{"message" => "Missing binding"})
     render_change(view, "draft", %{"message" => "Stale main draft", "chat_id" => "a1"})
@@ -908,6 +1090,229 @@ defmodule SymphonyElixir.ChatLiveTest do
 
   defp draft_message(view, message), do: view |> element("#chat-composer") |> render_change(%{"message" => message})
   defp send_message(view, message), do: view |> element("#chat-composer") |> render_submit(%{"message" => message})
+
+  test "Design mode is stamped by the host even without browser context and cannot confirm old proposals", ctx do
+    view = embedded_view(ctx, nil)
+    send(view.pid, {:design_mode, true})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-design-mode=true]") end)
+    view |> element("#chat-composer") |> render_submit(%{"message" => "Explore an idea", "chat_id" => "a1"})
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    message = chat["messages"] |> Enum.filter(&(&1["role"] == "user")) |> List.last()
+    assert message["view_context"] == %{"version" => 1, "project_id" => "alpha", "mode" => "design"}
+    render_click(view, "decide", %{"id" => "existing-proposal", "decision" => "confirm", "chat_id" => "a1"})
+    assert render(view) =~ "Design is discussion only"
+    send(view.pid, {:design_mode, false})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-design-mode=false]") end)
+    send(view.pid, {:view_context, %{"version" => 1, "project_id" => "alpha", "mode" => "design"}})
+    view |> element("#chat-composer") |> render_submit(%{"message" => "Ordinary discussion", "chat_id" => "a1"})
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    last = List.last(chat["queue"])
+    assert last["text"] == "Ordinary discussion"
+    refute Map.has_key?(last["view_context"], "mode")
+  end
+
+  test "Design corrections expose a safe browser review link without execution confirmation", ctx do
+    suggestion = %{
+      "version" => 1,
+      "project" => "alpha",
+      "section" => "data",
+      "base_document" => "design-fixture",
+      "base_revision" => 7,
+      "changes" => [%{"op" => "add_node", "node" => %{"kind" => "entity", "title" => "Event", "text" => "id: UUID"}}]
+    }
+
+    message = %{
+      "id" => "visual-feedback",
+      "role" => "assistant",
+      "text" => "Review the proposed entity.",
+      "view_context" => %{"version" => 1, "project_id" => "alpha", "mode" => "design"},
+      "widgets" => [%{"type" => "design_suggestion", "suggestion" => suggestion}]
+    }
+
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    {:ok, _} = FixtureStore.put(Map.put(chat, "messages", [message]))
+    view = embedded_view(ctx, nil)
+    send(view.pid, {:design_mode, true})
+    assert eventually(fn -> has_element?(view, "[data-review-design]", "Review on board") end)
+    html = render(view)
+    [encoded] = html |> Floki.parse_fragment!() |> Floki.find("[data-review-design]") |> Floki.attribute("data-design-suggestion")
+    assert Jason.decode!(encoded) == suggestion
+    refute has_element?(view, "[phx-click=decide]")
+    assert {:ok, retained} = FixtureStore.get("alpha", "a1", nil)
+    assert retained["messages"] == [message]
+  end
+
+  test "Design shows its turns without operational reports and preserves the full planning history", ctx do
+    design = %{"version" => 1, "project_id" => "alpha", "mode" => "design"}
+    message = fn id, role, extra -> Map.merge(%{"id" => id, "role" => role, "text" => id, "widgets" => []}, extra) end
+
+    messages = [
+      message.("ordinary-user", "user", %{}),
+      message.("ordinary-answer", "assistant", %{"view_context" => nil}),
+      message.("design-legacy-user", "user", %{"view_context" => design}),
+      message.("interleaved-pr", "assistant", %{"origin" => "pr_update", "view_context" => design}),
+      message.("design-legacy-answer", "assistant", %{}),
+      message.("later-action-receipt", "assistant", %{}),
+      message.("design-modern-user", "user", %{"view_context" => design}),
+      message.("interleaved-report", "user", %{"origin" => "agent_message", "agent_kind" => "report", "view_context" => design}),
+      message.("interleaved-evidence", "assistant", %{"origin" => "agent_evidence", "view_context" => design}),
+      message.("operational-reflection", "assistant", %{}),
+      message.("design-modern-answer", "assistant", %{"view_context" => design}),
+      message.("design-next-user", "user", %{"view_context" => design}),
+      message.("ordinary-stamped-answer", "assistant", %{"view_context" => nil}),
+      message.("design-question", "user", %{"view_context" => design}),
+      message.("system-observation", "system", %{}),
+      message.("unbound-answer", "assistant", %{}),
+      message.("design-current-user", "user", %{"view_context" => design}),
+      message.("design-current-answer", "assistant", %{"view_context" => design, "status" => "streaming", "text" => ""})
+    ]
+
+    queued = [message.("ordinary-queued", "user", %{})]
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    chat = chat |> Map.put("messages", messages) |> Map.put("queue", queued) |> Map.put("status", "running") |> Map.put("agent_goal", %{"text" => "Coordinate delivery", "status" => "active"})
+    {:ok, _} = FixtureStore.put(chat)
+    view = embedded_view(ctx, nil)
+    assert has_element?(view, "#agent-progress")
+    send(view.pid, {:design_mode, true})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-design-mode=true]") end)
+
+    for id <- ~w(design-legacy-user design-legacy-answer design-modern-user design-modern-answer design-next-user design-question design-current-user design-current-answer) do
+      assert has_element?(view, "#chat-messages #message-#{id}")
+    end
+
+    for id <-
+          ~w(ordinary-user ordinary-answer interleaved-pr later-action-receipt interleaved-report interleaved-evidence operational-reflection ordinary-stamped-answer system-observation unbound-answer) do
+      refute has_element?(view, "#chat-messages #message-#{id}")
+    end
+
+    refute has_element?(view, "#agent-progress")
+    refute has_element?(view, ".chat-empty")
+    assert has_element?(view, "#message-design-current-answer .streaming-mark", "Responding")
+    assert has_element?(view, "#stop-response-button")
+    assert has_element?(view, "#queued-ordinary-queued")
+    assert has_element?(view, "#send-message-button", "Queue")
+    assert has_element?(view, "#chat-message-input[placeholder='Brainstorm an idea or ask about this design…']")
+    assert {:ok, ^chat} = FixtureStore.get("alpha", "a1", nil)
+
+    send(view.pid, {:design_mode, false})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-design-mode=false]") end)
+    assert has_element?(view, "#agent-progress")
+
+    for message <- messages do
+      assert has_element?(view, "#chat-messages #message-#{message["id"]}")
+    end
+
+    assert {:ok, ^chat} = FixtureStore.get("alpha", "a1", nil)
+  end
+
+  test "Idea welcomes a new discussion despite existing operational history and leaves queue status visible", ctx do
+    {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
+    queued = [%{"id" => "existing-queued", "role" => "user", "text" => "Previously authorized request"}]
+    chat = chat |> Map.put("queue", queued) |> Map.put("queue_paused", true) |> Map.put("agent_notice", "Delivery needs attention")
+    {:ok, _} = FixtureStore.put(chat)
+    view = embedded_view(ctx, nil)
+    assert has_element?(view, "#message-m1", "Alpha secret")
+    send(view.pid, {:design_mode, true})
+    assert eventually(fn -> has_element?(view, ".chat-empty h1", "Let’s shape the idea") end)
+    refute has_element?(view, "#message-m1")
+    refute has_element?(view, "#agent-progress")
+    refute has_element?(view, ".chat-starters")
+    assert has_element?(view, "#queued-existing-queued", "Previously authorized request")
+    assert has_element?(view, "#chat-queue", "Paused")
+    assert has_element?(view, "#resume-queue-button")
+    assert has_element?(view, "#chat-message-input[placeholder='Brainstorm an idea or ask about this design…']")
+    assert {:ok, ^chat} = FixtureStore.get("alpha", "a1", nil)
+  end
+
+  test "long chat opens recent messages and reveals every earlier action without changing retained history", ctx do
+    {:ok, original} = FixtureStore.get("alpha", "a1", nil)
+    history = for n <- 1..95, do: history_message(n)
+    proposal = %{"type" => "proposal", "id" => "older-action", "title" => "Earlier action", "status" => "pending"}
+    history = List.update_at(history, 0, &Map.put(&1, "widgets", [proposal]))
+    FixtureStore.put(Map.put(original, "messages", history))
+    {view, _} = chat_view(ctx, "/chat?project=alpha&chat=a1")
+    assert message_count(view) == 30
+    refute has_element?(view, "#message-history-65")
+    assert has_element?(view, "#message-history-66")
+    assert has_element?(view, "#message-history-95")
+    assert has_element?(view, "#show-earlier-messages", "65")
+
+    render_click(view, "show-earlier-messages", %{"chat_id" => "other"})
+    render_click(view, "show-earlier-messages", %{})
+    assert message_count(view) == 30
+
+    for {count, remaining} <- [{60, 35}, {90, 5}, {95, 0}] do
+      view |> element("#show-earlier-messages") |> render_click()
+      assert message_count(view) == count
+      if remaining > 0, do: assert(has_element?(view, "#show-earlier-messages", to_string(remaining)))
+    end
+
+    refute has_element?(view, "#show-earlier-messages")
+    assert has_element?(view, "#message-history-1 button[phx-value-decision=confirm][phx-value-id=older-action]")
+    assert {:ok, %{"messages" => ^history}} = FixtureStore.get("alpha", "a1", nil)
+
+    view |> element("#message-history-1 button[phx-value-decision=cancel]") |> render_click()
+    assert {:ok, updated} = FixtureStore.get("alpha", "a1", nil)
+    assert hd(updated["messages"])["widgets"] == [Map.put(proposal, "status", "cancelled")]
+  end
+
+  test "same-chat updates retain the visible history boundary and live controls while conversation changes reset it", ctx do
+    {:ok, original} = FixtureStore.get("alpha", "a1", nil)
+    history = for n <- 1..80, do: history_message(n)
+    original = Map.put(original, "messages", history)
+    FixtureStore.put(original)
+    FixtureStore.put(original |> Map.put("id", "task-7") |> Map.put("conversation_role", "task") |> Map.put("task_id", "alpha:7"))
+    view = embedded_view(ctx, view_context())
+    view |> element("#show-earlier-messages") |> render_click()
+    assert message_count(view) == 60
+    assert has_element?(view, "#message-history-21")
+
+    latest = history_message(81) |> Map.put("status", "streaming")
+    queued = %{"id" => "queued-history", "role" => "user", "text" => "Next instruction"}
+    updated = original |> Map.put("messages", history ++ [latest]) |> Map.put("status", "running") |> Map.put("queue", [queued])
+    FixtureStore.put(updated)
+    assert eventually(fn -> has_element?(view, "#message-history-81 .streaming-mark", "Responding") end)
+    assert message_count(view) == 61
+    assert has_element?(view, "#message-history-21")
+    assert has_element?(view, "#stop-response-button")
+    assert has_element?(view, "#queued-queued-history", "Next instruction")
+    assert {:ok, ^updated} = FixtureStore.get("alpha", "a1", nil)
+
+    send(view.pid, {:task, "alpha:7", "Task seven"})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-chat-id=task-7]") end)
+    assert message_count(view) == 30
+    refute has_element?(view, "#message-history-21")
+    send(view.pid, {:chat_panel, :main})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-chat-id=a1]") end)
+    assert message_count(view) == 30
+    assert has_element?(view, "#message-history-52")
+    refute has_element?(view, "#message-history-51")
+  end
+
+  test "Idea history is paginated after operational messages are filtered and rejects expired access", ctx do
+    {:ok, original} = FixtureStore.get("alpha", "a1", nil)
+    context = %{"version" => 1, "project_id" => "alpha", "mode" => "design"}
+    history = for n <- 1..90, do: history_message(n) |> Map.put("view_context", if(rem(n, 2) == 0, do: context, else: view_context()))
+    FixtureStore.put(Map.put(original, "messages", history))
+    view = embedded_view(ctx, view_context())
+    send(view.pid, {:design_mode, true})
+    assert eventually(fn -> has_element?(view, "#chat-app[data-design-mode=true]") end)
+    assert message_count(view) == 30
+    assert has_element?(view, "#message-history-32")
+    refute has_element?(view, "#message-history-31")
+    refute has_element?(view, "#message-history-30")
+    assert has_element?(view, "#show-earlier-messages", "15")
+    view |> element("#show-earlier-messages") |> render_click()
+    assert message_count(view) == 45
+    assert has_element?(view, "#message-history-2")
+    refute has_element?(view, "#message-history-1")
+    refute has_element?(view, "#show-earlier-messages")
+
+    System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("revoked", 8))
+    render_click(view, "show-earlier-messages", %{"chat_id" => "a1"})
+    refute has_element?(view, "#chat-messages")
+    assert {:ok, %{"messages" => ^history}} = FixtureStore.get("alpha", "a1", nil)
+  end
 
   defp embedded_view(ctx, context, read_only \\ false) do
     session = %{BrowserAuth.session_key() => ctx.marker, "view_context" => context, "read_only" => read_only}
@@ -954,6 +1359,9 @@ defmodule SymphonyElixir.ChatLiveTest do
     {:ok, view, html} = live(conn, path)
     {with_target(view, "#chat-app"), html}
   end
+
+  defp history_message(n), do: %{"id" => "history-#{n}", "role" => "assistant", "text" => "Message #{n}", "status" => "completed", "widgets" => []}
+  defp message_count(view), do: length(Regex.scan(~r/<article[^>]+class="chat-message /, render(view)))
 
   defp chat(id, project, title) do
     %{

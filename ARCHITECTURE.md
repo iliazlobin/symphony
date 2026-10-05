@@ -1,5 +1,9 @@
 # Architecture
 
+The [Symphony design](https://app.notion.com/p/3ebd865005a881acbbc1cc9799077ef4)
+owns the component diagrams, agent model and planned extensions. This file maps the
+implemented runtime to its code, ownership and recovery contracts.
+
 Symphony schedules coding work from GitHub Issues on one trusted Mac. The controlled
 profile adds durable execution limits, operator commands, a separate reviewer and a
 host publication broker. Coding workers run in local Docker containers; application
@@ -28,36 +32,9 @@ owns those acceptance steps.
 
 ## System boundary
 
-```mermaid
-flowchart TB
-  User["User"] --> Client["CLI or narrow MCP tools"]
-  subgraph Mac["Trusted Mac services"]
-    Web["Web client · Board and Chat"] --> Browser["Google or local browser session · CSRF checks"]
-    Browser --> Scheduler
-    Browser --> Chat["Conversation store · project scope and action receipts"]
-    Chat --- History["Private durable chat records"]
-    Chat --> Runtime["Management App Server · Astra · no coding tools"]
-    Runtime --> Tools["Typed management tools"]
-    Tools --> Scheduler
-    Client --> API["Authenticated loopback API"]
-    API --> Scheduler["Symphony orchestrator"]
-    Scheduler --- Ledger["Durable control ledger"]
-    Scheduler --> Pipeline["Candidate pipeline and guardian"]
-    Broker["Host publication broker"] --> API
-    Broker --- Policy["Owner-approved publication policy"]
-  end
-  subgraph Docker["Local Docker workers"]
-    Builder["Builder App Server · writable checkout"]
-    Reviewer["Fresh reviewer App Server · read-only checkout"]
-    Builder -->|"candidate SHA"| Reviewer
-  end
-  GitHub["GitHub Issues"] --> Scheduler
-  Tools --> GitHub
-  Pipeline --> Builder
-  Pipeline --> Reviewer
-  Pipeline -->|"candidate and review evidence"| Ledger
-  Broker --> PR["GitHub branch, PR and gated merge"]
-```
+The component and data-flow diagrams live in the [Symphony design](https://app.notion.com/p/3ebd865005a881acbbc1cc9799077ef4).
+The trusted host owns authentication, scheduling, state and publication; isolated
+Docker builders and reviewers receive only their scoped checkout and runtime home.
 
 The scheduler owns admission and execution. The builder commits locally and the
 reviewer examines that exact SHA in a separate checkout. The host broker validates
@@ -74,12 +51,14 @@ commands to the native API and owns no scheduling state.
   not source documentation.
 - [`Tracker`](elixir/lib/symphony_elixir/tracker.ex) selects the provider adapter.
   [`GitHub.Admission`](elixir/lib/symphony_elixir/github/admission.ex) requires an
-  explicit dependency declaration and verifies referenced issues directly.
+  explicit dependency declaration. `TaskDependencies` evaluates normalized delivery,
+  design, technical and process prerequisites against local human acceptance. Priority
+  orders eligible tasks; it never creates a prerequisite. Missing targets and cycles block admission.
 - [`Orchestrator`](elixir/lib/symphony_elixir/orchestrator.ex) is the single
   scheduling authority. It polls, reconciles eligibility, reserves attempts,
   starts supervised workers and handles completion, deadlines and retries.
 - [`ControlLedger`](elixir/lib/symphony_elixir/control_ledger.ex) retains operating
-  mode, the concurrency override, issue holds, attempts, runtime/token totals and candidate handoffs.
+  mode, concurrency, issue holds, per-cycle attempts, lifetime usage, candidate handoffs and human acceptance.
   The orchestrator owns writes; an OS advisory lock rejects a second owner.
 - [`AgentRunner`](elixir/lib/symphony_elixir/agent_runner.ex) selects controlled or
   upstream execution. [`CandidatePipeline`](elixir/lib/symphony_elixir/candidate_pipeline.ex)
@@ -93,8 +72,14 @@ commands to the native API and owns no scheduling state.
 - [`Workspace`](elixir/lib/symphony_elixir/workspace.ex) creates and validates
   execution directories. Controlled mode retains workspaces for recovery.
 - [`TaskBoard`](elixir/lib/symphony_elixir_web/task_board.ex) combines tracker issues,
-  runtime and durable holds for the LiveView Kanban board. Sorting and manual order
+  runtime, durable holds and explicit human acceptance for five visual lanes. The four
+  task lifecycle stages remain Backlog, Work, Review and Done; active Work projects into
+  In progress. Failed attempts remain in Work, and only human acceptance produces Done. Sorting and manual order
   are browser preferences. Card and Settings dialogs preserve the board underneath.
+  [`TaskFilters`](elixir/lib/symphony_elixir_web/task_filters.ex) selects the same task IDs
+  for Graph and Gantt; [`WorkflowPlan`](elixir/lib/symphony_elixir_web/workflow_plan.ex)
+  projects task dependency context and a UTC calendar. Recorded execution/acceptance dates remain distinct from draft estimates, which never grant scheduling authority. Draft start/duration/scale preferences are stored per project in the browser and validated by the LiveView.
+  The URL retains the current view, task, Work session and filters.
   A supervised in-memory cache retains one complete board for up to 90 seconds.
   Reloads render that snapshot immediately, including its checked time, while a
   fresh read runs in the background. Configuration, credentials, data source and
@@ -106,15 +91,31 @@ commands to the native API and owns no scheduling state.
   project data is returned; an explicit allowlist controls operator access.
   `BoardActions` forwards only existing commands with native project,
   revision and idempotency checks. The same checks apply to chat control actions.
-  `TaskIntakePanel` prepares structured backlog issues and queue actions, requiring
-  explicit confirmation after an exact preview. `TaskIntake` reuses the conversation store's durable action
-  lifecycle without invoking a model. Action records are separate from chat history;
-  reconnects recover pending actions and uncertain outcomes through the same owner.
+  Backlog → Work and Review → Done execute directly from the authenticated board with
+  exact-revision and replay checks. Local state appears immediately while GitHub routing
+  labels synchronize asynchronously. `TaskIntake` retains Backlog preview receipts;
+  project chat and reviewed Idea items are the visible intake paths. Unknown outcomes
+  require reconciliation.
   Concurrency changes persist in the ledger and affect admission only: they never
   interrupt existing work or reset budgets. The workflow's configured concurrency
   remains the ceiling and default, including after reload or restart; restoring the
   default clears only the override. The control snapshot owns the reported effective
   value and read-only budget settings, including in the read-only preview.
+- [`Design.Store`](elixir/lib/symphony_elixir/design/store.ex) owns the project draft
+  and immutable reviewed versions through the private
+  [`Design.Persistence`](elixir/lib/symphony_elixir/design/persistence.ex) journal.
+  [`DesignActions`](elixir/lib/symphony_elixir_web/design_actions.ex) binds an unchanged
+  reviewed item to the existing Backlog preview. Idea snapshot review grants no execution
+  authority, and drawing relationships remain separate from task dependencies.
+  See [Design operation and recovery](elixir/README.md#multiple-project-boards).
+- [`Specification.Store`](elixir/lib/symphony_elixir/specification/store.ex) separately
+  owns structured Design drafts and immutable reviewed versions under the control state
+  path. [`Document`](elixir/lib/symphony_elixir/specification/document.ex) bounds stable
+  items and Mermaid source; [`Specification.Persistence`](elixir/lib/symphony_elixir/specification/persistence.ex)
+  validates its journal over the existing private atomic transport. Specification items
+  never derive implicitly from Idea geometry.
+  Editing and review check project authority and expected journal revision; specification
+  review grants no task acceptance or execution authority.
 - [`ReadOnlyBoard`](elixir/lib/symphony_elixir_web/read_only_board.ex) supports a
   separate local UI against a configured controller. The
   [`web launcher`](tools/symphony_web.py) starts only the web dependencies and reads
@@ -126,7 +127,8 @@ commands to the native API and owns no scheduling state.
   [`Chat.Runtime`](elixir/lib/symphony_elixir/chat/runtime.ex) runs private App Server
   turns in a dedicated Codex home, retaining native thread history and compaction.
   [`Chat.Tools`](elixir/lib/symphony_elixir/chat/tools.ex) exposes typed project reads and
-  bounded action proposals. `Chat.GitHub` owns the scoped tracker HTTP operations.
+  bounded action proposals. Queue/unqueue decisions use native controls; `Chat.GitHub`
+  owns scoped content and comment HTTP operations.
   [`ChatPanel`](elixir/lib/symphony_elixir_web/live/chat_panel.ex) renders messages, validated
   widgets, references and action previews through the existing LiveView connection.
 - [`ControlApiController`](elixir/lib/symphony_elixir_web/controllers/control_api_controller.ex)
@@ -142,7 +144,7 @@ commands to the native API and owns no scheduling state.
 - A controller owns one repository/workflow. The [Symphony project](profiles/symphony/README.md)
   uses a separate private configuration, service pair, port, ledger, worker home,
   workspace root, publication receipts and AppArmor policy from Events Concierge.
-- `server.project_links` lists trusted browser origins in the Projects menu. Each
+- `server.project_links` lists trusted browser origins in the single project selector. Each
   destination authenticates independently; navigation neither aggregates data nor
   transfers operator authority. `server.session_cookie` separates cookies for
   controllers sharing a hostname and defaults to the existing cookie key.
@@ -152,11 +154,39 @@ commands to the native API and owns no scheduling state.
   authentication, policy installation and combined host capacity need verification
   before activation; no shared scheduler coordinates capacity across controllers.
 
+## Workspace transport
+
+[`symphony_workspace.py`](tools/symphony_workspace.py) owns one public HTTP/WebSocket
+listener and a shared revocable Google session broker. Registered `/projects/<slug>`
+routes proxy only to private owner-only Unix sockets. Project engines retain distinct
+ledger/chat owners, scheduler limits and launch gates; the workspace adds no scheduling queue.
+Static assets, navigation, CSRF and LiveView reconnects use the same public origin.
+The [workspace service guide](profiles/events-concierge/README.md#workspace-service) owns
+configuration, installation, recovery and single-listener checks. Shared database leases
+and the multi-project cloud package remain separate work.
+
 ## Execution and ownership
 
-GitHub owns task intent and issue/PR state. The control ledger owns execution
-controls, not a second backlog. Notion owns explanations and plans; reports should
-link current GitHub records and runtime observations rather than copy task status.
+GitHub owns issue content, comments and PR evidence. The native control ledger owns
+local task routing, execution and human acceptance. Backlog → Work changes commit
+locally; worker handoff produces Review; only human acceptance produces Done.
+GitHub closure or PR merge alone leaves an unaccepted issue in Review. Notion owns
+explanations and plans; reports link the owning records rather than copy task status.
+
+Routing decisions and their latest pending label update commit atomically with the
+operator receipt. A scoped, bounded source catalog retains the last observed issue
+identity and timestamp. Queue decisions use that catalog; scheduling still revalidates
+current issue state, dependencies, capacity, holds and launch gates. Unmanaged issues
+retain label-based intake until their first local routing decision. Later GitHub label
+edits cannot reverse that decision.
+
+[`LabelSync`](elixir/lib/symphony_elixir/label_sync.ex) mirrors only configured routing
+labels, preserving other tags and issue content. It checks pending decisions every
+15 seconds, retries failures with backoff up to five minutes, and checks synced labels
+for drift at one-minute intervals within its bounded batch capacity. Restart reloads pending work from the ledger; only an acknowledgement
+for the same issue, tracker scope and decision revision can mark it synced. The board
+shows pending or retrying sync while rendering committed local state immediately.
+The mirror neither schedules workers nor closes issues.
 
 Each controlled attempt reserves its budget before launch and receives a random
 run identifier. Worker events must match both the running record and the durable
@@ -176,6 +206,13 @@ thread, candidate and publication receipt. The builder's thread is checkpointed
 before its first turn. A separately checkpointed working head permits recovery after
 reviewer failure without replacing the approved candidate or published-head checks.
 Resuming a thread charges only new token usage; each candidate gets a fresh reviewer.
+Human-confirmed correction cycles reset only their bounded attempt allowance, retaining
+lifetime attempts, token usage and runtime. Exact comment revisions can be bound to a
+work session. Builder dispositions must cover that set, and the fresh reviewer verifies
+them before addressed status is projected. GitHub comment reads share the bounded board
+cache; they are never dispatch authority. A separate host status mirror maintains one
+idempotent issue reply from ledger evidence, with a private delivery journal for ambiguous
+writes. It neither schedules work nor resolves review threads.
 Missing retained state, dirty or advanced checkouts, changed baselines and unexpected
 remote PR heads block continuation. Existing issue-level runs remain supported;
 unrelated or historical PRs are not automatically adopted as retained sessions.
@@ -201,8 +238,10 @@ prove that its container has stopped.
 
 - Pause stops active work and prevents dispatch. Drain prevents new worker
   lifetimes while allowing the current bounded pipeline to finish. Resume allows
-  eligible work again. Cancel holds one issue; retry clears its hold without
-  resetting budgets.
+  eligible work again. Cancel holds one issue; ordinary retry clears its hold without
+  resetting budgets. An explicitly authorized `retry` with `renew_attempts: true`
+  renews only an exhausted task's bounded attempt cycle. Lifetime usage remains charged;
+  active, accepted or reviewed work and exhausted lifetime budgets remain protected.
 - Commands carry an idempotency key and expected operator revision. A successful
   response follows an atomic, synced ledger write. Failed persistence blocks
   admission and stops owned workers.
@@ -249,9 +288,9 @@ is a separate extension. Historical messages are records; tools refresh current 
 and attach source timestamps, task links and board filters.
 
 The board keeps the shared conversation component open beside task details. Each
-project/tracker identity has one main conversation and one canonical conversation per
-task. Selecting a card switches conversations; closing its details keeps its chat
-selected. Main chat handles project-level orchestration through the same typed tools
+project/tracker identity has one project agent conversation, one task agent conversation per
+issue and one work agent conversation per retained working session. PRs are linked resources. Selecting a card switches conversations; closing its details keeps its chat
+selected. The conversation labeled **<project name> project agent** handles project-level orchestration through the same typed tools
 and explicit action decisions. Binding is durable and immutable; existing free-standing
 conversations are preserved in the standalone `/chat` history rather than inferred from
 message text. Drafts and selected tabs are scoped to each conversation.
@@ -267,51 +306,115 @@ the coding-task lifecycle. Pins and ordering in the standalone history remain pr
 project presentation preferences, not execution order.
 [`Chat.ViewContext`](elixir/lib/symphony_elixir/chat/view_context.ex) validates a
 bounded snapshot for each user message: project, filters, selected task ID,
-up to 50 displayed task IDs, their viewport subset, hidden columns and timestamps.
+up to 50 displayed task IDs, their viewport subset and timestamps. New snapshots have no hidden columns; older
+stored snapshots remain readable.
 The browser sends IDs and display metadata, never arbitrary page text, screenshots
 or form contents. The parent restricts IDs to its current board; the store validates
 the immutable project boundary again before persistence and model execution.
 
 The board snapshot accompanies each message automatically and is retained with that
 message. A standalone conversation without a matching board view has no current snapshot;
-it must not reuse an older view. The Context tab separates the next message's snapshot
-from retained history; Outputs and Sources expose recorded tool artifacts and references.
-Changing tabs does not reset the composer or conversation. Tabs are presentation state;
-conversation records remain owned by the store. `symphony_view_context` refreshes
+it must not reuse an older view. The board dock exposes chat and keeps context and outputs
+on the card; the standalone history retains its artifact views. Conversation records
+remain owned by the store. `symphony_view_context` refreshes
 authorized task summaries and reports missing records, stale sources and truncation.
 Snapshot hints never grant write authority. `symphony_task_details` retains each
 linked PR’s independent state, review, head revision and CI; a merged PR does not
 imply issue completion.
 
-The issue chat coordinates all PR work on that issue. Its headline picker groups
-Running, Ready for review, Needs attention, Ready, Backlog and Done, then sorts each
+The task agent manages the entire issue and coordinates its work agents. Its headline picker groups
+Work, Ready for review, Needs attention, Backlog and Done, then sorts each
 group by the newest issue, worker, chat, PR or check activity. Search matches categories,
 identifiers, titles and latest activity. Issue rows include creation date, priority,
-PR count and latest update; the picker contains the selected issue's GitHub/card links.
+PR count and latest update. Each issue appears once in the picker. Board card titles
+open details; clicking outside or pressing Escape closes them without clearing selection.
 The PR selector includes explicit GitHub links and exact Symphony publisher markers
 for that issue, excluding incidental cross-references. This attribution is display
-evidence, not execution authority. Incomplete evidence remains labeled; work-session
-shortcuts appear inside their matching published PR and open its card details.
-Main chat coordinates the project.
+evidence, not execution authority. The collapsed selector shows the current session;
+its first item is `<task name> task agent`, followed by `<work name> work agent` entries.
+Work names use PR titles, or the first line of the work instruction before publication.
+Names truncate visually while the agent role stays visible; hover reveals the full label.
+Card details link directly to each agent's chat.
+Compact cards show three PRs and an overflow link to the complete list.
+Native work IDs remain stable before and after publication. A verified publication binds an
+existing PR discussion to that work agent. Historical duplicate conversations are
+reconciled only when no turn or action is running, with a durable intent that fences
+losing queues before copying their messages and receipts. Recovery completes this
+idempotently before dispatch; old links resolve to the canonical conversation.
+An external PR without a native work identity remains discussion-only.
+If a PR links several issues, they share one work agent. Its verified native work
+selects the owning task; before publication, the first retained discussion owns it.
+Other issue associations become graph references, not extra supervisors. Ownership
+reconciliation waits for active turns and pending reports; conflicting native owners
+are rejected. Historical conversation links continue to resolve after reconciliation.
+The project agent coordinates the project. Task creation requires a title and accepts optional description
+and verification through a shared normalizer. Empty optional fields are omitted from the issue body. With `chat.auto_create_backlog: true`,
+only an authenticated human turn in the project conversation may execute `create_task`
+without another form. It persists intent, rechecks turn authorization immediately before
+GitHub writes, retains the exact receipt and deduplicates repeated tool calls in that turn.
+Agent reports, task/work conversations and other writes retain explicit confirmation.
+The host fences turn origin and role; the model interprets creation intent within that
+bounded permission. Status requests alone should not create tasks.
+Uncertain creation outcomes are reconciled before retrying; historical proposals remain readable.
 Creating or continuing PR work uses the same durable preview, browser confirmation and
-native receipt recovery as other controls. Issue chats cannot act on another issue's
+native receipt recovery as other controls. Task agents cannot act on another issue's
 PR work. Continuation is explicit; failed CI does not automatically authorize repairs,
 and publication, merge and deployment retain their separate gates.
 
-There are three distinct records: the app's visible messages and receipts, Codex's
-native thread history with automatic compaction, and committed project documents
-retrieved on demand. Compaction does not erase the visible conversation or create a
-shared project memory. Documents and task text are untrusted data. The Sources tab shows
-retrieved references, not a claim to list every token in the model context.
+[`Chat.Sessions`](elixir/lib/symphony_elixir/chat/sessions.ex) binds native work to its
+issue and tracker identity. `symphony_pr_session` reads the retained agent's state;
+confirmed `continue_pr_work` sends its next instruction through the existing native
+scheduler. Work agent controls are checked against the persisted binding at preview and
+confirmation, including cancellation and retry. Selection reads run outside the chat owner.
+[`Chat.PRUpdates`](elixir/lib/symphony_elixir/chat/pr_updates.ex) checks tracked issues
+every 15 seconds, reusing scoped board evidence no older than 10 seconds. Worker reports
+include run and candidate identity; GitHub reports require a known head. Missing or stale
+checks never imply readiness. Each recipient saves reports and deduplication receipts
+atomically, before any active streaming response. New evidence queues coalesced task-agent
+reasoning while a valid in-memory authorization is available. Without it, observations
+remain saved until an authenticated interaction; no browser grant survives restart.
+The latest 80 host reports are retained per conversation without removing user messages.
+Read failures leave prior observations intact; tracker and credential changes fence reads.
 
-Only browser decisions execute write proposals. Native controls retain revision and
+[`Chat.Graph`](elixir/lib/symphony_elixir/chat/graph.ex) exports versioned agent nodes
+and typed `supervises` / `reports_to` / `references` edges through the authorized store and
+`symphony_agent_graph` tool. Stable conversation IDs connect project, issue and PR/work
+identities, goals, activity and queue counts; historical aliases do not become extra agents.
+This graph is the input for future visualization, which is not implemented yet.
+
+A project agent delegates to its task agents; each task agent delegates to its work
+agents. `symphony_delegate` sends a durable instruction to a direct child.
+`symphony_report` supplies that turn's parent outcome; a completed task/work reply
+reports automatically only when no explicit report was accepted. Changed findings
+after an explicit report require another explicit update. Parents receive source-labelled messages, reason against
+their goals, and can revise their own or a child's goal with `symphony_set_goal`.
+A goal marked achieved does not accept the issue or move it to Done.
+
+[`Chat.Coordination`](elixir/lib/symphony_elixir/chat/coordination.ex) defines these
+bounded tools. The store persists outgoing intent before recipient admission, deduplicates
+recipient receipts, retries delivery when capacity returns and serializes reasoning in
+the existing FIFO. Each user-initiated chain permits 24 deliveries and depth six. Stop
+pauses further delivery; restart requires fresh authentication and explicit resumption
+of saved queues. Reports and observations are untrusted evidence, never authorization
+for native work or external writes. Source labels, goals and pending reports remain
+visible inline in chat.
+Report processing includes a bounded, authorized read of the receiving agent's current
+scope; unavailable data is labelled rather than replaced by historical conversation facts.
+
+The app retains visible messages, bounded tool receipts and provider/model provenance.
+OpenRouter receives that bounded portable history; Codex retains its native thread and
+automatic compaction. Committed documents are retrieved on demand. Compaction does not
+erase the visible conversation or create shared project memory. Documents and task text
+are untrusted data; recorded references do not list every token in the model context.
+
+Browser decisions execute write proposals, except the configured project-chat Backlog intake above. Native controls retain revision and
 idempotency checks inside the orchestrator. Tracker edits require a cancelled, idle
 task; fresh open, unqueued backlog tasks without a hold can also be queued directly.
-Both paths serialize with local dispatch and recheck task ownership. Queue previews
-pin whether the task has a hold, and confirmation never resumes the controller or
-clears an existing hold. Fresh GitHub timestamps reject observed
-staleness. GitHub does not provide an atomic compare-and-swap across the final read
-and patch, so concurrent external issue edits remain a limitation. Feedback is an
+Both paths serialize with local dispatch and recheck task ownership. The routing command
+checks the native revision and last observed issue timestamp without waiting for GitHub.
+It never resumes the controller or clears an existing hold. Source changes not yet polled
+are checked again before worker admission. Content edits still verify a fresh GitHub
+timestamp; GitHub has no atomic compare-and-swap between that read and patch. Feedback is an
 additive issue comment, not a message delivered into a running coding turn.
 
 Before a write, the app persists its executing state. An uncertain result requires
@@ -323,8 +426,11 @@ storage design requires persistent local storage and is not a multi-replica data
 
 Direct dynamic tools keep project authority, UI widgets and existing controls in one
 backend. MCP remains an optional client interface for external management agents;
-the web chat does not call MCP to reach its own service. Codex 0.154.0 is pinned for
-this experimental protocol. The management runtime registers no execution environments
+the web chat does not call MCP to reach its own service. The OpenRouter adapter accepts
+only declared typed functions through the active host turn, with bounded requests,
+tool calls and cancellation. Its private credentials never enter the transcript or
+coding environment. Codex 0.154.0 remains the alternative management provider for
+this experimental protocol. That runtime registers no execution environments
 or coding tools and disables inherited Apps, plugins, MCP servers and instructions.
 Its Symphony functions use the direct-only `functions` namespace. This overrides
 the model catalog's Code Mode routing without enabling the Code Mode host; local

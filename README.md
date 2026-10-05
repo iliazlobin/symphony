@@ -24,21 +24,33 @@ do not define this profile's authorization policy.
 
 ### Web operation in this fork
 
-The local service includes a Kanban task board and optional project-specific Astra
-chat with streaming replies, saved conversations, task widgets and filtered board
-links. Chat uses bounded management tools to read work and preview authorized
+The local service includes a Kanban task board and optional project-specific management
+chat through Codex or OpenRouter and a project → task → work-agent hierarchy. Parent
+agents supervise children and process their reports in durable conversations. Idea provides a guided whiteboard and brainstorming chat with retained snapshots. Design holds a separate structured specification with requirements, entities, architecture, decisions and Mermaid diagrams; project drafts and reviewed versions persist independently of chat. Existing Idea snapshots retain their task-source links. Notion explains the Symphony architecture. Connected Kanban, Graph and Gantt views retain task focus and filters; Graph shows task prerequisites; Gantt shows recorded dates and editable draft estimates. One workspace endpoint
+serves all projects; private project engines use Unix sockets and share browser sign-in. Chat uses bounded management tools to read work and preview authorized
 changes; coding remains with the scheduler's workers. Browser access supports Google
 sign-in with an explicit operator allowlist; existing local installations retain
 operator-token login until configured. Google sign-in does not sign in the model or
 change worker permissions. Authenticated browsers invoke native operator controls;
-GitHub remains the task and publication record. See the
+the local ledger saves task transitions immediately and mirrors routing labels to GitHub
+in the background. GitHub retains issue content and publication evidence. See the
 [operator guide](profiles/events-concierge/README.md#operate) for setup and limits.
 
-Each issue has one coordinator chat, with a searchable activity-grouped issue picker
-showing creation time, priority, PR count and links to the issue/card. Its PR selector
-lists only explicitly linked or Symphony-published PRs for that issue; incidental
-mentions are excluded and incomplete GitHub evidence is identified.
-Confirmed PR work sessions retain their own
+Graph selection highlights immediately while the conversation loads, preserving pan,
+zoom and focus. Kanban, Graph and Gantt keep selected-task view links at the top right.
+
+Each issue has one task agent responsible for the entire task, with a searchable activity-grouped issue picker
+showing concise titles, priority and available PR evidence. The embedded chat uses Project → Task → Work navigation without repeating the selected project name. Card titles open details;
+click outside or press Escape to dismiss them. Card bodies select chat without opening details. The Work selector lists
+the task conversation first, then retained work sessions with status and PR links.
+Card shortcuts select working sessions; linked PRs remain resources.
+The board shows Backlog, Work, In progress, Review and Done. In progress is derived from
+active execution; Work retains queued, paused, blocked and failed tasks. Compact cards
+show useful state and PR evidence; chat renders safe Markdown without duplicating the board.
+Long conversations open with recent messages; **Show earlier** retains access to the full history.
+Describe new tasks to the project agent; Backlog creation never starts coding work.
+The task agent receives worker and GitHub milestone updates and coordinates individual
+work agents. Confirmed PR work sessions retain their own
 builder thread and checkout across design, implementation and follow-up validation.
 They run sequentially within the issue budget, with a fresh reviewer for each candidate;
 publication, merge and deployment keep their existing authorization gates.

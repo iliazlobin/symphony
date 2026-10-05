@@ -42,6 +42,31 @@ defmodule SymphonyElixir.Chat.RuntimeTest do
     refute requests =~ "private diagnostic secret"
   end
 
+  test "a Design-first thread retains the full catalog without granting Design turn writes", %{opts: opts} do
+    write_tool = %{"name" => "symphony_propose_action", "description" => "Prepare an action", "inputSchema" => %{"type" => "object", "properties" => %{}}}
+    full_catalog = opts.tools ++ [write_tool]
+    design = opts |> Map.put(:thread_tools, full_catalog) |> Map.put(:view_context, %{"version" => 1, "project_id" => "github:test/repo", "mode" => "design"})
+    owner = self()
+
+    callback = fn name, _args ->
+      send(owner, {:catalog_tool, name})
+      %{"observed" => name}
+    end
+
+    assert {:ok, %{thread_id: "thread-1"}} = run(design, "split", callback)
+    assert_received {:catalog_tool, "symphony_status"}
+    ordinary = design |> Map.put(:thread_id, "thread-1") |> Map.put(:tools, full_catalog) |> Map.put(:view_context, nil)
+    assert {:ok, %{thread_id: "thread-1"}} = run(ordinary, "retained-write", callback)
+    assert_received {:catalog_tool, "symphony_propose_action"}
+
+    assert {:error, :forbidden_tool} = run(Map.put(design, :thread_id, "thread-1"), "retained-write", callback)
+    refute_received {:catalog_tool, "symphony_propose_action"}
+    requests = requests(Path.join(opts.codex_home, "requests.jsonl"))
+    assert [initial] = Enum.filter(requests, &(&1["method"] == "thread/start"))
+    assert Enum.map(initial["params"]["dynamicTools"], & &1["name"]) == ~w(symphony_status symphony_propose_action)
+    assert length(Enum.filter(requests, &(&1["method"] == "thread/resume"))) == 2
+  end
+
   test "every native turn records its own view snapshot including unavailable context on resume", %{opts: opts} do
     snapshot = %{"version" => 1, "project_id" => "github:test/repo", "selected_task_id" => "github:test/repo:1"}
     assert {:ok, _} = run(Map.put(opts, :view_context, snapshot), "split")
@@ -171,8 +196,8 @@ defmodule SymphonyElixir.Chat.RuntimeTest do
   test "rejects malformed and duplicate dynamic tool shapes without launching a process", %{opts: opts} do
     [valid] = opts.tools
 
-    for tools <- [nil, %{}, [nil], [valid, valid], [%{valid | "inputSchema" => []}], [Map.put(valid, "type", "shell")]] do
-      assert {:error, :invalid_tools} = run(%{opts | tools: tools}, "split")
+    for key <- [:tools, :thread_tools], tools <- [nil, %{}, [nil], [valid, valid], [%{valid | "inputSchema" => []}], [Map.put(valid, "type", "shell")]] do
+      assert {:error, :invalid_tools} = run(Map.put(opts, key, tools), "split")
     end
 
     refute File.exists?(Path.join(opts.codex_home, "child-pid"))

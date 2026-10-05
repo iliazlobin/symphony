@@ -84,14 +84,20 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
   end
 
   defmodule Board do
+    def load_cached(owner, timeout), do: load(owner, timeout)
     def load(_owner, _timeout), do: Agent.get(Application.fetch_env!(:symphony_elixir, :chat_integration_board), & &1)
   end
 
   defmodule Owner do
-    def tracker_action_guarded(fingerprint, revision, issue_id, callback, _owner) do
-      observer = Application.fetch_env!(:symphony_elixir, :chat_integration_test)
-      send(observer, {:owner_guard, fingerprint, revision, issue_id})
-      callback.()
+    use GenServer
+
+    def start_link(observer), do: GenServer.start_link(__MODULE__, observer)
+    @impl true
+    def init(observer), do: {:ok, observer}
+    @impl true
+    def handle_call({:authorized_control_command, command, fingerprint, authorize}, _from, observer) do
+      send(observer, {:native_command, command, fingerprint, authorize.()})
+      {:reply, {:ok, %{"revision" => 4, "replayed" => false}}, observer}
     end
   end
 
@@ -219,7 +225,8 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     }
 
     name = Module.concat(__MODULE__, "Store#{System.unique_integer([:positive])}")
-    opts = [name: name, settings: settings, runtime: ModelRuntime, tools: Tools, orchestrator: :integration_owner]
+    owner = start_supervised!({Owner, self()})
+    opts = [name: name, settings: settings, runtime: ModelRuntime, tools: Tools, orchestrator: owner]
     server = start_supervised!({Store, opts})
     Application.put_env(:symphony_elixir, :chat_integration_store, server)
     endpoint = Keyword.merge(previous[Endpoint] || [], server: false, secret_key_base: String.duplicate("i", 64), chat_store: StoreClient)
@@ -284,7 +291,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     assert has_element?(index, "#chat-thread-list:not([hidden])")
 
     assert {:ok, _} = Store.send_message(@project, background["id"], "Wait for thread status", "thread-status", ctx.auth, ctx.server)
-    assert_receive {:waiting_for_thread_status, runtime}
+    assert_receive {:waiting_for_thread_status, runtime}, 2_000
     assert eventually(fn -> has_element?(view, selector, "Running") end)
     assert eventually(fn -> has_element?(index, selector, "Running") end)
     assert has_element?(view, "#chat-message-input", "Keep this unsent draft")
@@ -388,7 +395,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     refute_receive {:github_request, "POST", _, _}
   end
 
-  test "queue preview retains routing labels and confirmation reaches the owner guard once", ctx do
+  test "queue confirmation persists one native receipt across duplicate confirmation and Store restart", ctx do
     {view, _} = chat_view(ctx)
     render_submit(view, "send-message", %{"message" => "Queue task"})
     wait_chat(ctx, &(&1["status"] == "idle"))
@@ -397,14 +404,33 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     assert has_element?(view, ".chat-widget-proposal", "ready")
     assert Agent.get(ctx.requests, & &1) == []
     render_click(view, "decide", %{"id" => proposal["id"], "decision" => "confirm"})
-    assert_receive {:owner_guard, fingerprint, 3, "2"}
+    assert_receive {:native_command, command, fingerprint, true}
     assert fingerprint == ctx.auth.tracker_fingerprint
-    assert_receive {:github_request, "PATCH", "/repos/example/integration/issues/2", body}
-    assert body["labels"] == ["publish-approved", "ready"]
-    wait_chat(ctx, &(hd(&1["proposals"])["status"] == "completed"))
-    assert has_element?(view, ".chat-widget-receipt", "cancelled")
+
+    assert command == %{
+             "action" => "queue_task",
+             "issue_id" => "2",
+             "command_id" => proposal["id"],
+             "expected_revision" => 3,
+             "expected_updated_at" => "2026-09-15T10:00:00Z"
+           }
+
+    complete = wait_chat(ctx, &(hd(&1["proposals"])["status"] == "completed"))
+    assert eventually(fn -> has_element?(view, ".chat-widget-receipt", "Task queued locally") end)
+    assert hd(complete["proposals"])["receipt"]["widgets"] |> hd() |> Map.fetch!("result") == %{"revision" => 4, "replayed" => false}
     render_click(view, "decide", %{"id" => proposal["id"], "decision" => "confirm"})
-    refute_receive {:owner_guard, _, _, _}
+    refute_receive {:native_command, _, _, _}
+
+    stop_supervised!(Store)
+    server = start_supervised!({Store, ctx.opts})
+    Application.put_env(:symphony_elixir, :chat_integration_store, server)
+    assert {:ok, restored} = Store.get(@project, complete["id"], ctx.auth, server)
+    assert restored["proposals"] == complete["proposals"]
+    assert restored["messages"] == complete["messages"]
+    assert {:ok, replayed} = Store.decide(@project, complete["id"], proposal["id"], "confirm", ctx.auth, server)
+    assert replayed["messages"] == complete["messages"]
+    refute_receive {:native_command, _, _, _}
+    assert Agent.get(ctx.requests, & &1) == []
   end
 
   test "board forms use the real durable tracker path without running a model", ctx do
@@ -686,7 +712,6 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
   end
 
   defp github_response("POST", _path, body), do: {:ok, %{status: 201, body: Map.put(body, "number", 8)}}
-  defp github_response("PATCH", _path, body), do: {:ok, %{status: 200, body: Map.put(body, "number", 2)}}
 
   defp board do
     issues =

@@ -2,8 +2,11 @@ defmodule SymphonyElixirWeb.ChatPanel do
   @moduledoc "Project-bound management conversations, streamed from the conversation owner."
   use Phoenix.LiveComponent
 
-  alias SymphonyElixir.Chat.Artifacts
-  alias SymphonyElixirWeb.{BrowserAuth, ChatNavigation, Endpoint}
+  alias SymphonyElixir.Chat.{Artifacts, Sessions, ViewContext}
+  alias SymphonyElixir.ProjectDirectory
+  alias SymphonyElixirWeb.{BrowserAuth, ChatNavigation, Endpoint, Markdown, TaskOperator}
+
+  @message_page_size 30
 
   @impl true
   def mount(socket) do
@@ -13,12 +16,18 @@ defmodule SymphonyElixirWeb.ChatPanel do
        csrf_token: "",
        embedded: false,
        read_only: false,
+       design_mode: false,
        project_id: nil,
        chat_id: nil,
        task_id: nil,
+       session_id: nil,
        task_title: nil,
        issue_tasks: [],
        issue_activity: %{},
+       operator_board: %{},
+       operator_payload: %{},
+       operator_design_url: nil,
+       controls_available: false,
        issue_query: "",
        pr_query: "",
        conversation_drafts: %{},
@@ -29,6 +38,8 @@ defmodule SymphonyElixirWeb.ChatPanel do
        chats: [],
        list_error: nil,
        chat: nil,
+       message_limit: @message_page_size,
+       history_page: 0,
        subscribed: nil,
        project_subscribed: nil,
        draft: "",
@@ -54,7 +65,32 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
   def update(assigns, socket) do
     previous = location(socket.assigns)
-    socket = assign(socket, Map.take(assigns, [:id, :auth, :csrf_token, :embedded, :project_id, :chat_id, :task_id, :task_title, :issue_tasks, :issue_activity, :view_context, :read_only]))
+
+    socket =
+      assign(
+        socket,
+        Map.take(assigns, [
+          :id,
+          :auth,
+          :csrf_token,
+          :embedded,
+          :project_id,
+          :chat_id,
+          :task_id,
+          :session_id,
+          :task_title,
+          :issue_tasks,
+          :issue_activity,
+          :view_context,
+          :read_only,
+          :design_mode,
+          :operator_board,
+          :operator_payload,
+          :operator_design_url,
+          :controls_available
+        ])
+      )
+
     location = location(socket.assigns)
     unavailable = availability(socket)
     socket = assign(socket, :unavailable, unavailable)
@@ -94,7 +130,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
     not assigns.initialized or previous != location or is_nil(assigns.project) or (assigns.embedded and is_nil(assigns.chat))
   end
 
-  defp location(assigns), do: {assigns.project_id, if(assigns.embedded, do: assigns.task_id, else: assigns.chat_id)}
+  defp location(assigns), do: {assigns.project_id, if(assigns.embedded, do: {assigns.task_id, assigns.session_id}, else: assigns.chat_id)}
 
   @impl true
   def handle_event(event, _params, %{assigns: %{embedded: true}} = socket)
@@ -107,14 +143,16 @@ defmodule SymphonyElixirWeb.ChatPanel do
     {:noreply, assign(socket, :issue_query, "")}
   end
 
-  def handle_event("inspect-pr-work", %{"id" => id}, socket) do
+  def handle_event("select-pr-session", %{"id" => id}, socket) do
     issue = Enum.find(socket.assigns.issue_tasks, &(&1.id == socket.assigns.task_id and &1.project == project_id(socket)))
+    selected = if id == "", do: nil, else: id
 
-    if socket.assigns.embedded and BrowserAuth.authorized?(socket.assigns.auth) and Enum.any?(ChatNavigation.work_sessions(issue), &(&1.id == id)) do
-      send(self(), {:chat_panel, :issue_card, socket.assigns.task_id})
-      {:noreply, socket}
+    if socket.assigns.embedded and BrowserAuth.authorized?(socket.assigns.auth) and
+         (is_nil(selected) or Enum.any?(Sessions.options(issue, [selected]), &(&1.id == selected))) do
+      send(self(), {:chat_panel, :session, socket.assigns.task_id, selected})
+      {:noreply, assign(socket, :pr_query, "")}
     else
-      {:noreply, socket}
+      {:noreply, assign(socket, :notice, "That work agent is not available for this task.")}
     end
   end
 
@@ -134,13 +172,6 @@ defmodule SymphonyElixirWeb.ChatPanel do
     else
       {:noreply, assign(socket, :notice, "That issue is not available in this project.")}
     end
-  end
-
-  def handle_event("issue-card", _params, socket) do
-    if socket.assigns.embedded and BrowserAuth.authorized?(socket.assigns.auth) and socket.assigns.task_id,
-      do: send(self(), {:chat_panel, :issue_card, socket.assigns.task_id})
-
-    {:noreply, socket}
   end
 
   def handle_event("close-panel", _params, socket) do
@@ -247,6 +278,27 @@ defmodule SymphonyElixirWeb.ChatPanel do
     {:noreply, if(matching_conversation?(socket, params), do: assign(socket, :draft, String.slice(text, 0, 16_000)), else: socket)}
   end
 
+  def handle_event("show-earlier-messages", %{"chat_id" => id}, socket) do
+    cond do
+      not BrowserAuth.authorized?(socket.assigns.auth) ->
+        {:noreply, show_error(socket, :unauthorized)}
+
+      is_nil(socket.assigns.unavailable) and id == chat_id(socket) and is_binary(id) ->
+        total = length(visible_messages(socket.assigns.chat, socket.assigns.design_mode))
+
+        {:noreply,
+         assign(socket,
+           message_limit: max(@message_page_size, min(socket.assigns.message_limit + @message_page_size, total)),
+           history_page: socket.assigns.history_page + 1
+         )}
+
+      true ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("show-earlier-messages", _params, socket), do: {:noreply, socket}
+
   def handle_event("send-message", %{"message" => text} = params, socket) do
     text = String.trim(text)
 
@@ -272,10 +324,14 @@ defmodule SymphonyElixirWeb.ChatPanel do
   end
 
   def handle_event("decide", %{"id" => id, "decision" => decision} = params, socket) when decision in ["confirm", "cancel", "reconcile"] do
-    if matching_conversation?(socket, params) do
-      mutate(socket, :decide, [project_id(socket), chat_id(socket), id, decision])
+    if socket.assigns.design_mode do
+      {:noreply, assign(socket, :notice, "Design is discussion only. Open a planning view to manage actions.")}
     else
-      {:noreply, socket}
+      if matching_conversation?(socket, params) do
+        mutate(socket, :decide, [project_id(socket), chat_id(socket), id, decision])
+      else
+        {:noreply, socket}
+      end
     end
   end
 
@@ -300,7 +356,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
              |> assign(session_tab: "chat", workspace_view: "conversation")
              |> assign(:client_id, nonce())
              |> assign(:notice, nil)
-             |> push_event("chat-message-sent", %{chat_id: chat["id"], accepted_text: text})
+             |> push_event("chat-message-sent", %{chat_id: chat["id"], accepted_text: text, client_id: socket.assigns.client_id})
              |> navigate(project_id(socket), chat["id"])}
 
           {:error, reason} ->
@@ -320,16 +376,25 @@ defmodule SymphonyElixirWeb.ChatPanel do
   defp scoped_context(assigns) do
     project = assigns.project && assigns.project["id"]
 
-    case assigns.view_context do
-      %{"project_id" => ^project} = context when is_binary(project) -> context
-      _ -> nil
+    if assigns.design_mode and is_binary(project) do
+      %{"version" => 1, "project_id" => project, "mode" => "design"}
+    else
+      case assigns.view_context do
+        %{"project_id" => ^project} = context when is_binary(project) -> Map.delete(context, "mode")
+        _ -> nil
+      end
     end
   end
+
+  defp ensure_bound_conversation(%{assigns: %{session_id: session}} = socket) when is_binary(session),
+    do: call(socket, :ensure_pr_conversation, [project_id(socket), socket.assigns.task_id, session])
+
+  defp ensure_bound_conversation(socket), do: call(socket, :ensure_conversation, [project_id(socket), socket.assigns.task_id])
 
   defp ensure_chat(%{assigns: %{chat: %{"id" => _id}}} = socket), do: {:ok, socket}
 
   defp ensure_chat(%{assigns: %{embedded: true}} = socket) do
-    case call(socket, :ensure_conversation, [project_id(socket), socket.assigns.task_id]) do
+    case ensure_bound_conversation(socket) do
       {:ok, chat} -> {:ok, put_chat(socket, chat)}
       error -> error
     end
@@ -365,6 +430,12 @@ defmodule SymphonyElixirWeb.ChatPanel do
     end
   end
 
+  # Embedded task changes retain the current project's metadata. Loading the
+  # selected conversation still checks current store authorization and binding.
+  defp load_location(%{assigns: %{embedded: true, initialized: true, project: %{"id" => id}}} = socket, %{"project" => id}) do
+    load_canonical(socket)
+  end
+
   defp load_location(socket, params) do
     case call(socket, :projects, []) do
       {:ok, projects} ->
@@ -393,7 +464,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
   end
 
   defp load_canonical(socket) do
-    case call(socket, :ensure_conversation, [project_id(socket), socket.assigns.task_id]) do
+    case ensure_bound_conversation(socket) do
       {:ok, chat} ->
         socket
         |> clear_changed_draft(chat["id"])
@@ -442,8 +513,22 @@ defmodule SymphonyElixirWeb.ChatPanel do
   end
 
   defp put_chat(socket, chat) do
+    socket =
+      if chat_id(socket) == chat["id"] do
+        assign(socket, :message_limit, retained_message_limit(socket.assigns, chat))
+      else
+        assign(socket, message_limit: @message_page_size, history_page: 0)
+      end
+
     socket = subscribe(socket, chat["id"])
     assign(socket, :chat, chat)
+  end
+
+  defp retained_message_limit(assigns, chat) do
+    previous = assigns.chat |> visible_messages(assigns.design_mode) |> Enum.take(-assigns.message_limit) |> List.first()
+    messages = visible_messages(chat, assigns.design_mode)
+    index = previous && Enum.find_index(messages, &(&1["id"] == previous["id"]))
+    if is_integer(index), do: max(@message_page_size, length(messages) - index), else: assigns.message_limit
   end
 
   defp clear_conversation(socket, keep_project \\ false) do
@@ -451,7 +536,16 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
     socket
     |> subscribe(nil)
-    |> assign(chat: nil, chats: [], list_error: nil, draft: "", thread_query: "", conversation_drafts: %{})
+    |> assign(
+      chat: nil,
+      chats: [],
+      list_error: nil,
+      draft: "",
+      thread_query: "",
+      conversation_drafts: %{},
+      message_limit: @message_page_size,
+      history_page: 0
+    )
     |> assign(:pr_query, "")
     |> assign(client_id: nonce(), session_tab: "chat", workspace_view: "list")
   end
@@ -547,10 +641,125 @@ defmodule SymphonyElixirWeb.ChatPanel do
   defp queue_paused?(chat), do: is_map(chat) and chat["queue_paused"] == true
   defp queueing?(chat), do: busy?(chat) or queued(chat) != []
   defp task_identifier(task_id), do: task_id |> String.split(":") |> List.last() |> then(&("#" <> &1))
-  defp embedded_title(nil, _title), do: "Main chat"
+
+  defp project_agent_name(project) do
+    id = project && project["id"]
+    directory = Enum.find(ProjectDirectory.links(), &(&1["id"] == id))
+    name = (directory && directory["label"]) || (project && (project["label"] || id))
+    if is_binary(name) and String.trim(name) != "", do: String.trim(name)
+  end
+
+  defp project_agent_title(project) do
+    if name = project_agent_name(project), do: name <> " project agent", else: "Project agent"
+  end
+
+  defp matches_project_agent?(title, query) do
+    String.contains?(String.downcase(title <> " project conversation orchestration main chat"), String.downcase(query))
+  end
+
   defp embedded_title(task_id, title), do: if(is_binary(title) and title != "", do: title, else: "Task " <> task_identifier(task_id))
+  attr(:name, :string, required: true)
+  attr(:role, :string, required: true, values: ["project", "task", "work"])
+
+  @spec agent_label(map()) :: Phoenix.LiveView.Rendered.t()
+  def agent_label(assigns) do
+    ~H"""
+    <span class="agent-label" title={@name <> " " <> @role <> " agent"}><span class="agent-name">{@name}</span><span class="agent-role">{" " <> @role <> " agent"}</span></span>
+    """
+  end
+
   defp messages(nil), do: []
   defp messages(chat), do: list(chat["messages"])
+
+  defp visible_messages(chat, false), do: messages(chat)
+
+  defp visible_messages(chat, true) do
+    {visible, _legacy_response} =
+      Enum.reduce(messages(chat), {[], false}, fn message, {visible, legacy_response} ->
+        cond do
+          not is_nil(message["origin"]) ->
+            {visible, legacy_response and message["role"] != "user"}
+
+          message["role"] == "user" ->
+            design = ViewContext.design?(message["view_context"])
+            {if(design, do: [message | visible], else: visible), design}
+
+          message["role"] == "assistant" ->
+            # Older responses lack a turn snapshot. Infer only the first plain
+            # response, never an operational report or a later action receipt.
+            design = design_response?(message, legacy_response)
+            {if(design, do: [message | visible], else: visible), false}
+
+          true ->
+            {visible, false}
+        end
+      end)
+
+    Enum.reverse(visible)
+  end
+
+  defp design_response?(message, legacy_response),
+    do: ViewContext.design?(message["view_context"]) or (legacy_response and not Map.has_key?(message, "view_context"))
+
+  defp message_author(assigns) do
+    assigns = assign(assigns, :author, message_identity(assigns.message, assigns.agent))
+
+    ~H"""
+    <.agent_label :if={@author.role} name={@author.name} role={@author.role} />
+    <span :if={is_nil(@author.role)} class="message-author" title={@author.name}>{@author.name}</span>
+    """
+  end
+
+  defp message_identity(%{"origin" => origin} = message, _agent) when origin in ["agent_message", "agent_evidence"] do
+    fallback = if origin == "agent_evidence", do: "Work reports", else: "Agent"
+    source = String.trim(text(message["source_name"]))
+    name = if source == "", do: fallback, else: source
+
+    case Regex.run(~r/\A(.+) (project|task|work|feature) agent\z/u, name) do
+      [_, name, role] -> %{name: name, role: if(role == "feature", do: "work", else: role)}
+      _ -> %{name: name, role: nil}
+    end
+  end
+
+  defp message_identity(%{"origin" => "pr_update"}, _agent), do: %{name: "PR update", role: nil}
+  defp message_identity(%{"role" => "assistant"}, agent), do: agent
+  defp message_identity(_message, _agent), do: %{name: "You", role: nil}
+
+  defp message_kind(%{"origin" => "agent_message", "agent_kind" => "report"}), do: "Report"
+  defp message_kind(%{"origin" => "agent_message", "agent_kind" => "instruction"}), do: "Instruction"
+  defp message_kind(%{"origin" => "agent_evidence"}), do: "Evidence"
+  defp message_kind(_message), do: nil
+
+  defp message_time_label(message) do
+    case {message["origin"], message["role"]} do
+      {"agent_message", _} -> "Received"
+      {origin, _} when origin in ["agent_evidence", "pr_update"] -> "Observed"
+      {_, "user"} -> "Sent"
+      _ -> "Response started"
+    end
+  end
+
+  defp message_style(%{"origin" => origin}) when origin in ["agent_message", "agent_evidence"], do: "agent"
+  defp message_style(%{"role" => "user"}), do: "user"
+  defp message_style(_message), do: "assistant"
+
+  defp agent_progress(chat) do
+    chat = map(chat)
+    goal = map(chat["agent_goal"])
+    pending = Enum.filter(list(chat["agent_outbox"]), &(&1["status"] == "pending"))
+
+    %{
+      notice: text(chat["agent_notice"]),
+      goal: if(text(goal["text"]) != "" and goal["status"] in ~w(active achieved blocked), do: goal),
+      reports: Map.get(map(chat["agent_delivery_counts"]), "report", Enum.count(pending, &(&1["kind"] == "report"))),
+      instructions: Map.get(map(chat["agent_delivery_counts"]), "instruction", Enum.count(pending, &(&1["kind"] == "instruction"))),
+      queued_reports: Enum.count(queued(chat), &(&1["origin"] == "agent_message" and &1["agent_kind"] == "report"))
+    }
+  end
+
+  defp agent_progress_visible?(progress), do: progress.notice != "" || progress.goal || progress.reports + progress.instructions + progress.queued_reports > 0
+  defp count_label(1, singular, _plural), do: "1 " <> singular
+  defp count_label(count, _singular, plural), do: "#{count} " <> plural
 
   defp empty_response?(message) do
     message["role"] == "assistant" and message["status"] in [nil, "completed"] and
@@ -648,10 +857,10 @@ defmodule SymphonyElixirWeb.ChatPanel do
   defp chat_path(project, id \\ nil) do
     params = if project, do: %{"project" => project}, else: %{}
     params = if id, do: Map.put(params, "chat", id), else: params
-    if params == %{}, do: "/chat", else: "/chat?" <> URI.encode_query(params)
+    SymphonyElixirWeb.WorkspacePath.path(if(params == %{}, do: "/chat", else: "/chat?" <> URI.encode_query(params)))
   end
 
-  defp board_path(project), do: if(project, do: "/?" <> URI.encode_query(%{"project" => project}), else: "/")
+  defp board_path(project), do: SymphonyElixirWeb.WorkspacePath.path(if(project, do: "/?" <> URI.encode_query(%{"project" => project}), else: "/"))
 
   defp safe_url(value) when is_binary(value) do
     if String.contains?(value, ["\\", "\n", "\r", "\t"]), do: nil, else: safe_uri(URI.parse(value), value)
@@ -663,11 +872,13 @@ defmodule SymphonyElixirWeb.ChatPanel do
   defp safe_uri(_uri, _value), do: nil
 
   defp board_link?(url, project) when is_binary(url) and is_binary(project) do
+    url = SymphonyElixirWeb.WorkspacePath.relative(url)
+
     case URI.parse(url) do
       %URI{scheme: nil, host: nil, path: "/", query: query, fragment: nil} when is_binary(query) ->
         params = URI.decode_query(query)
 
-        safe_url(url) == url and params["project"] == project and Enum.all?(Map.keys(params), &(&1 in ~w(project status priority q sort task))) and
+        safe_url(url) == url and params["project"] == project and Enum.all?(Map.keys(params), &(&1 in ~w(project status priority kind q sort task))) and
           (is_nil(params["task"]) or String.starts_with?(params["task"], project <> ":"))
 
       _ ->
@@ -683,24 +894,77 @@ defmodule SymphonyElixirWeb.ChatPanel do
     safe = safe_url(url)
 
     if is_binary(safe) and String.starts_with?(safe, "/?") do
-      if board_link?(safe, project && project["id"]), do: safe
+      if board_link?(safe, project && project["id"]), do: SymphonyElixirWeb.WorkspacePath.path(safe)
     else
       safe
     end
   end
 
+  defp selected_session(sessions, session_id, chat) do
+    Enum.find(sessions, &(&1.id == session_id)) || Enum.find(sessions, &(&1.id == map(chat)["agent_session_id"]))
+  end
+
+  defp task_agent_name(%{title: title}, _task_id, _title), do: title
+  defp task_agent_name(_issue, nil, _title), do: "Task"
+  defp task_agent_name(_issue, task_id, title), do: embedded_title(task_id, title)
+
+  defp current_agent(assigns, selected_session, issue, task_name) do
+    chat = map(assigns.chat)
+
+    cond do
+      selected_session -> %{name: selected_session.name, role: "work"}
+      issue || assigns.task_id -> %{name: task_name, role: "task"}
+      chat["conversation_role"] in ["task", "pr"] -> retained_agent(chat)
+      true -> %{name: project_agent_name(assigns.project) || "Symphony", role: "project"}
+    end
+  end
+
+  defp retained_agent(chat) do
+    %{
+      name: chat["agent_name"] || chat["title"] || "Untitled",
+      role: if(chat["conversation_role"] == "pr", do: "work", else: "task")
+    }
+  end
+
+  defp session_state(%{work: %{phase: phase}}), do: phase
+  defp session_state(_session), do: "Discussion"
+
+  defp task_stage(issue) do
+    case issue[:lane] || issue[:stage] do
+      "ready" -> "Work"
+      "running" -> "In progress"
+      "in_progress" -> "In progress"
+      stage when stage in ["backlog", "work", "review", "done"] -> String.capitalize(stage)
+      _ -> "State unavailable"
+    end
+  end
+
+  defp lane_label(label), do: label |> text() |> String.replace("_", " ") |> String.capitalize()
+
   @impl true
   def render(assigns) do
-    project = assigns.project && assigns.project["id"]
+    project = (assigns.project && assigns.project["id"]) || if(assigns.embedded, do: assigns.project_id)
     issue = Enum.find(assigns.issue_tasks, &(&1.id == assigns.task_id and &1.project == project))
     prs = if issue, do: ChatNavigation.pull_requests(issue), else: []
-    works = ChatNavigation.work_sessions(issue)
+    retained = assigns.chats |> Enum.filter(&(&1["task_id"] == assigns.task_id)) |> Enum.map(& &1["session_id"])
+    sessions = Sessions.options(issue, [assigns.session_id | retained])
+    selected_session = selected_session(sessions, assigns.session_id, assigns.chat)
+    task_name = task_agent_name(issue, assigns.task_id, assigns.task_title)
+    messages = visible_messages(assigns.chat, assigns.design_mode)
 
     assigns =
       assign(assigns,
         issue: issue,
+        task_agent_name: task_name,
+        agent: current_agent(assigns, selected_session, issue, task_name),
+        agent_progress: agent_progress(assigns.chat),
+        visible_messages: Enum.take(messages, -assigns.message_limit),
+        earlier_messages: max(length(messages) - assigns.message_limit, 0),
+        project_agent_title: project_agent_title(assigns.project),
         issue_groups: ChatNavigation.issues(assigns.issue_tasks, assigns.issue_activity, project, assigns.issue_query),
-        issue_prs: matching_prs(prs, works, assigns.pr_query),
+        issue_sessions: matching_sessions(sessions, assigns.pr_query),
+        work_counts: ChatNavigation.work_counts(issue),
+        selected_session: selected_session,
         pr_evidence: pr_evidence(issue && issue[:github_status], length(prs)),
         authorized: BrowserAuth.authorized?(assigns.auth),
         google_auth: BrowserAuth.google_enabled?(),
@@ -715,50 +979,15 @@ defmodule SymphonyElixirWeb.ChatPanel do
       )
 
     ~H"""
-    <section id="chat-app" class={"chat-shell chat-panel #{if @embedded, do: "embedded-chat", else: ""}"} phx-hook="ChatWorkspace" data-embedded={to_string(@embedded)} data-chat-id={@chat && @chat["id"]} data-project={@project && @project["id"]} data-event-target={@myself} data-running={to_string(@running)} data-session-tab={@session_tab} data-workspace-view={@workspace_view}>
-      <header class="board-header chat-header">
-        <a :if={!@embedded} href="/" class="brand">∿ Symphony</a>
+    <section id="chat-app" class={"chat-shell chat-panel #{if @embedded, do: "embedded-chat", else: ""}"} phx-hook="ChatWorkspace" data-embedded={to_string(@embedded)} data-design-mode={to_string(@design_mode)} data-chat-id={@chat && @chat["id"]} data-project={@project && @project["id"]} data-task-id={@task_id} data-event-target={@myself} data-running={to_string(@running)} data-session-tab={@session_tab} data-workspace-view={@workspace_view}>
+      <header :if={!@embedded || !@authorized || !is_nil(@unavailable)} class="board-header chat-header">
+        <a :if={!@embedded} href={SymphonyElixirWeb.WorkspacePath.path("/")} class="brand">∿ Symphony</a>
         <nav :if={!@embedded} class="workspace-tabs" aria-label="Workspace"><a href={board_path(@project && @project["id"])}>Board</a><a href={chat_path(@project && @project["id"])} aria-current="page">Chat</a></nav>
-        <details :if={@embedded && @authorized && is_nil(@unavailable)} id="issue-switcher" class="issue-switcher" phx-hook="IssueSwitcher">
-          <summary aria-label="Choose issue conversation"><span>{if @task_id, do: embedded_title(@task_id, @task_title), else: "Main chat"}</span><span aria-hidden="true">⌄</span></summary>
-          <div class="issue-switcher-menu">
-            <form phx-change="search-issues" phx-target={@myself} role="search">
-              <input id="issue-search" name="query" value={@issue_query} placeholder="Search issues, categories or activity…" autocomplete="off"
-                role="combobox" aria-label="Search issue conversations" aria-autocomplete="list" aria-expanded="false" aria-controls="issue-options" phx-debounce="150" />
-            </form>
-            <div id="issue-options" class="issue-options" role="listbox" aria-label="Issues by category and activity">
-              <button :if={@issue_query == "" || String.contains?("main chat orchestration", String.downcase(@issue_query))} id="issue-option-main" type="button" role="option" aria-selected={to_string(is_nil(@task_id))}
-                phx-click="main-chat" phx-target={@myself} class="issue-option issue-option-main"><span class="issue-option-name">Main chat</span><span>Project orchestration</span></button>
-              <div :for={group <- @issue_groups} role="group" aria-label={group.label} class="issue-option-group" data-issue-category={group.id}>
-                <div class="issue-group-label">{group.label}<span>{length(group.issues)}</span></div>
-                <button :for={item <- group.issues} id={"issue-option-" <> Base.url_encode64(item.id, padding: false)} type="button" role="option" aria-selected={to_string(@task_id == item.id)}
-                  phx-click="select-issue" phx-value-id={item.id} phx-target={@myself} class="issue-option" data-issue-id={item.id}>
-                  <span class="issue-option-title"><span>{item.identifier}</span><span class="issue-option-name">{item.title}</span></span>
-                  <span class="issue-option-meta">
-                    <time :if={item.created_at} datetime={item.created_at} title={"Created " <> item.created_at}>{compact_created_at(item.created_at)}</time>
-                    <span :if={is_nil(item.created_at)} title="Creation time unavailable">Created —</span>
-                    <span class="issue-option-priority" data-priority={item.priority || "none"} title={if item.priority, do: "Priority P#{item.priority}", else: "Priority not set"}>{if item.priority, do: "P#{item.priority}", else: "Priority —"}</span>
-                    <span class="issue-option-pr-count" title={pr_evidence(item.github_status, item.pull_request_count).message || "Pull requests attributed to this issue"}>{issue_pr_count(item)}</span>
-                    <time :if={item.activity_at} class="issue-option-updated" datetime={item.activity_at} title={item.activity_label <> ": " <> item.activity_at}>{compact_updated_at(item.activity_at)}</time>
-                  </span>
-                  <span :if={item.preview not in [nil, ""]} class="issue-option-preview">{item.preview}</span>
-                </button>
-              </div>
-              <p :if={@issue_groups == [] && @issue_query != ""} class="issue-options-empty">No matching issues. Try a category, issue number or recent activity.</p>
-            </div>
-            <div :if={@issue} class="issue-picker-links">
-              <a :if={safe_url(@issue.url)} href={safe_url(@issue.url)} target="_blank" rel="noopener noreferrer" class="issue-github-link">{@issue.identifier} ↗</a>
-              <span :if={!safe_url(@issue.url)}>{@issue.identifier}</span>
-              <button id="issue-card-link" class="button button-quiet" phx-click="issue-card" phx-target={@myself}>View card</button>
-              <span class="issue-chat-state" data-stage={@issue.stage}>{String.capitalize(@issue.stage)}</span>
-            </div>
-          </div>
-        </details>
-        <span :if={@embedded && (!@authorized || !is_nil(@unavailable))}>{if @task_id, do: "Issue chat", else: "Main chat"}</span><span class="header-spacer"></span>
+        <span :if={@embedded && (!@authorized || !is_nil(@unavailable))}>{if @task_id, do: "Task agent", else: @project_agent_title}</span><span class="header-spacer"></span>
         <button :if={!@embedded && @authorized && is_nil(@unavailable)} id="new-chat-button" class="button button-primary" phx-target={@myself} phx-click="new-chat" disabled={is_nil(@project)}>+ New chat</button>
       </header>
 
-      <div :if={@authorized && is_nil(@unavailable)} class="chat-toolbar">
+      <div :if={!@embedded && @authorized && is_nil(@unavailable)} class="chat-toolbar">
         <form :if={!@embedded} phx-target={@myself} phx-change="select-project" class="chat-project-filter">
           <label for="chat-project">Project</label>
           <select id="chat-project" name="project" aria-label="Chat project">
@@ -768,33 +997,84 @@ defmodule SymphonyElixirWeb.ChatPanel do
         </form>
         <button :if={!@embedded && @workspace_view == "conversation"} id="back-to-chats" class="button button-quiet" phx-target={@myself} phx-click="back-to-chats" aria-label="Back to chats">← Chats</button>
         <div :if={!@embedded} class="chat-title"><strong>{if @workspace_view == "list", do: "Chats", else: selected_title(@chat, @chats)}</strong><span class="muted">{if @workspace_view == "list", do: project_label(@project), else: conversation_status(@chat)}</span></div>
+        <div :if={@embedded && is_nil(@issue)} class="chat-title chat-bound-title"><span class="muted">{project_label(@project)} · {conversation_status(@chat)}</span></div>
+      </div>
+
+      <nav :if={@embedded && @authorized && is_nil(@unavailable) && !@loading} id="operator-scope" class="operator-breadcrumbs" data-agent-role={@agent.role} aria-label="Agent hierarchy">
+        <button id="project-agent-breadcrumb" type="button" class="breadcrumb-project" phx-click="main-chat" phx-target={@myself} aria-current={if is_nil(@task_id), do: "location"} title="Project conversation" aria-label={"Open " <> @project_agent_title <> " conversation"}>Project</button>
+        <span :if={@design_mode} class="design-chat-mode">Idea discussion</span>
+        <span :if={!@design_mode} class="breadcrumb-separator" aria-hidden="true">/</span>
+        <details :if={@embedded && @authorized && is_nil(@unavailable)} hidden={@design_mode} id="issue-switcher" class="issue-switcher" phx-hook="IssueSwitcher">
+          <summary aria-label="Choose task" title={if @task_id, do: embedded_title(@task_id, @task_title), else: "Project conversation"}><span class="breadcrumb-category">Task</span><span>{if @task_id, do: if(@issue, do: @issue.identifier, else: task_identifier(@task_id)), else: "All"}</span><span aria-hidden="true">⌄</span></summary>
+          <div class="issue-switcher-menu">
+            <form phx-change="search-issues" phx-target={@myself} role="search">
+              <input id="issue-search" name="query" value={@issue_query} placeholder="Search tasks…" autocomplete="off"
+                role="combobox" aria-label="Search issue conversations" aria-autocomplete="list" aria-expanded="false" aria-controls="issue-options" phx-debounce="150" />
+            </form>
+            <div id="issue-options" class="issue-options" role="listbox" aria-label="Issues by category and activity">
+              <button :if={matches_project_agent?(@project_agent_title, @issue_query)} id="issue-option-main" type="button" role="option" aria-selected={to_string(is_nil(@task_id))}
+                phx-click="main-chat" phx-target={@myself} class="issue-option issue-option-main" aria-label={@project_agent_title <> " conversation"}><span class="issue-option-name">Project conversation</span></button>
+              <div :for={group <- @issue_groups} role="group" aria-label={group.label} class="issue-option-group" data-issue-category={group.id}>
+                <div class="issue-group-label">{group.label}<span>{length(group.issues)}</span></div>
+                <button :for={item <- group.issues} id={"issue-option-" <> Base.url_encode64(item.id, padding: false)} type="button" role="option" aria-selected={to_string(@task_id == item.id)}
+                  phx-click="select-issue" phx-value-id={item.id} phx-target={@myself} class="issue-option" data-issue-id={item.id} title={item.identifier <> ": " <> item.title}>
+                  <span class="issue-option-title"><span>{item.identifier}</span><span class="issue-option-name">{item.title}</span></span>
+                  <span class="issue-option-meta">
+                    <time :if={item.created_at} datetime={item.created_at} title={"Created " <> item.created_at}>{compact_created_at(item.created_at)}</time>
+                    <span :if={item.priority} class="issue-option-priority" data-priority={item.priority} title={"Priority P#{item.priority}"}>P{item.priority}</span>
+                    <span :if={item.pull_request_count > 0} class="issue-option-pr-count" title={pr_evidence(item.github_status, item.pull_request_count).message || "Pull requests attributed to this issue"}>{issue_pr_count(item)}</span>
+                    <time :if={item.activity_at} class="issue-option-updated" datetime={item.activity_at} title={item.activity_label <> ": " <> item.activity_at}>{compact_updated_at(item.activity_at)}</time>
+                  </span>
+                  <span :if={item.preview not in [nil, ""]} class="issue-option-preview">{item.preview}</span>
+                </button>
+              </div>
+              <p :if={@issue_groups == [] && @issue_query != ""} class="issue-options-empty">No matching issues. Try a category, issue number or recent activity.</p>
+            </div>
+          </div>
+        </details>
+        <span :if={@issue} class="breadcrumb-separator" aria-hidden="true">/</span>
         <div :if={@embedded && @issue} class="issue-chat-identity">
           <details id="issue-pr-menu" class="issue-pr-menu" phx-hook="IssuePRMenu">
-            <summary aria-label="Pull requests for this issue">
-              <span>Pull requests</span>
-              <span class="issue-pr-count">{@pr_evidence.label}</span>
-              <span :if={@chat && thread_status(@chat) not in ["idle", "new"]} class="issue-chat-activity" data-status={thread_status(@chat)}>{thread_status_label(@chat)}</span>
+            <summary aria-label="Choose work">
+              <span class="breadcrumb-category">Work</span>
+              <span class="issue-pr-selected">{if @selected_session, do: if(@selected_session.pr, do: "PR ##{@selected_session.pr.number}", else: @selected_session.title), else: "All"}</span>
               <svg class="issue-pr-chevron" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
             </summary>
             <div class="issue-pr-list">
               <form class="issue-pr-search" phx-change="search-prs" phx-submit="search-prs" phx-target={@myself} role="search">
-                <input id="issue-pr-search" type="search" name="query" value={@pr_query} placeholder="Search pull requests or status…" aria-label="Search pull requests" autocomplete="off" phx-debounce="150" />
+                <input id="issue-pr-search" type="search" name="query" value={@pr_query} placeholder="Search work…" aria-label="Search work agents" autocomplete="off" phx-debounce="150" />
               </form>
               <div class="issue-pr-results">
+              <button id="pr-session-main" type="button" class="issue-pr-select issue-pr-main" aria-pressed={to_string(is_nil(@session_id))}
+                phx-click="select-pr-session" phx-value-id="" phx-target={@myself}><span>Task conversation</span></button>
               <p :if={@pr_evidence.message} class="issue-options-empty" role="status">{@pr_evidence.message}</p>
-              <div :for={pr <- @issue_prs} class="issue-pr-option" data-pr-number={pr.number}>
-                <div><a :if={pr.url} href={pr.url} target="_blank" rel="noopener noreferrer">PR #{pr.number} · {pr.title}</a><span :if={!pr.url}>PR #{pr.number} · {pr.title}</span><span class="pr-state" data-pr-state={pr.state}>{pr.status}</span></div>
-                <div class="issue-pr-meta"><span>Review: {String.capitalize(String.replace(pr.review, "_", " "))}</span><a :if={pr.checks_url} href={pr.checks_url} target="_blank" rel="noopener noreferrer">CI: {String.capitalize(pr.ci)} ↗</a><span :if={!pr.checks_url}>CI: {String.capitalize(pr.ci)}</span>
-                  <button :for={work <- pr.works} type="button" class="issue-pr-work-link" phx-click="inspect-pr-work" phx-target={@myself} phx-value-id={work.id} title="View PR work details">{work.phase} →</button>
+              <div :for={session <- @issue_sessions} class="issue-pr-option" data-pr-number={session.pr && session.pr.number} data-session-id={session.id}>
+                <button type="button" class="issue-pr-select" aria-pressed={to_string(!is_nil(@selected_session) && @selected_session.id == session.id)}
+                  phx-click="select-pr-session" phx-value-id={session.id} phx-target={@myself} aria-label={"Open work conversation: " <> session.name}>
+                  <span class="work-option-name" title={session.name}>{session.name}</span><span class="work-session-state">{session_state(session)}</span>
+                </button>
+                <div :if={session.pr} class="issue-pr-meta">
+                  <a :if={session.pr.url} href={session.pr.url} target="_blank" rel="noopener noreferrer">PR #{session.pr.number} ↗</a>
+                  <span class="pr-state" data-pr-state={session.pr.state}>{session.pr.status}</span>
+                  <span :if={session.pr.review != "no_decision"}>Review: {String.capitalize(String.replace(session.pr.review, "_", " "))}</span>
+                  <a :if={session.pr.checks_url} href={session.pr.checks_url} target="_blank" rel="noopener noreferrer">CI: {String.capitalize(session.pr.ci)} ↗</a>
                 </div>
               </div>
-              <p :if={@pr_query != "" && @issue_prs == []} class="issue-options-empty">No matching pull requests.</p>
+              <p :if={@pr_query != "" && @issue_sessions == []} class="issue-options-empty">No matching work agents.</p>
               </div>
             </div>
           </details>
         </div>
-        <div :if={@embedded && is_nil(@issue)} class="chat-title chat-bound-title"><span class="muted">{project_label(@project)} · {conversation_status(@chat)}</span></div>
-      </div>
+        <span :if={@issue} class="operator-task-state" data-task-stage={task_stage(@issue)}>{task_stage(@issue)}</span>
+        <span :if={@work_counts.working > 0} class="operator-working-count" data-working-count={@work_counts.working}>{@work_counts.working} active</span>
+      </nav>
+      <section :if={@embedded && @authorized && !@design_mode && @issue} id="selected-task-context" class="selected-task-context" aria-label="Selected task">
+        <header class="selected-task-heading"><div><span>{@issue.identifier}</span><h2 title={@issue.title}>{@issue.title}</h2></div>
+          <div class="selected-task-links"><.link :if={@operator_design_url} class="button button-small" patch={@operator_design_url}>Idea source</.link><button type="button" class="button button-small" phx-click="open-task" phx-value-id={@issue.id} aria-label={"Details: #{@issue.identifier}"}>Details</button></div>
+        </header>
+        <TaskOperator.panel id="task-chat-operator" compact={true} task={@issue} board={@operator_board} payload={@operator_payload} controls_available={@controls_available} />
+      </section>
+
 
       <div :if={!@embedded && !@loading && @authorized && is_nil(@unavailable)} hidden={@workspace_view == "list"} class="chat-session-tabs workspace-tabs" role="tablist" aria-label="Conversation workspace">
         <button :for={{tab, label} <- [{"chat", "Chat"}, {"context", "Context"}, {"outputs", "Outputs"}, {"sources", "Sources"}]} id={"session-#{tab}-tab"} role="tab" aria-selected={to_string(@session_tab == tab)} aria-controls={"session-#{tab}-content"} tabindex={if @session_tab == tab, do: "0", else: "-1"} phx-target={@myself} phx-click="session-tab" phx-value-tab={tab}>{label}<span :if={tab == "outputs" && @artifacts != []} class="chat-tab-count">{length(@artifacts)}</span><span :if={tab == "sources" && context_items(@chat) != []} class="chat-tab-count">{length(context_items(@chat))}</span></button>
@@ -809,12 +1089,12 @@ defmodule SymphonyElixirWeb.ChatPanel do
       <div :if={!@loading && !@authorized && is_nil(@unavailable)} class="chat-empty chat-login">
         <span class="chat-orbit" aria-hidden="true">∿</span><h1>Your project conversations</h1>
         <p>{if @google_auth, do: "Sign in to read chat history and manage work.", else: "Unlock this browser to read chat history and manage work."}</p>
-        <form :if={@google_auth} action="/auth/google" method="post" class="chat-login-form">
-          <input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={if @embedded, do: "/?assistant=1", else: "/chat"} />
+        <form :if={@google_auth} action={SymphonyElixirWeb.WorkspacePath.path("/auth/google")} method="post" class="chat-login-form">
+          <input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={SymphonyElixirWeb.WorkspacePath.path(if(@embedded, do: "/?assistant=1", else: "/chat"))} />
           <button class="button button-primary">Sign in with Google</button>
         </form>
-        <form :if={!@google_auth} action="/operator/session" method="post" class="chat-login-form">
-          <input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={if @embedded, do: "/?assistant=1", else: "/chat"} />
+        <form :if={!@google_auth} action={SymphonyElixirWeb.WorkspacePath.path("/operator/session")} method="post" class="chat-login-form">
+          <input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={SymphonyElixirWeb.WorkspacePath.path(if(@embedded, do: "/?assistant=1", else: "/chat"))} />
           <label class="field">Operator token<input type="password" name="operator_token" autocomplete="off" required /></label>
           <button class="button button-primary">Unlock chat</button>
         </form>
@@ -849,25 +1129,36 @@ defmodule SymphonyElixirWeb.ChatPanel do
             <p :if={is_nil(@list_error) && matching_chats(@chats, @thread_query) == []} class="chat-detail-empty">{if @thread_query == "", do: "No chats yet. Start a new chat for this project.", else: "No chats match your search."}</p>
           </section>
           <div id="chat-conversation-detail" class="chat-conversation-detail" hidden={@workspace_view != "conversation"}>
+          <details :if={!@design_mode && agent_progress_visible?(@agent_progress)} id="agent-progress" class="agent-progress" aria-label="Agent goal and reports"><summary>Goal and reports</summary>
+            <p :if={@agent_progress.notice != ""} class="agent-report-status" role="status">{@agent_progress.notice}</p>
+            <div :if={@agent_progress.goal} class="agent-goal"><span class="agent-goal-status" data-goal-status={@agent_progress.goal["status"]}>{String.capitalize(@agent_progress.goal["status"])} goal</span><span class="agent-goal-text" title={@agent_progress.goal["text"]}>{@agent_progress.goal["text"]}</span></div>
+            <div :if={@agent_progress.reports + @agent_progress.instructions + @agent_progress.queued_reports > 0} class="agent-report-status" role="status">
+              <span :if={@agent_progress.reports > 0} data-pending-reports={@agent_progress.reports} title="Waiting to be delivered to the parent agent">{count_label(@agent_progress.reports, "report pending", "reports pending")}</span>
+              <span :if={@agent_progress.instructions > 0} data-pending-instructions={@agent_progress.instructions} title="Waiting to be delivered to a child agent">{count_label(@agent_progress.instructions, "instruction pending", "instructions pending")}</span>
+              <span :if={@agent_progress.queued_reports > 0} data-queued-reports={@agent_progress.queued_reports}>{count_label(@agent_progress.queued_reports, "report queued for review", "reports queued for review")}</span>
+            </div>
+          </details>
           <div id="session-chat-content" class="chat-scroll" role={if @embedded, do: "region", else: "tabpanel"} tabindex="0" aria-label={if @embedded, do: "Conversation"} aria-labelledby={if !@embedded, do: "session-chat-tab"} hidden={!@embedded && @session_tab != "chat"}>
-            <div :if={messages(@chat) == []} class="chat-empty">
-              <span class="chat-orbit" aria-hidden="true">∿</span><h1>{if @embedded && @task_id, do: "Let’s work on this task", else: "What’s next for #{project_label(@project)}?"}</h1>
-              <p>{if @embedded && @task_id, do: "Discuss progress, clarify the scope, or plan the next step. This chat stays with the task.", else: "Plan work, create or update tasks, and review project progress."}</p>
-              <div :if={!@embedded || is_nil(@task_id)} class="chat-starters">
+            <div :if={@visible_messages == []} class="chat-empty">
+              <span class="chat-orbit" aria-hidden="true">∿</span><h1>{if @design_mode, do: "Let’s shape the idea", else: if(@embedded && @task_id, do: "Let’s work on this task", else: "What’s next for #{project_label(@project)}?")}</h1>
+              <p>{if @design_mode, do: "Explore ideas and clarify decisions. Task creation comes later.", else: if(@embedded && @task_id, do: "Discuss progress, clarify the scope, or plan the next step. This chat stays with the task.", else: "Plan work, create or update tasks, and review project progress.")}</p>
+              <div :if={!@design_mode && (!@embedded || is_nil(@task_id))} class="chat-starters">
                 <button type="button" data-chat-prompt="What is running and what is blocked?">What needs attention? <span aria-hidden="true">↗</span></button>
                 <button type="button" data-chat-prompt="Show the current tasks and help me choose what to work on next.">Help me plan the next step <span aria-hidden="true">↗</span></button>
                 <button type="button" data-chat-prompt="Help me write a clear new task with acceptance criteria.">Shape a new task <span aria-hidden="true">↗</span></button>
               </div>
             </div>
 
-            <div id="chat-messages" class="chat-messages" aria-live="off">
-              <article :for={message <- messages(@chat)} id={"message-#{message["id"]}"} class={"chat-message chat-message-#{if message["role"] == "user", do: "user", else: "assistant"}"}>
-                <div class="message-meta"><strong>{if message["role"] == "user", do: "You", else: "Symphony"}</strong><.message_timestamp value={message["created_at"]} label={if message["role"] == "user", do: "Sent", else: "Response started"} class="message-time" /><span :if={message["status"] == "streaming"} class="streaming-mark">Responding</span><span :if={message["role"] == "assistant" && message["status"] in ["interrupted", "error"]} class="message-outcome">{if message["status"] == "interrupted", do: "Stopped", else: "Failed"}</span></div>
-                <div :if={String.trim(text(message["text"])) != ""} class="message-text">{text(message["text"])}</div>
+            <div id="chat-messages" class="chat-messages" aria-live="off" data-history-page={@history_page}>
+              <button :if={@earlier_messages > 0} id="show-earlier-messages" type="button" class="button button-quiet chat-history-more" phx-target={@myself} phx-click="show-earlier-messages" phx-value-chat_id={@chat["id"]}>Show earlier <span class="muted">({@earlier_messages})</span></button>
+              <article :for={message <- @visible_messages} id={"message-#{message["id"]}"} class={"chat-message chat-message-#{message_style(message)}"}>
+                <div class="message-meta"><.message_author message={message} agent={@agent} /><span :if={message_kind(message)} class="message-kind">{message_kind(message)}</span><.message_timestamp value={message["created_at"]} label={message_time_label(message)} class="message-time" /><span :if={message["status"] == "streaming"} class="streaming-mark">Responding</span><span :if={message["role"] == "assistant" && message["status"] in ["interrupted", "error"]} class="message-outcome">{if message["status"] == "interrupted", do: "Stopped", else: "Failed"}</span></div>
+                <div :if={String.trim(text(message["text"])) != "" && message["role"] == "user"} class="message-text">{text(message["text"])}</div>
+                <div :if={String.trim(text(message["text"])) != "" && message["role"] != "user"} class="markdown-content message-markdown">{Markdown.render(text(message["text"]))}</div>
                 <span :if={empty_response?(message)} class="chat-empty-response">No text response.</span>
                 <span :if={message["status"] in ["streaming", "pending"] && String.trim(text(message["text"])) == ""} class="chat-thinking" role="status">Working<span aria-hidden="true"> ···</span></span>
                 <div :if={list(message["widgets"]) != []} class="chat-widgets">
-                  <.widget :for={widget <- list(message["widgets"])} widget={map(widget)} project={@project} busy={@busy} myself={@myself} embedded={@embedded} chat_id={@chat && @chat["id"]} />
+                  <.widget :for={widget <- list(message["widgets"])} widget={map(widget)} project={@project} busy={@busy || @design_mode} myself={@myself} embedded={@embedded} chat_id={@chat && @chat["id"]} />
                 </div>
               </article>
             </div>
@@ -891,7 +1182,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
             <h2>Outputs</h2><p class="muted">The latest 100 issues, pull requests and action results retained in this conversation. Status reflects the recorded observation; earlier tool results remain below.</p>
             <p :if={output_widgets(@chat) == []} class="chat-detail-empty">No outputs yet.</p>
             <div class="chat-artifacts"><.artifact :for={artifact <- @artifacts} artifact={artifact} /></div>
-            <div :if={@session_tab == "outputs" && output_widgets(@chat) != []} class="chat-widgets"><h3>Tool results and actions</h3><.widget :for={widget <- output_widgets(@chat)} widget={map(widget)} project={@project} busy={@busy} myself={@myself} embedded={@embedded} chat_id={@chat && @chat["id"]} /></div>
+            <div :if={@session_tab == "outputs" && output_widgets(@chat) != []} class="chat-widgets"><h3>Tool results and actions</h3><.widget :for={widget <- output_widgets(@chat)} widget={map(widget)} project={@project} busy={@busy || @design_mode} myself={@myself} embedded={@embedded} chat_id={@chat && @chat["id"]} /></div>
           </div>
           <div :if={!@embedded} id="session-sources-content" class="chat-detail-panel" role="tabpanel" tabindex="0" aria-labelledby="session-sources-tab" hidden={@session_tab != "sources"}>
             <h2>Sources</h2><p class="muted">References retrieved for this conversation, with the recorded revision or observation time when available.</p>
@@ -910,17 +1201,17 @@ defmodule SymphonyElixirWeb.ChatPanel do
               <div class="chat-queue-heading"><strong>{length(@queued)} queued</strong><span>{if @queue_paused, do: "Paused", else: if(@busy, do: "After the current response", else: "Waiting to send")}</span><button :if={@queue_paused && !@busy} id="resume-queue-button" type="button" class="button button-quiet" phx-target={@myself} phx-click="resume-queue" phx-value-chat_id={@chat["id"]}>Resume queue</button></div>
               <ol>
                 <li :for={{message, index} <- Enum.with_index(@queued)} id={"queued-#{message["id"]}"} class="chat-queued-message">
-                  <span class="chat-queue-position" aria-hidden="true">{index + 1}</span><div class="chat-queued-content"><p title={text(message["text"])}>{text(message["text"])}</p><.message_timestamp value={message["created_at"]} label="Queued" class="message-time queue-time" /></div>
+                  <span class="chat-queue-position" aria-hidden="true">{index + 1}</span><div class="chat-queued-content"><div class="chat-queued-source"><.message_author message={message} agent={@agent} /><span :if={message_kind(message)} class="message-kind">{message_kind(message)}</span></div><p title={text(message["text"])}>{text(message["text"])}</p><.message_timestamp value={message["created_at"]} label="Queued" class="message-time queue-time" /></div>
                   <div class="chat-queue-actions"><button :if={index > 0} type="button" class="button button-quiet" phx-target={@myself} phx-click="prioritize-queued" phx-value-id={message["id"]} phx-value-chat_id={@chat["id"]} title="Send this message next without interrupting the current response">Send next</button><button type="button" class="button button-quiet" phx-target={@myself} phx-click="remove-queued" phx-value-id={message["id"]} phx-value-chat_id={@chat["id"]} aria-label={"Remove queued message #{index + 1}"} title="Remove queued message">×</button></div>
                 </li>
               </ol>
             </section>
             <form id="chat-composer" phx-target={@myself} phx-submit="send-message" phx-change="draft" class="chat-composer">
               <input type="hidden" name="chat_id" value={@chat && @chat["id"] || ""} />
-              <label for="chat-message-input" class="visually-hidden">Message {project_label(@project)}</label>
-              <textarea id="chat-message-input" name="message" placeholder={"Message #{project_label(@project)}…"} rows="2" maxlength="16000" disabled={is_nil(@project)}>{@draft}</textarea>
+              <label for="chat-message-input" class="visually-hidden">Message {if @issue, do: if(@selected_session, do: @selected_session.name <> " work agent", else: @task_agent_name <> " task agent"), else: project_label(@project)}</label>
+              <textarea id="chat-message-input" name="message" data-draft={@draft} data-draft-revision={@client_id} placeholder={if @design_mode, do: "Brainstorm an idea or ask about this design…", else: if(@issue, do: if(@selected_session, do: "Message work agent…", else: "Message task agent…"), else: "Describe a task or ask #{project_label(@project)}…")} rows="2" maxlength="16000" disabled={is_nil(@project)}>{@draft}</textarea>
               <div class="composer-bottom"><span class="composer-project">{project_label(@project)}</span>
-                <button :if={@running} id="stop-response-button" type="button" class="button" phx-target={@myself} phx-click="stop-response" phx-value-chat_id={@chat["id"]} title="Stop this response; coding tasks keep running">■ Stop</button>
+                <button :if={@running} id="stop-response-button" type="button" class="button" phx-target={@myself} phx-click="stop-response" phx-value-chat_id={@chat["id"]} title="Stop this reply; coding work continues">■ Stop reply</button>
                 <button id="send-message-button" class="button button-primary" disabled={is_nil(@project)} phx-disable-with="Sending…" aria-label={if @queueing, do: "Queue message", else: "Send message"}>{if @queueing, do: "Queue ↑", else: "Send ↑"}</button>
               </div>
             </form>
@@ -969,6 +1260,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
     [
       list(filters["status"]) |> Enum.map_join(", ", &text/1),
       list(filters["priority"]) |> Enum.map_join(", ", &text/1),
+      list(filters["kind"]) |> Enum.map_join(", ", &text/1),
       if(text(filters["q"]) != "", do: "Search: #{text(filters["q"])}", else: ""),
       if(text(filters["sort"]) != "", do: "Sort: #{text(filters["sort"])}", else: "")
     ]
@@ -990,7 +1282,11 @@ defmodule SymphonyElixirWeb.ChatPanel do
     assigns = assign(assigns, type: widget_type(assigns.widget), task: map(assigns.widget["task"]))
 
     ~H"""
-    <section :if={@type in ["tasks", "task", "status", "proposal", "receipt"]} class={"chat-widget chat-widget-#{@type}"}>
+    <section :if={@type in ["tasks", "task", "status", "proposal", "receipt", "design_suggestion"]} class={"chat-widget chat-widget-#{@type}"}>
+      <div :if={@type == "design_suggestion"} class="design-suggestion-reference">
+        <strong>Suggested design changes</strong><p class="muted">Review the changes on your board before applying them.</p>
+        <button type="button" class="button" data-review-design data-design-suggestion={Jason.encode!(map(@widget["suggestion"]))}>Review on board ↗</button>
+      </div>
       <div :if={@type == "tasks"}>
         <div class="widget-heading"><strong>{text(@widget["title"] || "Tasks")}</strong><a :if={reference_url(@widget["url"], @project)} href={reference_url(@widget["url"], @project)} phx-target={@myself} phx-click={if @embedded && board_link?(@widget["url"], @project && @project["id"]), do: "board-link"} phx-value-url={@widget["url"]}>Open filtered board ↗</a></div>
         <.source_state widget={@widget} />
@@ -998,14 +1294,14 @@ defmodule SymphonyElixirWeb.ChatPanel do
         <.task_reference :for={task <- list(@widget["tasks"])} task={map(task)} project={@project} myself={@myself} embedded={@embedded} filters={map(@widget["filters"])} />
       </div>
       <.task_reference :if={@type == "task"} task={Map.put_new(@task, "url", @widget["url"])} project={@project} myself={@myself} embedded={@embedded} filters={map(@widget["filters"])} />
-      <div :if={@type == "status"}>
+      <details :if={@type == "status"} class="tool-observation"><summary>Board snapshot<span :if={map(@widget["counts"]) != %{}} class="observation-counts">{Enum.map_join(Enum.sort(map(@widget["counts"])), " · ", fn {label, value} -> "#{lane_label(label)} #{text(value)}" end)}</span></summary>
         <div class="widget-heading"><strong>Project status</strong><a :if={reference_url(@widget["url"], @project)} href={reference_url(@widget["url"], @project)} phx-target={@myself} phx-click={if @embedded && board_link?(@widget["url"], @project && @project["id"]), do: "board-link"} phx-value-url={@widget["url"]}>Open board ↗</a></div>
         <.source_state widget={@widget} />
         <p>{text(@widget["summary"])}</p>
         <p :if={map(@widget["control"])["mode"]} class="muted">Execution: {text(map(@widget["control"])["mode"])}</p>
-        <dl :if={map(@widget["counts"]) != %{} && !source_failed?(@widget)} class="status-counts"><div :for={{label, value} <- Enum.sort(map(@widget["counts"]))}><dt>{text(label)}</dt><dd>{text(value)}</dd></div></dl>
+        <dl :if={map(@widget["counts"]) != %{} && !source_failed?(@widget)} class="status-counts"><div :for={{label, value} <- Enum.sort(map(@widget["counts"]))}><dt>{lane_label(label)}</dt><dd>{text(value)}</dd></div></dl>
         <div :if={list(@widget["blockers"]) != []} class="widget-blockers"><strong>Needs attention</strong><.task_reference :for={task <- list(@widget["blockers"])} task={map(task)} project={@project} myself={@myself} embedded={@embedded} filters={%{"status" => "attention"}} /></div>
-      </div>
+      </details>
       <div :if={@type == "proposal"}>
         <div class="widget-heading"><strong>{text(@widget["title"] || "Proposed action")}</strong><span class="widget-label">{text(@widget["status"] || "pending")}</span></div>
         <p class="message-text">{proposal_details(@widget)}</p>
@@ -1029,12 +1325,10 @@ defmodule SymphonyElixirWeb.ChatPanel do
     """
   end
 
-  defp matching_prs(prs, works, query) do
-    prs
-    |> Enum.filter(&matches_search?(["PR ##{&1.number}", &1.title, &1.state, &1.status, &1.review, &1.ci], query))
-    |> Enum.map(fn pr ->
-      sessions = Enum.filter(works, &(is_integer(pr.number) and is_binary(pr.url) and &1.pr_number == pr.number and &1.pr_url == pr.url))
-      Map.put(pr, :works, sessions)
+  defp matching_sessions(sessions, query) do
+    Enum.filter(sessions, fn session ->
+      pr = session.pr || %{}
+      matches_search?([session.name, "work agent", session.title, session.status, pr[:review], pr[:ci]], query)
     end)
   end
 
@@ -1047,11 +1341,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
     count = item.pull_request_count
     label = if count == 1, do: "PR", else: "PRs"
 
-    cond do
-      item.github_status == "available" -> "#{count} #{label}"
-      count > 0 -> "#{count}+ #{label}"
-      true -> "PRs —"
-    end
+    if item.github_status == "available", do: "#{count} #{label}", else: "#{count}+ #{label}"
   end
 
   defp matches_search?(values, query) do
@@ -1077,7 +1367,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
   defp proposal_details(%{"action" => action, "args" => args, "pr_work" => work})
        when action in ["create_pr_work", "continue_pr_work"] and is_map(args) and is_map(work) do
-    verb = if action == "create_pr_work", do: "Create a PR work session", else: "Continue PR work #{String.slice(text(work["work_id"]), 0, 8)}"
+    verb = if action == "create_pr_work", do: "Create a work agent", else: "Continue work agent #{String.slice(text(work["work_id"]), 0, 8)}"
     "#{verb} for issue ##{text(args["task_id"])}\n\n#{text(args["body"])}\n\nUses the issue's remaining budget and existing execution controls."
   end
 
@@ -1098,7 +1388,10 @@ defmodule SymphonyElixirWeb.ChatPanel do
     assigns = assign(assigns, :url, url)
 
     ~H"""
-    <div class="widget-task"><div><span class="widget-task-id">{text(@task["identifier"])}</span><a :if={@url} href={@url} phx-target={@myself} phx-click={if @embedded && board_link?(@url, @project && @project["id"]), do: "board-link"} phx-value-url={@url}>{text(@task["title"] || "Open task")}</a><strong :if={!@url}>{text(@task["title"])}</strong><span :if={@task["attention"]} class="widget-task-attention">{text(@task["attention"])}</span></div><span class="widget-label">{text(@task["stage"] || @task["state"])}</span></div>
+    <div class="widget-task"><div><span class="widget-task-id">{text(@task["identifier"])}</span><a :if={@url} href={@url} phx-target={@myself} phx-click={if @embedded && board_link?(@url, @project && @project["id"]), do: "board-link"} phx-value-url={@url}>{text(@task["title"] || "Open task")}</a><strong :if={!@url}>{text(@task["title"])}</strong><span :if={@task["attention"]} class="widget-task-attention">{text(@task["attention"])}</span></div><span class="widget-label">{display_lane(@task["lane"] || @task["stage"] || @task["state"])}</span></div>
     """
   end
+
+  defp display_lane(stage) when stage in ["ready", "running"], do: "work"
+  defp display_lane(stage), do: text(stage)
 end

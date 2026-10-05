@@ -25,10 +25,12 @@ defmodule SymphonyElixirWeb.Router do
   scope "/", SymphonyElixirWeb do
     get("/dashboard.css", StaticAssetController, :dashboard_css)
     get("/dashboard.js", StaticAssetController, :dashboard_js)
+    get("/browser-login.js", StaticAssetController, :browser_login_js)
     get("/favicon.png", StaticAssetController, :favicon)
     get("/vendor/phoenix_html/phoenix_html.js", StaticAssetController, :phoenix_html_js)
     get("/vendor/phoenix/phoenix.js", StaticAssetController, :phoenix_js)
     get("/vendor/phoenix_live_view/phoenix_live_view.js", StaticAssetController, :phoenix_live_view_js)
+    get("/design-editor/*asset", StaticAssetController, :design_editor_asset)
   end
 
   scope "/", SymphonyElixirWeb do
@@ -47,6 +49,8 @@ defmodule SymphonyElixirWeb.Router do
     live_session :browser, on_mount: [{SymphonyElixirWeb.BrowserAccess, :default}] do
       live("/", DashboardLive, :index)
       live("/chat", ChatLive, :index)
+      live("/projects/:workspace/", DashboardLive, :index)
+      live("/projects/:workspace/chat", ChatLive, :index)
     end
   end
 

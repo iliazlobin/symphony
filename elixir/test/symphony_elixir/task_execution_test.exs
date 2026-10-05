@@ -3,6 +3,76 @@ defmodule SymphonyElixir.TaskExecutionTest do
 
   alias SymphonyElixirWeb.TaskExecution
 
+  test "closed unaccepted review awaits acceptance without misleading retry controls" do
+    for ledger <- [%{}, %{"attempts" => 1, "tokens" => 10, "runtime_ms" => 10}] do
+      task = task(%{stage: "review", tracker_state: "closed", hold: "interrupted", ledger: ledger})
+      summary = TaskExecution.summary(task, control())
+      assert summary.status == "Awaiting acceptance"
+      refute summary.cancel?
+      refute summary.retry?
+      assert TaskExecution.summary(%{task | runtime: %{status: "running"}}, control()).status == "Running"
+      assert TaskExecution.summary(put_in(task, [:ledger, "active"], %{}), control()).status == "Needs reconciliation"
+    end
+  end
+
+  test "explicit rework displays its bounded attempt cycle while retaining lifetime usage" do
+    task = task(%{stage: "ready", ledger: %{"attempts" => 6, "attempt_base" => 5, "tokens" => 517_755, "runtime_ms" => 189_000}, hold: "interrupted"})
+    summary = TaskExecution.summary(task, control())
+    assert metric(summary, "Attempts").value == "1 / 2"
+    assert metric(summary, "Attempts").title =~ "6 lifetime attempts"
+    assert summary.retry?
+    assert metric(summary, "Tokens").value == "518k / 1M"
+    assert metric(TaskExecution.summary(task, %{"enabled" => false}), "Attempts").value == "6"
+
+    for base <- [7, -1, nil, "5"] do
+      assert metric(TaskExecution.summary(put_in(task, [:ledger, "attempt_base"], base), control()), "Attempts").value == "— / 2"
+    end
+  end
+
+  test "cycle recovery requires exhausted attempts and known remaining lifetime usage" do
+    exhausted = task(%{hold: "interrupted"})
+    summary = TaskExecution.summary(exhausted, control())
+    assert summary.renew_attempts?
+    refute summary.retry?
+    assert metric(summary, "Tokens").used == 517_755
+    assert metric(summary, "Time").used == 189_000
+
+    for update <- [
+          %{ledger: %{"tokens" => 10, "attempts" => 1, "runtime_ms" => 10}},
+          %{ledger: %{"tokens" => 1_000_000, "attempts" => 2, "runtime_ms" => 10}},
+          %{ledger: %{"tokens" => 10, "attempts" => 2, "runtime_ms" => 3_600_000}},
+          %{ledger: %{"tokens" => 10, "attempts" => 2}},
+          %{stage: "done"},
+          %{stage: "review"},
+          %{source_missing: true},
+          %{hold: "input_required"},
+          %{hold: "approval_required"},
+          %{hold: "unknown_recovery"},
+          %{runtime: %{status: "running"}},
+          %{runtime: %{status: "retrying"}},
+          %{ledger: Map.put(exhausted.ledger, "active", %{})}
+        ] do
+      refute TaskExecution.summary(Map.merge(exhausted, update), control()).renew_attempts?, inspect(update)
+    end
+
+    refute TaskExecution.summary(exhausted, control(), true).renew_attempts?
+    refute TaskExecution.summary(exhausted, %{"enabled" => false}).renew_attempts?
+    refute TaskExecution.summary(exhausted, put_in(control(), ["settings", "budgets", "max_attempts"], 0)).renew_attempts?
+    assert TaskExecution.summary(task(%{hold: "worker_auth_required", runtime: %{status: "blocked"}}), control()).renew_attempts?
+  end
+
+  test "cycle recovery never substitutes for exact reviewed-work continuation" do
+    legacy = task(%{hold: "cancelled", handoff: %{"candidate_sha" => String.duplicate("a", 40)}})
+    refute TaskExecution.summary(legacy, control()).renew_attempts?
+    refute TaskExecution.summary(put_in(legacy, [:ledger, "handoff"], legacy.handoff) |> Map.put(:handoff, nil), control()).renew_attempts?
+
+    id = String.duplicate("a", 32)
+    work = %{"id" => id, "phase" => "owner_review"}
+    native = task(%{hold: "cancelled", ledger: Map.merge(task().ledger, %{"selected_work_id" => id, "pr_work" => %{id => work}})})
+    refute TaskExecution.summary(native, control()).renew_attempts?
+    assert TaskExecution.summary(put_in(native, [:ledger, "pr_work", id, "phase"], "paused"), control()).renew_attempts?
+  end
+
   test "settled candidate shows retained totals and owner review without worker controls" do
     task = task(%{hold: "owner_review", handoff: %{"review" => %{"verdict" => "approve"}}})
     summary = TaskExecution.summary(task, control())
@@ -152,6 +222,46 @@ defmodule SymphonyElixir.TaskExecutionTest do
     assert TaskExecution.summary(task(%{runtime: %{status: "blocked"}}), control()).status == "Needs input"
   end
 
+  test "worker authentication blocks coding separately and retry preserves remaining limits" do
+    held = task(%{stage: "ready", hold: "worker_auth_required", ledger: %{"attempts" => 1, "tokens" => 10, "runtime_ms" => 50, "active" => nil}})
+    summary = TaskExecution.summary(held, control())
+    assert summary.status == "Worker sign-in required"
+    assert summary.note =~ "credential ownership"
+    assert summary.note =~ "Codex sign-in"
+    assert summary.note =~ "Project chat remains available"
+    assert summary.retry?
+    refute summary.cancel?
+    assert metric(summary, "Attempts").value == "1 / 2"
+
+    exhausted = TaskExecution.summary(put_in(held, [:ledger, "attempts"], 2), control())
+    assert exhausted.status == "Worker sign-in required"
+    assert exhausted.note =~ "Attempts limit reached"
+    refute exhausted.retry?
+
+    unknown = TaskExecution.summary(%{held | ledger: %{}}, control())
+    assert unknown.note =~ "confirmed usage and limits"
+    refute unknown.retry?
+    assert TaskExecution.summary(held, control(), true).status == "Status unavailable"
+    assert TaskExecution.summary(%{held | stage: "done"}, control()).status == "Done"
+    assert TaskExecution.summary(%{held | runtime: %{status: "running"}}, control()).status == "Running"
+    assert TaskExecution.summary(put_in(held, [:ledger, "active"], %{}), control()).status == "Needs reconciliation"
+    assert TaskExecution.summary(%{held | runtime: %{status: "blocked", error: "Worker sign-in required"}}, control()).retry?
+  end
+
+  test "legacy authentication retries never imply automatic recovery or offer an unsafe retry" do
+    error = legacy_authentication_error()
+
+    for status <- ["retrying", "blocked"], error <- [error, "Worker sign-in required"] do
+      summary = TaskExecution.summary(task(%{stage: "ready", runtime: %{status: status, error: error}}), control())
+      assert summary.status == "Worker sign-in required"
+      assert summary.note =~ "Codex sign-in"
+      refute summary.retry?
+      refute summary.cancel?
+      refute summary.note =~ "refresh token"
+      assert TaskExecution.summary(task(%{runtime: %{status: status, error: error}}), %{"enabled" => false}).status == "Worker sign-in required"
+    end
+  end
+
   test "settled owner review wins over a normal completion continuation timer" do
     task = task(%{hold: "owner_review", handoff: %{"review" => %{"verdict" => "approve"}}, runtime: %{status: "retrying", due_at: past_time(0)}})
     summary = TaskExecution.summary(task, control())
@@ -273,6 +383,12 @@ defmodule SymphonyElixir.TaskExecutionTest do
   end
 
   defp metric(summary, label), do: Enum.find(summary.metrics, &(&1.label == label))
+
+  defp legacy_authentication_error do
+    payload = {:turn_failed, %{"turn" => %{"error" => %{"codexErrorInfo" => "unauthorized", "message" => "Your access token could not be refreshed because your refresh token was revoked."}}}}
+    exception = %RuntimeError{message: "Agent run failed for issue_id=2 issue_identifier=GH-2: #{inspect(payload)}"}
+    "agent exited: #{inspect({exception, [{SymphonyElixir.AgentRunner, :run, 3, [file: "lib/private.ex", line: 44]}]})}"
+  end
 
   defp past_time(seconds), do: DateTime.utc_now() |> DateTime.add(-seconds, :second) |> DateTime.to_iso8601()
 

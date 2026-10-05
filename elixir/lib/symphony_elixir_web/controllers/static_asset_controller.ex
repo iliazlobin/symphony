@@ -14,6 +14,9 @@ defmodule SymphonyElixirWeb.StaticAssetController do
   @spec dashboard_js(Conn.t(), map()) :: Conn.t()
   def dashboard_js(conn, _params), do: serve(conn, "/dashboard.js")
 
+  @spec browser_login_js(Conn.t(), map()) :: Conn.t()
+  def browser_login_js(conn, _params), do: serve(conn, "/browser-login.js")
+
   @spec favicon(Conn.t(), map()) :: Conn.t()
   def favicon(conn, _params), do: serve(conn, "/favicon.png")
 
@@ -25,6 +28,9 @@ defmodule SymphonyElixirWeb.StaticAssetController do
 
   @spec phoenix_live_view_js(Conn.t(), map()) :: Conn.t()
   def phoenix_live_view_js(conn, _params), do: serve(conn, "/vendor/phoenix_live_view/phoenix_live_view.js")
+
+  @spec design_editor_asset(Conn.t(), map()) :: Conn.t()
+  def design_editor_asset(conn, %{"asset" => segments}), do: serve(conn, "/design-editor/" <> Enum.join(segments, "/"))
 
   defp serve(conn, path) do
     case StaticAssets.fetch(path) do

@@ -5,8 +5,8 @@ defmodule SymphonyElixir.GitHub.Adapter do
 
   @behaviour SymphonyElixir.Tracker
 
-  alias SymphonyElixir.Config
-  alias SymphonyElixir.GitHub.{Admission, AgentTool, Client}
+  alias SymphonyElixir.{Config, TaskDependencies}
+  alias SymphonyElixir.GitHub.{AgentTool, Client}
   alias SymphonyElixir.Tracker.Issue
 
   @active_states ["open"]
@@ -55,8 +55,7 @@ defmodule SymphonyElixir.GitHub.Adapter do
 
   defp admit_dependencies({:ok, issues} = result) do
     if Config.control_settings().enabled do
-      client = client_module()
-      {:ok, Admission.evaluate(issues, &client.fetch_issues_by_ids/1)}
+      {:ok, TaskDependencies.prepare(issues)}
     else
       result
     end

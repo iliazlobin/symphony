@@ -94,8 +94,7 @@ AUTH = load_module("symphony_pilot_auth", ROOT / "tools/kubernetes_auth.py")
 
 def configuration():
     profile = load_module("symphony_pilot_profile", ROOT / "profiles/events-concierge/profile.py")
-    return ('cli_auth_credentials_store = "file"\nforced_login_method = "chatgpt"\n'
-            'web_search = "disabled"\n' + profile.permission_config()).encode()
+    return ('web_search = "disabled"\n' + profile.permission_config()).encode()
 
 
 def private_read(path):

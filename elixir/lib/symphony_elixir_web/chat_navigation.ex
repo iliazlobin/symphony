@@ -2,18 +2,16 @@ defmodule SymphonyElixirWeb.ChatNavigation do
   @moduledoc "Pure issue navigation projected from the board and its project-bound chat summaries."
 
   @categories [
-    %{id: "running", label: "Running"},
+    %{id: "work", label: "Work"},
     %{id: "review", label: "Ready for review"},
     %{id: "attention", label: "Needs attention"},
-    %{id: "ready", label: "Ready"},
     %{id: "backlog", label: "Backlog"},
     %{id: "done", label: "Done"}
   ]
   @synonyms %{
-    "running" => "processing working active in progress",
+    "work" => "work processing working active in progress running ready queued scheduled",
     "review" => "ready for review candidate approval",
     "attention" => "needs attention blocked failed error paused confirmation",
-    "ready" => "ready queued scheduled",
     "backlog" => "backlog pending unstarted",
     "done" => "done completed closed finished"
   }
@@ -39,6 +37,20 @@ defmodule SymphonyElixirWeb.ChatNavigation do
         [] -> []
         issues -> [Map.put(category, :issues, issues)]
       end
+    end)
+  end
+
+  @spec chat_activity([map()], String.t()) :: map()
+  def chat_activity(chats, project) do
+    chats
+    |> Enum.filter(&(is_binary(&1["task_id"]) and &1["project_id"] == project))
+    |> Enum.group_by(& &1["task_id"])
+    |> Map.new(fn {task, entries} ->
+      latest = Enum.max_by(entries, &(&1["updated_at"] || ""))
+      running = Enum.any?(entries, &(&1["status"] == "running"))
+      activity = latest |> Map.put("queued_count", Enum.reduce(entries, 0, &((&1["queued_count"] || 0) + &2)))
+      activity = if running, do: Map.merge(activity, %{"status" => "running", "display_status" => "running"}), else: activity
+      {task, activity}
     end)
   end
 
@@ -68,7 +80,8 @@ defmodule SymphonyElixirWeb.ChatNavigation do
 
         %{
           id: id,
-          title: if(is_integer(publication["pr_number"]), do: "PR ##{publication["pr_number"]}", else: "PR session #{String.slice(id, 0, 8)}"),
+          title: if(is_integer(publication["pr_number"]), do: "PR ##{publication["pr_number"]}", else: "Work #{String.slice(id, 0, 8)}"),
+          name: work_name(work, id, task),
           pr_number: publication["pr_number"],
           pr_url: safe_url(publication["pr_url"]),
           phase: work_phase(work["phase"]),
@@ -85,6 +98,31 @@ defmodule SymphonyElixirWeb.ChatNavigation do
       |> Enum.take(20)
     else
       []
+    end
+  end
+
+  @doc "Counts retained work sessions by their recorded phase; these are not process or chat counts."
+  @spec work_counts(map() | nil) :: map()
+  def work_counts(task) do
+    sessions = work_sessions(task)
+
+    %{
+      total: length(sessions),
+      working: Enum.count(sessions, &(&1.phase in ["Working", "Validating"])),
+      queued: Enum.count(sessions, &(&1.phase == "Queued")),
+      review: Enum.count(sessions, &(&1.phase == "Ready for review")),
+      paused: Enum.count(sessions, &(&1.phase == "Paused"))
+    }
+  end
+
+  defp work_name(work, id, task) do
+    publication = work["publication"] || %{}
+    pr = Enum.find(pull_requests(task), &(&1.number == publication["pr_number"] and &1.url == publication["pr_url"]))
+    name = if pr && String.trim(pr.title) != "", do: pr.title, else: work["instruction"]
+
+    case name |> text() |> String.trim() |> String.split(~r/\R/u, parts: 2) |> hd() do
+      "" -> "Work #{String.slice(id, 0, 8)}"
+      name -> name
     end
   end
 
@@ -109,6 +147,7 @@ defmodule SymphonyElixirWeb.ChatNavigation do
       created_at: timestamp(field(task, :created_at)),
       priority: priority(field(task, :priority)),
       github_status: field(task, :github_status),
+      lane: lane(task),
       category: category,
       activity_at: event.at,
       activity_label: event.label,
@@ -126,16 +165,24 @@ defmodule SymphonyElixirWeb.ChatNavigation do
   end
 
   defp category(task, activity) do
-    stage = field(task, :stage)
+    lane = lane(task)
     runtime = field(task, :runtime)
 
     cond do
-      stage == "done" -> "done"
-      stage == "running" or field(runtime, :status) == "running" or chat_running?(activity) -> "running"
-      stage == "review" -> "review"
+      lane == "done" -> "done"
+      field(task, :stage) == "running" or field(runtime, :status) == "running" -> "work"
+      lane == "review" -> "review"
       attention?(task, activity) -> "attention"
-      stage == "ready" -> "ready"
+      chat_running?(activity) -> "work"
+      lane == "work" -> "work"
       true -> "backlog"
+    end
+  end
+
+  defp lane(task) do
+    case field(task, :lane) || field(task, :stage) do
+      stage when stage in ["ready", "running"] -> "work"
+      stage -> stage
     end
   end
 

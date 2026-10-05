@@ -68,6 +68,7 @@ class Page(HTMLParser):
         super().__init__()
         self.csrf = None
         self.live = None
+        self.design_editor = None
         self.feed(text)
 
     def handle_starttag(self, tag, attrs):
@@ -76,6 +77,8 @@ class Page(HTMLParser):
             self.csrf = attrs.get("content")
         if "data-phx-main" in attrs:
             self.live = attrs
+        if "data-design-editor-js" in attrs:
+            self.design_editor = attrs
 
 
 class Browser:
@@ -208,6 +211,35 @@ def record():
     return json.loads(files[0].read_text())
 
 
+def design_assets(browser):
+    """Read the normal Design page and its embedded native-editor dependencies."""
+    path = "/?" + urllib.parse.urlencode({"view": "design", "project": PROJECT})
+    status, body = browser.request(path)
+    editor = Page(body).design_editor
+    require(status == 200 and editor, "Packaged Design editor bootstrap missing")
+    base = editor.get("data-design-editor-assets", "")
+    require(re.fullmatch(r"/design-editor/[0-9a-f]{12}/", base), "Design asset path escaped the package")
+    entry = editor.get("data-design-editor-js", "")
+    stylesheet = editor.get("data-design-editor-css", "")
+    require(re.fullmatch(re.escape(base) + r"editor-[A-Z0-9]+\.js", entry), "Design entry escaped the package")
+    require(re.fullmatch(re.escape(base) + r"editor-[A-Z0-9]+\.css", stylesheet), "Design stylesheet escaped the package")
+    status, code = browser.request(entry)
+    require(status == 200 and code, "Packaged native editor JavaScript missing")
+    imports = set(re.findall(r'\bfrom\s*["\'](\./chunks/[A-Za-z0-9_-]+\.js)["\']', code))
+    require(0 < len(imports) <= 16, "Native editor entry chunks missing or unbounded")
+    for target in sorted(imports):
+        status, chunk = browser.request(base + target[2:])
+        require(status == 200 and chunk, "Packaged native editor chunk missing: " + target)
+    status, css = browser.request(stylesheet)
+    require(status == 200 and css, "Packaged native editor CSS missing")
+    fonts = re.findall(r'url\(["\']?(\./files/[A-Za-z0-9_-]+\.woff2)', css)
+    require(fonts, "Native editor stylesheet font missing")
+    status, font = browser.request(base + fonts[0][2:])
+    require(status == 200 and font, "Packaged native editor font missing")
+    status, _body = browser.request(base + "manifest.json")
+    require(status == 404, "Native editor source manifest was exposed")
+
+
 def inside(phase):
     require(os.getuid() == 10001, "Probe must share the application's unprivileged identity")
     require(not Path(ROOT + "/chat-codex/auth.json").exists(), "Provider credentials must be absent")
@@ -235,6 +267,7 @@ def inside(phase):
     require(status == 302, "CSRF-protected loopback login failed")
     status, control = browser.request("/api/v1/control", headers={"Authorization": "Bearer " + os.environ["SYMPHONY_CONTROL_TOKEN"]})
     require(status == 200 and json.loads(control)["mode"] == "paused" and json.loads(control)["issues"] == {}, "Real controller was not paused and empty")
+    design_assets(browser)
     if phase == "recover":
         saved = record()
         path += "&chat=" + saved["id"]

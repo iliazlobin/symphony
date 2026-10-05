@@ -195,6 +195,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:turn_timeout_ms, :integer, default: 3_600_000)
       field(:read_timeout_ms, :integer, default: 5_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
+      field(:auth_preflight, :boolean, default: false)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -209,7 +210,8 @@ defmodule SymphonyElixir.Config.Schema do
           :turn_sandbox_policy,
           :turn_timeout_ms,
           :read_timeout_ms,
-          :stall_timeout_ms
+          :stall_timeout_ms,
+          :auth_preflight
         ],
         empty_values: []
       )
@@ -231,23 +233,68 @@ defmodule SymphonyElixir.Config.Schema do
     @moduledoc false
     use Ecto.Schema
     import Ecto.Changeset
+    alias SymphonyElixir.Chat.Runtime
 
     @primary_key false
     embedded_schema do
       field(:enabled, :boolean, default: false)
+      field(:provider, :string, default: "codex")
+      field(:model, :string)
+      field(:api_key, :string, default: "$OPENROUTER_API_KEY")
       field(:state_path, :string)
       field(:codex_home, :string)
       field(:executable, :string)
       field(:timeout_ms, :integer, default: 300_000)
       field(:max_concurrent, :integer, default: 2)
+      field(:max_tool_calls, :integer, default: 8)
+      field(:auto_create_backlog, :boolean, default: false)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
-      schema
-      |> cast(attrs, [:enabled, :state_path, :codex_home, :executable, :timeout_ms, :max_concurrent], empty_values: [])
-      |> validate_number(:timeout_ms, greater_than_or_equal_to: 1_000, less_than_or_equal_to: 900_000)
-      |> validate_number(:max_concurrent, greater_than: 0, less_than_or_equal_to: 8)
+      changeset =
+        schema
+        |> cast(
+          attrs,
+          [
+            :enabled,
+            :provider,
+            :model,
+            :api_key,
+            :state_path,
+            :codex_home,
+            :executable,
+            :timeout_ms,
+            :max_concurrent,
+            :max_tool_calls,
+            :auto_create_backlog
+          ],
+          empty_values: []
+        )
+        |> validate_required([:provider])
+        |> validate_inclusion(:provider, ["codex", "openrouter"])
+        |> validate_length(:model, max: 200)
+        |> validate_format(:api_key, ~r/\A\$[A-Za-z_][A-Za-z0-9_]*\z/, message: "must reference a host environment variable")
+        |> validate_number(:max_tool_calls, greater_than: 0, less_than_or_equal_to: 24)
+        |> validate_number(:timeout_ms, greater_than_or_equal_to: 1_000, less_than_or_equal_to: 900_000)
+        |> validate_number(:max_concurrent, greater_than: 0, less_than_or_equal_to: 8)
+
+      case get_field(changeset, :provider) do
+        "openrouter" ->
+          changeset
+          |> validate_required([:model, :api_key])
+          |> validate_format(:model, ~r/\A(?:\$[A-Za-z_][A-Za-z0-9_]*|[a-zA-Z0-9][a-zA-Z0-9._:>-]*(?:\/[a-zA-Z0-9._:>-]+)+)\z/)
+
+        "codex" ->
+          validate_change(changeset, :model, &codex_model/2)
+
+        _ ->
+          changeset
+      end
+    end
+
+    defp codex_model(:model, model) do
+      if model == Runtime.model(), do: [], else: [model: "Codex management model is fixed"]
     end
   end
 

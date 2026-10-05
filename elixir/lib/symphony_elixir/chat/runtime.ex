@@ -10,6 +10,8 @@ defmodule SymphonyElixir.Chat.Runtime do
   This boundary is pinned to Codex 0.154.0: `environments: []` removes environment
   tools (including apply_patch, which shell_tool=false alone does not remove).
   Codex owns its native history and automatic compaction in a dedicated home.
+  Its declared tool catalog is stable across that history; the current turn's
+  allowed tools and host callback still enforce Design-only restrictions.
   """
 
   alias SymphonyElixir.Chat.ViewContext
@@ -74,7 +76,7 @@ defmodule SymphonyElixir.Chat.Runtime do
   defp validate_options(opts) do
     with :ok <- validate_values(opts),
          :ok <- validate_paths(opts),
-         true <- valid_tools?(Map.get(opts, :tools, [])) do
+         true <- valid_tools?(Map.get(opts, :tools, [])) and valid_tools?(Map.get(opts, :thread_tools, Map.get(opts, :tools, []))) do
       :ok
     else
       false -> {:error, :invalid_tools}
@@ -218,7 +220,12 @@ defmodule SymphonyElixir.Chat.Runtime do
       case opts[:thread_id] do
         nil ->
           {"thread/start",
-           Map.merge(params, %{"environments" => [], "ephemeral" => false, "allowProviderModelFallback" => false, "dynamicTools" => Enum.map(state.tools, &Map.put(&1, "type", "function"))})}
+           Map.merge(params, %{
+             "environments" => [],
+             "ephemeral" => false,
+             "allowProviderModelFallback" => false,
+             "dynamicTools" => Enum.map(Map.get(opts, :thread_tools, state.tools), &Map.put(&1, "type", "function"))
+           })}
 
         id when is_binary(id) ->
           {"thread/resume", Map.put(params, "threadId", id)}

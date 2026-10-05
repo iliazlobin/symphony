@@ -8,6 +8,10 @@
 !elixir/lib/**
 !elixir/priv/
 !elixir/priv/**
+!elixir/assets/
+!elixir/assets/**
+elixir/assets/node_modules/
+elixir/assets/node_modules/**
 !deploy/
 !deploy/gke/
 !deploy/gke/application.Dockerfile

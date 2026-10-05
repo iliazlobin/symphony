@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Chat.StoreTest do
   use ExUnit.Case, async: false
-  alias SymphonyElixir.Chat.{Artifacts, Persistence, Store, ViewContext}
+  alias SymphonyElixir.Chat.{Artifacts, Persistence, PRUpdates, Sessions, Store, ViewContext}
 
   defmodule TestRuntime do
     @spec run(map(), function(), function()) :: term()
@@ -53,7 +53,24 @@ defmodule SymphonyElixir.Chat.StoreTest do
 
     defp respond("view", opts, _emit, tool) do
       send(opts.test_pid, {:view_runtime, opts.view_context, opts.instructions})
+      send(opts.test_pid, {:view_catalog, opts.tools, opts.thread_tools})
       send(opts.test_pid, {:view_tool, tool.("symphony_view_context", %{})})
+      {:ok, %{status: :completed}}
+    end
+
+    defp respond("design guard", opts, emit, tool) do
+      send(opts.test_pid, {:design_runtime, opts.view_context, opts.instructions, opts.tools, opts.thread_tools})
+
+      receive do
+        :check_design -> :ok
+      end
+
+      for name <- ~w(symphony_propose_action symphony_delegate symphony_report symphony_set_goal) do
+        send(opts.test_pid, {:design_tool, name, tool.(name, %{})})
+      end
+
+      send(opts.test_pid, {:design_read, tool.("symphony_view_context", %{})})
+      emit.({:delta, "Keep the first design small."})
       {:ok, %{status: :completed}}
     end
 
@@ -72,6 +89,19 @@ defmodule SymphonyElixir.Chat.StoreTest do
     defp respond("malformed tool", opts, _emit, tool) do
       send(opts.test_pid, {:tool_result, tool.("malformed", %{})})
       {:ok, %{status: :completed}}
+    end
+
+    defp respond("report interleaving", opts, emit, tool) do
+      receive do
+        :deliver_tools ->
+          send(opts.test_pid, {:report_tool, tool.("artifacts", %{})})
+          emit.({:delta, "Agent response"})
+      end
+
+      receive do
+        :interrupt -> {:ok, %{status: :interrupted}}
+        :finish -> {:ok, %{status: :completed}}
+      end
     end
 
     defp respond("wait", _opts, emit, _tool) do
@@ -104,6 +134,19 @@ defmodule SymphonyElixir.Chat.StoreTest do
       {:ok, %{status: :completed}}
     end
 
+    defp respond("provider-error:" <> reason, _opts, _emit, _tool) do
+      errors = %{
+        "auth" => :openrouter_auth_required,
+        "rate" => :openrouter_rate_limited,
+        "unavailable" => :openrouter_unavailable,
+        "limit" => :openrouter_tool_limit,
+        "budget" => :provider_budget_exhausted,
+        "unknown" => :protocol_error
+      }
+
+      {:error, Map.fetch!(errors, reason)}
+    end
+
     defp respond("crash", _opts, _emit, _tool), do: exit(:runtime_failure)
     defp respond("error", _opts, _emit, _tool), do: {:error, :model_unavailable}
     defp respond("auth", _opts, _emit, _tool), do: {:error, :authentication_required}
@@ -113,6 +156,30 @@ defmodule SymphonyElixir.Chat.StoreTest do
       emit.({:delta, "from the project."})
       {:ok, %{status: :completed}}
     end
+  end
+
+  defmodule CheckpointRuntime do
+    @spec run(map(), function(), function()) :: term()
+    def run(opts, emit, _tool) do
+      send(opts.test_pid, {:checkpoint, opts.history, opts.model, opts.thread_id})
+      emit.({:delta, "Continued from saved context"})
+      {:ok, %{status: :completed}}
+    end
+  end
+
+  defmodule DesignTools do
+    alias SymphonyElixir.Chat.StoreTest.TestTools
+    alias SymphonyElixir.Chat.Tools
+
+    def specs, do: Tools.specs()
+    def call(name, args, context), do: TestTools.call(name, args, context)
+
+    def confirm(proposal, context) do
+      send(context.auth.test_pid, {:operator_view, context.view_context})
+      TestTools.confirm(proposal, context)
+    end
+
+    def reconcile(proposal, context), do: TestTools.reconcile(proposal, context)
   end
 
   defmodule TestTools do
@@ -224,13 +291,297 @@ defmodule SymphonyElixir.Chat.StoreTest do
       projects: project_reader,
       authorize: authorize,
       runtime: TestRuntime,
-      tools: TestTools
+      tools: TestTools,
+      session_reader: fn task_id, session, context ->
+        if task_id == "github:test/one:11" do
+          Sessions.resolve(pr_task(), session, context.tracker_fingerprint)
+        else
+          {:error, :pr_session_unavailable}
+        end
+      end
     ]
 
     server = start_supervised!({Store, opts})
     auth = %{allowed: true, tracker_fingerprint: "scope", test_pid: self()}
     on_exit(fn -> File.rm_rf(root) end)
     %{server: server, opts: opts, root: root, auth: auth, access: access, project: "github:test/one"}
+  end
+
+  test "PR chats are canonical, separate from the issue main thread and retain binding across restart", c do
+    task = pr_task()
+    session = "work:" <> String.duplicate("a", 32)
+    children = 1..6 |> Task.async_stream(fn _ -> Store.ensure_pr_conversation(c.project, task.id, session, c.auth, c.server) end) |> Enum.map(fn {:ok, {:ok, chat}} -> chat end)
+    assert length(Enum.uniq_by(children, & &1["id"])) == 1
+    child = hd(children)
+    assert child["conversation_role"] == "pr"
+    assert child["session_id"] == session
+    assert {:ok, parent} = Store.ensure_conversation(c.project, task.id, c.auth, c.server)
+    refute child["id"] == parent["id"]
+    assert {:ok, other} = Store.ensure_pr_conversation(c.project, task.id, "pr:22", c.auth, c.server)
+    refute other["id"] in [parent["id"], child["id"]]
+    assert {:error, :pr_session_unavailable} = Store.ensure_pr_conversation(c.project, task.id, "pr:999", c.auth, c.server)
+    assert {:error, :pr_session_unavailable} = Store.ensure_pr_conversation(c.project, "github:test/two:11", session, c.auth, c.server)
+    assert {:error, :unauthorized} = Store.ensure_pr_conversation(c.project, task.id, session, %{}, c.server)
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    assert {:ok, restored} = Store.ensure_pr_conversation(c.project, task.id, session, c.auth, server)
+    assert restored["id"] == child["id"]
+    assert {:ok, chats} = Store.list(c.project, c.auth, server)
+    assert length(chats) == 4
+  end
+
+  test "read-only PR polling delivers independent durable reports to main and matching PR chats without model turns", c do
+    task = pr_task()
+    assert {:ok, child} = Store.ensure_pr_conversation(c.project, task.id, "work:" <> String.duplicate("a", 32), c.auth, c.server)
+    assert {:ok, other} = Store.ensure_pr_conversation(c.project, task.id, "pr:22", c.auth, c.server)
+    assert {:ok, parent} = Store.ensure_conversation(c.project, task.id, c.auth, c.server)
+    board = report_board(task)
+    reader = fn -> {:ok, c.project, c.auth.tracker_fingerprint, board} end
+    sync = start_supervised!({PRUpdates, name: nil, store: c.server, interval_ms: :manual, reader: reader})
+    assert :ok = PRUpdates.sync(sync)
+    assert {:ok, main} = Store.get(c.project, parent["id"], c.auth, c.server)
+    assert length(main["messages"]) == 3
+    assert Enum.any?(main["messages"], &String.contains?(&1["text"], "PR #14"))
+    assert Enum.any?(main["messages"], &String.contains?(&1["text"], "PR #22"))
+    assert {:ok, selected} = Store.get(c.project, child["id"], c.auth, c.server)
+    assert length(selected["messages"]) == 2
+    assert Enum.all?(selected["messages"], &(&1["session_id"] == child["session_id"]))
+    assert {:ok, second} = Store.get(c.project, other["id"], c.auth, c.server)
+    assert length(second["messages"]) == 1
+    refute_receive {:runtime, _, _, _}
+
+    assert :ok = PRUpdates.sync(sync)
+    assert {:ok, unchanged} = Store.get(c.project, parent["id"], c.auth, c.server)
+    assert unchanged["messages"] == main["messages"]
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    assert :ok = Store.sync_pr_updates(c.project, "scope", board, server)
+    assert {:ok, restored} = Store.get(c.project, parent["id"], c.auth, server)
+    assert restored["messages"] == main["messages"]
+    assert {:ok, _} = Store.send_message(c.project, child["id"], "view", "view-pr", c.auth, server)
+    assert_receive {:view_runtime, nil, instructions}
+    assert instructions =~ "work session work:"
+    assert instructions =~ "Recent PR reports"
+    assert instructions =~ "PR #14"
+  end
+
+  test "reports preserve streaming assistant ownership through widgets, deltas and cancellation", c do
+    task = pr_task()
+    assert {:ok, chat} = Store.ensure_conversation(c.project, task.id, c.auth, c.server)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "report interleaving", "stream", c.auth, c.server)
+    assert_receive {:runtime, runtime, _, "report interleaving"}
+    assert_receive {:phase_ready, ^runtime, _}
+    assert :ok = Store.sync_pr_updates(c.project, "scope", report_board(task), c.server)
+    send(runtime, :deliver_tools)
+    assert_receive {:report_tool, %{"widgets" => [_]}}
+    assert :ok = Store.sync_pr_updates(c.project, "scope", report_board(pr_task("owner_review"), 1), c.server)
+    assert {:ok, stopped} = Store.stop(c.project, chat["id"], c.auth, c.server)
+    assert stopped["status"] in ["running", "interrupted"]
+    settled = wait_chat(c, chat, &(&1["status"] == "interrupted"))
+    assert List.last(settled["messages"])["text"] == "Agent response"
+    assert length(List.last(settled["messages"])["widgets"]) == 1
+    assert Enum.all?(Enum.filter(settled["messages"], &(&1["origin"] == "pr_update")), &(&1["widgets"] == [] and &1["status"] == "completed"))
+    stop_supervised!(Store)
+    server = start_supervised!({Store, c.opts})
+    assert {:ok, restored} = Store.get(c.project, chat["id"], c.auth, server)
+    assert restored["messages"] == settled["messages"]
+  end
+
+  test "report receipts ignore stale or foreign reads and cap host reports without deleting conversation history", c do
+    task = pr_task()
+    assert {:ok, chat} = Store.ensure_conversation(c.project, task.id, c.auth, c.server)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "hello", "user", c.auth, c.server)
+    wait_chat(c, chat, &(&1["status"] == "idle"))
+
+    for n <- 1..85 do
+      updated = put_in(task, [:ledger, "active"], %{"run_id" => "run-#{n}", "work_id" => String.duplicate("a", 32)})
+      assert :ok = Store.sync_pr_updates(c.project, "scope", report_board(updated, n), c.server)
+    end
+
+    assert {:ok, full} = Store.get(c.project, chat["id"], c.auth, c.server)
+    assert length(Enum.filter(full["messages"], &(&1["origin"] == "pr_update"))) == 80
+    assert Enum.any?(full["messages"], &(&1["role"] == "user" and &1["text"] == "hello"))
+    assert :ok = Store.sync_pr_updates(c.project, "scope", report_board(pr_task("paused")), c.server)
+    assert :ok = Store.sync_pr_updates(c.project, "foreign", report_board(pr_task("paused"), 100), c.server)
+    unavailable = %{report_board(task, 100) | source_error: "Unavailable"}
+    assert {:error, :board_unavailable} = Store.sync_pr_updates(c.project, "scope", unavailable, c.server)
+    assert {:ok, same} = Store.get(c.project, chat["id"], c.auth, c.server)
+    assert Enum.filter(same["messages"], &(&1["origin"] == "pr_update")) == Enum.filter(full["messages"], &(&1["origin"] == "pr_update"))
+    assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
+  end
+
+  test "slow PR selection leaves streaming and cancellation responsive and rechecks access before creation", c do
+    parent = self()
+
+    reader = fn _task, session, context ->
+      send(parent, {:selection_read, self()})
+
+      receive do
+        :continue -> Sessions.resolve(pr_task(), session, context.tracker_fingerprint)
+      end
+    end
+
+    :sys.replace_state(c.server, &%{&1 | session_reader: reader})
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "active", c.auth, c.server)
+    assert_receive {:runtime, _, _, "wait"}
+    selecting = Task.async(fn -> Store.ensure_pr_conversation(c.project, pr_task().id, "pr:22", c.auth, c.server) end)
+    assert_receive {:selection_read, reader_pid}
+    assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
+    assert {:ok, _} = Store.stop(c.project, chat["id"], c.auth, c.server)
+    wait_chat(c, chat, &(&1["status"] == "interrupted"))
+    Agent.update(c.access, fn _ -> false end)
+    send(reader_pid, :continue)
+    assert Task.await(selecting) == {:error, :unauthorized}
+    Agent.update(c.access, fn _ -> true end)
+    assert {:ok, [_]} = Store.list(c.project, c.auth, c.server)
+
+    for failing <- [fn _, _, _ -> raise "reader failed" end, fn _, _, _ -> exit(:reader_stopped) end] do
+      :sys.replace_state(c.server, &%{&1 | session_reader: failing})
+      result = Store.ensure_pr_conversation(c.project, pr_task().id, "pr:22", c.auth, c.server)
+      assert result == {:error, :pr_session_unavailable}
+      assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
+    end
+  end
+
+  test "report replay after a recipient write failure neither loses another recipient nor duplicates its reports", c do
+    task = pr_task()
+    assert {:ok, _} = Store.ensure_pr_conversation(c.project, task.id, "work:" <> String.duplicate("a", 32), c.auth, c.server)
+    assert :ok = Store.sync_pr_updates(c.project, "scope", report_board(task), c.server)
+
+    [delivered_id, failed_id] =
+      :sys.get_state(c.server).chats
+      |> Enum.filter(fn {_, chat} -> chat["conversation_role"] == "task" or String.starts_with?(chat["session_id"] || "", "work:") end)
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.sort()
+
+    task = pr_task("owner_review")
+    original = File.read!(Path.join(c.root, failed_id <> ".json"))
+    block_record(c, %{"id" => failed_id})
+    assert {:error, :chat_storage_unavailable} = Store.sync_pr_updates(c.project, "scope", report_board(task), c.server)
+    delivered = File.read!(Path.join(c.root, delivered_id <> ".json")) |> Jason.decode!()
+    assert delivered["messages"] != []
+    stop_supervised!(Store)
+    File.rmdir!(Path.join(c.root, failed_id <> ".json"))
+    File.write!(Path.join(c.root, failed_id <> ".json"), original)
+    server = start_supervised!({Store, c.opts})
+    assert :ok = Store.sync_pr_updates(c.project, "scope", report_board(task), server)
+    assert {:ok, first} = Store.get(c.project, delivered_id, c.auth, server)
+    assert first["messages"] == delivered["messages"]
+    assert {:ok, second} = Store.get(c.project, failed_id, c.auth, server)
+    assert second["messages"] != []
+    assert :ok = Store.sync_pr_updates(c.project, "scope", report_board(task), server)
+    assert {:ok, unchanged} = Store.get(c.project, failed_id, c.auth, server)
+    assert unchanged["messages"] == second["messages"]
+  end
+
+  test "a report storage fault cannot restore running status after all jobs have stopped", c do
+    task = pr_task()
+    assert {:ok, _} = Store.ensure_pr_conversation(c.project, task.id, "pr:22", c.auth, c.server)
+    [failed_id, running_id] = :sys.get_state(c.server).chats |> Enum.reject(fn {_, chat} -> chat["conversation_role"] == "main" end) |> Enum.map(&elem(&1, 0)) |> Enum.sort()
+    assert :ok = Store.sync_pr_updates(c.project, "scope", report_board(task), c.server)
+    assert {:ok, _} = Store.send_message(c.project, running_id, "wait", "active", c.auth, c.server)
+    assert_receive {:runtime, runtime, _, "wait"}
+    monitor = Process.monitor(runtime)
+    # Settle this recipient's bootstrap receipt before replacing its record;
+    # the other conversation remains active for the storage-fault assertion.
+    wait_chat(c, %{"id" => failed_id}, &(&1["status"] == "idle"))
+    block_record(c, %{"id" => failed_id})
+    # Simulate recovery where only this recipient still needs the same report.
+    :sys.replace_state(c.server, &put_in(&1, [:chats, failed_id, "pr_report_receipts"], %{}))
+    assert {:error, reason} = Store.sync_pr_updates(c.project, "scope", report_board(task, 1), c.server)
+    assert reason in [:chat_storage_unavailable, :board_unavailable]
+    assert_receive {:DOWN, ^monitor, :process, ^runtime, _}
+    assert :sys.get_state(c.server).jobs == %{}
+    assert {:ok, stopped} = Store.get(c.project, running_id, c.auth, c.server)
+    refute stopped["status"] == "running"
+    assert {:error, :board_unavailable} = Store.sync_pr_updates(c.project, "scope", report_board(task, 2), c.server)
+    assert {:ok, still_stopped} = Store.get(c.project, running_id, c.auth, c.server)
+    refute still_stopped["status"] == "running"
+  end
+
+  test "repeated milestones get distinct message identities and multibyte reports remain within storage bounds", c do
+    task = pr_task()
+    assert {:ok, chat} = Store.ensure_conversation(c.project, task.id, c.auth, c.server)
+
+    for {phase, n} <- Enum.with_index(["building", "reviewing", "building"]) do
+      assert :ok = Store.sync_pr_updates(c.project, "scope", report_board(pr_task(phase), n), c.server)
+    end
+
+    assert {:ok, changed} = Store.get(c.project, chat["id"], c.auth, c.server)
+    assert length(changed["messages"]) == 5
+    assert length(Enum.uniq_by(changed["messages"], & &1["id"])) == 5
+    summary = String.duplicate("👨‍👩‍👧‍👦", 1500)
+    task = put_in(pr_task("owner_review"), [:ledger, "pr_work", String.duplicate("a", 32), "handoff"], %{"summary" => summary})
+    assert :ok = Store.sync_pr_updates(c.project, "scope", report_board(task, 3), c.server)
+    assert {:ok, bounded} = Store.get(c.project, chat["id"], c.auth, c.server)
+    assert Enum.all?(bounded["messages"], &(String.valid?(&1["text"]) and byte_size(&1["text"]) <= 8000))
+    assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
+  end
+
+  test "PR selection rejects mismatched lookup results and incompatible retained bindings", c do
+    ensure = fn -> Store.ensure_pr_conversation(c.project, pr_task().id, "pr:22", c.auth, c.server) end
+    reader = Keyword.fetch!(c.opts, :session_reader)
+    :sys.replace_state(c.server, &%{&1 | session_reader: fn _, _, _ -> {:ok, %{"task_id" => "other", "session_id" => "pr:22"}} end})
+    assert {:error, :pr_session_unavailable} = ensure.()
+    assert {:ok, []} = Store.list(c.project, c.auth, c.server)
+    :sys.replace_state(c.server, &%{&1 | session_reader: reader})
+    assert {:ok, child} = ensure.()
+    :sys.replace_state(c.server, &put_in(&1, [:chats, child["id"], "session_id"], "pr:99"))
+    assert {:error, :chat_binding_conflict} = ensure.()
+  end
+
+  test "failure to save the parent prevents orphan PR conversations", c do
+    id = Persistence.conversation_id(c.project, pr_task().id, c.auth.tracker_fingerprint)
+    File.mkdir!(Path.join(c.root, id <> ".json"))
+    result = Store.ensure_pr_conversation(c.project, pr_task().id, "pr:22", c.auth, c.server)
+    assert result == {:error, :chat_storage_unavailable}
+    assert Enum.all?(:sys.get_state(c.server).chats, fn {_, chat} -> chat["conversation_role"] == "main" end)
+    assert :sys.get_state(c.server).jobs == %{}
+    assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: false}}
+    assert {:error, :board_unavailable} = Store.sync_pr_updates(c.project, "scope", %{})
+  end
+
+  defp pr_task(phase \\ "building") do
+    id = String.duplicate("a", 32)
+
+    work = %{
+      "id" => id,
+      "issue_id" => "11",
+      "tracker_fingerprint" => "scope",
+      "phase" => phase,
+      "instruction" => "Implement this PR",
+      "builder_thread_id" => "worker-1",
+      "head_sha" => String.duplicate("b", 40),
+      "updated_at" => "2026-09-23T10:00:00Z",
+      "publication" => %{"pr_number" => 14, "pr_url" => "https://github.com/test/one/pull/14", "status" => "ready"}
+    }
+
+    prs =
+      for n <- [14, 22],
+          do: %{
+            number: n,
+            url: "https://github.com/test/one/pull/#{n}",
+            title: "Change #{n}",
+            state: "open",
+            checks: "pending",
+            review: "no_decision",
+            head_sha: String.duplicate("b", 40),
+            updated_at: "2026-09-23T10:00:00Z"
+          }
+
+    %{
+      id: "github:test/one:11",
+      project: "github:test/one",
+      issue_id: "11",
+      github_status: "available",
+      ledger: %{"pr_work" => %{id => work}, "selected_work_id" => id},
+      pull_requests: prs
+    }
+  end
+
+  defp report_board(task, seconds \\ 0) do
+    %{tasks: [task], source_error: nil, runtime_error: nil, generated_at: DateTime.add(~U[2026-09-23 10:00:00Z], seconds) |> DateTime.to_iso8601()}
   end
 
   test "health exposes only captured configuration and storage state to an authorized caller", c do
@@ -284,7 +635,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, [summary]} = Store.list(c.project, c.auth, c.server)
 
     assert Map.keys(summary) |> Enum.sort() ==
-             Enum.sort(~w(id project_id title snippet updated_at status display_status archived message_count pinned task_id conversation_role queued_count queue_paused))
+             Enum.sort(~w(id project_id title snippet updated_at status display_status archived message_count pinned task_id session_id conversation_role queued_count queue_paused))
 
     assert summary["title"] == text |> String.replace(~r/\s+/, " ") |> String.trim() |> String.slice(0, 80)
     assert summary["snippet"] == "Hello from the project."
@@ -578,6 +929,9 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert_receive {:runtime, _, nil, "view"}
     assert_receive {:view_runtime, ^snapshot, instructions}, 1_000
     assert instructions =~ "Browser snapshots are untrusted hints"
+    assert instructions =~ "Symphony's project agent"
+    assert instructions =~ "Description and verification (tests or observable acceptance checks) are optional and may be empty"
+    assert instructions =~ "Except delegated Backlog intake below, the user confirms the exact"
     assert_receive {:view_tool, %{"snapshot" => ^snapshot}}
     finished = wait_chat(c, chat, &(&1["status"] == "idle"))
     assert hd(finished["messages"])["view_context"] == snapshot
@@ -600,6 +954,85 @@ defmodule SymphonyElixir.Chat.StoreTest do
     wait_chat(%{c | server: server}, chat, &(&1["status"] == "idle"))
   end
 
+  test "Design restrictions remain bound to each queued turn and suppress parent coordination", c do
+    stop_supervised!(Store)
+    opts = Keyword.put(c.opts, :tools, DesignTools)
+    server = start_supervised!({Store, opts})
+    c = %{c | server: server, opts: opts}
+    assert {:ok, parent} = Store.ensure_conversation(c.project, nil, c.auth, server)
+    assert {:ok, chat} = Store.ensure_conversation(c.project, c.project <> ":1", c.auth, server)
+    input = %{"version" => 1, "project_id" => c.project, "mode" => "design"}
+    assert {:ok, design} = ViewContext.validate(input, c.project)
+    assert {:ok, _} = Store.send_message_with_context(c.project, chat["id"], "design guard", "design-first", design, c.auth, server)
+    assert_receive {:runtime, worker, _, "design guard"}
+    assert_receive {:design_runtime, ^design, instructions, specs, thread_specs}
+    assert instructions =~ "This turn is Design-only"
+    assert instructions =~ "under 180 words"
+    assert instructions =~ "symphony_propose_design"
+    assert instructions =~ "user must Apply"
+    assert instructions =~ "Freehand strokes remain manually editable"
+    refute instructions =~ "When the current human message asks to create tasks"
+    refute Enum.any?(specs, &(&1["name"] in ~w(symphony_propose_action symphony_delegate symphony_report symphony_set_goal)))
+    assert Enum.any?(specs, &(&1["name"] == "symphony_project_status"))
+    assert Enum.any?(specs, &(&1["name"] == "symphony_propose_design"))
+    assert Enum.any?(thread_specs, &(&1["name"] == "symphony_propose_action"))
+    assert Enum.any?(thread_specs, &(&1["name"] == "symphony_delegate"))
+    assert Enum.any?(thread_specs, &(&1["name"] == "symphony_propose_design"))
+    ordinary_specs = Enum.reject(thread_specs, &(&1["name"] == "symphony_propose_design"))
+
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "view", "ordinary-next", c.auth, server)
+    assert {:ok, _} = Store.send_message_with_context(c.project, chat["id"], "view", "design-next", design, c.auth, server)
+    run = :sys.get_state(server).jobs[chat["id"]].run
+    assert {:error, :design_read_only} = GenServer.call(server, {:coordinate, chat["id"], run, "symphony_set_goal", %{"text" => "Must not change", "status" => "active"}, c.auth})
+    send(worker, :check_design)
+
+    for name <- ~w(symphony_propose_action symphony_delegate symphony_report symphony_set_goal) do
+      assert_receive {:design_tool, ^name, %{"error" => %{"code" => "design_read_only"}}}
+    end
+
+    assert_receive {:design_read, %{"snapshot" => ^design}}
+    assert_receive {:view_runtime, nil, ordinary_instructions}, 1_000
+    assert_receive {:view_catalog, ^ordinary_specs, ^thread_specs}
+    refute ordinary_instructions =~ "This turn is Design-only"
+    assert_receive {:view_tool, %{"snapshot" => nil}}
+    assert_receive {:view_runtime, ^design, design_instructions}, 1_000
+    assert_receive {:view_catalog, ^specs, ^thread_specs}
+    assert design_instructions =~ "This turn is Design-only"
+    assert_receive {:view_tool, %{"snapshot" => ^design}}
+    completed = wait_chat(c, chat, &(&1["status"] == "idle" and &1["queued_count"] == 0))
+    assert Enum.map(Enum.filter(completed["messages"], &(&1["role"] == "assistant")), & &1["view_context"]) == [design, nil, design]
+    assert completed["proposals"] == []
+    assert completed["agent_goal"] == chat["agent_goal"]
+    assert {:ok, saved_parent} = Store.get(c.project, parent["id"], c.auth, server)
+    refute Enum.any?(saved_parent["messages"] ++ saved_parent["queue"], &(&1["text"] == "Keep the first design small."))
+
+    stop_supervised!(Store)
+    server = start_supervised!({Store, opts})
+    assert {:ok, restored} = Store.get(c.project, chat["id"], c.auth, server)
+    assert restored["messages"] == completed["messages"]
+    assert List.last(Enum.filter(restored["messages"], &(&1["role"] == "user")))["view_context"] == design
+  end
+
+  test "an explicit operator confirmation is not locked by a historical Design turn", c do
+    stop_supervised!(Store)
+    opts = Keyword.put(c.opts, :tools, DesignTools)
+    server = start_supervised!({Store, opts})
+    c = %{c | server: server, opts: opts}
+    {chat, proposal} = propose(c)
+    design = %{"version" => 1, "project_id" => c.project, "mode" => "design"}
+    assert {:ok, _} = Store.send_message_with_context(c.project, chat["id"], "view", "design-before-action", design, c.auth, server)
+    assert_receive {:view_runtime, %{"mode" => "design"}, _}
+    wait_chat(c, chat, &(&1["status"] == "idle"))
+    refute_receive {:confirmed, _}
+
+    assert {:ok, _} = Store.decide(c.project, chat["id"], proposal["id"], "confirm", c.auth, server)
+    assert_receive {:operator_view, ordinary}
+    refute Map.has_key?(ordinary, "mode")
+    assert_receive {:confirmed, %{"id" => id}}
+    assert id == proposal["id"]
+    wait_chat(c, chat, &(hd(&1["proposals"])["status"] == "completed"))
+  end
+
   test "malformed and foreign view context never starts inference or changes history", c do
     assert {:error, :unauthorized} = Store.send_message_with_context(c.project, "missing", "view", "client", nil, %{})
     chat = create(c)
@@ -614,11 +1047,11 @@ defmodule SymphonyElixir.Chat.StoreTest do
     second = create(c)
     snapshot = %{"version" => 1, "project_id" => c.project, "selected_task_id" => c.project <> ":2"}
     assert {:ok, _} = Store.send_message_with_context(c.project, chat["id"], "view", "shared", snapshot, c.auth, c.server)
-    assert_receive {:view_tool, %{"snapshot" => saved}}
+    assert_receive {:view_tool, %{"snapshot" => saved}}, 2_000
     assert saved["selected_task_id"] == c.project <> ":2"
     wait_chat(c, chat, &(&1["status"] == "idle"))
     assert {:ok, _} = Store.send_message(c.project, second["id"], "view", "separate", c.auth, c.server)
-    assert_receive {:view_tool, %{"snapshot" => nil}}
+    assert_receive {:view_tool, %{"snapshot" => nil}}, 2_000
     wait_chat(c, second, &(&1["status"] == "idle"))
   end
 
@@ -640,6 +1073,105 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert restored["messages"] == before_restart["messages"]
     assert Artifacts.entries(restored) == entries
     refute_receive {:runtime, _, _, _}
+  end
+
+  test "provider and model changes preserve identity, host receipts and native history across settled restarts", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "status", "checkpoint-original", c.auth, c.server)
+    assert_receive {:runtime, _, _, "status"}
+    initial = wait_chat(c, chat, &(&1["status"] == "idle"))
+    assert [%{"tool" => "symphony_project_status", "result" => result}] = List.last(initial["messages"])["tool_receipts"]
+    assert result =~ "No active tasks"
+    original = disk_chat(c, chat)
+    initial_native = original["codex_thread_id"]
+    stop_supervised!(Store)
+    receipt = %{"tool" => "symphony_project_status", "arguments" => %{}, "result" => String.duplicate("x", 65_080)}
+    oversized = List.last(original["messages"]) |> Map.put("text", String.duplicate("x", 600)) |> Map.put("tool_receipts", [receipt])
+    receipt_only = oversized |> Map.put("id", String.duplicate("f", 32)) |> Map.put("text", "")
+    saved = Map.put(original, "messages", [hd(original["messages"]), oversized, receipt_only])
+    File.write!(Path.join(c.root, chat["id"] <> ".json"), Jason.encode!(saved))
+
+    for {model, sequence} <- [{"deepseek/model-a", "a"}, {"deepseek/model-b", "b"}] do
+      if sequence == "b", do: stop_supervised!(Store)
+      settings = Keyword.fetch!(c.opts, :settings) |> Map.merge(%{provider: "openrouter", model: model, api_key: "private-fixture-key"})
+      opts = c.opts |> Keyword.put(:settings, settings) |> Keyword.put(:runtime, CheckpointRuntime)
+      server = start_supervised!({Store, opts})
+      assert {:ok, _} = Store.send_message(c.project, chat["id"], "Continue " <> sequence, "checkpoint-" <> sequence, c.auth, server)
+      assert_receive {:checkpoint, history, ^model, ^initial_native}
+      assert hd(history) == %{"role" => "user", "content" => "status"}
+      assert Enum.any?(history, &String.contains?(&1["content"], "symphony_project_status"))
+      assert Enum.all?(history, &(String.valid?(&1["content"]) and byte_size(&1["content"]) <= 65_536))
+      assert Enum.at(history, 1)["content"] =~ "Context truncated"
+      assert Enum.at(history, 2)["content"] =~ "Host tool receipts"
+      restored = wait_chat(%{c | server: server}, chat, &(&1["status"] == "idle"))
+      assert restored["id"] == chat["id"]
+      assert List.last(restored["messages"])["runtime"]["model"] == model
+      assert disk_chat(c, chat)["codex_thread_id"] == initial_native
+      refute Jason.encode!(restored) =~ "private-fixture-key"
+    end
+  end
+
+  test "OpenRouter diagnostics distinguish credential capacity and protocol failures", c do
+    for {reason, text} <- [
+          {"auth", "OpenRouter key"},
+          {"rate", "rate limited"},
+          {"unavailable", "conversation is saved"},
+          {"limit", "tool-call limit"},
+          {"budget", "account budget"},
+          {"unknown", "chat runtime"}
+        ] do
+      chat = create(c)
+      assert {:ok, _} = Store.send_message(c.project, chat["id"], "provider-error:" <> reason, "error-" <> reason, c.auth, c.server)
+      assert_receive {:runtime, _, _, _}
+      failed = wait_chat(c, chat, &(&1["status"] == "error"))
+      assert failed["error"] =~ text
+      refute failed["error"] =~ "dedicated management-chat Codex"
+      assert :sys.get_state(c.server).fault == nil
+    end
+  end
+
+  test "an unresolved OpenRouter model is a configuration error rather than a storage failure", c do
+    chat = create(c)
+    stop_supervised!(Store)
+    settings = Keyword.fetch!(c.opts, :settings) |> Map.merge(%{provider: "openrouter", model: nil, api_key: "private-fixture-key"})
+    opts = c.opts |> Keyword.put(:settings, settings) |> Keyword.put(:runtime, SymphonyElixir.Chat.Provider)
+    server = start_supervised!({Store, opts})
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "status", "invalid-model", c.auth, server)
+    failed = wait_chat(%{c | server: server}, chat, &(&1["status"] == "error"))
+    assert failed["error"] =~ "configured chat model"
+    assert List.last(failed["messages"])["runtime"]["model"] == "unconfigured"
+    assert :sys.get_state(server).fault == nil
+    assert {:ok, %{"id" => _}} = Store.create(c.project, "Another chat", c.auth, server)
+  end
+
+  test "legacy tool callbacks and oversized receipts cannot corrupt saved conversation state", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "wait", "receipt-compatibility", c.auth, c.server)
+    assert_receive {:runtime, pid, _, "wait"}
+    assert_receive {:phase_ready, ^pid, "wait"}
+    run = :sys.get_state(c.server).jobs[chat["id"]].run
+    result = %{"message" => "Legacy callback"}
+    assert ^result = GenServer.call(c.server, {:tool_result, chat["id"], run, result})
+    large = %{"message" => String.duplicate("x", 65_536)}
+    assert ^large = GenServer.call(c.server, {:tool_result, chat["id"], run, %{tool: "symphony_project_status", arguments: %{}}, large})
+    send(pid, :finish)
+    saved = wait_chat(c, chat, &(&1["status"] == "idle"))
+    assert Map.get(List.last(saved["messages"]), "tool_receipts", []) == []
+    assert :sys.get_state(c.server).fault == nil
+  end
+
+  test "Stop denies new tools and delegation while the current runtime settles", c do
+    chat = create(c)
+    assert {:ok, _} = Store.send_message(c.project, chat["id"], "ignore stop", "stopping-tools", c.auth, c.server)
+    assert_receive {:runtime, pid, _, "ignore stop"}
+    assert_receive {:phase_ready, ^pid, "ignore stop"}
+    run = :sys.get_state(c.server).jobs[chat["id"]].run
+    assert {:ok, _} = Store.stop(c.project, chat["id"], c.auth, c.server)
+    assert_receive :interrupt_received
+    assert {:error, :stale_turn} = GenServer.call(c.server, {:tool_context, chat["id"], run, c.auth})
+    assert {:error, :stale_turn} = GenServer.call(c.server, {:coordinate, chat["id"], run, "symphony_delegate", %{}, c.auth})
+    send(pid, :finish)
+    assert wait_chat(c, chat, &(&1["status"] == "interrupted"))["queued_count"] == 0
   end
 
   test "Stop cancels only chat execution and interrupted service restarts retain history", c do
@@ -1061,12 +1593,16 @@ defmodule SymphonyElixir.Chat.StoreTest do
   test "canonical conversation limits reject only new bindings and retain the existing main chat", c do
     assert {:ok, main} = Store.ensure_conversation(c.project, nil, c.auth, c.server)
 
-    for number <- 1..499 do
+    assert {:ok, parent} = Store.ensure_conversation(c.project, pr_task().id, c.auth, c.server)
+
+    for number <- 1..498 do
       assert {:ok, _} = Store.create(c.project, "Retained conversation #{number}", c.auth, c.server)
     end
 
     assert length(Path.wildcard(Path.join(c.root, "*.json"))) == 500
-    assert {:error, :chat_history_full} = Store.ensure_conversation(c.project, c.project <> ":11", c.auth, c.server)
+    assert {:error, :chat_history_full} = Store.ensure_conversation(c.project, c.project <> ":12", c.auth, c.server)
+    assert {:error, :chat_history_full} = Store.ensure_pr_conversation(c.project, pr_task().id, "pr:22", c.auth, c.server)
+    assert {:ok, ^parent} = Store.get(c.project, parent["id"], c.auth, c.server)
     assert {:ok, existing} = Store.ensure_conversation(c.project, nil, c.auth, c.server)
     assert existing["id"] == main["id"]
     assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
@@ -1237,6 +1773,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, _} = Store.send_message(c.project, chat["id"], "auth resume", "auth-resume", c.auth, c.server)
     Agent.update(c.access, fn _ -> false end)
     send(active, :finish)
+    wait_revoked_dispatch(c, chat)
     refute_receive {:runtime, _, _, "auth resume"}
     Agent.update(c.access, fn _ -> true end)
     paused = wait_chat(c, chat, & &1["queue_paused"])
@@ -1257,6 +1794,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert thread_summary(c, waiting)["display_status"] == "queued"
     Agent.update(c.access, fn _ -> false end)
     send(first_pid, :finish)
+    wait_revoked_dispatch(c, waiting)
     refute_receive {:runtime, _, _, "capacity followup"}
     Agent.update(c.access, fn _ -> true end)
     paused = wait_chat(c, waiting, & &1["queue_paused"])
@@ -1287,6 +1825,8 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert instructions =~ "permanently associated with task #{task_id}"
     assert instructions =~ "continue_pr_work with its exact work_id"
     assert instructions =~ "fresh independent reviewer"
+    assert instructions =~ "project agent -> task agent -> work agent"
+    assert instructions =~ "A task kind never grants tool or deployment permission"
     assert_receive {:view_tool, %{"task_id" => ^task_id}}
     completed = wait_chat(c, chat, &(&1["status"] == "idle"))
     retained = List.duplicate(hd(completed["messages"]), 400)
@@ -1296,6 +1836,11 @@ defmodule SymphonyElixir.Chat.StoreTest do
     wait_chat(c, chat, &(&1["status"] == "idle"))
     :sys.replace_state(c.server, fn state -> put_in(state, [:chats, chat["id"], "padding"], String.duplicate("x", 6_500_001)) end)
     assert {:error, :chat_history_full} = Store.send_message(c.project, chat["id"], "full", "full", c.auth, c.server)
+    before_reports = :sys.get_state(c.server).chats[chat["id"]]
+    assert :ok = Store.sync_pr_updates(c.project, "scope", report_board(pr_task()), c.server)
+    after_reports = :sys.get_state(c.server).chats[chat["id"]]
+    assert Map.take(after_reports, ~w(messages proposals report_cursors)) == Map.take(before_reports, ~w(messages proposals report_cursors))
+    assert after_reports["task_kind"] == "general"
     assert Store.health(c.auth, c.server) == {:ok, %{enabled: true, healthy: true}}
   end
 
@@ -1356,6 +1901,23 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, _} = Store.send_message(c.project, chat["id"], "proposal", "proposal", c.auth, c.server)
     final = wait_chat(c, chat, &(&1["status"] == "idle"))
     {final, hd(final["proposals"])}
+  end
+
+  defp disk_chat(c, chat), do: c.root |> Path.join(chat["id"] <> ".json") |> File.read!() |> Jason.decode!()
+
+  # Reads remain unauthorized during revocation. Observe the owned fixture's
+  # completed dispatch decision before restoring access, rather than racing it.
+  defp wait_revoked_dispatch(c, chat, attempts \\ 100) do
+    current = :sys.get_state(c.server).chats[chat["id"]]
+
+    if current["queue_paused"] do
+      assert current["error"] =~ "Sign in and resume"
+      current
+    else
+      assert attempts > 0, "revoked dispatch did not pause the retained queue"
+      Process.sleep(10)
+      wait_revoked_dispatch(c, chat, attempts - 1)
+    end
   end
 
   defp wait_chat(c, chat, predicate, attempts \\ 100) do

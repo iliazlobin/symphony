@@ -158,8 +158,12 @@ defmodule SymphonyElixir.SSHTest do
   end
 
   test "remote_shell_command/1 escapes embedded single quotes" do
+    names = ~w(SYMPHONY_GOOGLE_CLIENT_ID SYMPHONY_GOOGLE_CLIENT_SECRET OPENROUTER_API_KEY
+      SYMPHONY_WORKSPACE_SECRET SYMPHONY_WORKSPACE_AUTH_SOCKET SYMPHONY_WORKSPACE_ENGINE_SOCKET
+      SYMPHONY_WORKSPACE_PROJECT SYMPHONY_WORKSPACE_ORIGIN) |> Enum.join(" ")
+
     assert SSH.remote_shell_command("printf 'hello'") ==
-             "bash -lc 'unset SYMPHONY_GOOGLE_CLIENT_ID SYMPHONY_GOOGLE_CLIENT_SECRET && printf '\"'\"'hello'\"'\"''"
+             "bash -lc 'unset " <> names <> " && printf '\"'\"'hello'\"'\"''"
   end
 
   defp install_fake_ssh!(test_root, trace_file, script \\ nil) do

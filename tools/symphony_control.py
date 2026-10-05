@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 import urllib.error
@@ -45,7 +46,7 @@ def load_config(path: str | Path | None = None) -> dict:
     parsed = urllib.parse.urlsplit(config["api_url"])
     if (parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "::1")
             or parsed.username or parsed.password or parsed.query or parsed.fragment
-            or parsed.path not in ("", "/")):
+            or not valid_api_prefix(parsed.path, config.get("repository"))):
         raise ControlError("The Mac control client only connects to an explicit loopback HTTP address")
     if parsed.port is None:
         raise ControlError("An explicit control API port is required")
@@ -57,6 +58,15 @@ def load_config(path: str | Path | None = None) -> dict:
         raise ControlError("Control token is missing or too short")
     config["_config_path"] = str(target)
     return config
+
+
+def valid_api_prefix(path: str, repository: str | None) -> bool:
+    if path in ("", "/"):
+        return True
+    if not isinstance(repository, str):
+        return False
+    slug = repository.split("/")[-1]
+    return path in ("/projects/" + slug, "/projects/" + slug + "/") and bool(re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", slug))
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -113,9 +123,13 @@ def status(config: dict) -> dict:
 
 
 def control(config: dict, action: str, expected_revision: int,
-            command_id: str, issue_id: str | None = None) -> dict:
+            command_id: str, issue_id: str | None = None, *, renew_attempts: bool = False) -> dict:
     if action not in ACTIONS:
         raise ControlError("Unsupported control action")
+    if type(renew_attempts) is not bool:
+        raise ControlError("renew_attempts must be a boolean")
+    if renew_attempts and action != "retry":
+        raise ControlError("renew_attempts requires the retry action")
     if type(expected_revision) is not int or expected_revision < 0:
         raise ControlError("expected_revision must be a nonnegative integer")
     if not isinstance(command_id, str) or not 1 <= len(command_id) <= 128:
@@ -127,6 +141,8 @@ def control(config: dict, action: str, expected_revision: int,
     payload = dict(action=action, expected_revision=expected_revision, command_id=command_id)
     if issue_id is not None:
         payload["issue_id"] = issue_id
+    if renew_attempts:
+        payload["renew_attempts"] = True
     return request_json(config, "/api/v1/control", payload)
 
 
@@ -146,12 +162,13 @@ TOOLS = [
     },
     {
         "name": "symphony_control",
-        "description": "Request an authorized pause, drain, resume, issue cancellation or retry. Read status first and pass its control revision. Reuse command_id on an uncertain retry. This grants no merge, deployment or broader permissions.",
+        "description": "Request an authorized pause, drain, resume, issue cancellation or retry. Read status first and pass its control revision. Reuse command_id on an uncertain retry. Explicitly authorized retry renewal with renew_attempts=true grants a new configured bounded attempt cycle and retains lifetime usage. This grants no merge, deployment or broader permissions.",
         "inputSchema": {"type": "object", "properties": {
             "action": {"type": "string", "enum": list(ACTIONS)},
             "expected_revision": {"type": "integer", "minimum": 0},
             "command_id": {"type": "string", "minLength": 1, "maxLength": 128},
             "issue_id": {"type": "string", "maxLength": 256},
+            "renew_attempts": {"type": "boolean", "description": "Retry only: explicitly authorized renewal of the configured bounded attempt cycle; lifetime usage is retained."},
         }, "required": ["action", "expected_revision", "command_id"], "additionalProperties": False},
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
     },
@@ -168,7 +185,7 @@ def call_tool(config: dict, name: str, arguments: dict) -> dict:
         if not isinstance(issue, str) or not 1 <= len(issue) <= 256:
             raise ControlError("Invalid issue identifier")
         result = request_json(config, "/api/v1/" + urllib.parse.quote(issue, safe=""))
-    elif name == "symphony_control" and set(arguments) <= {"action", "expected_revision", "command_id", "issue_id"}:
+    elif name == "symphony_control" and set(arguments) <= {"action", "expected_revision", "command_id", "issue_id", "renew_attempts"}:
         result = control(config, **arguments)
     else:
         raise ControlError("Unknown tool or invalid arguments")
@@ -248,6 +265,9 @@ def main() -> int:
         p.add_argument("--command-id", default=None)
         if action in ("cancel", "retry"):
             p.add_argument("issue_id")
+        if action == "retry":
+            p.add_argument("--renew-attempts", action="store_true",
+                           help="Explicitly authorized new configured bounded attempt cycle; retains lifetime usage")
     args = parser.parse_args()
     try:
         config = load_config(args.config)
@@ -260,7 +280,8 @@ def main() -> int:
             result = request_json(config, "/api/v1/" + urllib.parse.quote(args.identifier, safe=""))
         else:
             result = control(config, args.command, args.revision,
-                             args.command_id or str(uuid.uuid4()), getattr(args, "issue_id", None))
+                             args.command_id or str(uuid.uuid4()), getattr(args, "issue_id", None),
+                             renew_attempts=getattr(args, "renew_attempts", False))
         print(json.dumps(result, indent=2))
         return 0
     except (ControlError, OSError, KeyError, json.JSONDecodeError) as exc:

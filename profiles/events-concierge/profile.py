@@ -18,6 +18,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from symphony_control import ControlError, DEFAULT_CONFIG, load_config, read_private
+from container_auth import AuthLease, AuthLeaseError
+from local_codex_auth import LocalCodexAuthError, _paths, cached_status
 
 REPOSITORY = "iliazlobin/events-concierge"
 REMOTE = "https://github.com/" + REPOSITORY + ".git"
@@ -96,6 +98,8 @@ def permission_config() -> str:
     sections = [
         'model = "gpt-6-astra"',
         'model_reasoning_effort = "medium"',
+        'cli_auth_credentials_store = "file"',
+        'forced_login_method = "chatgpt"',
         'approval_policy = "on-request"',
         'approvals_reviewer = "user"',
         'default_permissions = "symphony-builder"',
@@ -124,6 +128,20 @@ def permission_config() -> str:
             f'[permissions.{name}.network]', 'enabled = false',
         ]
     return "\n".join(sections) + "\n"
+
+
+def worker_workflow(workflow: str) -> str:
+    """Generated dedicated-container workflows always verify provider auth."""
+    pieces = workflow.split("---\n", 2)
+    settings = yaml.safe_load(pieces[1])
+    codex = settings.setdefault("codex", {})
+    if not isinstance(codex, dict):
+        raise ControlError("Worker workflow Codex configuration must be an object")
+    codex["auth_preflight"] = True
+    # One enrolled credential is one serialized worker stream. Concurrency
+    # needs an explicit pool of independently enrolled credentials first.
+    settings["agent"]["max_concurrent_agents"] = 1
+    return "---\n" + yaml.safe_dump(settings, sort_keys=False) + "---\n" + pieces[2]
 
 
 def initialize(args, repository: str = REPOSITORY, profile_bin: Path | None = None) -> dict:
@@ -173,7 +191,7 @@ def initialize(args, repository: str = REPOSITORY, profile_bin: Path | None = No
         },
     }
     write_private(state / "control.token", secrets.token_urlsafe(48) + "\n")
-    write_private(state / "WORKFLOW.md", workflow)
+    write_private(state / "WORKFLOW.md", worker_workflow(workflow))
     write_private(state / "codex/config.toml", permission_config())
     write_private(config_file, json.dumps(config, indent=2) + "\n")
     return {"config": str(config_file), "mode": "paused", "source_revision": base,
@@ -261,18 +279,51 @@ def container_launch_options(config: dict) -> list[str]:
     return ["--seccomp-policy", str(seccomp), "--apparmor-profile", policy_name]
 
 
+def worker_auth_options(config: dict) -> list[str]:
+    """Select authentication explicitly, without mounting or copying local state."""
+    source = config.get("worker_auth_source", "dedicated")
+    fields = ("local_codex_binary", "local_codex_home")
+    if source == "dedicated":
+        if any(field in config for field in fields):
+            raise ControlError("Local Codex paths require the explicit local_codex authentication source")
+        return []
+    if source != "local_codex":
+        raise ControlError("Unknown worker authentication source")
+    try:
+        binary, home, cwd = _paths(config["local_codex_binary"], config["local_codex_home"], config["worker_home"])
+        runtime_home = Path(config["codex_home"]).resolve(strict=True)
+        if runtime_home == home or home in runtime_home.parents:
+            raise ValueError("Personal configuration cannot be mounted into workers")
+        forbidden = [runtime_home, runtime_home.parent / "stage-state", runtime_home.parent / "pr-work-state", cwd]
+        for field in ("workspace_root", "source_path"):
+            if field in config:
+                root = Path(config[field]).resolve(strict=True)
+                if cwd == root or root in cwd.parents or cwd in root.parents:
+                    raise ValueError("Authentication client cannot run in a source tree")
+                forbidden.append(root)
+        if any(binary == root or root in binary.parents for root in forbidden):
+            raise ValueError("Authentication executable cannot be supplied by worker storage")
+    except (LocalCodexAuthError, OSError, ValueError, TypeError, KeyError):
+        raise ControlError("Local Codex authentication requires its original home, an executable CLI, and an isolated private client directory") from None
+    options = ["--auth-source", "local_codex", "--local-codex-binary", str(binary),
+               "--local-codex-home", str(home), "--auth-cwd", str(cwd)]
+    if "source_path" in config:
+        options += ["--auth-source-path", str(Path(config["source_path"]).resolve(strict=True))]
+    return options
+
+
 def codex_server(config: dict) -> None:
     if config.get("worker_launch_enabled") is not True:
         raise ControlError("Live workers are disabled until isolation, cancellation, authentication and pilot acceptance are verified")
-    home = Path(config["codex_home"])
-    if not (home / "auth.json").is_file():
-        raise ControlError("Dedicated worker Codex login is missing; run profile.py login")
+    # The sole credential can currently belong to another stage. The wrapper
+    # waits for its durable lease; checking only the master file loses that fact.
     rules = Path(config["state_dir"]) / "bin/codex-rules"
     if not rules.is_file():
         raise ControlError("Managed worker rules are not installed; run profile.py install-rules")
     image = config.get("worker_image_id", "")
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
         raise ControlError("Verified immutable worker image ID is missing")
+    auth_options = worker_auth_options(config)
     launch_options = container_launch_options(config)
     # Rule synchronization runs on the host. The worker sees only its dedicated
     # Codex home and its own checkout mounted into a separate PID namespace.
@@ -295,7 +346,8 @@ def codex_server(config: dict) -> None:
         raise ControlError("Retained builder resume requires a work identity")
     wrapper = ROOT / "tools/container_worker.py"
     os.execve(sys.executable, [sys.executable, "-I", str(wrapper), "--workspace", str(Path.cwd()),
-                             "--codex-home", config["codex_home"], "--image", image, *launch_options], env)
+                             "--codex-home", config["codex_home"], "--image", image,
+                             *auth_options, *launch_options], env)
 
 
 def install_rules(config: dict) -> dict:
@@ -303,6 +355,46 @@ def install_rules(config: dict) -> dict:
     run(sys.executable, config["rules_source"], "install",
         "--real-codex", config["codex_binary"], "--bin-dir", str(Path(config["state_dir"]) / "bin"), env=env)
     return {"installed": True, "codex_home": config["codex_home"]}
+
+
+def worker_auth_status(config: dict) -> dict:
+    source = config.get("worker_auth_source", "dedicated")
+    if source == "local_codex":
+        try:
+            worker_auth_options(config)
+            return cached_status(binary=config["local_codex_binary"], home=config["local_codex_home"], cwd=config["worker_home"])
+        except (ControlError, OSError, ValueError):
+            return {"state": "recovery", "source": source, "credential_present": False,
+                    "sign_in_required": True, "provider_verified": False}
+    if source != "dedicated":
+        return {"state": "recovery", "source": "invalid", "credential_present": False,
+                "sign_in_required": True, "provider_verified": False}
+    try:
+        worker_auth_options(config)
+        return dict(AuthLease(config["codex_home"]).status(), source=source)
+    except (AuthLeaseError, ControlError, OSError, ValueError):
+        return {"state": "recovery", "source": source, "credential_present": False,
+                "sign_in_required": True, "provider_verified": False}
+
+
+def worker_login(config: dict) -> None:
+    worker_auth_options(config)
+    if config.get("worker_auth_source", "dedicated") == "local_codex":
+        raise ControlError("Local Codex authentication uses the original CLI sign-in; this profile does not enroll or copy credentials")
+    try:
+        with AuthLease(config["codex_home"]).enrollment() as home:
+            env = worker_env(config)
+            env["CODEX_HOME"] = str(home)
+            try:
+                status = subprocess.run([config["codex_binary"], "login", "--device-auth"], env=env).returncode
+            except (FileNotFoundError, PermissionError):
+                # Popen reports these only after its failed exec child is
+                # settled. Other interruptions retain the durable claim.
+                status = 127
+        if status:
+            raise ControlError("Dedicated worker sign-in did not complete")
+    except (AuthLeaseError, OSError) as exc:
+        raise ControlError("Dedicated worker sign-in is in use or unavailable; reconcile its ownership first") from exc
 
 
 def google_oauth_environment(config: dict) -> dict:
@@ -330,6 +422,28 @@ def google_oauth_environment(config: dict) -> dict:
     return {"SYMPHONY_GOOGLE_CLIENT_ID": client_id, "SYMPHONY_GOOGLE_CLIENT_SECRET": secret}
 
 
+def openrouter_environment(config: dict) -> dict:
+    """Read only the explicitly configured OpenRouter key; never source an env file."""
+    if "openrouter_env_file" not in config:
+        return {}
+    try:
+        location = config["openrouter_env_file"]
+        if not isinstance(location, str) or not Path(location).is_absolute():
+            raise ValueError("Invalid credential path")
+        matches = re.findall(r"^\s*(?:export\s+)?OPENROUTER_API_KEY\s*=\s*(.*?)\s*$",
+                             read_private(Path(location)), re.MULTILINE)
+        if len(matches) != 1:
+            raise ValueError("Missing or duplicate key")
+        key = matches[0]
+        if len(key) >= 2 and key[0] in ('\"', "'") and key[-1] == key[0]:
+            key = key[1:-1]
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,4096}", key):
+            raise ValueError("Invalid key")
+    except (OSError, ValueError, TypeError, ControlError):
+        raise ControlError("OpenRouter env file must be an owned private regular file with one valid OPENROUTER_API_KEY") from None
+    return {"OPENROUTER_API_KEY": key}
+
+
 def start_service(config: dict) -> None:
     validate_workflow(read_private(Path(config["workflow_path"])), config.get("repository", REPOSITORY))
     binary = ROOT / "elixir/bin/symphony"
@@ -337,6 +451,7 @@ def start_service(config: dict) -> None:
         raise ControlError("Build Symphony first: cd elixir && mix build")
     env = dict(os.environ)
     env.update(google_oauth_environment(config))
+    env.update(openrouter_environment(config))
     # Host-owned auth is never serialized to workflow/config files.
     token = os.environ.get("GITHUB_TOKEN") or run("gh", "auth", "token")
     env.update({
@@ -359,7 +474,8 @@ def start_service(config: dict) -> None:
     pinned_bin = ROOT / ".runtime/elixir-1.19.5/bin"
     if pinned_bin.is_dir():
         env["PATH"] = str(pinned_bin) + ":/opt/homebrew/opt/erlang@28/bin:" + env.get("PATH", WORKER_PATH)
-    port = config["api_url"].rsplit(":", 1)[1]
+    from urllib.parse import urlsplit
+    port = "0" if os.environ.get("SYMPHONY_WORKSPACE_ENGINE_SOCKET") else str(urlsplit(config["api_url"]).port)
     os.chdir(ROOT / "elixir")
     os.execve(str(binary), [str(binary), config["workflow_path"], "--port", port,
                            "--logs-root", str(Path(config["state_dir"]) / "logs"),
@@ -399,8 +515,8 @@ def main(repository: str = REPOSITORY, profile_bin: Path | None = None) -> int:
             elif args.command == "install-rules":
                 result = install_rules(config)
             elif args.command == "login":
-                env = dict(os.environ, CODEX_HOME=config["codex_home"])
-                os.execve(config["codex_binary"], [config["codex_binary"], "login", "--device-auth"], env)
+                worker_login(config)
+                result = {"login_completed": True}
             elif args.command == "doctor":
                 try:
                     container_launch_options(config)
@@ -410,7 +526,7 @@ def main(repository: str = REPOSITORY, profile_bin: Path | None = None) -> int:
                 result = {
                     "repository": config["repository"], "base_sha": config["base_sha"],
                     "integration_branch": config["integration_branch"],
-                    "worker_auth_present": (Path(config["codex_home"]) / "auth.json").is_file(),
+                    "worker_auth": worker_auth_status(config),
                     "managed_rules_present": (Path(config["state_dir"]) / "bin/codex-managed").is_file(),
                     "compiled_service_present": (ROOT / "elixir/bin/symphony").is_file(),
                     "auto_merge_enabled": config["auto_merge"]["enabled"],

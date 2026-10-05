@@ -33,7 +33,7 @@ def disposable_root(parent, fixed=False):
     try:
         yield root
     finally:
-        if list(root.glob("*.cid.intent")):
+        if list(root.glob("*.cid.intent")) or list(root.glob("*.cid.auth")):
             raise RuntimeError("Container cleanup remains unverified; retained recovery markers in " + str(root))
         shutil.rmtree(root)
 
@@ -104,8 +104,11 @@ def probe(binary, native_terminate=False, container_image=None, seccomp_policy=N
         raise ValueError("Fixed root is only for container sandbox diagnosis")
     with disposable_root(temporary_parent, fixed=fixed_root) as root:
         home = root / "codex"
-        home.mkdir()
+        home.mkdir(mode=0o700)
         (home / "config.toml").write_text(profile.permission_config())
+        if container_image:
+            (home / "auth.json").write_text('{}')
+            (home / "auth.json").chmod(0o600)
 
         for mode in ("pipe", "pty", "detached_child"):
             workspace = root / mode
@@ -195,6 +198,18 @@ while time.monotonic()<deadline:
                     inspected = subprocess.run(["docker", "--host", docker_endpoint, "inspect", cid],
                                                env=docker_env, capture_output=True, text=True, timeout=2, check=True)
                     verify_container_policy(json.loads(inspected.stdout)[0], runtime)
+                    if (home / "auth.json").exists():
+                        raise RuntimeError("Disposable stage did not exclusively own its authentication file")
+                    # Host-controlled synthetic refresh, never a provider token
+                    # or model request. Atomic replacement also exercises future
+                    # Codex versions that replace rather than truncate auth.json.
+                    refreshed = json.dumps({"fake_canary": mode + "-refreshed"})
+                    rotate = ("import os,pathlib; p=pathlib.Path('/codex-home'); "
+                              "t=p/'auth-canary.tmp'; t.write_text(" + repr(refreshed) + "); "
+                              "t.chmod(0o600); os.replace(t,p/'auth.json')")
+                    subprocess.run(["docker", "--host", docker_endpoint, "exec", cid,
+                                    "/usr/local/bin/python3", "-I", "-c", rotate],
+                                   env=docker_env, capture_output=True, text=True, timeout=5, check=True)
                 cancelled_at = time.monotonic()
                 if cancelled_at - started > 15 and container_image:
                     raise RuntimeError("Probe startup too slow to distinguish cancellation from self-expiry")
@@ -219,6 +234,11 @@ while time.monotonic()<deadline:
                 process.wait(timeout=40 if container_image else 3)
                 elapsed = time.monotonic() - cancelled_at
                 verified_cleanup = not any(alive.values()) and (not container_image or elapsed < 10)
+                auth_retired = bool(container_image and profile.AuthLease(home).status()["state"] == "idle"
+                                    and (home / "auth.json").read_text() == refreshed
+                                    and not list(root.glob(mode + ".lock.*.cid.auth")))
+                if container_image and not auth_retired:
+                    raise RuntimeError("Disposable refreshed authentication was not returned after verified cleanup")
                 results[mode] = {
                     "cancelled": verified_cleanup, "surviving_owned_processes": alive,
                     "parent_group": owned["parent_group"], "child_group": owned["child_group"],
@@ -227,6 +247,7 @@ while time.monotonic()<deadline:
                     "cancellation_seconds": round(elapsed, 3), "self_expiry_seconds": ttl,
                     "selected_container_policy_verified": bool(container_image),
                     "operator_launch_selection": runtime["operational"],
+                    "refreshed_fake_auth_returned": auth_retired,
                 }
             finally:
                 connection.selector.close()

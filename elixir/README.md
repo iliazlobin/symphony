@@ -1,9 +1,11 @@
 # Symphony Elixir
 
-The controlled GitHub board supports queueing from **Backlog → Ready** by drag-and-drop
-or the task's **Move to Ready** button. Both open a durable preview requiring **Queue task**
-confirmation. See the [profile workflow](../profiles/events-concierge/README.md#operate)
-for task creation, holds, review and completion. Queueing does not resume a paused controller.
+The controlled GitHub board supports queueing from **Backlog → Work** by drag-and-drop
+or the task's **Move to Work** button. These save the move directly, without another
+confirmation form. See the [profile workflow](../profiles/events-concierge/README.md#operate)
+for task creation, holds, review and completion. Transitions commit to the local control
+ledger and update the board immediately. GitHub routing labels synchronize in the background
+with durable retry; queueing does not resume a paused controller.
 
 This directory contains the current Elixir/OTP implementation of Symphony, based on
 [`SPEC.md`](../SPEC.md) at the repository root.
@@ -11,6 +13,15 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 > [!WARNING]
 > Symphony Elixir is prototype software intended for evaluation only and is presented as-is.
 > We recommend implementing your own hardened version based on `SPEC.md`.
+
+## Multi-project workspace
+
+Use the [workspace service](../profiles/events-concierge/README.md#workspace-service)
+for one browser origin and project-scoped board, chat and control API. The workspace
+supervises isolated engines on private Unix sockets and owns the shared revocable
+browser grant. Internal navigation uses `WorkspacePath`; LiveView aliases preserve
+explicit project scope. Standalone workflows retain their existing endpoint behavior.
+
 
 ## Controlled local execution
 
@@ -332,42 +343,69 @@ The observability UI now runs on a minimal Phoenix stack:
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
 The chat panel stays open. Select a task card to open its dedicated conversation;
-closing task details keeps that conversation selected. **Main chat** in the issue picker returns to the
+closing task details keeps that conversation selected. **Project** in the issue picker returns to the
 project conversation for reports and task creation, updates or cancellation.
 The headline picker searches issue numbers, titles, categories and recent activity.
-Issues appear in Running, Ready for review, Needs attention, Ready, Backlog and Done
-groups, newest activity first within each group. The second line starts with **PRs**,
-followed by links to the issue and its card and the current status. The PR menu searches
-fetched associated PRs by number, title, status, review or CI,
-and indicates when GitHub evidence is incomplete or unavailable.
-Retained PR work sessions open on the issue card, keeping the same issue chat selected.
-Use **New task** to enter a title, outcome, scope, acceptance checks and dependencies.
-**Preview task** saves the exact proposed GitHub issue; **Create task** confirms it.
-Created tasks enter the backlog without execution routing labels. Recent submissions
-retain receipts and unfinished actions across reconnects. If the result is uncertain,
-use **Check outcome** to reconcile it before creating another request. This form uses
-the durable action store and works without a model turn or subscription login.
+Issues appear in Work, Ready for review, Needs attention, Backlog and Done
+groups, newest activity first within each group. The working-session selector shows the
+selected agent and status when closed. `<task name> task agent`, its first item, manages
+the entire task. `<work name> work agent` entries select retained coding sessions. PRs are linked resources; external PR-only entries remain discussions.
+Work names use the PR title or the first line of the work instruction before publication.
+Long names truncate while the role stays visible; hover reveals the full label. Search
+matches names, PR numbers, status, review or CI. Incomplete GitHub evidence stays labeled.
+Named agent links in task details focus the corresponding conversation.
+Filter **Kind** separates features, bugs, testing, security, releases, operations and other task intents. Classification grants no execution tools. The selected session is retained in the board URL across reloads. Project → Task → Work breadcrumbs return to the supervising conversation. Work cards and chat show retained session counts, recorded execution phases separately from chat activity.
+Describe a new task in project chat. Only a title is required; description and verification
+may be empty. Enable `chat.auto_create_backlog: true` to let the authenticated project
+conversation create requested Backlog tasks without another form. Creation never queues
+coding work. The durable action receipt survives reconnects; unknown outcomes require
+reconciliation rather than another creation request. Other writes retain their action preview.
 The board and full-page chat share `ChatPanel`. The dock retains board filters and
 selected task links. Each message automatically attaches a validated project-bound
 snapshot of bounded task IDs and filters, not raw browser contents. Each task has
-one retained conversation, and each project has one main conversation. These bindings
-survive reconnects and restarts; prior free-standing chats remain available at `/chat`.
-Drafts stay separate when switching cards. The board chat shows messages and actions
-directly, without a tab bar; task details and PR work live on the issue card.
+one task agent conversation plus separate work agent conversations, and each project has its own agent
+conversation. These bindings survive reconnects and restarts; prior free-standing chats
+remain available at `/chat`. Drafts and response queues stay separate when switching sessions.
+The board chat shows messages and actions directly, without a tab bar; the issue card
+shows task details and links to each PR conversation.
+Chat opens the latest 30 messages; **Show earlier** reveals older messages without changing stored history or agent context.
 The full-page chat list retains search, pins and ordering for saved conversations.
 At `/chat`, **Chat**, **Context**,
 **Outputs** and **Sources** organize the same durable conversation. Context separates
 the next message's view from snapshots retained with earlier messages. Outputs collect
 the latest 100 distinct issue/PR summaries and action results; original tool results stay
 in message history. Sources retain retrieved references.
-Ask the issue chat to create PR work with a bounded instruction, or continue an existing
+Ask the task agent to create coding work with a bounded instruction, or continue an existing
 work session to address feedback or checks, then confirm its preview. Each PR work keeps
 its builder thread and checkout across attempts; every candidate gets a fresh reviewer.
 One PR work runs per issue at a time, sharing the issue's cumulative budget. A review
 handoff requires explicit continuation; **Retry** does not replay a completed candidate.
-Previously linked PRs are shown but are not automatically adopted as work sessions.
-Existing routing labels, launch permissions, publication and merge gates still apply.
-GitHub artifact statuses are recorded observations; thread activity updates live.
+The task agent can inspect work agent state with `symphony_pr_session` and propose
+`continue_pr_work` with an instruction for that agent. A work agent restricts controls to
+its own retained worker; all actions still require confirmation and fresh ownership checks.
+Previously linked PRs support discussion without automatically adopting a coding worker.
+A verified publication binds the earlier discussion to the same work agent. Historical
+duplicates reconcile when idle; old links resolve to the canonical conversation without
+losing messages, receipts or queued work.
+PRs linked to several issues share one work agent: verified native work selects its
+owning task, and other issues reference it. Before publication, the first retained
+discussion owns the conversation. Active turns and pending reports delay reconciliation.
+Local task routing, launch permissions, publication and merge gates still apply. Testing-only, security and deployment adapters are design targets; changing the public role name does not enable them. The retained PR conversation still supervises the existing native builder/reviewer pipeline until that runtime is replaced.
+Worker progress, review handoffs and GitHub state changes are checked every 15 seconds
+and recorded as **PR update** messages in the task agent and matching work agent conversations.
+Reports survive restart and retain the latest 80 updates per conversation. With valid
+authorization, new evidence queues a task-agent reasoning turn; it never starts a coding
+worker. Without authorization, the saved evidence waits for an authenticated interaction. Missing or stale checks never imply completion; issue acceptance
+remains separate from PR merge.
+The project, task and work agents form a graph with stable IDs and typed supervision
+and reporting edges. Parents delegate to direct children; children report upward.
+A successful explicit report supplies that turn's outcome and replaces its automatic
+completion report; changed findings require another explicit update. Other completed
+replies report automatically. Parents read their current scope before processing reports,
+revise goals and can delegate follow-ups. Chat shows the source agent, goals and pending
+reports inline. Each user-initiated chain is bounded to 24 deliveries and depth six;
+Stop pauses supervision and restart requires fresh authorization. The graph is exported
+by `Chat.Store.agent_graph/3` and the `symphony_agent_graph` tool for future visualization.
 You can send follow-ups while a response is running. Up to 20 messages wait in the
 conversation queue above the composer; **Send next** changes the next waiting message
 and **Remove** cancels one queued message. Messages run one at a time per conversation
@@ -389,6 +427,7 @@ Enable management chat in the selected workflow's YAML front matter:
 ```yaml
 chat:
   enabled: true
+  provider: codex
   state_path: $SYMPHONY_CHAT_STATE
   codex_home: $SYMPHONY_CHAT_CODEX_HOME
   executable: $SYMPHONY_CHAT_CODEX_EXECUTABLE
@@ -429,7 +468,7 @@ Symphony, while the dedicated Codex home supplies model access. A disabled store
 exposes no chat history. See the
 [operator guide](../profiles/events-concierge/README.md#operate) for the user flow.
 
-Conversation JSON and the native Codex home both need durable private storage to
+For Codex, conversation JSON and the native Codex home both need durable private storage to
 retain display history and resume model threads after restart. Stop the service
 before moving or restoring either; preserve both together. A second store owner,
 corrupt records or failed writes block operation without overwriting recovery data.
@@ -438,12 +477,55 @@ available to continue and uncertain writes available for read-only reconciliatio
 The file store holds at most 500 conversation and task-submission records, with an
 8 MiB limit per record. Previously archived records remain retained; the current
 chat list exposes pinning and ordering, with no Archive or Rename buttons.
-Task and main conversations keep their identity beyond 400 messages. Storage remains
+Task, PR and project conversations keep their identity beyond 400 messages. Storage remains
 bounded per record; a full history rejects additional messages without deleting it.
 Legacy free-standing chats retain their 400-message limit.
 
-The current backend serves one configured project; the picker and immutable chat
-scope prepare the interface for additional controllers without mixing their data.
+### OpenRouter management runtime
+
+OpenRouter replaces only the management model connection. Coding workers still use
+their existing Codex runtime, and browser sign-in remains separate. Configure the
+selected workflow and supply the key through the private host environment:
+
+```yaml
+chat:
+  enabled: true
+  provider: openrouter
+  model: deepseek/deepseek-v4-flash
+  api_key: $OPENROUTER_API_KEY
+  state_path: $SYMPHONY_CHAT_STATE
+  timeout_ms: 300000
+  max_concurrent: 2
+  max_tool_calls: 8
+  auto_create_backlog: true
+```
+
+- `model` accepts a provider/model ID or an environment reference; `api_key` must
+  reference an environment variable. Never store a literal key in the workflow.
+  No Codex home or executable is required for OpenRouter management chat.
+- Turns capture their configuration at start. After active turns and actions settle,
+  restart the controller to change provider or model; the durable chat identity and
+  transcript remain. Codex's management model stays fixed at `gpt-6-astra`.
+- Requests use the fixed HTTPS OpenRouter endpoint, without redirects or automatic
+  retries. `timeout_ms` bounds the whole turn; `max_tool_calls` accepts 1–24. Tools
+  run sequentially through the same host authorization and confirmation boundary.
+- Tool rounds show host activity; only the terminal answer enters the transcript.
+  Provider preambles and reasoning stay within the active turn. Token streaming is not implemented.
+  Stop terminates and awaits the current request/tool operation before settling the turn.
+  A stopped or failed write may still have taken effect; reconcile its recorded action
+  before attempting it again.
+- Context is rebuilt from bounded persisted messages and tool receipts (at most 80
+  prior messages / 256 KiB), without native provider thread IDs. Full display history
+  remains in the private conversation store. Back up that store before moving it;
+  OpenRouter needs no native session directory or copied model credentials.
+- Management API keys remain host-side and are excluded from coding-worker and hook
+  subprocess environments. Provider failures show sanitized diagnostics; raw HTTP
+  bodies, keys and model reasoning are not stored in the transcript.
+
+The workspace service exposes one public port for registered projects and supervises
+private project engines over Unix sockets. Browser identity is shared; project ledgers,
+conversations, tokens and admission gates remain scoped. See the
+[workspace service guide](../profiles/events-concierge/README.md#workspace-service).
 The default listener remains local. Google browser identity is available through the
 configuration below; remote ingress, multi-replica storage and cloud model sign-in
 remain separate deployment work.
@@ -513,8 +595,14 @@ this is not a multi-tenant role system.
 Google mode requires browser sign-in for the whole board and chat. OAuth callbacks
 validate state, nonce, PKCE and Google-signed identity claims. Browser cookies contain
 an opaque reference to a bounded in-memory grant; no Google access or refresh token
-is retained in the cookie. Sign-out and restart invalidate browser sessions without
-erasing conversations. Identity configuration changes invalidate existing grants.
+is retained in the cookie. Identity configuration changes invalidate existing grants.
+The workspace service owns one revocable browser session for projects with the same
+reviewed admission policy. Switching projects reuses that session. Its proxy forwards
+browser cookies without retaining its own copies. Sign-out or workspace restart ends
+the shared grant without erasing conversations; a project-engine restart preserves it.
+Standalone controllers retain separate cookies and grants. Their project links try
+Google single sign-on once when necessary; Google may still require account selection
+or consent. Explicit sign-out disables that automatic continuation until manual sign-in.
 Restart after provider, public-origin or private service-environment changes, then
 open the configured address; the socket origin policy is loaded at startup.
 Token-based local API/CLI clients
@@ -639,25 +727,25 @@ status, priority, milestone, tag and assignee filters, per-lane sorting, and bro
 The compact board follows the Linear board shown in OpenAI's Symphony demo while
 retaining this fork's GitHub workflow. Project selection stays in the top bar;
 The task filters stay visible on the left of the toolbar. **Display**,
-on the right, controls sorting, card
-detail, light/dark appearance and visible columns. Hidden columns remain available
-in the restore rail; selecting a status reveals its column. Display preferences are
-saved only in this browser and do not change scheduling or issue state.
+on the right, controls sorting, card detail and light/dark appearance. All five columns
+stay visible; use filters to narrow the tasks. Display preferences are saved only in this
+browser and do not change scheduling or issue state.
 Milestones, tags and assignees come from GitHub issue metadata; tags include ordinary
-categories and `work:*` labels. Select multiple values to match any of them within a
+topic labels such as performance or authentication. Internal `kind:*`, `priority:*` and
+`symphony:*` labels are excluded; **Kind** is one task intent, while **Tags** can include several topics. Select multiple values to match any of them within a
 filter; different filters combine to narrow the result. Use **No milestone**, **No tags**
-or **Unassigned** to find missing metadata. Options reflect all loaded tasks, including
-hidden columns. Filters survive reload and are retained in board links and chat view
+or **Unassigned** to find missing metadata. Options reflect all loaded tasks. Filters survive reload and are retained in board links and chat view
 context; a saved selection with no matching tasks stays selected until cleared.
 Metadata filters do not change queue eligibility, ownership or execution permissions.
 Click a card's background to select its task chat without opening a dialog. Only the title
 text links to scrollable task details; space beside wrapped title lines selects the chat.
 Issue, PR and CI links open directly in GitHub.
-Additional PRs expand inside the card without opening task details.
+Cards show at most three PRs; **… +N** opens task details with the complete list.
 Details retain their scroll position during refresh and return to the top when you open another issue. Focus a card and
 press Enter or Space to select it. Selection survives reload and browser navigation;
 dragging still moves or reorders cards. Card details and Settings open as native dialogs
-with Close and Escape. Settings has
+with a fixed title and close header; only their body scrolls. Escape dismisses either dialog.
+Task details also close on an outside click. Settings has
 three sections: **Execution** for native controls, concurrency and read-only budgets;
 **AI & chat** for context behavior and read-only model presets;
 and **Connections** for tracker/controller/chat storage status and operator login.
@@ -684,15 +772,53 @@ Task
 descriptions render Markdown headings, lists, code, tables and safe external links;
 embedded HTML and interactive attributes are omitted, and images show their alt text.
 Relative links remain text; open the source issue for repository-relative navigation.
-Tracker issues, current runtime and durable holds own the displayed stages; stale sources
-are marked. A terminal issue does not verify a merge or deployment.
+Controlled boards use **Backlog → Work → Review → Done**:
 
-Cards and task popups retain an inline execution summary with cumulative tokens,
-attempts and elapsed time against the reported limits. It stays visible in compact view after workers exit;
+- **Backlog → Work:** drag directly or choose **Move to Work**. Local routing commits
+  immediately; GitHub label updates run in the background. Queued, paused, blocked and
+  failed tasks stay in Work. Active execution appears automatically in **In progress**
+  when dependencies, priority, concurrency, launch gates and budgets allow.
+- **Work → Review:** the agent automatically hands off its committed candidate and
+  independent review evidence after worker cleanup.
+- **Review → Done:** drag to Done or choose **Accept · Done**. Confirming records your
+  acceptance in the durable control ledger, without a second popup. Merging a PR or closing its GitHub issue
+  alone does not accept it; closed issues without acceptance remain in Review.
+  Acceptance does not merge, deploy, or change the GitHub issue's state.
+- **Review → Work:** select **Return with corrections**, enter corrections and/or select GitHub
+  comments, choose a retained PR session or new PR work, then confirm. A merged PR
+  needs new work. Reopen a closed GitHub issue before returning it to Work. New work
+  still uses the operator-approved baseline; it does not silently repin it to main.
+- **Work → Backlog:** cancel execution and wait for worker cleanup. Tokens and time
+  already consumed remain charged. Explicit new correction cycles receive a fresh
+  bounded attempt allowance; automatic retries do not reset it.
+
+The board refreshes automatically every 30 seconds. There is no manual Refresh button
+or hidden-column rail. Existing Ready/Running status links still narrow Work to queued
+or running tasks. Old column order preferences migrate into Work.
+
+GitHub issue comments, PR conversation comments, submitted reviews and review-thread
+replies enrich the existing cached board read. Cards show comment counts, working,
+remaining, addressed and blocked items. Reads are bounded: partial/unavailable sources
+are explicit, never treated as zero verified feedback. New or edited comments do not
+start agents automatically. Selecting feedback pins its exact text revision to the
+confirmed work. A candidate must report a disposition for every selected revision;
+addressed counts require independent approval of that candidate's evidence. Edited
+comments become pending again. One PR session runs per issue; comment counts describe
+its batch, not a separate worker for every comment.
+
+For the selected PR session’s feedback batch, the host maintains one GitHub issue reply with source links and
+👀 working, ✅ addressed or ❗ blocked status. It coalesces updates, caches delivery state
+privately beside the control ledger, and reconciles uncertain outcomes instead of
+blindly posting duplicates. This reply never resolves a human review thread or grants
+acceptance. Incoming comments remain untrusted source content and cannot broaden scope
+or execution permissions. Uncontrolled/upstream boards retain tracker stage semantics.
+
+Cards and task popups retain an inline execution summary with cumulative tokens and
+elapsed time, plus attempts in the current correction cycle against the reported limits. It stays visible in compact view after workers exit;
 unavailable status and missing metrics remain explicit. Task dialogs show Cancel or
 Retry only when applicable; settled candidate review does not offer Retry.
 
-Cards preview two associated PRs; the task popup lists every PR with its own state,
+Cards preview three associated PRs; the task popup lists every PR with its own state,
 GitHub review, CI summary, short commit and file counts. Each PR's CI link opens its
 checks on GitHub. Partial, stale and unavailable check data remain explicit.
 Agent review appears once for the reviewed candidate, with its reviewer summary and
@@ -708,13 +834,120 @@ for commands, limitations and the existing GitHub task workflow.
 
 ## Multiple project boards
 
-Run one configured controller per repository. The [Symphony project guide](../profiles/symphony/README.md)
-provides the self-management profile and activation requirements. In workflow front matter,
-`server.project_links` accepts up to 20 unique `{id, label, url}` maps: GitHub project ID,
-display label and HTTPS or loopback HTTP browser origin. The Projects menu follows ordinary
-links; each destination retains its own Google sign-in, chat and control state.
-`server.session_cookie` selects a distinct cookie key for controllers on the same host;
-its default preserves existing installations. Use the same key for HTTP and LiveView.
+Use the [workspace service](../profiles/events-concierge/README.md#workspace-service)
+for one public listener and shared sign-in. Project → Task → Work selectors navigate
+within that origin. **Idea / Design / Kanban / Graph / Gantt** sit beside the project selector.
+Idea keeps five vertical steps: brief, requirements, data, architecture and decisions.
+Each step embeds the self-hosted Excalidraw editor: draw shapes and text, connect arrows,
+resize, rotate, pan, zoom and undo. **Entity**, **Component** and **Note** insert editable
+groups for structured feedback. Entity fields use plain lines; relationship labels can
+include `1 → many`. Existing text, cards, arrows and sketches migrate to native scenes;
+the original browser record is preserved before the first save. Each step retains its
+own undo history while open. Images and external embeds are outside this draft format.
+
+**Get feedback** prepares project chat without submitting or replacing an unsent message.
+Structured suggestions open a change preview; **Apply** changes the working draft,
+with undo, after checking the project and exact draft revision. New edits invalidate old
+suggestions. Freehand strokes remain editable annotations; model feedback covers the
+inserted notes, entities, components and connections. Notes over 600 characters remain intact; feedback can
+add a separate note or adjust its title/position. Idea turns cannot create tasks,
+delegate, change
+goals or propose execution actions. Each queued turn retains its mode. Operational
+history remains in planning views, and project switching retains Idea.
+
+**Outline** lists tagged native items and edits the same text shown on the board; it is
+not a second model. **Review changes** compares the draft with its previous reviewed
+version. Saving a reviewed Idea snapshot stores an immutable source; it neither accepts a task
+nor starts work. Keep editing the next draft. **Prepare task** opens the existing Backlog
+preview from an unchanged reviewed item. This is a Backlog starting point: inspect the
+excerpt before creating it, and refine its outcome/verification before admission.
+Drawing relationships do not automatically become task dependencies, priorities or
+estimates; set those through task planning. Its **Idea source** link shows the immutable
+item excerpt beside the unchanged current canvas, with a return link to the task.
+A cancelled preview can be explicitly prepared again; an uncertain or completed
+submission reuses its durable intent.
+
+Draft edits autosave to the configured project's private journal at
+`<chat.state_path>/design/journal.json`. One supervised owner holds `.owner.lock`;
+every read/write checks fresh browser authority, the configuration scope, owner and
+journal digest. Save and review also check the caller's expected durable revision.
+Each scene is bounded to 4 MB and 500 native elements per step; the
+journal has a 32 MB capacity. When full, new saves and reviews stop; existing history
+and browser recovery remain intact, without automatic pruning. Restart retains both
+the draft and all reviewed sources. Project storage is local to this workspace,
+not cross-machine storage or independent backup. Include the Idea journal directory in private
+state backups; retain its ownership and file permissions during recovery.
+
+Browser storage keeps a recovery copy. An existing browser draft requires explicit
+import; a different saved project draft can be opened while preserving the browser
+original. Concurrent or unconfirmed saves stop instead of overwriting or retrying.
+Review and task preparation require the currently visible drawing to be saved.
+No operation publishes to Notion automatically. **Project design notes** opens the existing
+Notion record. The Events Concierge example remains illustrative.
+
+**Design** is the separate structured specification: Brief, Requirements, Data,
+Architecture and Decisions. Items have stable IDs, a section-specific kind, title and
+editable details. Named Mermaid diagrams retain their source and show a local preview;
+syntax feedback does not erase the source. **Save specification** saves the draft.
+**Review specification** previews that saved version; **Save reviewed version** retains
+an immutable copy. Open a past version read-only and return to the current draft.
+Idea scenes are never automatically imported or interpreted as an approved specification.
+
+Specification storage is `<control.state_path>.specification/journal.json`, owned by
+`Specification.Store` independently of chat availability. Authentication, configured
+project scope, exclusive ownership and journal digest guard every read/write. Saves and
+reviews also require the caller's expected storage revision. Specifications are bounded
+to 1 MB, 200 items and 30 diagrams per section; titles allow 256 UTF-16 units, item details
+24,000 and Mermaid source 60,000. The journal is bounded to 32 MB; full storage stops changes
+without pruning history. Include this private directory in state backups; local durability
+does not establish cross-machine storage or an independent backup. Conflicting
+saves keep your open edits; compare them before using **Reload saved draft**. An empty
+specification cannot become reviewed. Specification versions do not accept tasks,
+start workers or change execution budgets. Iteration branches, task packs and release
+mapping remain planned. Existing `view=design` task source links resolve to Idea;
+plain `view=design` opens the specification.
+
+Kanban / Graph / Gantt share filters,
+selected task and retained Work chat. Selected-task context shows the current execution,
+next safe action and readiness; the task Details panel retains limits and evidence.
+Agent replies are separate from coding execution: **Stop reply** cancels the management
+turn only. Blocked work takes precedence over an active management reply in attention
+filters. Passive dependency or capacity waits do not create another attention alert.
+**Retry cycle** previews the configured attempt bound, retains lifetime tokens/runtime,
+and forwards the exact native command ID and revision on uncertain replay. It cannot
+release other holds, bypass dependencies or change total budgets. Card `↑` / `↓` counts open the focused dependency
+graph; **Show on board** returns to Kanban. Graph supports background drag, wheel/pinch
+zoom, **Fit**, **Center selected** and keyboard controls.
+Graph shows task dependencies only. Waiting is task status; malformed declarations
+and unavailable evidence remain visible beside the affected task.
+Selecting a graph node highlights it immediately without recentering or moving focus.
+Rapid selections keep the latest intent while the server validates and opens the
+conversation; rejected stale selections return to the server's current task. Server
+patches restore the viewport before painting. Only explicit Center selected, view
+navigation and offscreen keyboard focus reveal a node. Selected-task links sit at the
+top right across Kanban, Graph and Gantt. Graph and Gantt omit the duplicate Text view.
+
+Gantt uses a UTC calendar with **Day / Week**, **Today** and **Fit** controls. Solid
+segments show recorded active execution; diamonds show human acceptance. Dashed bars
+are draft estimates, ordered by prerequisites and priority. Undated tasks default to
+one estimated day; edit the draft start or per-task days to refine the projection.
+Start/duration/scale preferences stay in this browser per project, with an explicit
+not-saved indicator if storage fails. They are not shared scheduler state. Unknown
+prerequisites and cycles remain unscheduled. Filtered neighbors retain context.
+These views never queue work, change priority or record acceptance.
+Dependencies declare delivery, design, technical or process prerequisites and optional reasons:
+`Depends on: #19 (technical: approved baseline)`. Source ingestion retains these edges
+locally; unaccepted prerequisites and cycles block admission. Editing declarations uses the
+existing confirmed, scope-checked task-content path; arbitrary graph edits are not exposed.
+
+Standalone engines remain available for development. `server.project_links` accepts up to
+20 `{id, label, url}` entries; the workspace supplies scoped URLs automatically. Distinct
+`server.session_cookie` values apply only to standalone controllers sharing a hostname.
+
+Coding workers verify their subscription before model execution. The host profile supports
+[dedicated login or explicit reuse of the laptop login](../profiles/events-concierge/README.md#coding-worker-sign-in)
+through an authentication-only client; both modes keep coding inside the isolated container.
+Permanent sign-in failures retain task usage and stop retries, including failures during a turn.
 
 ## License
 

@@ -15,6 +15,11 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
       {:reply, snapshot, state}
     end
 
+    def handle_call({:observe_tracker_issues, issues, scope}, _from, state) do
+      send(state[:owner], {:source_observed, issues, scope})
+      {:reply, :ok, state}
+    end
+
     def handle_call(:control_snapshot, _from, state) do
       send(state[:owner], :control_read)
       {:reply, state[:control] || %{"enabled" => true, "issues" => %{}}, state}
@@ -36,6 +41,12 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     end
   end
 
+  test "task intent is projected independently from stage and legacy domain labels" do
+    board = TaskBoard.project([issue("1", labels: ["kind:testing", "work:application"]), issue("2", labels: ["kind:bug"])], %{}, %{}, settings())
+    assert Enum.map(board.tasks, & &1.task_kind) == ["testing", "bug"]
+    assert Enum.all?(board.tasks, &(&1.stage == "backlog"))
+  end
+
   setup do
     previous = Application.get_env(:symphony_elixir, :github_client_module)
     previous_enrichment = Application.get_env(:symphony_elixir, :github_board_request)
@@ -55,6 +66,70 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     end)
 
     :ok
+  end
+
+  test "routing previews reuse scoped source data with current native controls and refresh on a cache miss" do
+    configure_workflow()
+    alias SymphonyElixirWeb.{BoardCache, Endpoint}
+    endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
+    cache_state = :sys.get_state(BoardCache)
+    Application.put_env(:symphony_elixir, Endpoint, server: false, secret_key_base: String.duplicate("c", 64))
+    start_supervised!({Endpoint, []})
+
+    on_exit(fn ->
+      Application.put_env(:symphony_elixir, Endpoint, endpoint_config)
+      :sys.replace_state(BoardCache, fn _ -> cache_state end)
+    end)
+
+    settings = Config.settings!()
+    fingerprint = SymphonyElixir.TaskRouting.fingerprint(settings.tracker)
+    context = %{tracker_kind: "github", tracker_fingerprint: fingerprint, repository: "example/repo", required_labels: ["ready"]}
+    queued = SymphonyElixir.TaskRouting.intent(%{}, "queue_task", 1, context)
+    control = %{"enabled" => true, "tracker_fingerprint" => fingerprint, "issues" => %{"1" => queued}}
+    name = start_runtime(control)
+    board = TaskBoard.project([issue("1", labels: [])], %{}, %{}, settings)
+    scope = BoardCache.scope(name)
+    assert :ok = BoardCache.put(scope, board)
+    Application.put_env(:symphony_elixir, :task_board_test_source, {self(), :wait})
+    assert [%{stage: "ready"}] = TaskBoard.load_cached(name, 500).tasks
+    refute_receive {:tracker_read, _, _}
+
+    BoardCache.put("different-scope", board)
+    Application.put_env(:symphony_elixir, :task_board_test_source, {self(), {:ok, [issue("1")]}})
+    assert TaskBoard.load_cached(name, 500).source_error == nil
+    assert_receive {:tracker_read, ["open", "closed"], _}
+    assert_receive {:source_observed, [_], ^fingerprint}
+  end
+
+  test "local routing immediately projects stale GitHub labels while retaining PR evidence" do
+    configure_workflow()
+    settings = Config.settings!()
+    scope = SymphonyElixir.TaskRouting.fingerprint(settings.tracker)
+    context = %{tracker_kind: "github", tracker_fingerprint: scope, repository: "example/repo", required_labels: ["ready"]}
+    native = SymphonyElixir.TaskRouting.intent(%{}, "queue_task", 1, context)
+    control = %{"enabled" => true, "tracker_fingerprint" => scope, "issues" => %{"1" => native}}
+    source = issue("1", labels: ["area:backend"])
+    board = TaskBoard.project([source], %{}, %{}, settings)
+    board = put_in(board, [:tasks, Access.at(0), :pull_requests], [%{number: 9, state: "OPEN"}])
+    pr_link = %{kind: "pull_request", label: "PR #9", url: "https://github.com/example/repo/pull/9"}
+    board = update_in(board, [:tasks, Access.at(0), :links], &(&1 ++ [pr_link]))
+    board = %{board | source_error: "GitHub unavailable", enrichment_error: "Checks unavailable"}
+
+    assert [task] = TaskBoard.refresh_control(board, control).tasks
+    assert task.stage == "ready"
+    assert task.labels == ["area:backend"]
+    assert task.routing["status"] == "pending"
+    assert task.pull_requests == [%{number: 9, state: "OPEN"}]
+    assert pr_link in task.links
+    assert TaskBoard.refresh_control(board, control).source_error == "GitHub unavailable"
+    assert TaskBoard.refresh_control(board, control).enrichment_error == "Checks unavailable"
+
+    cancelled = native |> Map.put("hold", "cancelled") |> SymphonyElixir.TaskRouting.intent("cancel", 2, context)
+    control = put_in(control, ["issues", "1"], cancelled)
+    assert [%{stage: "backlog"}] = TaskBoard.refresh_control(board, control).tasks
+    assert TaskBoard.refresh_control(board, {:error, :unavailable}).runtime_error =~ "unavailable"
+    assert TaskBoard.refresh_control(board, %{control | "tracker_fingerprint" => "other"}).runtime_error =~ "changed"
+    assert TaskBoard.refresh_control(board, Map.put(control, "fault", "broken")).tasks == board.tasks
   end
 
   test "board retains issue filter metadata and defaults for missing tracker rows" do
@@ -87,8 +162,10 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     assert task(tasks, "1").stage == "backlog"
     assert task(tasks, "1").attention == nil
     assert task(tasks, "2").stage == "ready"
-    assert task(tasks, "3").stage == "backlog"
-    assert task(tasks, "3").attention =~ "Dependencies must be visible"
+    assert task(tasks, "3").stage == "ready"
+    assert task(tasks, "3").lane == "work"
+    assert task(tasks, "3").attention == nil
+    assert task(tasks, "3").dependency_error =~ "human-accepted Done"
     assert task(tasks, "4").attention =~ "Depends on:"
 
     tasks = TaskBoard.project([%{backlog | state: "closed"}, waiting], %{}, %{}, settings()).tasks
@@ -105,7 +182,7 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     assert task(tasks, "1").stage == "running"
     assert task(tasks, "1").runtime.status == "running"
     assert task(tasks, "2").stage == "ready"
-    assert task(tasks, "2").attention == "Retry scheduled"
+    assert task(tasks, "2").attention == nil
     assert task(tasks, "3").attention == "Worker needs input"
     assert task(tasks, "4").stage == "review"
     assert task(tasks, "4").handoff == handoff
@@ -138,19 +215,74 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     assert Enum.all?(board.tasks, &(&1.stage != "done"))
   end
 
-  test "terminal tracker state carries only tracker closure evidence" do
+  test "terminal tracker state awaits native human acceptance in controlled mode" do
     date = ~U[2026-09-14 10:00:00Z]
     closed = issue("1", state: "closed", created_at: date, updated_at: date, priority: 2)
     board = TaskBoard.project([closed], %{}, %{}, settings())
     [card] = board.tasks
-    assert card.stage == "done"
-    assert card.completion_evidence =~ "Tracker marked this issue closed"
-    assert card.completion_evidence =~ "merge and deployment are not verified"
+    assert card.stage == "review"
+    assert card.lane == "review"
+    assert card.attention == "Awaiting your acceptance"
+    assert card.completion_evidence =~ "your acceptance is still required"
     assert card.created_at == "2026-09-14T10:00:00Z"
     assert card.updated_at == card.created_at
     assert card.priority == 2
     assert card.id == "github:example/repo:1"
     assert board.projects == [%{id: "github:example/repo", label: "example/repo", url: "https://github.com/example/repo"}]
+
+    uncontrolled = put_in(settings(), [:control, :enabled], false)
+    [running] = TaskBoard.project([closed], %{running: [activity("1")]}, %{}, uncontrolled).tasks
+    assert running.stage == "running"
+    [card] = TaskBoard.project([closed], %{}, %{}, uncontrolled).tasks
+    assert card.stage == "done"
+    assert card.completion_evidence =~ "Tracker marked this issue closed"
+  end
+
+  test "only explicit scoped acceptance completes a controlled task" do
+    tracker = settings().tracker
+    fingerprint = :crypto.hash(:sha256, :erlang.term_to_binary(tracker)) |> Base.url_encode64(padding: false)
+
+    acceptance = %{
+      "command_id" => "accept-1",
+      "tracker_fingerprint" => fingerprint,
+      "candidate_sha" => nil,
+      "tracker_state" => "closed",
+      "issue_updated_at" => "2026-09-14T10:00:00Z",
+      "accepted_at" => "2026-09-14T11:00:00Z"
+    }
+
+    ledger = %{"hold" => "accepted", "acceptance" => acceptance}
+    [card] = TaskBoard.project([issue("1", state: "closed")], %{}, %{"issues" => %{"1" => ledger}}, settings()).tasks
+    assert card.stage == "done"
+    assert card.lane == "done"
+    assert card.attention == nil
+    assert card.acceptance == acceptance
+
+    stable = put_in(ledger, ["acceptance", "project_id"], "github:example/repo")
+    stable = put_in(stable, ["acceptance", "tracker_fingerprint"], "previous-credentials")
+    [converged] = TaskBoard.project([issue("1")], %{running: [activity("1")]}, %{"issues" => %{"1" => stable}}, settings()).tasks
+    assert converged.lane == "done"
+    assert converged.execution_status == "idle"
+    assert converged.attention == nil
+
+    remote_settings = put_in(settings(), [:control, :enabled], false)
+    remote_control = %{"enabled" => true, "tracker_fingerprint" => fingerprint, "issues" => %{"1" => ledger}}
+    [remote_card] = TaskBoard.project([issue("1", state: "closed")], %{}, remote_control, remote_settings).tasks
+    assert remote_card.stage == "done"
+    assert remote_card.acceptance == acceptance
+    remote_board = TaskBoard.project([issue("1", state: "closed")], %{}, %{remote_control | "issues" => %{}}, remote_settings)
+    [remote_review] = remote_board.tasks
+    assert remote_review.stage == "review"
+    assert card.completion_evidence =~ "Accepted by you"
+
+    foreign = put_in(ledger, ["acceptance", "tracker_fingerprint"], "other-project")
+    [card] = TaskBoard.project([issue("1", state: "closed")], %{}, %{"issues" => %{"1" => foreign}}, settings()).tasks
+    assert card.stage == "review"
+    assert card.acceptance == nil
+
+    [card] = TaskBoard.project([issue("1")], %{running: [activity("1")]}, %{}, settings()).tasks
+    assert card.stage == "running"
+    assert card.lane == "in_progress"
   end
 
   test "a durable reservation without a running worker is explicitly uncertain" do
@@ -374,13 +506,13 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
   end
 
   test "execution and blocker evidence retain actual reason and safe canonical links" do
-    runtime = %{blocked: [Map.put(activity("1"), :error, "Worker needs input: choose the deployment region")], retrying: [Map.put(activity("2"), :error, "Rate limit; retry at the recorded deadline")]}
+    runtime = %{blocked: [Map.put(activity("1"), :error, "codex turn requires operator input")], retrying: [Map.put(activity("2"), :error, "Worker response timed out; retry scheduled")]}
     control = %{"issues" => %{"3" => %{"hold" => "token_budget"}, "4" => %{"active" => %{}}}}
     issues = [issue("1", url: "https://evil.example/steal"), issue("2"), issue("3"), issue("4"), issue("5")]
     board = TaskBoard.project(issues, runtime, control, settings())
-    assert task(board.tasks, "1").blocker_reason =~ "choose the deployment region"
+    assert task(board.tasks, "1").blocker_reason == "codex turn requires operator input"
     assert task(board.tasks, "1").execution_status == "blocked"
-    assert task(board.tasks, "2").blocker_reason =~ "Rate limit"
+    assert task(board.tasks, "2").blocker_reason == nil
     assert task(board.tasks, "3").blocker_reason == "Token budget"
     assert task(board.tasks, "3").execution_status == "held"
     assert task(board.tasks, "4").execution_status == "unknown"
@@ -393,6 +525,25 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
            ]
 
     assert Enum.all?(board.tasks, &(&1.pull_requests == []))
+  end
+
+  test "raw worker failures never become board summaries and authentication holds remain in Work" do
+    private = "agent exited: {%RuntimeError{message: \"unexpected provider failure: Bearer private-secret\"}, [{PrivateWorker, :run, 3, [file: \"private/config.ex\", line: 44]}]}"
+    runtime = %{retrying: [Map.put(activity("1"), :error, private)]}
+    control = %{"issues" => %{"2" => %{"hold" => "worker_auth_required", "tokens" => 10, "attempts" => 1, "runtime_ms" => 50}}}
+    board = TaskBoard.project([issue("1"), issue("2", labels: [])], runtime, control, settings())
+    failed = task(board.tasks, "1")
+    blocked = task(board.tasks, "2")
+
+    assert failed.blocker_reason == nil
+    assert failed.attention == nil
+    assert failed.runtime.error == private
+    assert blocked.stage == "ready"
+    assert blocked.lane == "work"
+    assert blocked.execution_status == "blocked"
+    assert blocked.attention == "Worker sign-in required"
+    assert blocked.blocker_reason == "Worker sign-in required"
+    assert blocked.ledger["tokens"] == 10
   end
 
   test "enrichment failure and tracker reload preserve issue data with separate uncertainty" do

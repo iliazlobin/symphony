@@ -6,7 +6,7 @@ defmodule SymphonyElixir.CandidatePipeline do
   """
 
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, PathSafety, ProcessGroup, PromptBuilder, Workspace}
+  alias SymphonyElixir.{Config, Feedback, PathSafety, ProcessGroup, PromptBuilder, Workspace}
 
   @handoff ".symphony/handoff.json"
   @review_schema %{
@@ -40,6 +40,7 @@ defmodule SymphonyElixir.CandidatePipeline do
          {:ok, base_sha} <- approved_base(workspace),
          {:ok, builder} <- build(workspace, issue, opts, on_message),
          {:ok, candidate} <- read_candidate(workspace),
+         {:ok, candidate} <- Feedback.bind_candidate(candidate, opts[:pr_work]),
          :ok <- verify_work_branch(candidate, opts[:pr_work]),
          {:ok, _} <- git(workspace, ["merge-base", "--is-ancestor", base_sha, candidate.candidate_sha]),
          :ok <- checkpoint_work_head(candidate, opts),
@@ -110,7 +111,7 @@ defmodule SymphonyElixir.CandidatePipeline do
   defp work_evidence(candidate, nil, _builder), do: candidate
 
   defp work_evidence(candidate, work, builder) do
-    Map.merge(candidate, %{work_id: work["id"], expected_head_sha: work["head_sha"], builder_thread_id: builder.thread_id})
+    Map.merge(candidate, %{work_id: work["id"], goal_revision: Map.get(work, "goal_revision", 1), expected_head_sha: work["head_sha"], builder_thread_id: builder.thread_id})
   end
 
   defp approved_base(workspace) do
@@ -145,7 +146,8 @@ defmodule SymphonyElixir.CandidatePipeline do
          branch: branch,
          summary: handoff["summary"],
          checks: handoff["checks"],
-         limitations: handoff["limitations"]
+         limitations: handoff["limitations"],
+         feedback_results: Map.get(handoff, "feedback_results", [])
        }}
     else
       {:error, _} = error -> error
@@ -204,7 +206,9 @@ defmodule SymphonyElixir.CandidatePipeline do
 
   defp build_work(workspace, prompt, issue, work, checkpoint, on_message) do
     prompt =
-      prompt <> "\nPR work #{work["id"]} on #{work["branch"]}. Keep this work scoped to the following confirmed instruction. Other issue work belongs to separate sessions.\n" <> work["instruction"]
+      prompt <>
+        "\nPR work #{work["id"]} on #{work["branch"]}. Keep this work scoped to the following confirmed instruction. Other issue work belongs to separate sessions.\n" <>
+        work["instruction"] <> Feedback.prompt(work)
 
     session_opts = [issue: issue, profile: :builder, pr_work_id: work["id"], thread_id: work["builder_thread_id"]]
 
@@ -226,6 +230,9 @@ defmodule SymphonyElixir.CandidatePipeline do
     Do not modify files, publish, call tracker tools, or request elevated permissions.
     Review correctness, regression risk, tests, security and scope. Report missing verification
     as a limitation, not as a successful test. Approve only when no actionable findings remain.
+    Verify every feedback_results disposition against feedback_items and the committed change.
+    A claimed addressed comment needs concrete implementation and check evidence. Request changes
+    if any claim is unsupported. A documented blocked disposition is not a claim of completion.
     Return only the structured result with this exact candidate_sha, verdict (approve,
     request_changes, blocked), summary and findings ({severity, path, line, description}).
 

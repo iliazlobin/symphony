@@ -39,15 +39,17 @@ defmodule SymphonyElixir.PrWorkRuntimeTest do
     assert :ok = AgentRunner.run(issue(), self(), options(c))
     assert_receive {:worker_candidate_ready, "42", first}, 1_000
     assert first.work_id == c.work["id"]
+    assert first.goal_revision == 1
     assert first.expected_head_sha == nil
     assert first.builder_thread_id == "retained-builder"
     assert first.branch == c.work["branch"]
     assert first.base_sha == c.work["base_sha"]
     assert first.review["candidate_sha"] == first.candidate_sha
-    second_work = Map.merge(c.work, %{"builder_thread_id" => first.builder_thread_id, "head_sha" => first.candidate_sha})
+    second_work = Map.merge(c.work, %{"builder_thread_id" => first.builder_thread_id, "head_sha" => first.candidate_sha, "goal_revision" => 2})
     File.rm!(Path.join(c.root, "checkpoint"))
     assert {:ok, second} = CandidatePipeline.run(c.workspace, issue(), options(%{c | work: second_work}), fn _ -> :ok end)
     assert second.builder_thread_id == first.builder_thread_id
+    assert second.goal_revision == 2
     assert second.expected_head_sha == first.candidate_sha
     assert second.candidate_sha != first.candidate_sha
     assert second.reviewer_session_id != first.reviewer_session_id
@@ -63,6 +65,44 @@ defmodule SymphonyElixir.PrWorkRuntimeTest do
     assert length(starts) == 3
     assert Enum.count(starts, &(&1["params"]["config"]["default_permissions"] == "symphony-reviewer")) == 2
     assert Enum.all?(Enum.filter(calls, &(&1["method"] == "turn/start")), &(not Map.has_key?(&1["params"], "sandboxPolicy")))
+  end
+
+  test "selected feedback reaches both roles and requires exact per-comment evidence", c do
+    feedback = %{
+      "id" => "IC_42",
+      "revision" => String.duplicate("d", 64),
+      "body" => "Correct the example",
+      "author" => "human",
+      "source" => "issue",
+      "pr_number" => nil,
+      "url" => "https://github.com/example/repo/issues/42#issuecomment-42"
+    }
+
+    result = Map.merge(Map.take(feedback, ~w(id revision)), %{"status" => "addressed", "details" => "Example corrected; focused check passed"})
+    File.write!(Path.join(c.root, "feedback-results"), Jason.encode!([result]))
+    context = %{c | work: Map.put(c.work, "feedback", [feedback])}
+    assert {:ok, candidate} = CandidatePipeline.run(c.workspace, issue(), options(context), fn _ -> :ok end)
+    assert candidate.feedback_items == [feedback]
+    assert candidate.feedback_results == [result]
+    prompts = calls(c) |> Enum.filter(&(&1["method"] == "turn/start")) |> Jason.encode!()
+    assert prompts =~ "Correct the example"
+    assert prompts =~ "Verify every feedback_results disposition"
+  end
+
+  test "omitted selected feedback disposition prevents review and handoff", c do
+    feedback = %{
+      "id" => "IC_42",
+      "revision" => String.duplicate("d", 64),
+      "body" => "Correct the example",
+      "author" => "human",
+      "source" => "issue",
+      "pr_number" => nil,
+      "url" => "https://github.com/example/repo/issues/42#issuecomment-42"
+    }
+
+    context = %{c | work: Map.put(c.work, "feedback", [feedback])}
+    assert {:error, :invalid_feedback_handoff} = CandidatePipeline.run(c.workspace, issue(), options(context), fn _ -> :ok end)
+    assert Enum.count(calls(c), &(&1["method"] == "thread/start")) == 1
   end
 
   test "owner checkpoint failure stops before turn start and retains the verified thread identity", c do
@@ -269,8 +309,10 @@ defmodule SymphonyElixir.PrWorkRuntimeTest do
             if role == 'builder':
                 branch = subprocess.check_output(['git', 'symbolic-ref', '--short', 'HEAD'], text=True).strip()
                 os.makedirs('.symphony', exist_ok=True)
+                handoff = {'candidate_sha': sha, 'branch': branch, 'summary': 'scoped work', 'checks': [], 'limitations': []}
+                if (root / 'feedback-results').exists(): handoff['feedback_results'] = json.loads((root / 'feedback-results').read_text())
                 with open('.symphony/handoff.json', 'w') as stream:
-                    json.dump({'candidate_sha': sha, 'branch': branch, 'summary': 'scoped work', 'checks': [], 'limitations': []}, stream)
+                    json.dump(handoff, stream)
                 result = 'Ready'
             else: result = 'invalid review' if mode == 'review_failure' else json.dumps({'candidate_sha': sha, 'verdict': 'approve', 'summary': 'Reviewed', 'findings': []})
             send({'method': 'item/completed', 'params': {'item': {'type': 'agentMessage', 'text': result}}})

@@ -34,6 +34,10 @@ defmodule SymphonyElixir.GitHub.BoardTest do
       assert body["query"] =~ "CROSS_REFERENCED_EVENT"
       assert body["query"] =~ "createdAt updatedAt"
       assert body["query"] =~ "contexts(first: 20)"
+      assert body["query"] =~ "comments(last: 20)"
+      assert body["query"] =~ "reviewThreads(last: 10)"
+      assert body["query"] =~ "comments(last: 3)"
+      assert body["query"] =~ "author { __typename login }"
       assert body["query"] =~ "... on CheckRun"
       assert body["query"] =~ "... on StatusContext"
       assert body["query"] =~ "workflowRun { workflow { name } url runNumber event }"
@@ -60,6 +64,30 @@ defmodule SymphonyElixir.GitHub.BoardTest do
     assert Enum.count(card.links, &(&1.kind == "pull_request")) == 2
     assert Enum.count(card.links, &(&1.kind == "checks" and String.ends_with?(&1.url, "/checks"))) == 2
     refute Enum.any?(card.links, &(&1.kind == "commit"))
+  end
+
+  test "feedback shares the scoped board read and becomes unavailable with failed or stale evidence" do
+    comment = %{
+      "id" => "IC_example",
+      "url" => "https://github.com/example/repo/issues/1#issuecomment-12",
+      "body" => "Clarify the test exclusions.",
+      "updatedAt" => "2026-09-15T00:00:00Z",
+      "author" => %{"__typename" => "User", "login" => "reviewer"}
+    }
+
+    comments = %{"nodes" => [comment], "totalCount" => 1, "pageInfo" => %{"hasPreviousPage" => false}}
+    data = Map.put(evidence(), "comments", comments)
+    respond(payload(data))
+    result = Board.enrich(board(), settings())
+    assert [%{feedback: %{status: "available", items: [item], counts: %{"pending" => 1}}}] = result.tasks
+    assert item["id"] == "IC_example"
+    assert item["status"] == "pending"
+    assert item["body"] == comment["body"]
+
+    respond({:error, :unavailable})
+    assert [%{feedback: %{status: "unavailable", items: []}}] = Board.enrich(result, settings()).tasks
+    respond(payload(Map.put(data, "updatedAt", "2026-09-16T00:00:00Z")))
+    assert [%{feedback: %{status: "unavailable", items: []}}] = Board.enrich(result, settings()).tasks
   end
 
   test "current-head checks carry individual job durations and workflow identity with PR metadata" do
@@ -296,12 +324,97 @@ defmodule SymphonyElixir.GitHub.BoardTest do
     assert length(result.tasks) == 51
   end
 
+  test "scoped GraphQL errors retain validated sibling evidence without promoting partial CI" do
+    jobs = contexts([check_run("Static checks")])
+    empty = %{"nodes" => [], "totalCount" => 0, "pageInfo" => %{"hasPreviousPage" => false}}
+    complete = %{"commits" => commits(jobs), "comments" => empty, "reviews" => empty, "reviewThreads" => empty}
+    data = multi_evidence([pr(7, complete)], [pr(8, complete)])
+    errors = [%{"path" => ["repository", "issue_1", "timelineItems"], "message" => "private provider detail"}]
+    respond(graphql_payload(data, errors))
+    result = Board.enrich(board(["1", "2"]), settings())
+    assert [first, second] = result.tasks
+    assert first.github_status == "partial"
+    assert first.github_partial_reason == "evidence_unavailable"
+    assert result.enrichment_reason == "evidence_unavailable"
+    assert first.feedback.status == "partial"
+    assert [%{checks: "unknown", check_details_status: "partial", check_runs: [%{conclusion: "success"}]}] = first.pull_requests
+    assert second.github_status == "available"
+    assert second.github_partial_reason == nil
+    assert second.feedback.status == "available"
+    assert [%{checks: "success", check_details_status: "available"}] = second.pull_requests
+    assert Enum.all?(result.tasks, &(&1.execution_status == "idle" and is_nil(&1.hold)))
+    assert result.enrichment_error =~ "partial"
+    refute inspect(result) =~ "private provider detail"
+  end
+
+  test "bounded older relationships do not imply unavailable current PR checks" do
+    data = put_in(issue_evidence(1, [pr(7)]), ["timelineItems", "pageInfo", "hasPreviousPage"], true)
+    respond(payload(data))
+    result = Board.enrich(board(), settings())
+    assert result.enrichment_reason == "history_truncated"
+    assert result.enrichment_error =~ "Older PR history not loaded"
+    assert [%{github_status: "partial", github_partial_reason: "history_truncated", pull_requests: [%{checks: "success"}]}] = result.tasks
+
+    respond(payload(Map.put(data, "timelineItems", %{"nodes" => [], "pageInfo" => %{}})))
+    result = Board.enrich(result, settings())
+    assert result.enrichment_reason == "evidence_unavailable"
+    assert hd(result.tasks).github_partial_reason == "evidence_unavailable"
+
+    respond({:error, :unavailable})
+    result = Board.enrich(result, settings())
+    assert result.enrichment_reason == "evidence_unavailable"
+    assert hd(result.tasks).github_partial_reason == "evidence_unavailable"
+  end
+
+  test "root, unknown and malformed GraphQL error paths cannot certify any selected task" do
+    for errors <- [
+          [%{"path" => ["repository"]}],
+          [%{"path" => ["repository", "issue_99", "comments"]}],
+          [%{"path" => ["other", "issue_1"]}],
+          [%{"message" => "private provider detail"}],
+          [%{"path" => "repository.issue_1"}],
+          [%{"path" => ["repository", 1]}],
+          [nil],
+          nil,
+          %{}
+        ] do
+      respond(graphql_payload(multi_evidence([pr(7)], [pr(8)]), errors))
+      result = Board.enrich(board(["1", "2"]), settings())
+      assert Enum.all?(result.tasks, &(&1.github_status == "partial")), inspect(errors)
+      assert Enum.all?(result.tasks, &(&1.feedback.status == "partial"))
+      assert Enum.all?(result.tasks, fn task -> Enum.all?(task.pull_requests, &(&1.checks != "success")) end)
+      refute inspect(result) =~ "private provider detail"
+    end
+  end
+
+  test "partial data cannot recover invalid issue or PR identity, or replace stale head checks" do
+    errors = [%{"path" => ["repository", "issue_1", "closedByPullRequestsReferences", "nodes", 0]}]
+
+    for issue <- [nil, %{}, Map.put(issue_evidence(1, [pr(7)]), "updatedAt", "2026-09-16T00:00:00Z")] do
+      respond(graphql_payload(Map.put(multi_evidence(), "issue_1", issue), errors))
+
+      assert [%{github_status: "unavailable", pull_requests: []}, %{github_status: "available"}] =
+               Board.enrich(board(["1", "2"]), settings()).tasks
+    end
+
+    invalid = pr(9, %{"repository" => %{"nameWithOwner" => "foreign/repo"}})
+    stale = pr(7, %{"headRefOid" => String.duplicate("b", 40)})
+    failed = pr(8, %{"commits" => commits(contexts([check_run("Web", %{"conclusion" => "FAILURE"})]), "FAILURE")})
+    respond(graphql_payload(multi_evidence([invalid, stale, failed]), errors))
+    assert [first, second] = Board.enrich(board(["1", "2"]), settings()).tasks
+    assert first.github_status == "partial"
+    assert second.github_status == "available"
+
+    assert [%{number: 8, checks: "failure", check_details_status: "partial"}, %{number: 7, checks: "stale", check_details_status: "stale"}] =
+             first.pull_requests
+  end
+
   test "transport and GraphQL failures are sanitized and preserve the complete source list" do
     failures = [
       {:error, "private token"},
       {:ok, %{status: 403, body: "private response"}},
       {:ok, %{status: 200, body: %{"data" => %{"repository" => %{"nameWithOwner" => "other/repo"}}}}},
-      {:ok, %{status: 200, body: %{"data" => %{"repository" => %{"nameWithOwner" => "example/repo"}}, "errors" => [%{"message" => "secret"}]}}}
+      {:ok, %{status: 200, body: %{"data" => %{"repository" => nil}, "errors" => [%{"message" => "secret"}]}}}
     ]
 
     for result <- failures ++ [:raise, :throw] do
@@ -407,6 +520,19 @@ defmodule SymphonyElixir.GitHub.BoardTest do
   defp respond(fun) when is_function(fun, 5), do: Application.put_env(:symphony_elixir, :github_board_request, fun)
   defp respond(result), do: respond(fn _, _, _, _, _ -> result end)
   defp payload(issue), do: {:ok, %{status: 200, body: %{"data" => %{"repository" => %{"nameWithOwner" => "example/repo", "issue_1" => issue}}}}}
+
+  defp graphql_payload(data, errors), do: {:ok, %{status: 200, body: %{"data" => %{"repository" => data}, "errors" => errors}}}
+
+  defp multi_evidence(first \\ [], second \\ []) do
+    %{"nameWithOwner" => "example/repo", "issue_1" => issue_evidence(1, first), "issue_2" => issue_evidence(2, second)}
+  end
+
+  defp issue_evidence(number, prs) do
+    evidence(prs)
+    |> Map.put("number", number)
+    |> Map.put("url", "https://github.com/example/repo/issues/#{number}")
+    |> Map.put("comments", %{"nodes" => [], "totalCount" => 0, "pageInfo" => %{"hasPreviousPage" => false}})
+  end
 
   defp evidence(prs \\ [], events \\ []) do
     %{

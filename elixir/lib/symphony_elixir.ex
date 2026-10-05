@@ -39,9 +39,14 @@ defmodule SymphonyElixir.Application do
       {Phoenix.PubSub, name: SymphonyElixir.PubSub},
       SymphonyElixir.WorkflowStore,
       SymphonyElixir.AgentRuntimeSupervisor,
+      SymphonyElixir.FeedbackSync,
+      SymphonyElixir.LabelSync,
       SymphonyElixir.Chat.Store,
+      SymphonyElixir.Design.Store,
+      SymphonyElixir.Specification.Store,
       SymphonyElixirWeb.BrowserSessions,
       SymphonyElixirWeb.BoardCache,
+      SymphonyElixir.Chat.PRUpdates,
       SymphonyElixir.HttpServer,
       SymphonyElixir.StatusDashboard
     ]

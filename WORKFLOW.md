@@ -32,6 +32,7 @@ agent:
   max_concurrent_agents: 1
   max_turns: 3
 codex:
+  auth_preflight: true
   command: '"$SYMPHONY_PROFILE_PYTHON" "$SYMPHONY_PROFILE_BIN" codex-server'
   approval_policy: on-request
   thread_sandbox: workspace-write
@@ -55,6 +56,7 @@ chat:
   state_path: $SYMPHONY_CHAT_STATE
   codex_home: $SYMPHONY_CHAT_CODEX_HOME
   executable: $SYMPHONY_CHAT_CODEX_EXECUTABLE
+  auto_create_backlog: false
 ---
 
 # Symphony coding task

@@ -5,6 +5,30 @@ defmodule SymphonyElixir.Chat.ViewContextTest do
   @project "github:example/repo"
   @id @project <> ":1"
 
+  test "Design mode is a bounded restriction and leaves historical board snapshots unchanged" do
+    base = %{"version" => 1, "project_id" => @project}
+    assert {:ok, ordinary} = ViewContext.validate(base, @project)
+    refute Map.has_key?(ordinary, "mode")
+    refute ViewContext.design?(nil)
+    refute ViewContext.design?(ordinary)
+    assert ViewContext.allowed_tool?(ordinary, "symphony_propose_action")
+    refute ViewContext.allowed_tool?(ordinary, "symphony_propose_design")
+    refute ViewContext.allowed_tool?(nil, "symphony_propose_design")
+
+    assert {:ok, design} = ViewContext.validate(Map.put(base, "mode", "design"), @project)
+    assert ViewContext.design?(design)
+    assert ViewContext.allowed_tool?(design, "symphony_view_context")
+    assert ViewContext.allowed_tool?(design, "symphony_read_project_document")
+    assert ViewContext.allowed_tool?(design, "symphony_propose_design")
+    refute ViewContext.allowed_tool?(design, "symphony_propose_action")
+    refute ViewContext.allowed_tool?(design, "symphony_delegate")
+    refute ViewContext.allowed_tool?(design, "symphony_set_goal")
+
+    for mode <- [nil, "kanban", "write", false, %{}, ["design"]] do
+      assert {:error, :invalid_view_context} = ViewContext.validate(Map.put(base, "mode", mode), @project)
+    end
+  end
+
   test "optional fields normalize to a bounded snapshot and missing context is explicit" do
     assert {:ok, nil} = ViewContext.validate(nil, @project)
     assert {:ok, snapshot} = ViewContext.validate(%{"version" => 1, "project_id" => @project}, @project)
@@ -35,6 +59,31 @@ defmodule SymphonyElixir.Chat.ViewContextTest do
     assert ViewContext.task_ids(snapshot) == [@project <> ":2", @id]
     assert {:ok, repeated} = ViewContext.validate(Map.put(snapshot, "selected_task_id", @id), @project)
     assert ViewContext.task_ids(repeated) == [@id]
+  end
+
+  test "accepts Work and In progress filters while retaining historical snapshots" do
+    base = %{"version" => 1, "project_id" => @project, "hidden_columns" => []}
+
+    for status <- ~w(work in_progress) do
+      assert {:ok, current} = ViewContext.validate(Map.put(base, "filters", %{"status" => [status]}), @project)
+      assert current["filters"]["status"] == [status]
+      assert current["hidden_columns"] == []
+    end
+
+    historical = Map.merge(base, %{"hidden_columns" => ["running", "done"], "filters" => %{"status" => ["ready", "running"]}})
+    assert {:ok, retained} = ViewContext.validate(historical, @project)
+    assert retained["hidden_columns"] == ["running", "done"]
+    assert retained["filters"]["status"] == ["ready", "running"]
+  end
+
+  test "task-kind snapshots retain bounded classifications without granting capabilities" do
+    base = %{"version" => 1, "project_id" => @project, "filters" => %{"kind" => ["bug", "testing"]}}
+    assert {:ok, context} = ViewContext.validate(base, @project)
+    assert context["filters"]["kind"] == ["bug", "testing"]
+
+    for kinds <- [["deployment"], ["bug", "bug"], ["kind:bug"], "bug", [123]] do
+      assert {:error, :invalid_view_context} = ViewContext.validate(put_in(base, ["filters", "kind"], kinds), @project)
+    end
   end
 
   test "rejects foreign, malformed, duplicate, oversized and authority-bearing fields" do

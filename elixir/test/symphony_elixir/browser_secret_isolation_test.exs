@@ -7,22 +7,28 @@ defmodule SymphonyElixir.BrowserSecretIsolationTest do
   @secret "SYMP_TEST_BROWSER_CLIENT_SECRET"
   @client "SYMP_TEST_BROWSER_CLIENT_ID"
   @public "SYMP_TEST_BROWSER_PUBLIC_VALUE"
+  @chat_secret "SYMP_TEST_CHAT_API_KEY"
+  @chat_reserved "OPENROUTER_API_KEY"
   @reserved ["SYMPHONY_GOOGLE_CLIENT_ID", "SYMPHONY_GOOGLE_CLIENT_SECRET"]
+  @workspace ~w(SYMPHONY_WORKSPACE_SECRET SYMPHONY_WORKSPACE_AUTH_SOCKET SYMPHONY_WORKSPACE_ENGINE_SOCKET SYMPHONY_WORKSPACE_PROJECT SYMPHONY_WORKSPACE_ORIGIN)
 
   setup do
     {:ok, root} = PathSafety.canonicalize(Path.dirname(Workflow.workflow_file_path()))
     workspace = Path.join(root, "workspaces/task")
     File.mkdir_p!(workspace)
 
-    previous = Map.new([@secret, @client, @public, "PATH"] ++ @reserved, &{&1, System.get_env(&1)})
+    previous = Map.new([@secret, @client, @public, @chat_secret, @chat_reserved, "PATH"] ++ @reserved ++ @workspace, &{&1, System.get_env(&1)})
     System.put_env(@secret, "fixture-secret")
     System.put_env(@client, "fixture-client")
     System.put_env(@public, "visible")
-    Enum.each(@reserved, &System.put_env(&1, "fixture-reserved"))
+    System.put_env(@chat_secret, "fixture-chat-key")
+    System.put_env(@chat_reserved, "fixture-default-chat-key")
+    Enum.each(@reserved ++ @workspace, &System.put_env(&1, "fixture-reserved"))
     on_exit(fn -> Enum.each(previous, fn {name, value} -> restore_env(name, value) end) end)
 
     config = %{
       "tracker" => %{"kind" => "memory"},
+      "chat" => %{"api_key" => "$" <> @chat_secret},
       "workspace" => %{"root" => Path.join(root, "workspaces")},
       "browser_auth" => %{"provider" => "google", "client_secret" => "$" <> @secret, "client_id" => "$" <> @client}
     }
@@ -40,6 +46,19 @@ defmodule SymphonyElixir.BrowserSecretIsolationTest do
 
     assert System.get_env(@secret) == "fixture-secret"
     assert System.get_env(@client) == "fixture-client"
+  end
+
+  test "chat credentials are excluded from ports, hooks and option overrides without clearing backend credentials", ctx do
+    assert MapSet.new(Config.process_secret_environment_names()) == MapSet.new([@secret, @client, @chat_secret, @chat_reserved] ++ @reserved ++ @workspace)
+    env = Enum.map([@chat_secret, @chat_reserved], &{String.to_charlist(&1), ~c"attempted-override"})
+    probe = "printf '%s:%s:%s\\n' \"${#{@chat_secret}-unset}\" \"${#{@chat_reserved}-unset}\" \"$#{@public}\""
+    assert {:ok, {"unset:unset:visible\n", 0}} = ProcessGroup.run(probe, cd: ctx.workspace, env: env, timeout_ms: 3_000)
+    trace = Path.join(ctx.root, "chat-hook-env")
+    configure(Map.put(ctx.config, "hooks", %{"before_run" => probe <> " > " <> quote_shell(trace)}))
+    assert :ok = Workspace.run_before_run_hook(ctx.workspace, "TASK-1")
+    assert File.read!(trace) == "unset:unset:visible\n"
+    assert System.get_env(@chat_secret) == "fixture-chat-key"
+    assert System.get_env(@chat_reserved) == "fixture-default-chat-key"
   end
 
   test "reserved launcher credentials stay private without Google settings and across workflow reloads", ctx do
@@ -72,6 +91,8 @@ defmodule SymphonyElixir.BrowserSecretIsolationTest do
     pathlib.Path(#{Jason.encode!(trace)}).write_text(json.dumps({
         "secret_present": #{@secret |> Jason.encode!()} in os.environ,
         "client_present": #{@client |> Jason.encode!()} in os.environ,
+        "chat_present": #{@chat_secret |> Jason.encode!()} in os.environ,
+        "openrouter_present": #{@chat_reserved |> Jason.encode!()} in os.environ,
         "public": os.environ.get(#{Jason.encode!(@public)})
     }))
     for line in sys.stdin:
@@ -85,14 +106,14 @@ defmodule SymphonyElixir.BrowserSecretIsolationTest do
     # Model the credentials being exported by a login shell's profile before it
     # evaluates the command, without touching the user's shell files or HOME.
     install_binary(ctx.root, "bash", """
-    export #{@secret}=profile-secret #{@client}=profile-client
+    export #{@secret}=profile-secret #{@client}=profile-client #{@chat_secret}=profile-chat #{@chat_reserved}=profile-default-chat
     exec /bin/sh -c "$2"
     """)
 
     configure(Map.put(ctx.config, "codex", %{"command" => quote_shell(executable)}))
     assert {:ok, session} = AppServer.start_session(ctx.workspace)
     AppServer.stop_session(session)
-    assert Jason.decode!(File.read!(trace)) == %{"secret_present" => false, "client_present" => false, "public" => "visible"}
+    assert Jason.decode!(File.read!(trace)) == %{"secret_present" => false, "client_present" => false, "chat_present" => false, "openrouter_present" => false, "public" => "visible"}
   end
 
   test "SSH command and port strip local credentials and clear remote login-shell exports", ctx do
@@ -134,7 +155,8 @@ defmodule SymphonyElixir.BrowserSecretIsolationTest do
       assert {:ok, storage, %{}} = Persistence.open(Path.join(ctx.root, "chat-state"))
 
       try do
-        assert File.read!(trace) == "unset:unset:visible\nunset:unset:visible\n"
+        # The ledger lock needs no inherited environment; conversation locks retain ordinary variables.
+        assert File.read!(trace) == "unset:unset:\nunset:unset:visible\n"
       after
         Persistence.close(storage)
       end
@@ -144,12 +166,27 @@ defmodule SymphonyElixir.BrowserSecretIsolationTest do
   end
 
   test "environment names cannot inject shell syntax and literal client IDs are not secret references", ctx do
-    configure(Map.put(ctx.config, "browser_auth", %{"provider" => "local_token", "client_id" => "public-client", "client_secret" => "$bad; injected"}))
+    configure(
+      ctx.config
+      |> Map.put("browser_auth", %{"provider" => "local_token", "client_id" => "public-client", "client_secret" => "$bad; injected"})
+      |> Map.put("chat", %{})
+    )
+
     assert Config.browser_auth_secret_environment_names() == @reserved
-    assert ProcessGroup.shell_command("printf ok") == "unset SYMPHONY_GOOGLE_CLIENT_ID SYMPHONY_GOOGLE_CLIENT_SECRET && printf ok"
+    names = Enum.join(@reserved ++ [@chat_reserved] ++ @workspace, " ")
+    assert ProcessGroup.shell_command("printf ok") == "unset " <> names <> " && printf ok"
 
     assert ProcessGroup.command_environment([{"PUBLIC", "ok"}, {"REMOVED", false}]) ==
-             [{"PUBLIC", "ok"}, {"REMOVED", nil}] ++ Enum.map(@reserved, &{&1, nil})
+             [{"PUBLIC", "ok"}, {"REMOVED", nil}] ++ Enum.map(@reserved ++ [@chat_reserved] ++ @workspace, &{&1, nil})
+  end
+
+  test "workspace cookie key and private broker paths never enter worker descendants", ctx do
+    env = Enum.map(@workspace, &{String.to_charlist(&1), ~c"attempted-override"})
+    arguments = Enum.map_join(@workspace, " ", &"\"${#{&1}-unset}\"")
+    probe = "printf '%s\\n' " <> arguments
+    assert {:ok, {output, 0}} = ProcessGroup.run(probe, cd: ctx.workspace, env: env, timeout_ms: 3_000)
+    assert String.split(output, "\n", trim: true) == List.duplicate("unset", length(@workspace))
+    assert System.get_env("SYMPHONY_WORKSPACE_SECRET") == "fixture-reserved"
   end
 
   defp configure(config) do

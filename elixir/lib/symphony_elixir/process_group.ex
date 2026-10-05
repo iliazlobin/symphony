@@ -11,7 +11,7 @@ defmodule SymphonyElixir.ProcessGroup do
   """
 
   @guardian ~S"""
-  import fcntl, glob, json, os, pathlib, re, select, selectors, shutil, signal, subprocess, sys, time, uuid
+  import fcntl, glob, json, os, pathlib, re, select, selectors, shutil, signal, stat, subprocess, sys, time, uuid
   selector = selectors.DefaultSelector()
   selector.register(0, selectors.EVENT_READ)
   lock_fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -26,16 +26,39 @@ defmodule SymphonyElixir.ProcessGroup do
               if not data:
                   sys.exit(0)
               pending.append(data)
-  if glob.glob(sys.argv[1] + '.*.cid.intent'):
-      raise RuntimeError('Workspace has an unverified container cleanup; operator recovery is required')
+  if glob.glob(sys.argv[1] + '.*.cid.intent') or glob.glob(sys.argv[1] + '.*.cid.auth'):
+      print('Workspace has an unverified container cleanup; operator recovery is required', file=sys.stderr)
+      sys.exit(78)
   owner = uuid.uuid4().hex
   cidfile = pathlib.Path(sys.argv[1] + '.' + owner + '.cid')
   intent = pathlib.Path(str(cidfile) + '.intent')
+  auth_marker = pathlib.Path(str(cidfile) + '.auth')
   os.environ['SYMPHONY_CONTAINER_CIDFILE'] = str(cidfile)
   os.environ['SYMPHONY_CONTAINER_OWNER'] = owner
 
+  def retire_worker_auth():
+      if not auth_marker.exists() and not auth_marker.is_symlink():
+          return
+      info = auth_marker.lstat()
+      if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or info.st_size > 8192:
+          raise RuntimeError('Worker authentication ownership is unverified; retain recovery state')
+      recorded = json.loads(auth_marker.read_text())
+      helper = pathlib.Path(recorded.get('helper', ''))
+      if recorded.get('owner') != owner or recorded.get('cidfile') != str(cidfile) or not helper.is_absolute() or helper.name != 'container_auth.py' or helper.parent.name != 'tools':
+          raise RuntimeError('Worker authentication ownership is unverified; retain recovery state')
+      helper_info = helper.lstat()
+      if not stat.S_ISREG(helper_info.st_mode) or helper_info.st_uid != os.getuid() or stat.S_IMODE(helper_info.st_mode) & 0o022 or helper.resolve() != helper:
+          raise RuntimeError('Worker authentication helper is unverified; retain recovery state')
+      result = subprocess.run([sys.executable, '-I', str(helper), 'retire', '--marker', str(auth_marker), '--owner', owner, '--cidfile', str(cidfile)], env={}, capture_output=True, timeout=15)
+      if result.returncode != 0:
+          raise RuntimeError('Worker authentication retirement failed; retain recovery state')
+      auth_marker.unlink()
+
   def remove_owned_container():
       if not intent.exists():
+          # The auth claim precedes Docker creation intent. Without creation
+          # intent no container could have been started by the trusted wrapper.
+          retire_worker_auth()
           return
       docker = shutil.which('docker')
       if not docker:
@@ -69,6 +92,9 @@ defmodule SymphonyElixir.ProcessGroup do
           result = subprocess.run(docker_command + ['rm', '--force', identity[1]], env=docker_env, capture_output=True, text=True, timeout=20)
           if result.returncode != 0 or inspect(identity[1]) is not None:
               raise RuntimeError('Container removal was not verified; workspace remains blocked')
+      # Preserve the claim until the exact owned container is proven absent.
+      # The helper returns only the current refreshed file, never a snapshot.
+      retire_worker_auth()
       cidfile.unlink(missing_ok=True)
       intent.unlink()
 
@@ -146,6 +172,7 @@ defmodule SymphonyElixir.ProcessGroup do
         workspace = Keyword.fetch!(opts, :cd) |> Path.expand()
         lock_root = Path.join(Path.dirname(workspace), ".symphony-process-locks")
         File.mkdir_p!(lock_root)
+        File.chmod!(lock_root, 0o700)
         lock_name = :crypto.hash(:sha256, workspace) |> Base.encode16(case: :lower)
         lock_path = Path.join(lock_root, lock_name <> ".lock")
 
@@ -163,10 +190,10 @@ defmodule SymphonyElixir.ProcessGroup do
     end
   end
 
-  @doc "Removes browser identity credentials before a port or its descendants start."
+  @doc "Removes host browser and chat credentials before a port or its descendants start."
   @spec port_environment(list()) :: list()
   def port_environment(environment \\ []) do
-    names = SymphonyElixir.Config.browser_auth_secret_environment_names()
+    names = SymphonyElixir.Config.process_secret_environment_names()
     Enum.reject(environment, fn {name, _value} -> to_string(name) in names end) ++ Enum.map(names, &{String.to_charlist(&1), false})
   end
 
@@ -180,10 +207,10 @@ defmodule SymphonyElixir.ProcessGroup do
     end)
   end
 
-  @doc "Removes browser credentials that a login profile may have reintroduced."
+  @doc "Removes host credentials that a login profile may have reintroduced."
   @spec shell_command(String.t()) :: String.t()
   def shell_command(command) do
-    names = SymphonyElixir.Config.browser_auth_secret_environment_names()
+    names = SymphonyElixir.Config.process_secret_environment_names()
     "unset " <> Enum.join(names, " ") <> " && " <> command
   end
 

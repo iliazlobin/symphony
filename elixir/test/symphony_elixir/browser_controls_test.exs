@@ -51,6 +51,81 @@ defmodule SymphonyElixir.BrowserControlsTest do
     %{pid: pid, token: token, marker: marker, authorization: authorization, workflow: workflow, config: config}
   end
 
+  test "acceptance rejects missing browser authority and malformed fields before dispatch", ctx do
+    command = %{
+      "action" => "accept_task",
+      "issue_id" => "7",
+      "command_id" => "accept",
+      "expected_revision" => 0,
+      "expected_candidate_sha" => nil,
+      "expected_updated_at" => "2026-09-23T00:00:00Z",
+      "expected_tracker_state" => "closed"
+    }
+
+    assert {:error, :unauthorized} = BoardActions.accept_command(command, %{})
+    assert {:error, :unauthorized} = BoardActions.accept_command(command, %{ctx.authorization | tracker_fingerprint: "foreign"}, ctx.pid)
+    assert {:error, :invalid_command} = BoardActions.accept_command(Map.delete(command, "expected_updated_at"), ctx.authorization, ctx.pid)
+    assert {:error, :invalid_command} = BoardActions.accept_command(Map.put(command, "extra", true), ctx.authorization, ctx.pid)
+    assert {:error, :invalid_command} = BoardActions.accept_command(%{command | "action" => "deploy"}, ctx.authorization, ctx.pid)
+    assert Orchestrator.control_snapshot(ctx.pid)["revision"] == 0
+  end
+
+  test "routing rejects absent authority or altered command fields before native dispatch", ctx do
+    command = %{"action" => "queue_task", "issue_id" => "7", "command_id" => "queue", "expected_revision" => 0, "expected_updated_at" => "2026-09-24T00:00:00Z"}
+    assert {:error, :unauthorized} = BoardActions.routing_command(command, %{})
+    assert {:error, :unauthorized} = BoardActions.routing_command(command, %{ctx.authorization | tracker_fingerprint: "foreign"}, ctx.pid)
+    assert {:error, :invalid_command} = BoardActions.routing_command(Map.delete(command, "expected_updated_at"), ctx.authorization, ctx.pid)
+    assert {:error, :invalid_command} = BoardActions.routing_command(Map.put(command, "labels", ["extra"]), ctx.authorization, ctx.pid)
+    assert {:error, :invalid_command} = BoardActions.routing_command(%{command | "action" => "deploy"}, ctx.authorization, ctx.pid)
+    assert Orchestrator.control_snapshot(ctx.pid)["revision"] == 0
+  end
+
+  test "attempt renewal forwards only a confirmed boolean with current browser authority", ctx do
+    command = %{"action" => "retry", "issue_id" => "7", "command_id" => "renew", "expected_revision" => 0, "renew_attempts" => true}
+    assert {:error, :unauthorized} = BoardActions.retry_command(command, %{})
+    assert {:error, :unauthorized} = BoardActions.retry_command(command, %{ctx.authorization | tracker_fingerprint: "foreign"}, ctx.pid)
+
+    for malformed <- [Map.delete(command, "renew_attempts"), Map.put(command, "renew_attempts", "true"), Map.put(command, "raise_tokens", true), %{command | "action" => "resume"}] do
+      assert {:error, :invalid_command} = BoardActions.retry_command(malformed, ctx.authorization, ctx.pid)
+    end
+
+    assert {:error, :attempts_not_exhausted} = BoardActions.retry_command(command, ctx.authorization, ctx.pid)
+    assert %{"revision" => 0, "mode" => "paused", "issues" => %{}} = Orchestrator.control_snapshot(ctx.pid)
+  end
+
+  test "browser cycle renewal preserves lifetime usage and paused mode with durable replay fencing", ctx do
+    :sys.replace_state(ctx.pid, fn state ->
+      {:ok, ledger, _, false} = SymphonyElixir.ControlLedger.command(state.control, %{"action" => "resume", "command_id" => "fixture-resume", "expected_revision" => 0})
+
+      ledger =
+        Enum.reduce([10, 20], ledger, fn tokens, ledger ->
+          {:ok, ledger, run, _} = SymphonyElixir.ControlLedger.reserve(ledger, "7")
+          {:ok, ledger} = SymphonyElixir.ControlLedger.tokens(ledger, "7", run, tokens)
+          {:ok, ledger} = SymphonyElixir.ControlLedger.finish(ledger, "7", run)
+          ledger
+        end)
+
+      {:ok, ledger} = SymphonyElixir.ControlLedger.hold(ledger, "7", "worker_failed")
+      {:ok, ledger, _, false} = SymphonyElixir.ControlLedger.command(ledger, %{"action" => "pause", "command_id" => "fixture-pause", "expected_revision" => ledger.data["revision"]})
+      %{state | control: ledger}
+    end)
+
+    before = Orchestrator.control_snapshot(ctx.pid)
+    command = %{"action" => "retry", "issue_id" => "7", "command_id" => "renew-cycle", "expected_revision" => before["revision"], "renew_attempts" => true}
+    assert {:ok, %{"renew_attempts" => true, "replayed" => false}} = BoardActions.retry_command(command, ctx.authorization, ctx.pid)
+    after_renewal = Orchestrator.control_snapshot(ctx.pid)
+    assert after_renewal["mode"] == "paused"
+    assert after_renewal["issues"]["7"]["attempts"] == 2
+    assert after_renewal["issues"]["7"]["attempt_base"] == 2
+    assert after_renewal["issues"]["7"]["hold"] == nil
+    assert after_renewal["issues"]["7"]["tokens"] == before["issues"]["7"]["tokens"]
+    assert after_renewal["issues"]["7"]["runtime_ms"] == before["issues"]["7"]["runtime_ms"]
+    assert {:ok, %{"replayed" => true}} = BoardActions.retry_command(command, ctx.authorization, ctx.pid)
+    assert {:error, :command_id_conflict} = BoardActions.retry_command(%{command | "renew_attempts" => false}, ctx.authorization, ctx.pid)
+    assert {:error, :revision_conflict} = BoardActions.retry_command(%{command | "command_id" => "stale"}, ctx.authorization, ctx.pid)
+    assert Orchestrator.control_snapshot(ctx.pid) == after_renewal
+  end
+
   test "settings commands keep browser auth, tracker scope and revision guards", ctx do
     assert {:error, :unauthorized} = BoardActions.settings_command(1, 0, "unauthorized", %{})
     assert {:error, :unauthorized} = BoardActions.settings_command(1, 0, "foreign", %{ctx.authorization | tracker_fingerprint: "foreign"}, ctx.pid)
@@ -119,6 +194,58 @@ defmodule SymphonyElixir.BrowserControlsTest do
     {conn, csrf} = browser_page()
     rejected = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => "wrong", "return_to" => "/chat"})
     assert redirected_to(rejected) == "/chat"
+  end
+
+  test "local unlock preserves bounded board destinations including project workspace paths", ctx do
+    board =
+      "/?" <>
+        URI.encode_query(%{
+          "view" => "design",
+          "project" => "github:example/fixture",
+          "priority" => "P1",
+          "chat_task" => "github:example/fixture:2",
+          "chat_session" => "work:" <> String.duplicate("a", 32),
+          "panel" => "settings"
+        })
+
+    historical =
+      board <>
+        "&design_ref=" <>
+        String.duplicate("a", 64) <>
+        "&design_section=data&design_item=event&design_task=github%3Aexample%2Ffixture%3A2"
+
+    for destination <- [historical | Enum.map(~w(idea design gantt graph), &String.replace(board, "view=design", "view=" <> &1))] do
+      {conn, csrf} = browser_page()
+      signed_in = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => ctx.token, "return_to" => destination})
+      assert redirected_to(signed_in) == destination
+    end
+
+    for destination <- [
+          "/?next=//evil.example",
+          "/?view=other",
+          "/?panel=other",
+          "/?q=%0D%0Ainjected",
+          "/?q=%FF",
+          %{"next" => "//evil.example"},
+          "/?q=" <> String.duplicate("a", 2_001),
+          "/?view=design#evil",
+          "/projects/other/?view=design"
+        ] do
+      {conn, csrf} = browser_page()
+      rejected = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => ctx.token, "return_to" => destination})
+      assert redirected_to(rejected) == "/?panel=settings"
+    end
+
+    previous = System.get_env("SYMPHONY_WORKSPACE_PROJECT")
+    System.put_env("SYMPHONY_WORKSPACE_PROJECT", "events-concierge")
+    on_exit(fn -> restore_env("SYMPHONY_WORKSPACE_PROJECT", previous) end)
+
+    for path <- [historical, String.replace(board, "view=design", "view=idea")] do
+      destination = "/projects/events-concierge" <> path
+      {conn, csrf} = browser_page()
+      signed_in = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => ctx.token, "return_to" => destination})
+      assert redirected_to(signed_in) == destination
+    end
   end
 
   test "authorization rejects missing context, expiry, token rotation and unavailable token", ctx do

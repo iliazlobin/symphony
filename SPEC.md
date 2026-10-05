@@ -486,6 +486,13 @@ fields locally if they want stricter startup checks.
   - Default: `3600000` (1 hour)
 - `read_timeout_ms` (integer)
   - Default: `5000`
+- `auth_preflight` (boolean)
+  - Default: `false`; generated dedicated subscription-worker profiles enable it.
+  - Controlled workers verify subscription account, token-free auth status and provider rate limits
+    after initialization, before starting or resuming a thread. No model turn is used for this check.
+  - Structured permanent authentication failures atomically settle the attempt and persist
+    `worker_auth_required`. They are not retried automatically; operator retry retains usage and limits.
+  - Disabled and uncontrolled runtimes retain their existing authentication behavior.
 - `stall_timeout_ms` (integer)
   - Default: `300000` (5 minutes)
   - If `<= 0`, stall detection is disabled.
@@ -767,6 +774,10 @@ An issue is dispatch-eligible only if all are true:
 For refresh and continuation checks, `issue_routable(issue)` means only that adapter-provided
 `dispatchable` is true and all `tracker.required_labels` match. State, claims, and concurrency are
 checked separately by the surrounding algorithm.
+
+For controlled GitHub execution, a scoped local routing decision replaces the required-label
+check. Issues without a local decision retain label-based routing. Source state, assignee,
+dependencies and capacity checks still apply; see [Appendix B](#appendix-b-controlled-local-execution).
 
 Sorting order (stable intent):
 
@@ -2372,11 +2383,47 @@ read-only configured `budgets` and the retained `base_sha`; it contains no crede
 | `pause` | Persist paused mode, interrupt active workers, preserve workspaces. |
 | `drain` | Stop new worker lifetimes and retries; allow currently admitted bounded execution to finish. |
 | `resume` | Enable eligible dispatch without clearing issue holds or budgets. |
-| `cancel` | Persist a per-issue hold, stop owned work and retain its workspace. |
-| `retry` | Clear an issue hold only within remaining budgets; never reset counters. |
+| `cancel` | Persist a per-issue hold and local Backlog routing, stop owned work and retain its workspace. |
+| `retry` | Clear an issue hold and route to Work only within remaining budgets; never reset counters. |
+| `queue_task` | Persist local Work routing for a known open idle issue. Requires `issue_id` and `expected_updated_at`; retains any cancelled hold. |
+| `unqueue_task` | Persist local Backlog routing for a known open cancelled idle issue. Requires `issue_id` and `expected_updated_at`; retains the hold. |
 | `set_concurrency` | Persist `limit` (integer 1 through the configured ceiling), or `null` to restore the default. No `issue_id`; active work and consumed budgets are unchanged. |
 | `create_pr_work` | Retain a new PR work identity for `issue_id`, with a 32-character lowercase hexadecimal `work_id`, bounded `instruction` and exact configured `base_sha`. Releases only a prior review hold; preserves other holds and launch gates. |
 | `continue_pr_work` | Select existing `work_id` with a new bounded `instruction` and exact `expected_head_sha` (explicit `null` before a candidate). Releases only the issue's review hold; other holds require their existing recovery path. |
+
+On controlled GitHub projects, task routing and the latest desired routing-label update
+MUST commit in the same ledger write and idempotent command receipt. Routing commands
+compare `expected_updated_at` with the last successfully observed, scoped issue record.
+Local decisions override remote routing labels for board projection and scheduling;
+current source identity, state and dependencies still gate worker admission. Existing
+issues without a local decision retain configured label intake.
+
+A separate supervised mirror MUST retry pending label updates across restarts, preserve
+unrelated labels and issue content, and acknowledge only the exact current decision.
+It MUST fence tracker/configuration/owner changes before writes and acknowledgements.
+Stale delivery cannot clear a newer pending decision. Periodic reconciliation repairs
+owned-label drift. `issues[id].routing` exposes `queued`, decision `revision`,
+`tracker_fingerprint`, `repository`, owned `labels`, `status`, `error` and `synced_at`.
+Mirroring MUST NOT close issues, launch workers or change merge/deployment policy.
+
+`accept_task` records human acceptance of an idle, reviewable issue. It MUST bind
+`issue_id`, the expected tracker state/update timestamp and nullable candidate SHA,
+plus the existing command ID and revision. The native owner revalidates tracker scope
+and those observations before atomically retaining acceptance. Accepted issues MUST
+not admit further work; this command does not close an issue, merge or deploy. Acceptance
+MUST retain stable project identity, independently of mutable routing/auth configuration.
+A repeated acceptance matching current source/evidence is an idempotent success. Legacy
+identity recovery MUST validate retained evidence and preserve the original decision.
+The explicit Accept action or a Review-to-Done drop MAY submit this command directly
+without a second confirmation dialog. An uncertain response MUST retain its command
+identity for a deliberate retry; stale evidence MUST NOT be refreshed and retried automatically.
+
+Controlled GitHub admission MUST evaluate typed same-project prerequisites from retained
+source observations. Delivery, design, technical and process edges carry optional bounded
+reasons. Missing targets and cycles block admission; local human acceptance satisfies a
+prerequisite. Priority orders eligible work and MUST NOT create dependency edges.
+The workflow graph exposes ownership and dependency edges separately; displaying or
+filtering that graph grants no scheduling or agent authority.
 
 PR work commands MUST share the native revision, authorization and idempotency boundary.
 The owner MUST derive branch and workspace names, verify fresh issue eligibility and
@@ -2384,6 +2431,17 @@ reject concurrent work on the same issue. Work identities MUST be immutable and 
 before a PR number exists. A completed work requires explicit continuation; generic Retry
 MUST NOT silently replay it. Per-issue budgets include every PR work and review attempt.
 The control snapshot includes the tracker fingerprint and retained PR work records.
+An explicitly confirmed new or continued correction cycle renews only its attempt
+allowance. Lifetime attempts and cumulative token/runtime charges remain retained.
+Automatic retry MUST NOT renew that allowance.
+
+Optional selected feedback MUST retain bounded source text, identity and revision in
+the work record. The candidate MUST return one addressed/blocked disposition with
+evidence per selected revision; addressed requires independent review approval.
+New or edited remote comments alone MUST NOT schedule work. The host MAY maintain one
+issue status reply for confirmed selections, using scoped source links and durable
+write intents; uncertain POST outcomes MUST reconcile without blind reposting.
+
 
 Both routes require `Authorization: Bearer $SYMPHONY_CONTROL_TOKEN`; the token MUST
 have at least 32 bytes. The Mac profile binds loopback, accepts only loopback Host
@@ -2492,6 +2550,25 @@ they do not constitute admission, completion or scheduler priority. Missing sour
 data preserves last-known tasks with explicit uncertainty. Tracker-terminal issues
 are not evidence of merge, acceptance or deployment.
 
+Controlled boards expose Backlog, Work, In progress, Review and Done. In progress projects
+active execution from lifecycle Work; queued, paused, blocked and failed tasks remain in
+the Work lane. It MUST NOT be set by a routing command. Human queueing moves Backlog
+to Work; native completion moves Work to Review. Only explicit human acceptance moves
+Review to Done, even when GitHub reports merged PRs or a closed issue. Review may return
+to Work through a confirmed correction command. Upstream/control-disabled projection
+retains its tracker semantics. Columns remain visible; filters control which tasks are
+shown. Board data refreshes automatically.
+
+Project chat is the visible task-intake path. A title is required; description and
+verification are optional. With `chat.auto_create_backlog: true`, an authenticated human
+project turn MAY execute a `create_task` proposal within that delegated permission.
+The host MUST persist intent, recheck turn/scope authorization immediately before writes,
+retain the receipt, deduplicate same-turn proposals and reconcile an unknown creation
+before any later creation. Reports and task/work turns MUST NOT use this authority.
+Other proposals require their existing explicit decision. Historical form/body actions
+remain readable. Per-tab drafts MUST survive project/conversation navigation; successful
+send clears only the accepted draft, while failed sends preserve it.
+
 Optional GitHub enrichment reads explicit issue/PR relationships and reports draft
 state, GitHub review decisions and checks tied to the current PR head. Enrichment
 failure MUST NOT remove otherwise valid issue data or imply successful checks.
@@ -2516,7 +2593,7 @@ controlling another repository. The bearer API authentication boundary is unchan
 
 Dialogs do not suspend execution. Closing or disconnecting the browser cannot
 cancel work. Browser controls expose pause, drain, resume, concurrency settings,
-cancel and retry operations; optional management chat adds bounded tracker edits.
+cancel, retry, acceptance and correction operations; optional management chat adds bounded tracker edits.
 Missing-input delivery, repair and publication workflows remain separate owners. Remote identity and ingress are
 not provided by the local login mechanism.
 
@@ -2528,6 +2605,17 @@ not provided by the local login mechanism.
 Settings are fixed for the store lifetime. The current service resolves only its
 configured tracker project; it does not aggregate other Symphony controllers.
 
+Management reads MUST expose `stage` / `lane` as Backlog, Work, Review or Done,
+with queued and running tasks counted and filtered together in Work. Legacy
+ready/running search inputs alias Work. `scheduler_stage` and `runtime_status`
+retain internal observations without changing admission or action permissions.
+`execution_status` / `execution_note` MUST use the same task presentation as the
+board, with current project controller mode and `admission_status` included in
+task, search, view and project results. Paused/draining blocks new admission;
+running remains subject to all admission checks. Missing or unhealthy controller
+evidence is unavailable. An idle runtime or absent issue hold does not prove
+execution is resumed, eligible or running.
+
 The conversation store MUST bind each record to an immutable project, tracker
 fingerprint and native runtime identity. Every read, turn, tool request and action
 decision MUST revalidate browser authorization and project scope. A project picker
@@ -2535,12 +2623,77 @@ changes selection, never conversation ownership. Client message IDs deduplicate
 reconnect submissions and reject changed text under the same ID. The browser MUST
 not receive model credentials, private native thread IDs or another project's history.
 
+A project MUST have one project agent, each issue one task agent, and each associated
+work session one work-agent conversation. Names use `<name> project agent`, `<name> task agent`
+and `<name> work agent`. Agent records and typed `supervises` / `reports_to` edges
+MUST export stable identifiers, parent relationships, goals and activity without leaking
+credentials. Historical aliases MUST NOT create extra graph agents. Reconciliation
+MUST fence losing queues durably before copying history and recover before dispatch.
+One PR linked to several issues MUST keep one work agent and one owning task.
+Verified native work selects its owner; before that, the first retained discussion
+owns it. Other associated issues use reference edges without supervision authority.
+Ownership changes MUST wait for active work and pending reports; conflicting native
+owners MUST be rejected rather than adopting another issue's worker.
+
+Scoped coordination tools may read this graph, set their own or a direct child's goal,
+delegate to a direct child and report to their direct parent. Completed task/work
+replies MUST report upward automatically unless the same turn successfully submitted
+an explicit parent report, including a durable pending delivery. Earlier-turn reports
+and rejected reports MUST NOT suppress automatic completion. Changed findings after
+an explicit report require another explicit update. Parent turns process source-labelled reports
+against their goals. Outgoing intent MUST precede admission and recipient receipts
+MUST prevent duplicate delivery after uncertain writes. Recipient backpressure retains
+pending delivery. Stop and restart MUST NOT silently resume supervision; fresh user
+authorization is required after restart. Each root chain is bounded to 24 deliveries
+and depth six. Model reports and goal status are not task acceptance or external-write
+authority; native scheduling and exact human action confirmation remain unchanged.
+Before inference on a report or host-evidence turn, the host MUST refresh role-scoped
+facts through the normal authorized tool callback: project status, task details or
+the bound work session. The bounded snapshot is untrusted evidence, not permission;
+unavailable facts MUST be explicit. Receipts survive Stop/restart; a post-read fence
+MUST prevent inference after Stop or revoked access. OpenRouter replays retained
+history as conversation history, without also promoting it into system instructions.
+Current proposal statuses and uncertain action outcomes MUST remain available as a
+bounded, source-labelled host snapshot after restart. Runtime provenance uses
+`project-task-work-v3`; retained v2 messages remain readable.
+
+The graph export uses version 2 and public roles `project`, `task`, `work`. Persisted
+`conversation_role=pr`, `pr:N` discussion and `work:ID` native identities remain compatible;
+PR URLs are artifact references, never agent identity or execution authority. Task kinds
+are `feature`, `enhancement`, `bug`, `testing`, `security`, `release`, `operations`,
+`analysis`, `maintenance`, `general`. Host-owned `kind:` labels classify intent; legacy
+`work:deployment` / `work:operations` map to release / operations when no explicit kind
+exists. Domain labels such as `work:application` grant no execution capability.
+
+The host MUST enforce role and scope at proposal and confirmation: project agents may
+propose project controls, task agents may propose changes and coding work only for their
+issue, and work agents may continue/cancel/retry only their verified native session.
+Mutations require authenticated human authority, including explicitly delegated project-chat
+Backlog creation above. Coordination remains
+adjacent; model instructions and task kinds never expand the tool allowlist.
+
+Native work has purpose `coding` and a positive instruction `goal_revision`, incremented
+on continuation. Candidate evidence MUST match that revision, work, run, branch, base
+and reviewed candidate SHA. Old stored records without these fields retain purpose
+coding and revision 1. Retained evidence from an older instruction remains available
+but is not current readiness. Session results expose verdict, reported checks and
+limitations; empty checks mean not reported, never passed. Results label their evidence as retained-candidate scope. For published work, session
+readiness MUST also compare the observed associated PR head; changed heads become stale
+and missing/unavailable GitHub heads remain unverified. GitHub check facts and human
+acceptance stay separate.
+Work purposes testing/security/analysis/deployment are vocabulary for future adapters;
+this iteration MUST reject them for native execution. Discussion-only external PRs
+remain read-only. The existing coding scheduler and lifecycle are unchanged.
+
 Each turn uses Codex 0.154.0 App Server with `gpt-6-astra`, private stdio and a
 dedicated home. The runtime MUST verify effective configuration and model availability,
 register no execution environments on either thread or turn, disable inherited
 tools/instructions and reject unexpected requests. The host exposes only typed
 management tools. Codex owns native history and automatic compaction; the application
 separately persists visible messages, references, action previews and receipts.
+OpenRouter tool-round preambles and provider reasoning MUST remain transient replay
+context; only terminal assistant content enters the visible transcript. Host activity,
+tool receipts and interrupted/error status remain durable.
 
 Read tools expose current project status, filtered tasks, task details and a bounded
 set of committed project documents. Document reads resolve a full default-branch SHA
@@ -2549,13 +2702,14 @@ WORKFLOW.md, PROJECT.md, README.md and AGENTS.md, capped at 128 KiB UTF-8. Sourc
 is untrusted data and never grants authority. Widgets use fixed renderers and safe
 links; model output cannot inject HTML, JavaScript or executable UI descriptions.
 
-Write tools produce proposals; only a subsequent authenticated browser decision
+External write tools produce proposals; only a subsequent authenticated browser decision
 can execute them. Proposals retain exact arguments, scope, expected control revision
 and observed task update time. Supported writes are create/edit issue, additive
-feedback, configured queue-label changes, and existing native controls. Creation
-requires configured intake labels and creates an unlabeled backlog issue. Edit and
-queue/unqueue require a cancelled, inactive task and serialize with native dispatch.
-External GitHub writers remain outside this local serialization boundary.
+feedback, local queue/unqueue decisions, and existing native controls. Creation
+requires configured intake labels and creates an unlabeled backlog issue. Edits and
+unqueue require a cancelled, inactive task. Queue also permits an unheld, idle backlog
+task; all native routing decisions serialize with dispatch and retain existing holds.
+External GitHub content writers remain outside this local serialization boundary.
 
 The store MUST persist execution intent before dispatch. Unknown outcomes MUST
 reconcile read-only through exact native receipts or GitHub operation markers,

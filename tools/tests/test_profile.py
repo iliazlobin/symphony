@@ -34,6 +34,47 @@ Keep scope bounded.
 
 
 class ProfileTests(unittest.TestCase):
+    def test_generated_single_credential_workflow_serializes_workers_without_changing_source(self):
+        source = WORKFLOW.replace("max_concurrent_agents: 1", "max_concurrent_agents: 5")
+        result = profile.worker_workflow(source)
+        settings = profile.yaml.safe_load(result.split("---\n", 2)[1])
+        self.assertEqual(settings["agent"]["max_concurrent_agents"], 1)
+        self.assertTrue(settings["codex"]["auth_preflight"])
+        self.assertIn("max_concurrent_agents: 5", source)
+
+    def test_openrouter_loads_only_explicit_private_key_without_sourcing_env(self):
+        self.assertEqual(profile.openrouter_environment({}), {})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            path = root / ".env"
+            key = "sk-or-v1-" + "x" * 32
+            path.write_text('OTHER_SECRET=not-for-symphony\nOPENROUTER_API_KEY="' + key + '"\n')
+            path.chmod(0o600)
+            config = {"openrouter_env_file": str(path), "codex_home": str(root / "worker-home")}
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "ambient"}):
+                self.assertEqual(profile.openrouter_environment(config), {"OPENROUTER_API_KEY": key})
+                self.assertEqual(os.environ["OPENROUTER_API_KEY"], "ambient")
+                self.assertNotIn("OPENROUTER_API_KEY", profile.worker_env(config))
+            for content in ["", "OTHER_SECRET=only", "OPENROUTER_API_KEY=$(command)",
+                            "OPENROUTER_API_KEY=" + key + "\nOPENROUTER_API_KEY=" + key]:
+                path.write_text(content)
+                with self.assertRaises(profile.ControlError) as error:
+                    profile.openrouter_environment(config)
+                self.assertNotIn(key, str(error.exception))
+                if content:
+                    self.assertNotIn(content, str(error.exception))
+            path.write_text("OPENROUTER_API_KEY=" + key)
+            path.chmod(0o644)
+            with self.assertRaises(profile.ControlError):
+                profile.openrouter_environment(config)
+            path.chmod(0o600)
+            link = root / "linked.env"
+            link.symlink_to(path)
+            with self.assertRaises(profile.ControlError):
+                profile.openrouter_environment({"openrouter_env_file": str(link)})
+            with self.assertRaises(profile.ControlError):
+                profile.openrouter_environment({"openrouter_env_file": "relative.env"})
+
     def oauth_file(self, root):
         path = root / "google-client.json"
         path.write_text(json.dumps({"web": {
@@ -137,6 +178,7 @@ class ProfileTests(unittest.TestCase):
             self.assertIs(installed["worker_launch_enabled"], False)
             workflow = profile.yaml.safe_load((state / "WORKFLOW.md").read_text().split("---\n", 2)[1])
             self.assertEqual(workflow["agent"]["max_concurrent_agents"], 1)
+            self.assertTrue(workflow["codex"]["auth_preflight"])
             # The generated scalar sections are also valid INI when the TOML
             # root keys get an explicit section; no Codex/auth calls are needed.
             config = configparser.RawConfigParser(delimiters=("=",))
@@ -148,6 +190,8 @@ class ProfileTests(unittest.TestCase):
             self.assertFalse(config.getboolean("features", "multi_agent"))
             self.assertEqual(config["root"]["approval_policy"], '"on-request"')
             self.assertEqual(config["root"]["approvals_reviewer"], '"user"')
+            self.assertEqual(config["root"]["cli_auth_credentials_store"], '"file"')
+            self.assertEqual(config["root"]["forced_login_method"], '"chatgpt"')
             for role in ("builder", "reviewer"):
                 self.assertFalse(config.getboolean("permissions.symphony-" + role + ".network", "enabled"))
                 self.assertEqual(config["permissions.symphony-" + role + ".filesystem"]['":root"'], '"deny"')
@@ -168,6 +212,52 @@ class ProfileTests(unittest.TestCase):
         self.assertTrue(all(path.startswith(("/usr/local/bin/", "/usr/bin/", "/bin/"))
                             for path in result.stdout.splitlines()))
 
+    def test_worker_login_serializes_enrollment_without_inheriting_host_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve() / "codex"
+            home.mkdir(mode=0o700)
+            config = {"codex_home": str(home), "codex_binary": "/fixture/codex"}
+
+            def login(command, *, env):
+                self.assertEqual(command, ["/fixture/codex", "login", "--device-auth"])
+                self.assertEqual(env["CODEX_HOME"], str(home))
+                self.assertNotIn("GITHUB_TOKEN", env)
+                self.assertNotIn("OPENROUTER_API_KEY", env)
+                state = profile.worker_auth_status(config)
+                self.assertEqual(state["state"], "active")
+                self.assertFalse(state["provider_verified"])
+                (home / "auth.json").write_text("FAKE AUTH")
+                (home / "auth.json").chmod(0o600)
+                return SimpleNamespace(returncode=0)
+
+            with patch.dict(os.environ, {"GITHUB_TOKEN": "DO NOT INHERIT", "OPENROUTER_API_KEY": "DO NOT INHERIT"}), \
+                    patch.object(profile.subprocess, "run", side_effect=login):
+                profile.worker_login(config)
+            self.assertEqual(profile.worker_auth_status(config)["state"], "idle")
+            with profile.AuthLease(home).enrollment(), patch.object(profile.subprocess, "run") as launch:
+                with self.assertRaises(profile.ControlError):
+                    profile.worker_login(config)
+                launch.assert_not_called()
+
+    def test_failed_settled_login_releases_enrollment_but_uncertain_login_retains_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve() / "codex"
+            home.mkdir(mode=0o700)
+            config = {"codex_home": str(home), "codex_binary": "/fixture/codex"}
+            for outcome in (SimpleNamespace(returncode=1), FileNotFoundError(), PermissionError()):
+                with self.subTest(outcome=type(outcome).__name__), patch.object(profile.subprocess, "run") as launch:
+                    if isinstance(outcome, Exception):
+                        launch.side_effect = outcome
+                    else:
+                        launch.return_value = outcome
+                    with self.assertRaises(profile.ControlError):
+                        profile.worker_login(config)
+                    self.assertEqual(profile.worker_auth_status(config)["state"], "idle")
+            with patch.object(profile.subprocess, "run", side_effect=OSError("uncertain host interruption")):
+                with self.assertRaises(profile.ControlError):
+                    profile.worker_login(config)
+            self.assertEqual(profile.worker_auth_status(config)["state"], "active")
+
     def sandbox_config(self, root):
         from worker_policy import render_policy
 
@@ -183,6 +273,190 @@ class ProfileTests(unittest.TestCase):
             "apparmor_sha256": hashlib.sha256(content.encode()).hexdigest(),
             "seccomp_sha256": hashlib.sha256(seccomp.read_bytes()).hexdigest(),
         }}
+
+    def local_auth_config(self, root):
+        config = self.sandbox_config(root)
+        owner = root / "owner"
+        owner.mkdir(mode=0o700)
+        local = owner / ".codex"
+        local.mkdir(mode=0o700)
+        client, runtime = root / "auth-client", root / "runtime-codex"
+        client.mkdir(mode=0o700)
+        runtime.mkdir(mode=0o700)
+        binary = root / "local-cli"
+        binary.write_text("fixture executable")
+        binary.chmod(0o700)
+        config.update(worker_auth_source="local_codex", local_codex_home=str(local),
+                      local_codex_binary=str(binary), worker_home=str(client), codex_home=str(runtime))
+        return config, owner
+
+    def test_local_auth_options_require_explicit_source_original_home_and_private_cwd(self):
+        self.assertEqual(profile.worker_auth_options({}), [])
+        for source in (None, "local", "auto", "", {}):
+            with self.subTest(source=source), self.assertRaises(profile.ControlError):
+                profile.worker_auth_options({"worker_auth_source": source})
+        for field in ("local_codex_binary", "local_codex_home"):
+            with self.assertRaises(profile.ControlError):
+                profile.worker_auth_options({field: "/private/local"})
+            with patch.object(profile, "AuthLease") as lease:
+                self.assertEqual(profile.worker_auth_status({field: "/private/local"}), {
+                    "state": "recovery", "source": "dedicated", "credential_present": False,
+                    "sign_in_required": True, "provider_verified": False})
+                lease.assert_not_called()
+        with tempfile.TemporaryDirectory() as tmp:
+            config, owner = self.local_auth_config(Path(tmp).resolve())
+            with patch.object(profile.Path, "home", return_value=owner):
+                self.assertEqual(profile.worker_auth_options(config), [
+                    "--auth-source", "local_codex", "--local-codex-binary", config["local_codex_binary"],
+                    "--local-codex-home", config["local_codex_home"], "--auth-cwd", config["worker_home"]])
+                for change in ({"local_codex_binary": "relative-cli"}, {"local_codex_home": config["codex_home"]},
+                               {"worker_home": config["workspace_root"]}, {"codex_home": config["local_codex_home"]},
+                               {"source_path": config["worker_home"]}, {"local_codex_home": None}):
+                    with self.subTest(change=list(change)), self.assertRaises(profile.ControlError):
+                        profile.worker_auth_options(dict(config, **change))
+                Path(config["worker_home"]).chmod(0o755)
+                with self.assertRaises(profile.ControlError):
+                    profile.worker_auth_options(config)
+
+    def test_local_auth_refuses_symlink_original_home_and_nonexecutable_cli(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config, owner = self.local_auth_config(Path(tmp).resolve())
+            local = Path(config["local_codex_home"])
+            actual = owner / "other-home"
+            local.rename(actual)
+            local.symlink_to(actual, target_is_directory=True)
+            with patch.object(profile.Path, "home", return_value=owner), self.assertRaises(profile.ControlError):
+                profile.worker_auth_options(config)
+            local.unlink()
+            actual.rename(local)
+            Path(config["local_codex_binary"]).chmod(0o600)
+            with patch.object(profile.Path, "home", return_value=owner), self.assertRaises(profile.ControlError):
+                profile.worker_auth_options(config)
+
+    def test_local_auth_accepts_owned_standard_home_but_keeps_client_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config, owner = self.local_auth_config(Path(tmp).resolve())
+            home = Path(config["local_codex_home"])
+            with patch.object(profile.Path, "home", return_value=owner):
+                home.chmod(0o755)
+                self.assertIn("local_codex", profile.worker_auth_options(config))
+                self.assertEqual(home.stat().st_mode & 0o777, 0o755)
+                for mode in (0o775, 0o777):
+                    home.chmod(mode)
+                    with self.subTest(mode=mode), self.assertRaises(profile.ControlError):
+                        profile.worker_auth_options(config)
+                home.chmod(0o755)
+                Path(config["worker_home"]).chmod(0o755)
+                with self.assertRaises(profile.ControlError):
+                    profile.worker_auth_options(config)
+
+    def test_local_auth_rejects_unsafe_personal_auth_leaf_without_reading_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config, owner = self.local_auth_config(root)
+            home = Path(config["local_codex_home"])
+            home.chmod(0o755)
+            credential = home / "auth.json"
+            credential.write_text("FAKE AUTH MUST NOT BE READ")
+            credential.chmod(0o600)
+            with patch.object(profile.Path, "home", return_value=owner), \
+                    patch.object(profile.Path, "read_text", side_effect=AssertionError("Credential read")), \
+                    patch.object(profile.Path, "read_bytes", side_effect=AssertionError("Credential read")):
+                self.assertIn("local_codex", profile.worker_auth_options(config))
+                for mode in (0o640, 0o604):
+                    credential.chmod(mode)
+                    with self.subTest(mode=mode), self.assertRaises(profile.ControlError):
+                        profile.worker_auth_options(config)
+                credential.chmod(0o600)
+                os.link(credential, root / "linked-auth")
+                with self.assertRaises(profile.ControlError):
+                    profile.worker_auth_options(config)
+                credential.unlink()
+                credential.symlink_to(root / "linked-auth")
+                with self.assertRaises(profile.ControlError):
+                    profile.worker_auth_options(config)
+
+    def test_local_auth_resolves_safe_cli_links_and_rejects_worker_controlled_executables(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config, owner = self.local_auth_config(root)
+            source = root / "source"
+            source.mkdir(mode=0o700)
+            config["source_path"] = str(source)
+            binary = Path(config["local_codex_binary"])
+            link = root / "cli-link"
+            link.symlink_to(binary)
+            with patch.object(profile.Path, "home", return_value=owner):
+                options = profile.worker_auth_options(dict(config, local_codex_binary=str(link)))
+                self.assertEqual(options[options.index("--local-codex-binary") + 1], str(binary))
+                self.assertEqual(options[-2:], ["--auth-source-path", str(source)])
+                trees = [Path(config["workspace_root"]), source, Path(config["codex_home"]),
+                         root / "stage-state", root / "pr-work-state", Path(config["worker_home"])]
+                for tree in trees:
+                    tree.mkdir(mode=0o700, exist_ok=True)
+                    supplied = tree / "worker-cli"
+                    supplied.write_text("worker controlled")
+                    supplied.chmod(0o700)
+                    with self.subTest(tree=tree.name), self.assertRaises(profile.ControlError):
+                        profile.worker_auth_options(dict(config, local_codex_binary=str(supplied)))
+                for mode in (0o770, 0o707, 0o777):
+                    binary.chmod(mode)
+                    with self.subTest(mode=mode), self.assertRaises(profile.ControlError):
+                        profile.worker_auth_options(config)
+                binary.chmod(0o700)
+                with patch.object(profile.os, "getuid", return_value=os.getuid() + 1), \
+                        self.assertRaises(profile.ControlError):
+                    profile.worker_auth_options(config)
+
+    def test_local_doctor_uses_only_cached_cli_status_and_never_claims_dedicated_auth(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config, owner = self.local_auth_config(Path(tmp).resolve())
+            expected = {"state": "local", "credential_present": True, "sign_in_required": False,
+                        "provider_verified": False, "source": "local_codex"}
+            with patch.object(profile.Path, "home", return_value=owner), \
+                    patch.object(profile, "cached_status", return_value=expected) as status, \
+                    patch.object(profile, "AuthLease") as lease, patch.object(profile.subprocess, "run") as login:
+                self.assertEqual(profile.worker_auth_status(config), expected)
+                status.assert_called_once_with(binary=config["local_codex_binary"], home=config["local_codex_home"],
+                                               cwd=config["worker_home"])
+                with self.assertRaisesRegex(profile.ControlError, "original CLI sign-in"):
+                    profile.worker_login(config)
+                lease.assert_not_called()
+                login.assert_not_called()
+            config["local_codex_home"] = "/invalid/home"
+            with patch.object(profile.Path, "home", return_value=owner), patch.object(profile, "cached_status") as status:
+                self.assertEqual(profile.worker_auth_status(config), {
+                    "state": "recovery", "source": "local_codex", "credential_present": False,
+                    "sign_in_required": True, "provider_verified": False})
+                status.assert_not_called()
+
+    def test_local_worker_entrypoint_forwards_auth_paths_without_host_credentials_or_mounts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config, owner = self.local_auth_config(root)
+            (root / "bin").mkdir()
+            (root / "bin/codex-rules").touch()
+            config.update(worker_launch_enabled=True, worker_image_id="sha256:" + "a" * 64)
+            environment = {"SYMPHONY_CONTAINER_CIDFILE": str(root / "private.cid"),
+                           "SYMPHONY_CONTAINER_OWNER": "b" * 32, "SYMPHONY_WORKER_ROLE": "builder",
+                           "GITHUB_TOKEN": "PRIVATE", "OPENROUTER_API_KEY": "PRIVATE"}
+            with patch.object(profile.Path, "home", return_value=owner), \
+                    patch.dict(os.environ, environment, clear=True), patch.object(profile, "run") as sync, \
+                    patch.object(profile.os, "execve") as execute:
+                profile.codex_server(config)
+                command, env = execute.call_args.args[1:]
+                self.assertIn("local_codex", command)
+                self.assertEqual(command[-4:], profile.container_launch_options(config))
+                self.assertNotIn("GITHUB_TOKEN", env)
+                self.assertNotIn("OPENROUTER_API_KEY", env)
+                self.assertEqual(env["CODEX_HOME"], config["codex_home"])
+                self.assertEqual(sync.call_args.kwargs["env"]["CODEX_HOME"], config["codex_home"])
+            config["worker_auth_source"] = "fallback"
+            with patch.object(profile, "run") as sync, patch.object(profile.os, "execve") as execute, \
+                    self.assertRaises(profile.ControlError):
+                profile.codex_server(config)
+            sync.assert_not_called()
+            execute.assert_not_called()
 
     def test_worker_policy_rejects_drift_and_different_workspace_scope(self):
         with tempfile.TemporaryDirectory() as tmp:

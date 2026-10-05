@@ -7,47 +7,82 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
   alias SymphonyElixirWeb.{BrowserAuth, BrowserLoginHTML, BrowserOrigin, BrowserSessions, Endpoint, GoogleOIDC}
 
   @spec login(Conn.t(), map()) :: Conn.t()
-  def login(conn, _params) do
+  def login(conn, params) do
     case BrowserOrigin.loopback_login_url(conn) do
-      nil -> login_page(conn)
-      url -> conn |> no_store() |> redirect(external: url)
+      nil -> login_page(conn, params)
+      url -> conn |> no_store() |> redirect(external: url <> if(params["continue"] == "1", do: "?continue=1", else: ""))
     end
   end
 
-  defp login_page(conn) do
+  defp login_page(conn, params) do
+    if params["continue"] == "1" and BrowserAuth.authorized?(BrowserAuth.conn_context(conn)) do
+      conn |> no_store() |> redirect(to: SymphonyElixirWeb.WorkspacePath.path("/"))
+    else
+      sign_in_page(conn, params)
+    end
+  end
+
+  defp sign_in_page(conn, params) do
     if BrowserAuth.google_enabled?() do
-      assigns = %{csrf_token: Plug.CSRFProtection.get_csrf_token(), error: Phoenix.Flash.get(conn.assigns.flash, :error)}
+      error = Phoenix.Flash.get(conn.assigns.flash, :error)
+
+      continue =
+        params["continue"] == "1" and BrowserAuth.callback_request?(conn) and
+          get_session(conn, "google_signed_out") != true and is_nil(error)
+
+      assigns = %{csrf_token: Plug.CSRFProtection.get_csrf_token(), error: error, continue: continue}
 
       # Form POSTs inherit this policy: no-referrer would replace their Origin with null.
       conn
+      |> put_session("google_continue", continue)
       |> no_store()
       |> put_resp_header("referrer-policy", "same-origin")
       |> html(BrowserLoginHTML.render(assigns) |> Safe.to_iodata() |> IO.iodata_to_binary())
     else
-      redirect(conn, to: "/?panel=settings")
+      redirect(conn, to: if(params["continue"] == "1", do: SymphonyElixirWeb.WorkspacePath.path("/"), else: SymphonyElixirWeb.WorkspacePath.path("/?panel=settings")))
     end
   end
 
   @spec google(Conn.t(), map()) :: Conn.t()
   def google(conn, params) do
     if BrowserAuth.browser_request?(conn) and BrowserAuth.google_enabled?() do
-      conn = disconnect_sessions(conn)
-      BrowserSessions.revoke(get_session(conn, "google_flow"))
-
-      case GoogleOIDC.start(return_to(params)) do
-        {:ok, id, url} ->
-          conn
-          |> configure_session(renew: true)
-          |> delete_session(BrowserAuth.session_key())
-          |> put_session("google_flow", id)
-          |> no_store()
-          |> redirect(external: url)
-
-        _ ->
-          login_failed(conn)
-      end
+      google_intent(conn, params)
     else
       rejected_origin(conn)
+    end
+  end
+
+  defp google_intent(conn, params) do
+    continuation = params["continue"] == "1"
+    permitted = get_session(conn, "google_continue") == true and get_session(conn, "google_signed_out") != true
+    conn = delete_session(conn, "google_continue")
+
+    cond do
+      continuation and BrowserAuth.authorized?(BrowserAuth.conn_context(conn)) ->
+        conn |> no_store() |> redirect(to: SymphonyElixirWeb.WorkspacePath.path("/"))
+
+      continuation and not permitted ->
+        conn |> no_store() |> redirect(to: SymphonyElixirWeb.WorkspacePath.path("/login"))
+
+      true ->
+        start_google(conn, params, if(continuation, do: :continuation, else: :interactive))
+    end
+  end
+
+  defp start_google(conn, params, mode) do
+    conn = conn |> disconnect_sessions() |> delete_session("google_signed_out")
+
+    case GoogleOIDC.start(return_to(params), mode) do
+      {:ok, id, url} ->
+        conn
+        |> configure_session(renew: true)
+        |> delete_session(BrowserAuth.session_key())
+        |> put_session("google_flow", id)
+        |> no_store()
+        |> redirect(external: url)
+
+      _ ->
+        login_failed(conn)
     end
   end
 
@@ -76,7 +111,7 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
       BrowserAuth.authorized?(BrowserAuth.conn_context(conn)) ->
         # A cross-site callback GET carries the Lax cookie. Only a CSRF-protected
         # login start may replace an existing grant, never an unsolicited callback.
-        redirect(conn, to: "/")
+        redirect(conn, to: SymphonyElixirWeb.WorkspacePath.path("/"))
 
       true ->
         complete_callback(conn, flow, params)
@@ -93,20 +128,24 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
         |> put_session("live_socket_id", "operator:" <> marker["id"])
         |> redirect(to: destination)
 
+      {:error, :interaction_required} ->
+        login_failed(conn, "Choose your Google account to continue to this project.")
+
       _ ->
         login_failed(conn)
     end
   end
 
-  defp login_failed(conn) do
+  defp login_failed(conn, message \\ "Google sign-in failed or this account is not allowed. Please try again.") do
     conn
     |> disconnect_sessions()
     |> delete_session(BrowserAuth.session_key())
     |> delete_session("live_socket_id")
     |> delete_session("google_flow")
-    |> put_flash(:error, "Google sign-in failed or this account is not allowed. Please try again.")
+    |> delete_session("google_continue")
+    |> put_flash(:error, message)
     |> no_store()
-    |> redirect(to: "/login")
+    |> redirect(to: SymphonyElixirWeb.WorkspacePath.path("/login"))
   end
 
   defp no_store(conn), do: conn |> put_resp_header("cache-control", "no-store") |> put_resp_header("referrer-policy", "no-referrer")
@@ -124,7 +163,7 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
         |> redirect(to: return_to(params))
 
       {:error, :google_required} ->
-        conn |> no_store() |> redirect(to: "/login")
+        conn |> no_store() |> redirect(to: SymphonyElixirWeb.WorkspacePath.path("/login"))
 
       {:error, :local_browser_required} ->
         conn |> send_resp(403, "Operator controls require a same-origin loopback browser.") |> halt()
@@ -142,10 +181,30 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
   end
 
   # Only known app entrypoints can receive an authentication redirect.
-  defp return_to(%{"return_to" => "/chat"}), do: "/chat"
-  defp return_to(%{"return_to" => "/?assistant=1"}), do: "/?assistant=1"
-  defp return_to(%{"return_to" => "/"}), do: "/"
-  defp return_to(_params), do: "/?panel=settings"
+  defp return_to(params) do
+    requested = params["return_to"]
+    relative = if is_binary(requested), do: SymphonyElixirWeb.WorkspacePath.relative(requested)
+    destination = if relative in ["/chat", "/?assistant=1", "/"] or board_destination?(relative), do: relative, else: "/?panel=settings"
+    SymphonyElixirWeb.WorkspacePath.path(destination)
+  end
+
+  # Keep scoped operator navigation while accepting only this app's board
+  # entrypoint and its bounded state parameters, never arbitrary local paths.
+  defp board_destination?(value) when is_binary(value) and byte_size(value) <= 20_000 do
+    case URI.parse(value) do
+      %URI{scheme: nil, host: nil, path: "/", fragment: nil, query: query} when is_binary(query) ->
+        fields = ~w(project status priority kind milestone label assignee q sort view task chat_task chat_session panel design_ref design_section design_item design_task)
+        params = URI.decode_query(query)
+
+        Enum.all?(params, fn {key, item} -> key in fields and String.valid?(item) and byte_size(item) <= 2_000 and not Regex.match?(~r/[\x00-\x1f\x7f]/, item) end) and
+          params["view"] in [nil, "idea", "design", "graph", "gantt", "kanban"] and params["panel"] in [nil, "settings"]
+
+      _ ->
+        false
+    end
+  end
+
+  defp board_destination?(_value), do: false
 
   @spec delete(Conn.t(), map()) :: Conn.t()
   def delete(conn, _params) do
@@ -156,9 +215,11 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
       |> delete_session(BrowserAuth.session_key())
       |> delete_session("live_socket_id")
       |> delete_session("google_flow")
+      |> delete_session("google_continue")
+      |> put_session("google_signed_out", true)
       |> no_store()
       |> put_flash(:info, "Signed out.")
-      |> redirect(to: if(BrowserAuth.google_enabled?(), do: "/login", else: "/?panel=settings"))
+      |> redirect(to: if(BrowserAuth.google_enabled?(), do: SymphonyElixirWeb.WorkspacePath.path("/login"), else: SymphonyElixirWeb.WorkspacePath.path("/?panel=settings")))
     else
       conn |> send_resp(403, "Operator controls require a same-origin loopback browser.") |> halt()
     end
