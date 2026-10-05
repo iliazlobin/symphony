@@ -6,6 +6,7 @@ defmodule SymphonyElixirWeb.StaticAssets do
   @design_canvas_js_path Path.expand("../../priv/static/design-canvas.js", __DIR__)
   @design_sync_js_path Path.expand("../../priv/static/design-sync.js", __DIR__)
   @design_canvas_css_path Path.expand("../../priv/static/design-canvas.css", __DIR__)
+  @assurance_css_path Path.expand("../../priv/static/assurance.css", __DIR__)
   @browser_login_js_path Path.expand("../../priv/static/browser-login.js", __DIR__)
   @favicon_path Path.expand("../../priv/static/favicon.png", __DIR__)
   @phoenix_html_js_path Application.app_dir(:phoenix_html, "priv/static/phoenix_html.js")
@@ -19,6 +20,7 @@ defmodule SymphonyElixirWeb.StaticAssets do
   @external_resource @design_canvas_js_path
   @external_resource @design_sync_js_path
   @external_resource @design_canvas_css_path
+  @external_resource @assurance_css_path
   @external_resource @browser_login_js_path
   @external_resource @favicon_path
   @external_resource @phoenix_html_js_path
@@ -59,7 +61,7 @@ defmodule SymphonyElixirWeb.StaticAssets do
     @external_resource Path.join(@design_editor_path, asset)
   end
 
-  @dashboard_css File.read!(@dashboard_css_path) <> "\n" <> File.read!(@design_canvas_css_path)
+  @dashboard_css File.read!(@dashboard_css_path) <> "\n" <> File.read!(@design_canvas_css_path) <> "\n" <> File.read!(@assurance_css_path)
   @dashboard_css_digest :crypto.hash(:sha256, @dashboard_css)
                         |> Base.encode16(case: :lower)
                         |> binary_part(0, 12)

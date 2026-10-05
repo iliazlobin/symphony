@@ -417,6 +417,35 @@ defmodule SymphonyElixir.ControlLedgerTest do
     assert {:error, :control_state_inside_workspace} = ControlLedger.open(inside, ctx.workspace)
   end
 
+  test "repeated rejected lock contenders survive and preserve exclusive ownership", ctx do
+    owner = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    snapshot = GenServer.call(owner, :snapshot)
+    bytes = File.read!(ctx.settings.state_path)
+    contenders = Enum.map(1..8, fn _ -> spawn_monitor(fn -> repeat_lock_contention(ctx.settings, ctx.workspace) end) end)
+
+    for {pid, reference} <- contenders do
+      assert_receive {:DOWN, ^reference, :process, ^pid, :normal}, 10_000
+    end
+
+    assert Process.alive?(owner)
+    assert GenServer.call(owner, :snapshot) == snapshot
+    assert File.read!(ctx.settings.state_path) == bytes
+    stop_supervised!(Owner)
+    assert {:ok, replacement} = ControlLedger.open(ctx.settings, ctx.workspace)
+
+    try do
+      assert ControlLedger.snapshot(replacement) == snapshot
+      assert File.read!(ctx.settings.state_path) == bytes
+    after
+      ControlLedger.close(replacement)
+    end
+  end
+
+  defp repeat_lock_contention(settings, workspace) do
+    assert Process.info(self(), :trap_exit) == {:trap_exit, false}
+    for _ <- 1..16, do: assert({:error, :control_state_locked} = ControlLedger.open(settings, workspace))
+  end
+
   test "invalid commands and retry of a running issue leave the durable revision unchanged", ctx do
     pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
 
@@ -486,8 +515,8 @@ defmodule SymphonyElixir.ControlLedgerTest do
     System.put_env("PATH", bin)
     assert {:error, :python3_required_for_control_lock} = ControlLedger.open(ctx.settings, ctx.workspace)
 
-    # A helper that never acknowledges the lock and ignores the close request
-    # must be disconnected within the handshake plus shutdown deadlines.
+    # A helper that never acknowledges the lock must be disconnected
+    # when the handshake deadline passes.
     File.write!(bin <> "/python3", "#!#{python}\nimport sys\nsys.stdin.buffer.read()\n")
     File.chmod!(bin <> "/python3", 0o700)
     started = System.monotonic_time(:millisecond)

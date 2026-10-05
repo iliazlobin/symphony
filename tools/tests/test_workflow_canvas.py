@@ -76,6 +76,59 @@ el.dataset.canvasScope="other";hook.updated();assert.equal(hook.cameras.size,1);
 assert(viewportEvents>8);hook.destroyed();assert.equal(hook.abort.signal.aborted,true);assert.equal(hook.pointers.size,0);
 ''')
 
+    def test_projection_pages_retain_separate_cameras_and_search_requests_explicit_focus(self):
+        self.run_hook(r'''
+const assert=require("node:assert/strict"),fs=require("node:fs"),vm=require("node:vm"),plain=x=>JSON.parse(JSON.stringify(x));
+const listeners=new Map(),sent=[];
+const svg={dataset:{contentWidth:"1500",contentHeight:"3000"},attrs:{},setAttribute(k,v){this.attrs[k]=v;},querySelector:()=>null,querySelectorAll:()=>[]};
+const canvas={getBoundingClientRect:()=>({left:0,top:0,width:1000,height:600}),querySelector:()=>svg};
+const el={dataset:{canvasScope:"p",planMode:"dependencies",projectionKey:"live|overview:0"},addEventListener:(n,f)=>listeners.set(n,f),dispatchEvent(){},closest:()=>null,
+ querySelector:s=>s.includes("data-plan-panel")?canvas:null,querySelectorAll:s=>s==="[data-plan-panel]"?[{dataset:{planPanel:"dependencies"}}]:[]};
+const sandbox={window:{},AbortController,CustomEvent:class{},requestAnimationFrame:fn=>fn()};vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),sandbox);
+const hook={...sandbox.window.SymphonyHooks.WorkflowCanvas,el,pushEvent:(name,payload,reply)=>{sent.push({name,payload:plain(payload)});reply({selected_task_id:payload.id});}};hook.mounted();
+hook.zoom(2);hook.camera().x=321;const overview=plain(hook.camera());hook.beforeUpdate();hook.updated();assert.deepEqual(plain(hook.camera()),overview);
+el.dataset.projectionKey="live|focus:0";svg.dataset.contentHeight="600";hook.updated();assert.notDeepEqual(plain(hook.camera()),overview);hook.camera().x=45;const focus=plain(hook.camera());
+el.dataset.selectedTaskId="issue:999";hook.updated();assert.deepEqual(plain(hook.camera()),focus);
+el.dataset.projectionKey="live|overview:0";hook.updated();assert.deepEqual(plain(hook.camera()),overview);
+el.dataset.projectionKey="baseline:abc|overview:0";hook.updated();assert.notDeepEqual(plain(hook.camera()),overview);hook.camera().x=98;const baseline=plain(hook.camera());
+el.dataset.projectionKey="live|overview:0";hook.updated();assert.deepEqual(plain(hook.camera()),overview);
+el.dataset.projectionKey="baseline:abc|overview:0";hook.updated();assert.deepEqual(plain(hook.camera()),baseline);
+el.dataset.projectionKey="live|overview:0";hook.updated();assert.deepEqual(plain(hook.camera()),overview);
+const search={hasAttribute:key=>key==="data-graph-search-result",getAttribute:()=>"issue:1000"};
+listeners.get("click")({target:{closest:s=>s==='[phx-click="select-plan-task"]'?search:null},preventDefault(){},stopPropagation(){}});
+assert.deepEqual(sent.at(-1),{name:"select-plan-task",payload:{id:"issue:1000",focus:"true"}});assert.deepEqual(plain(hook.camera()),overview);
+for(let page=0;page<25;page++){el.dataset.projectionKey="page:"+page;hook.updated();}assert.equal(hook.cameras.size,20);
+el.dataset.canvasScope="other";hook.updated();assert.equal(hook.cameras.size,1);hook.destroyed();
+''')
+
+    def test_new_focused_projection_opens_readably_and_explicit_fit_and_saved_cameras_survive(self):
+        self.run_hook(r'''
+const assert=require("node:assert/strict"),fs=require("node:fs"),vm=require("node:vm"),plain=x=>JSON.parse(JSON.stringify(x));
+const listeners=new Map(),size={left:0,top:0,width:1000,height:600};
+const nodes=[1,2].map(id=>({dataset:{planTaskId:"issue:"+id,nodeId:"task:"+id,nodeX:"700",nodeY:String(id*400),nodeWidth:"260",nodeHeight:"116"}}));
+let selected=null;
+const svg={dataset:{contentWidth:"1600",contentHeight:"5600"},attrs:{},setAttribute(k,v){this.attrs[k]=v;},querySelector:()=>selected,querySelectorAll:()=>nodes};
+const canvas={getBoundingClientRect:()=>size,querySelector:()=>svg};
+const el={dataset:{canvasScope:"p",planMode:"dependencies",graphMode:"overview",projectionKey:"live|overview:0"},addEventListener:(n,f)=>listeners.set(n,f),dispatchEvent(){},closest:()=>null,
+ querySelector:s=>s.includes("data-plan-panel")?canvas:null,querySelectorAll:s=>s==="[data-plan-panel]"?[{dataset:{planPanel:"dependencies"}}]:[]};
+const sandbox={window:{},AbortController,CustomEvent:class{},requestAnimationFrame:fn=>fn()};
+vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),sandbox);
+const hook={...sandbox.window.SymphonyHooks.WorkflowCanvas,el};hook.mounted();
+assert(hook.camera().scale<.11);const overview=plain(hook.camera());
+selected=nodes[0];el.dataset.graphMode="focus";el.dataset.selectedTaskId="issue:1";el.dataset.selectedId="task:1";el.dataset.projectionKey="live|focus:0";hook.updated();
+assert.equal(hook.camera().scale,1);assert.equal(hook.camera().x+size.width/2,830);assert.equal(hook.camera().y+size.height/2,458);
+hook.camera().x=321;hook.camera().scale=.7;const retained=plain(hook.camera());selected=nodes[1];el.dataset.selectedId="task:2";el.dataset.selectedTaskId="issue:2";hook.updated();
+assert.deepEqual(plain(hook.camera()),retained); // Ordinary selection retains user pan and zoom.
+const fit={dataset:{canvasAction:"fit"}},target={closest:s=>s==="[data-canvas-action]"?fit:null};listeners.get("click")({target});
+assert(hook.camera().scale<.11);const explicitFit=plain(hook.camera());hook.updated();assert.deepEqual(plain(hook.camera()),explicitFit);
+el.dataset.projectionKey="baseline:abc|focus:0";hook.updated();assert.equal(hook.camera().scale,1);const history=plain(hook.camera());
+el.dataset.projectionKey="live|focus:0";hook.updated();assert.deepEqual(plain(hook.camera()),explicitFit);
+el.dataset.projectionKey="baseline:abc|focus:0";hook.updated();assert.deepEqual(plain(hook.camera()),history);
+el.dataset.graphMode="overview";el.dataset.projectionKey="live|overview:0";hook.updated();assert.deepEqual(plain(hook.camera()),overview);
+selected=null;el.dataset.selectedTaskId="issue:outside-group";el.dataset.selectedId="task:outside-group";el.dataset.graphMode="tasks";el.dataset.graphGroup="milestone:1";el.dataset.projectionKey="live|tasks:milestone:1";hook.updated();
+assert.equal(hook.camera().scale,1);assert.equal(hook.camera().x+size.width/2,830);assert.equal(hook.camera().y+size.height/2,458);hook.destroyed();
+''')
+
     def test_selection_is_immediate_coalesced_and_survives_stale_patches_without_camera_or_focus_changes(self):
         self.run_hook(r'''
 const assert=require("node:assert/strict"),fs=require("node:fs"),vm=require("node:vm");
@@ -139,6 +192,37 @@ delete el.dataset.selectionFeedbackMs;delete el.dataset.selectionSettledMs;hook.
 while(frames.length)frames.shift()();replies.shift()({selected_task_id:"issue:47"});
 assert.equal(el.dataset.selectionFeedbackMs,undefined);assert.equal(el.dataset.selectionSettledMs,undefined);
 click("issue:50");hook.destroyed();replies.shift()({selected_task_id:"issue:30"});assert.equal(nodes[50].dataset.selected,"true");
+''')
+
+    def test_historical_selection_keeps_current_chat_toolbar_and_links(self):
+        self.run_hook(r'''
+const assert=require("node:assert/strict"),fs=require("node:fs"),vm=require("node:vm");
+const listeners=new Map(),replies=[];
+const nodes=[1,2].map(id=>({dataset:{planTaskId:"issue:"+id,nodeId:"task:"+id,nodeX:"44",nodeY:"44",nodeWidth:"260",nodeHeight:"116"},
+ querySelector:s=>s===".plan-node-select"?{setAttribute(){}}:s===".plan-node-meta span"?{textContent:"GH-"+id}:{textContent:"Task "+id}}));
+const edge={dataset:{edgeSource:"task:1",edgeTarget:"task:2"}};
+const svg={dataset:{contentWidth:"1600",contentHeight:"600"},attrs:{},setAttribute(k,v){this.attrs[k]=v;},querySelector:()=>nodes[0],querySelectorAll:s=>s==="[data-plan-node]"?nodes:s==="[data-edge-source]"?[edge]:[]};
+const canvas={getBoundingClientRect:()=>({left:0,top:0,width:1000,height:600}),querySelector:()=>svg};
+const label={hidden:false,textContent:"GH-1",title:"Current task 1"};
+const links=["kanban","gantt"].map(view=>({dataset:{boardViewTask:"issue:1"},textContent:view,href:"http://localhost/?view="+view+"&chat_task=issue%3A1&chat_session=work%3Acurrent",setAttribute(k,v){this[k]=v;}}));
+const toolbar={dataset:{selectedTaskId:"issue:1"},querySelector:()=>label,querySelectorAll:()=>links};
+const el={dataset:{canvasScope:"p",planMode:"dependencies",graphHistorical:"true",selectedTaskId:"issue:1"},addEventListener:(n,f)=>listeners.set(n,f),dispatchEvent(){},contains:()=>false,
+ closest:()=>({querySelector:()=>toolbar}),querySelector:s=>s.includes("data-plan-panel")?canvas:null,querySelectorAll:s=>s==="[data-plan-panel]"?[{dataset:{planPanel:"dependencies"}}]:[]};
+const sandbox={window:{location:{href:"http://localhost/"}},URL,AbortController,CustomEvent:class{},requestAnimationFrame:fn=>fn()};
+vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),sandbox);
+const hook={...sandbox.window.SymphonyHooks.WorkflowCanvas,el,pushEvent:(name,payload,reply)=>replies.push(reply)};hook.mounted();
+const currentToolbar=JSON.stringify({label,links,toolbar:toolbar.dataset});
+const click=id=>listeners.get("click")({target:{closest:s=>s==='[phx-click="select-plan-task"]'?{hasAttribute:()=>false,getAttribute:()=>id}:null},preventDefault(){},stopPropagation(){}});
+click("issue:2");assert.equal(nodes[1].dataset.selected,"true");assert.equal(nodes[0].dataset.selected,"false");assert.equal(edge.dataset.related,"true");
+assert.equal(JSON.stringify({label,links,toolbar:toolbar.dataset}),currentToolbar);
+hook.beforeUpdate();el.dataset.selectedTaskId="issue:1";nodes.forEach(n=>n.dataset.selected="false");hook.updated();
+assert.equal(nodes[1].dataset.selected,"true");assert.equal(JSON.stringify({label,links,toolbar:toolbar.dataset}),currentToolbar);
+replies.shift()({selected_task_id:"issue:2"});assert.equal(nodes[1].dataset.selected,"true");
+assert.equal(JSON.stringify({label,links,toolbar:toolbar.dataset}),currentToolbar);
+el.dataset.graphHistorical="false";el.dataset.selectedTaskId="issue:2";hook.updated();click("issue:1");
+assert.equal(toolbar.dataset.selectedTaskId,"issue:1");assert.equal(label.title,"Task 1");
+assert(links.every(link=>link.dataset.boardViewTask==="issue:1" && !link.href.includes("chat_session")));
+replies.shift()({selected_task_id:"issue:1"});hook.destroyed();
 ''')
 
     def test_graph_patch_retains_only_original_control_focus_without_revealing_or_stealing_it(self):
@@ -288,6 +372,29 @@ board.el.dataset.selectedTask="queued";board.hook.prefs.label=["label:backend"];
 board.el.dataset.chatOpen="true";board.el.dataset.chatProject="github:example/repo";board.hook.captureContext();assert(!board.sent.at(-1).payload.visible_task_ids.includes("queued"));
 const direct={dataset:{boardViewLink:"graph",boardViewTask:"queued"},closest:s=>s==="[data-board-view-link]"?direct:null};board.listeners.get("click")({target:direct,button:0,preventDefault(){}});assert.equal(board.sent.at(-1).payload.id,"queued");assert.equal(board.sent.at(-1).payload.filters.label,'["label:backend"]');
 
+''')
+
+    def test_graph_only_catalog_keeps_filters_counts_and_real_viewport_context(self):
+        self.run_hook(self.board_fixture() + r'''
+const p=mount(),originalAll=p.el.querySelectorAll.bind(p.el),originalOne=p.el.querySelector.bind(p.el);
+const node=id=>({dataset:{planTaskId:id},closest:()=>null,getClientRects:()=>[{}],getBoundingClientRect:()=>({left:10,right:200,top:10,bottom:80})});
+p.el.dataset.boardView="graph";
+p.el.dataset.taskCatalog=JSON.stringify(Array.from({length:1000},(_,i)=>({taskId:"task:"+i,project:"github:example/repo",lane:"work",status:"ready",attention:"false",priority:"P2",kind:"feature",title:"Task "+i,identifier:"GH-"+i,labels:JSON.stringify([i%2?"frontend":"backend"]),assignees:'["alice"]',milestone:JSON.stringify({id:String(i%20+1),title:"Milestone "+(i%20+1)})})));
+p.el.querySelectorAll=s=>s==='[data-plan-task-id][data-plan-visible="true"]'?[node("task:998"),node("task:999"),node("unknown")]:s===".task-card[data-task-id]"||s==="[data-stage]"?[]:originalAll(s);
+p.el.querySelector=s=>s.startsWith('[data-stage="')?null:originalOne(s);
+p.el.dataset.urlFilters=JSON.stringify({view:"graph",status:"work",label:'["label:backend"]'});p.hook.updated();
+assert.equal(p.elements.get("[data-result-count]").textContent,"500 of 1000 tasks");
+assert(p.hook.options("label").some(([id])=>id==="label:frontend"));
+assert(p.hook.options("milestone").some(([id])=>id==="milestone:github:example/repo:20"));
+assert(p.hook.options("assignee").some(([id])=>id==="assignee:alice"));
+p.el.dataset.chatOpen="true";p.el.dataset.chatProject="github:example/repo";p.el.querySelector("#management-chat-dock").getBoundingClientRect=()=>({left:1000});p.hook.captureContext();
+let context=p.sent.at(-1).payload;assert.deepEqual(plain(context.viewport_task_ids),["task:998"]);assert.equal(context.visible_task_ids.length,50);assert.equal(context.visible_task_ids[0],"task:998");assert.equal(context.truncated,true);
+p.el.dataset.boardView="gantt";p.hook.updated();assert.equal(p.elements.get("[data-result-count]").textContent,"500 of 1000 tasks");
+p.el.dataset.urlFilters=JSON.stringify({view:"gantt",q:"GH-999"});p.hook.updated();assert.equal(p.elements.get("[data-result-count]").textContent,"1 of 1000 tasks");p.hook.captureContext();assert.deepEqual(plain(p.sent.at(-1).payload.visible_task_ids),["task:999"]);
+p.el.dataset.taskCatalog="{";p.hook.updated();assert.equal(p.elements.get("[data-result-count]").textContent,"0 of 0 tasks");
+// Returning to Kanban uses actual cards even if a previous catalog remains on the root.
+p.el.dataset.taskCatalog='[{"taskId":"stale","labels":"[\\"stale\\"]"}]';p.el.dataset.boardView="kanban";p.el.dataset.urlFilters="{}";p.el.querySelectorAll=originalAll;p.el.querySelector=originalOne;p.hook.updated();
+assert.equal(p.elements.get("[data-result-count]").textContent,"5 of 5 tasks");assert(!p.hook.options("label").some(([id])=>id==="label:stale"));
 ''')
 
     def test_mobile_filters_toggle_and_close_on_view_navigation(self):

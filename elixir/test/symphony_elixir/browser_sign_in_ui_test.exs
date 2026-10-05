@@ -66,6 +66,26 @@ defmodule SymphonyElixir.BrowserSignInUITest do
     refute preview =~ ~s(action="/operator/session/logout")
   end
 
+  test "embedded chat sign-in preserves the scoped graph location for both providers" do
+    destination =
+      "/projects/events-concierge/?" <>
+        URI.encode_query(%{
+          "view" => "graph",
+          "chat_task" => "github:example/fixture:2",
+          "graph_mode" => "focus",
+          "graph_query" => "GH-2 & schema",
+          "graph_hops" => "2"
+        })
+
+    for {provider, action} <- [{"google", "/auth/google"}, {"local_token", "/operator/session"}] do
+      configure(provider)
+      html = chat_html(true, return_to: destination)
+      document = Floki.parse_document!(html)
+      assert Floki.attribute(document, "form[action='#{action}'] input[name=return_to]", "value") == [destination]
+      assert Floki.attribute(document, "form[action='#{action}'] input[name=_csrf_token]", "value") == ["fixture-csrf"]
+    end
+  end
+
   test "both Settings providers submit the current scoped return location" do
     historical =
       "/projects/events-concierge/?view=design&design_ref=" <>
@@ -110,7 +130,7 @@ defmodule SymphonyElixir.BrowserSignInUITest do
     :ok = WorkflowStore.force_reload()
   end
 
-  defp chat_html(embedded) do
+  defp chat_html(embedded, overrides \\ []) do
     {:ok, socket} = ChatPanel.mount(%Phoenix.LiveView.Socket{})
 
     assigns =
@@ -121,7 +141,7 @@ defmodule SymphonyElixir.BrowserSignInUITest do
         myself: %Phoenix.LiveComponent.CID{cid: 1}
       })
 
-    render_component(&ChatPanel.render/1, assigns)
+    render_component(&ChatPanel.render/1, Map.merge(assigns, Map.new(overrides)))
   end
 
   defp settings_html(overrides \\ []) do
