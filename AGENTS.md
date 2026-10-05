@@ -1,6 +1,6 @@
 # Symphony orchestration
 
-This private fork keeps OpenAI Symphony's scheduler and adds bounded local controls,
+This public fork keeps OpenAI Symphony's scheduler and adds bounded local controls,
 an independent reviewer, host publication and a small MCP client. Read
 [ARCHITECTURE.md](ARCHITECTURE.md), then the owning code and tests. The Events Concierge
 profile is the first consumer; application code and GCP infrastructure live separately.

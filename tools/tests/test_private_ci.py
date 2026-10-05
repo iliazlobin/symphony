@@ -2,7 +2,10 @@
 
 import ipaddress
 import json
+import os
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 
 import yaml
@@ -97,8 +100,20 @@ class PrivateCITests(unittest.TestCase):
         for filename, name in (("make-all.yml", "make-all"), ("pr-description-lint.yml", "validate-pr-description")):
             workflow = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
             job = workflow["jobs"][name]
-            # Bootstrap leaves hosted routing intact until the pilot is verified.
-            self.assertIn(job["runs-on"], ("ubuntu-latest", "symphony-ci"))
+            # Bootstrap is hosted. A later routing change must retain a hosted
+            # path for forks and Dependabot; unconditional private routing fails.
+            if job["runs-on"] != "ubuntu-latest":
+                same_repo = ("github.event_name == 'pull_request' && "
+                             "github.event.pull_request.head.repo.full_name == github.repository && "
+                             "github.actor != 'dependabot[bot]' && "
+                             "github.event.pull_request.user.login != 'dependabot[bot]'")
+                predicate = ("(github.event_name == 'push' && github.ref == 'refs/heads/main') || (" + same_repo + ")"
+                             if filename == "make-all.yml" else same_repo)
+                self.assertEqual(job["runs-on"], "${{ (" + predicate + ") && 'symphony-ci' || 'ubuntu-latest' }}")
+                mise = next(s for s in job["steps"] if s.get("uses", "").startswith("jdx/mise-action@"))
+                self.assertEqual(mise["if"], "runner.environment == 'github-hosted'")
+                probe = next(s for s in job["steps"] if s.get("run") == "python3 deploy/ci/probe_runner.py")
+                self.assertEqual(probe["if"], "runner.environment == 'self-hosted'")
             self.assertNotIn("container", job)
             self.assertNotIn("services", job)
         make = (ROOT / ".github/workflows/make-all.yml").read_text()
@@ -107,6 +122,42 @@ class PrivateCITests(unittest.TestCase):
         release = yaml.safe_load((ROOT / ".github/workflows/burrito-release.yml").read_text())
         targets = {m["target"] for m in release["jobs"]["smoke"]["strategy"]["matrix"]["include"]}
         self.assertEqual(targets, {"linux_x86_64", "linux_arm64", "macos_x86_64", "macos_arm64"})
+
+    def test_install_rejects_weaker_or_unverifiable_fork_approval_before_gke(self):
+        image = "us-west1-docker.pkg.dev/iz27-platform-dev/symphony/ci-runner@sha256:" + "a" * 64
+        cases = (("first_time_contributors", 0, False),
+                 ("first_time_contributors_new_to_github", 0, False),
+                 ("", 0, False), ("all_external_contributors", 1, False),
+                 ("all_external_contributors", 0, True))
+        for policy, api_status, permits_gke in cases:
+            with self.subTest(policy=policy, api_status=api_status), tempfile.TemporaryDirectory() as root:
+                root = Path(root)
+                trace = root / "commands"
+                # These fixtures cannot invoke GitHub, Helm or the cluster.
+                gh = root / "gh"
+                gh.write_text("#!/bin/sh\nprintf 'gh\\n' >> \"$CI_PREFLIGHT_TRACE\"\n"
+                              "printf '%s\\n' \"$@\" > \"$CI_PREFLIGHT_ARGS\"\n"
+                              "printf '%s\\n' \"$CI_PREFLIGHT_POLICY\"\n"
+                              "exit \"$CI_PREFLIGHT_API_STATUS\"\n")
+                gh.chmod(0o700)
+                for command in ("kubectl", "helm"):
+                    fixture = root / command
+                    fixture.write_text(f"#!/bin/sh\nprintf '{command}\\n' >> \"$CI_PREFLIGHT_TRACE\"\nexit 90\n")
+                    fixture.chmod(0o700)
+                args_path = root / "gh-args"
+                env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                       "CI_PREFLIGHT_TRACE": str(trace), "CI_PREFLIGHT_ARGS": str(args_path),
+                       "CI_PREFLIGHT_POLICY": policy, "CI_PREFLIGHT_API_STATUS": str(api_status)}
+                result = subprocess.run([str(CI / "install.sh"), image], env=env,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(trace.read_text().splitlines(), ["gh", "kubectl"] if permits_gke else ["gh"])
+                self.assertEqual(args_path.read_text().splitlines(),
+                                 ["api", "--hostname", "github.com",
+                                  "repos/iliazlobin/symphony/actions/permissions/fork-pr-contributor-approval",
+                                  "--jq", ".approval_policy"])
+                if not permits_gke:
+                    self.assertIn("approval", result.stderr)
 
     def test_build_and_chart_inputs_have_immutable_pins(self):
         versions = json.loads((CI / "versions.json").read_text())

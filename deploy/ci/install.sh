@@ -12,6 +12,18 @@ if not re.fullmatch(r'us-west1-docker\.pkg\.dev/iz27-platform-dev/symphony/ci-ru
     raise SystemExit('A reviewed private CI image digest is required.')
 PY
 ci_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# A fork can edit workflow routing. Check GitHub-side approval before touching GKE.
+# Use existing operator gh authentication only; it is never delivered to job Pods.
+if ! ci_approval_policy=$(gh api --hostname github.com \
+  repos/iliazlobin/symphony/actions/permissions/fork-pr-contributor-approval \
+  --jq '.approval_policy'); then
+  echo 'Cannot verify external-contributor workflow approval; CI install stopped.' >&2
+  exit 1
+fi
+if [ "$ci_approval_policy" != all_external_contributors ]; then
+  echo 'Require all_external_contributors workflow approval before CI install.' >&2
+  exit 1
+fi
 expected_context=gke_iz27-platform-dev_us-west1-a_platform-dev
 test "$(kubectl config current-context)" = "$expected_context"
 test "$(kubectl -n default get service kubernetes -o jsonpath='{.spec.clusterIP}')" = 10.48.0.1
