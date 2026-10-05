@@ -5,7 +5,7 @@ ARG TARGETARCH
 RUN test "$TARGETARCH" = amd64 \
     && apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates curl git jq libgssapi-krb5-2 libicu-dev \
-      libssl-dev libstdc++6 procps python3 python3-venv unzip xz-utils zlib1g \
+      libssl-dev libstdc++6 procps python3 python3-venv tini unzip xz-utils zlib1g \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1001 runner \
     && useradd --uid 1001 --gid 1001 --create-home --shell /bin/bash runner
@@ -16,7 +16,7 @@ RUN tar -xzf /tmp/runner.tar.gz -C /home/runner \
     && rm /tmp/runner.tar.gz /tmp/node.tar.xz \
     && mkdir /home/runner/_work \
     && chown -R 1001:1001 /home/runner \
-    && test -x /home/runner/run.sh && test -x /bin/kill \
+    && test -x /home/runner/run.sh && test -x /bin/kill && test -x /usr/bin/tini \
     && node --version | grep -Fx v22.14.0 \
     && elixir --version | grep -F 'Elixir 1.19.5' \
     && erl -noshell -eval '"28" = erlang:system_info(otp_release), halt().'
@@ -30,4 +30,5 @@ ENV HOME=/home/runner LANG=C.UTF-8 \
     ERL_FLAGS="+S 2:2 +SDcpu 2 +SDio 2"
 USER 1001:1001
 WORKDIR /home/runner
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/home/runner/run.sh"]

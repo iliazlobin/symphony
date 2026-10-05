@@ -90,7 +90,7 @@ template:
     containers:
       - name: runner
         image: REQUIRES_REVIEWED_CI_IMAGE_DIGEST
-        command: ["/home/runner/run.sh"]
+        command: ["/usr/bin/tini", "--", "/home/runner/run.sh"]
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
