@@ -38,6 +38,13 @@ in the background. GitHub retains issue content and publication evidence. See th
 
 Graph selection highlights immediately while the conversation loads, preserving pan,
 zoom and focus. Kanban, Graph and Gantt keep selected-task view links at the top right.
+Milestone or task-kind overviews, search, task neighborhoods and paging keep large
+graphs within 80 nodes and 300 arrows per canvas, with omitted connections reported.
+**Coverage** links acceptance criteria to exact task revisions and current host receipts.
+Reviewed versions retain immutable task and dependency snapshots for comparison.
+Coverage and release records grant no scheduling, human acceptance or deployment authority;
+missing integrated-source, artifact and runtime evidence keeps release gaps visible.
+See [graph and Coverage operation](elixir/README.md#coverage) for storage and review limits.
 
 Each issue has one task agent responsible for the entire task, with a searchable activity-grouped issue picker
 showing concise titles, priority and available PR evidence. The embedded chat uses Project → Task → Work navigation without repeating the selected project name. Card titles open details;

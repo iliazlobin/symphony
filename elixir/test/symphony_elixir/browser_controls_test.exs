@@ -248,6 +248,41 @@ defmodule SymphonyElixir.BrowserControlsTest do
     end
   end
 
+  test "unlock preserves focused graph navigation and Coverage while rejecting foreign return fields", ctx do
+    params = %{
+      "view" => "graph",
+      "project" => "github:example/fixture",
+      "chat_task" => "github:example/fixture:2",
+      "chat_session" => "work:" <> String.duplicate("a", 32),
+      "graph_mode" => "focus",
+      "graph_direction" => "upstream",
+      "graph_hops" => "2",
+      "graph_group_by" => "milestone",
+      "graph_group" => "group:milestone:github:example/fixture:1",
+      "graph_anchor" => "github:example/fixture:2",
+      "graph_page" => "3",
+      "graph_query" => "GH-2 & schema",
+      "graph_search_page" => "1",
+      "graph_gaps_only" => "true"
+    }
+
+    reviewed = Map.merge(params, %{"baseline" => String.duplicate("b", 64), "panel" => "coverage"})
+
+    for destination_params <- [params, reviewed] do
+      destination = "/?" <> URI.encode_query(destination_params)
+      {conn, csrf} = browser_page()
+      signed_in = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => ctx.token, "return_to" => destination})
+      assert redirected_to(signed_in) == destination
+      assert BrowserAuth.authorized?(BrowserAuth.conn_context(signed_in))
+    end
+
+    for forged <- [Map.put(params, "command", "resume"), Map.put(params, "graph_unknown", "secret"), Map.put(params, "graph_query", "bad\r\nquery")] do
+      {conn, csrf} = browser_page()
+      response = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => ctx.token, "return_to" => "/?" <> URI.encode_query(forged)})
+      assert redirected_to(response) == "/?panel=settings"
+    end
+  end
+
   test "authorization rejects missing context, expiry, token rotation and unavailable token", ctx do
     assert BrowserAuth.authorized?(ctx.authorization)
     refute BrowserAuth.authorized?(%{})

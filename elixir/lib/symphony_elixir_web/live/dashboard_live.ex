@@ -11,7 +11,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, ChatPanel, Endpoint, Markdown, SettingsPanel, TaskIntakePanel}
   alias SymphonyElixirWeb.{BoardCache, ChatNavigation, ObservabilityPubSub, Presenter}
   alias SymphonyElixirWeb.SpecificationEditor
-  alias SymphonyElixirWeb.{TaskBoard, TaskExecution, TaskFilters, TaskOperator, TaskRework, WorkflowPlan}
+  alias SymphonyElixirWeb.{TaskBoard, TaskExecution, TaskFilters, TaskOperator, TaskRework}
+
+  alias SymphonyElixir.Assurance.{GraphSnapshot, Store}
+  alias SymphonyElixirWeb.{AssuranceWorkspace, GraphNavigation, GraphProjection}
 
   @lanes [{"backlog", "Backlog"}, {"work", "Work"}, {"in_progress", "In progress"}, {"review", "Review"}, {"done", "Done"}]
   @refresh_ms 30_000
@@ -54,6 +57,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:specification_history, nil)
       |> assign(:specification_review_open, false)
       |> assign(:board_view, "kanban")
+      |> assign(:graph_options, %{})
+      |> assign(:graph_index, nil)
+      |> assign(:graph_index_key, nil)
+      |> assign(:graph_board, board)
+      |> assign(:graph_baseline, nil)
+      |> assign(:graph_requested_baseline, nil)
+      |> assign(:graph_history_task, nil)
+      |> assign(:assurance_project, nil)
+      |> assign(:assurance_snapshot, %{})
+      |> assign(:assurance_projection, %{})
+      |> assign(:assurance_error, nil)
+      |> assign(:assurance_tab, "requirements")
+      |> assign(:assurance_baseline_ref, nil)
+      |> assign(:assurance_difference, %{})
+      |> assign(:assurance_gaps, false)
+      |> assign(:assurance_page, 0)
       |> assign(:calendar_plan, %{"anchor_on" => nil, "durations" => %{}})
       |> assign(:linked_task, nil)
       |> assign(:chat_task_id, nil)
@@ -77,13 +96,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
   @impl true
   def handle_params(params, _uri, socket) do
     socket = if socket.assigns.dialog in [:new_task, :queue_task], do: clear_intake_subscription(socket), else: socket
-    dialog = if params["panel"] == "settings", do: :settings, else: nil
+    dialog = navigation_dialog(params["panel"])
     filters = params |> url_filters() |> legacy_idea_filters(params)
     board_view = filters["view"] || "kanban"
     view_changed = board_view != socket.assigns.board_view
     project = selected_project(socket.assigns.board, filters)
     chat_task = params["task"] || params["chat_task"]
-    chat_session = if Sessions.valid_id?(params["chat_session"]), do: params["chat_session"]
+    chat_session = valid_chat_session(params["chat_session"])
     previous_selection = {socket.assigns.chat_project, socket.assigns.chat_task_id, socket.assigns.chat_session_id}
     selection_changed = {project, chat_task, chat_session} != previous_selection
     project_changed = project != socket.assigns.chat_project
@@ -96,6 +115,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:url_filters, filters)
       |> assign(:design_source_context, design_source_context(params, filters, project))
       |> assign(:board_view, board_view)
+      |> assign(:graph_options, GraphNavigation.read(params))
       |> assign(:linked_task, params["task"])
       |> assign(:chat_task_id, chat_task)
       |> assign(:chat_session_id, chat_session)
@@ -113,7 +133,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
     # Task/view navigation uses the already projected board and activity. The
     # project subscription and periodic refresh supply fresh activity without
     # serializing every selection behind a conversation-store list read.
-    socket = refresh_chat_activity(socket, project_changed)
+    socket =
+      socket
+      |> refresh_chat_activity(project_changed)
+      |> navigation_assurance(project_changed or dialog == :assurance)
+      |> select_graph_baseline(if(board_view == "graph", do: params["baseline"]))
+      |> refresh_graph_index()
+      |> initialize_graph_anchor()
 
     {:noreply, socket}
   end
@@ -245,13 +271,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
         socket
       end
 
-    socket |> open_linked_task() |> sync_chat_selection() |> refresh_chat_activity()
+    socket = socket |> open_linked_task() |> sync_chat_selection() |> refresh_chat_activity()
+    socket |> refresh_assurance(true) |> refresh_graph_index()
   end
 
   @impl true
   def handle_event(action, params, socket)
       when action in ["new-task", "queue-task", "move-task", "prepare-rework", "prepare-command", "confirm-command", "save-concurrency", "reset-concurrency"] do
-    if read_only?(socket.assigns.board) do
+    if read_only?(socket.assigns.board) or historical_graph?(socket.assigns) do
       dialog = if socket.assigns.dialog in [:confirm, :new_task, :queue_task, :rework], do: nil, else: socket.assigns.dialog
       {:noreply, socket |> assign(:pending_command, nil) |> assign(:dialog, dialog) |> assign(:notice, "This board is read-only. Execution and tracker changes are unavailable here.")}
     else
@@ -290,11 +317,105 @@ defmodule SymphonyElixirWeb.DashboardLive do
       else: {:noreply, assign(socket, :specification_notice, "Open this project’s Design and sign in to edit its specification.")}
   end
 
+  def handle_event("open-assurance", _params, socket) do
+    socket = socket |> clear_card_context() |> assign(:dialog, :assurance) |> refresh_assurance(true)
+    {:noreply, push_patch(socket, to: board_location(socket))}
+  end
+
+  def handle_event("graph-options", params, socket) do
+    params = if params["group_by"] && params["group_by"] != socket.assigns.graph_options["group_by"], do: Map.merge(params, %{"group" => "", "page" => 0}), else: params
+    params = if params["mode"] == "focus", do: Map.put(params, "anchor", socket.assigns.graph_history_task || socket.assigns.chat_task_id), else: params
+    options = GraphNavigation.update(socket.assigns.graph_options, params)
+    socket = assign(socket, :graph_options, options)
+    {:noreply, push_patch(socket, to: board_location(socket), replace: true)}
+  end
+
+  def handle_event("graph-search", params, socket) do
+    options = GraphNavigation.update(socket.assigns.graph_options, %{"query" => params["query"] || "", "search_page" => 0})
+    socket = assign(socket, :graph_options, options)
+    {:noreply, push_patch(socket, to: board_location(socket), replace: true)}
+  end
+
+  def handle_event("live-graph", _params, socket) do
+    socket = socket |> select_graph_baseline(nil) |> refresh_graph_index()
+    {:noreply, push_patch(socket, to: board_location(socket), replace: true)}
+  end
+
+  def handle_event("assurance-tab", %{"tab" => tab}, socket) when tab in ~w(requirements versions releases),
+    do: {:noreply, assign(socket, assurance_tab: tab, assurance_page: 0)}
+
+  def handle_event("assurance-select-baseline", %{"ref" => ref}, socket) do
+    ref = if ref == "", do: nil, else: ref
+    exists = is_nil(ref) or Enum.any?(socket.assigns.assurance_snapshot["baselines"] || [], &(&1["ref"] == ref))
+
+    if exists,
+      do: {:noreply, assign(socket, assurance_baseline_ref: ref, assurance_difference: %{}, assurance_page: 0)},
+      else: {:noreply, assign(socket, :assurance_error, :assurance_baseline_not_found)}
+  end
+
+  def handle_event("assurance-compare", %{"ref" => ref}, socket) do
+    case Store.diff(socket.assigns.chat_project, ref, socket.assigns.auth, assurance_server()) do
+      {:ok, difference} ->
+        baseline = Enum.find(socket.assigns.assurance_snapshot["baselines"] || [], &(&1["ref"] == ref))
+
+        graph_difference = current_graph_difference(socket, baseline)
+        difference = difference |> Map.merge(graph_difference) |> Map.put("compared_ref", ref)
+        {:noreply, assign(socket, assurance_difference: difference, assurance_page: 0)}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, :assurance_error, reason)}
+    end
+  end
+
+  def handle_event("assurance-view-baseline", %{"ref" => ref}, socket) do
+    filters = view_filters(socket.assigns.url_filters, "graph")
+    socket = socket |> select_graph_baseline(ref) |> clear_card_context() |> assign(:url_filters, filters)
+    socket = refresh_graph_index(socket)
+    {:noreply, push_patch(socket, to: board_location(socket))}
+  end
+
+  def handle_event("assurance-gaps", params, socket), do: {:noreply, assign(socket, assurance_gaps: (params["gaps_only"] || params["only"]) in ~w(true on), assurance_page: 0)}
+
+  def handle_event("assurance-page", %{"page" => page}, socket) do
+    number = GraphNavigation.read(%{"graph_page" => page})["page"] || 0
+    {:noreply, assign(socket, :assurance_page, number)}
+  end
+
+  def handle_event("assurance-" <> action, params, socket)
+      when action in ~w(save-requirement save-criterion link-task unlink-task remove-requirement remove-criterion save-dependency remove-dependency save-baseline record-release) do
+    result = assurance_mutation(socket, action, params)
+
+    socket =
+      case result do
+        {:ok, _snapshot} -> assurance_saved(socket)
+        {:error, reason} -> socket |> refresh_assurance(true) |> assign(:assurance_error, reason)
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("select-plan-task", %{"id" => id} = params, %{assigns: %{graph_baseline: %{} = baseline}} = socket) do
+    exists = Enum.any?(baseline["graph_snapshot"]["graph"]["nodes"], &(&1["task_id"] == id))
+
+    socket =
+      if exists do
+        socket
+        |> assign(:graph_history_task, id)
+        |> focus_graph_options(params)
+        |> plan_selection_focus(id, params)
+      else
+        socket
+      end
+
+    {:reply, %{selected_task_id: socket.assigns.graph_history_task}, socket}
+  end
+
   def handle_event("select-plan-task", %{"id" => id, "work_id" => work}, socket) when is_binary(work),
     do: socket |> focus_chat_session(id, "work:" <> work, false) |> reply_plan_selection()
 
   def handle_event("select-plan-task", %{"id" => id} = params, socket) when is_binary(id) do
     if Enum.any?(socket.assigns.board.tasks, &(&1.id == id)) do
+      socket = socket |> focus_graph_options(params) |> plan_selection_focus(id, params)
       same_thread = socket.assigns.chat_task_id == id and is_nil(socket.assigns.chat_session_id)
       chat_id = if same_thread, do: socket.assigns.chat_id
 
@@ -307,6 +428,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   def handle_event("select-plan-task", _params, socket), do: reply_plan_selection({:noreply, socket})
+
+  def handle_event("open-card", _params, %{assigns: %{graph_requested_baseline: ref}} = socket) when is_binary(ref),
+    do: {:noreply, assign(socket, :notice, "This is a reviewed snapshot. Return to the live graph to open current task controls.")}
 
   def handle_event("open-card", %{"id" => id} = params, socket) when is_binary(id),
     do: handle_event("open-task", params, socket)
@@ -323,6 +447,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
       if task && task.id != socket.assigns.chat_task_id,
         do: assign(socket, chat_task_id: task.id, chat_session_id: nil, chat_id: nil),
         else: socket
+
+    socket = if (view == "graph" and task) && params["id"], do: focus_graph_options(socket, %{"focus" => "true", "id" => task.id}), else: socket
 
     {:noreply, push_patch(socket, to: board_location(socket))}
   end
@@ -802,7 +928,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp controls_available?(assigns) do
     board = assigns.board
 
-    not read_only?(board) and BrowserAuth.authorized?(assigns.auth) and not runtime_unavailable?(board, assigns.payload) and
+    not historical_graph?(assigns) and not read_only?(board) and BrowserAuth.authorized?(assigns.auth) and not runtime_unavailable?(board, assigns.payload) and
       board.control["enabled"] == true and is_nil(board.control["fault"]) and is_integer(board.control["revision"])
   end
 
@@ -843,32 +969,34 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def render(assigns) do
     project_links = SymphonyElixir.ProjectDirectory.links()
     visible_task_ids = TaskFilters.visible_ids(assigns.board, assigns.url_filters, selected_project(assigns.board, assigns.url_filters))
-    plan = WorkflowPlan.project(assigns.board, visible_task_ids)
+    graph_nodes = get_in(assigns.board, [:workflow_graph, "nodes"]) || []
 
     assigns =
       assign(assigns,
         authorized: BrowserAuth.authorized?(assigns.auth),
         chat_activity: if(BrowserAuth.authorized?(assigns.auth), do: assigns.chat_activity, else: %{}),
-        read_only: read_only?(assigns.board),
+        read_only: read_only?(assigns.board) or (historical_graph?(assigns) and BrowserAuth.authorized?(assigns.auth)),
         settings: reported_settings(assigns.board),
         settings_editable: settings_editable?(assigns),
         controls_available: controls_available?(assigns),
         dispatch_guidance: dispatch_guidance(assigns.board, assigns.payload),
         settings_projects: Enum.map(assigns.board.projects, &Map.put(&1, :url, safe_url(&1.url))),
         settings_return_to: board_path(Map.put(board_location_params(assigns), "panel", "settings")),
+        chat_return_to: board_path(board_location_params(assigns)),
         project_links: project_links,
         visible_task_ids: visible_task_ids,
+        task_catalog: task_catalog(assigns.board),
         selected_plan_id: selected_plan_id(assigns.board, assigns.chat_task_id, assigns.chat_session_id),
         navigation_task: Enum.find(assigns.board.tasks, &(&1.id == assigns.chat_task_id)),
         project_overview: project_overview(assigns.board, assigns.payload, selected_project(assigns.board, assigns.url_filters)),
-        dependency_nodes: Map.new(Enum.filter(plan["nodes"], &(&1["type"] == "task")), &{&1["task_id"], &1}),
+        dependency_nodes: Map.new(Enum.filter(graph_nodes, &(&1["type"] == "task")), &{&1["task_id"], &1}),
         project_picker_label: project_picker_label(assigns.board, assigns.url_filters, project_links)
       )
 
     ~H"""
     <section id="task-board-app" class="dashboard-shell" phx-hook="TaskBoard" data-density="compact" data-theme="light"
       data-chat-open="true" data-board-view={@board_view} data-chat-project={@chat_project} data-board-checked-at={@board.generated_at} data-context-revision={@context_revision} data-specification-dirty={to_string(specification_dirty?(assigns))}
-      data-task-kinds={Jason.encode!(TaskKind.values() ++ ["invalid"])} data-scope={scope(@board)} data-projects={Jason.encode!(@board.projects)} data-project-links={Jason.encode!(@project_links)} data-url-filters={Jason.encode!(@url_filters)} data-selected-task={@chat_task_id}>
+      data-task-catalog={Jason.encode!(@task_catalog)} data-task-kinds={Jason.encode!(TaskKind.values() ++ ["invalid"])} data-scope={scope(@board)} data-projects={Jason.encode!(@board.projects)} data-project-links={Jason.encode!(@project_links)} data-url-filters={Jason.encode!(@url_filters)} data-selected-task={@chat_task_id}>
       <div class="board-main">
       <header class="board-header">
         <div class="board-location">
@@ -882,7 +1010,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
           <nav id="board-view-picker" class="board-view-picker" aria-label="Project views">
             <.link :for={{view, label} <- [{"idea", "Idea"}, {"design", "Design"}, {"kanban", "Kanban"}, {"graph", "Graph"}, {"gantt", "Gantt"}]} id={"view-#{view}"}
-              patch={view_path(@url_filters, view, @chat_task_id, @chat_session_id)} aria-current={if @board_view == view, do: "page"}
+              patch={view_path(Map.merge(@url_filters, GraphNavigation.params(@graph_options)), view, @chat_task_id, @chat_session_id)} aria-current={if @board_view == view, do: "page"}
               title={"#{label} view"} data-board-view-link={view}>
               <svg viewBox="0 0 20 20" aria-hidden="true">
                 <path :if={view == "idea"} d="M7 13c0-2-3-3-3-6a6 6 0 0 1 12 0c0 3-3 4-3 6M7 13h6M8 16h4M9 18h2" />
@@ -896,6 +1024,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         </div>
         <span class="header-spacer"></span>
         <div id="board-search" phx-update="ignore"><input type="search" data-board-search aria-label="Search tasks" placeholder="Search tasks…" /></div>
+        <button :if={@chat_project && @authorized} id="coverage-button" class="button button-quiet" phx-click="open-assurance" title="Requirements, reviewed versions and release evidence">Coverage</button>
         <button id="settings-button" class="button button-quiet" phx-click="open-settings">Settings</button>
       </header>
 
@@ -955,7 +1084,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <.task_view_navigation :if={@navigation_task && @board_view in ["kanban", "graph", "gantt"]} task={@navigation_task} task_id={@chat_task_id} view={@board_view} filters={@url_filters} session={@chat_session_id} />
           </div>
         </div>
-        <div id="kanban-view" class="board-view-panel" hidden={@board_view != "kanban"} aria-label="Kanban view">
+        <div :if={@board_view == "kanban"} id="kanban-view" class="board-view-panel" aria-label="Kanban view">
         <div id="mobile-lane-control" class="mobile-lane-control" phx-update="ignore"><label>Lane <select data-mobile-lane aria-label="Board lane">
           <option :for={{id, label} <- @lanes} value={id}>{label}</option>
         </select></label></div>
@@ -1008,7 +1137,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
         </div>
         </div>
         <div :if={@board_view == "graph"} id="graph-view" class="board-view-panel" aria-label="Graph view">
-          <SymphonyElixirWeb.WorkflowGraphView.content board={@board} project={@chat_project} filters={@url_filters} selected_id={@selected_plan_id} visible_task_ids={@visible_task_ids} />
+          <p :if={@graph_baseline} class="board-notice graph-version-notice">Reviewed graph <code>{String.slice(@graph_baseline["ref"], 0, 12)}</code> · captured {@graph_baseline["graph_snapshot"]["captured_at"]}. Status is from this snapshot.
+            <button type="button" class="button button-small" phx-click="live-graph">Live graph</button>
+          </p>
+          <p :if={@graph_requested_baseline && !@graph_baseline} class="board-notice graph-version-notice">Reviewed graph unavailable. Sign in to load this version, or return to the live graph.
+            <button type="button" class="button button-small" phx-click="live-graph">Live graph</button>
+          </p>
+          <SymphonyElixirWeb.WorkflowGraphView.content :if={!@graph_requested_baseline || @graph_baseline} board={@graph_board} project={@chat_project} filters={@url_filters} selected_id={@graph_history_task || @selected_plan_id} visible_task_ids={@visible_task_ids} graph_index={@graph_index} graph_options={@graph_options} />
         </div>
         <div :if={@board_view == "gantt"} id="gantt-view" class="board-view-panel" aria-label="Gantt view">
           <SymphonyElixirWeb.WorkflowGanttView.content board={@board} project={@chat_project} filters={@url_filters} selected_id={@chat_task_id} visible_task_ids={@visible_task_ids} plan_options={@calendar_plan} />
@@ -1036,6 +1171,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <div class="dialog-inner" data-dialog-scroll>
           <p :if={@notice} class="board-notice" role="status">{@notice}</p>
           <%= case @dialog do %>
+            <% :assurance -> %>
+              <SymphonyElixirWeb.AssuranceView.content snapshot={@assurance_snapshot} projection={@assurance_projection} board={@board} tab={@assurance_tab}
+                baseline_ref={@assurance_baseline_ref} selected_task_id={@chat_task_id} difference={@assurance_difference}
+                read_only={@read_only || !@authorized || !is_nil(@assurance_error) && @assurance_snapshot == %{}}
+                error={@assurance_error} gaps_only={@assurance_gaps} page={@assurance_page} />
             <% :settings -> %>
               <SettingsPanel.content board={%{@board | projects: @settings_projects}} read_only={@read_only} tab={@settings_tab}
                 execution_status={execution_status(@board, @payload)} authorized={@authorized} can_control={@controls_available}
@@ -1112,7 +1252,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       </dialog>
       </div>
       <aside :if={@board_view != "design"} id="management-chat-dock" class="management-chat-dock" aria-label="Project chat">
-        <.live_component module={ChatPanel} id="management-chat" auth={@auth} csrf_token={@csrf_token}
+        <.live_component module={ChatPanel} id="management-chat" auth={@auth} csrf_token={@csrf_token} return_to={@chat_return_to}
           embedded={true} project_id={@chat_project} chat_id={@chat_id} task_id={if @board_view != "idea", do: @chat_task_id} session_id={if @board_view != "idea", do: @chat_session_id}
           task_title={if @board_view != "idea", do: chat_task_title(@board, @chat_task_id)} issue_tasks={@board.tasks} issue_activity={@chat_activity}
           view_context={@view_context} design_mode={@board_view == "idea"} read_only={@read_only}
@@ -1127,6 +1267,213 @@ defmodule SymphonyElixirWeb.DashboardLive do
       do: send_update(TaskIntakePanel, id: "task-intake", refresh_history: true)
   end
 
+  defp task_catalog(board) do
+    Enum.map(board.tasks, fn task ->
+      %{
+        taskId: task.id,
+        project: task.project,
+        title: task.title,
+        identifier: task.identifier,
+        kind: task_kind(task),
+        priority: priority(task.priority),
+        status: task.stage,
+        stage: task_lane(task),
+        lane: task_lane(task),
+        attention: to_string(not is_nil(task.attention)),
+        labels: Jason.encode!(subject_tags(Map.get(task, :labels, []))),
+        milestone: Jason.encode!(Map.get(task, :milestone)),
+        assignees: Jason.encode!(Map.get(task, :assignees, []))
+      }
+    end)
+  end
+
+  defp valid_chat_session(session), do: if(Sessions.valid_id?(session), do: session)
+
+  defp assurance_saved(socket) do
+    socket = assign(socket, assurance_error: nil, assurance_difference: %{})
+    socket |> refresh_assurance(true) |> refresh_graph_index()
+  end
+
+  defp assurance_server, do: Endpoint.config(:assurance_store) || Store
+
+  defp refresh_assurance(socket, reload \\ false) do
+    project = socket.assigns.chat_project
+    changed = project != socket.assigns.assurance_project
+
+    socket =
+      if changed,
+        do:
+          assign(socket,
+            assurance_project: project,
+            assurance_snapshot: %{},
+            assurance_projection: %{},
+            assurance_error: nil,
+            assurance_baseline_ref: nil,
+            assurance_difference: %{},
+            graph_baseline: nil
+          ),
+        else: socket
+
+    if assurance_readable?(socket) do
+      case AssuranceWorkspace.load(socket.assigns.board, project, socket.assigns.auth, socket.assigns.assurance_snapshot, reload or changed, assurance_server()) do
+        {:ok, value, projection, board} ->
+          socket = assign(socket, board: board, assurance_snapshot: value)
+          assign(socket, assurance_projection: projection, assurance_error: nil)
+
+        {:error, reason} ->
+          clear_assurance(socket, reason)
+      end
+    else
+      clear_assurance(socket, :assurance_unavailable)
+    end
+  end
+
+  defp clear_assurance(socket, reason) do
+    board = Map.drop(socket.assigns.board, [:assurance, :assurance_observations, :assurance_evidence, :assurance_baselines])
+
+    assign(socket,
+      board: board,
+      assurance_snapshot: %{},
+      assurance_projection: %{},
+      assurance_error: reason,
+      assurance_baseline_ref: nil,
+      assurance_difference: %{},
+      graph_baseline: nil,
+      graph_history_task: nil
+    )
+  end
+
+  defp current_graph_difference(socket, baseline) do
+    board = socket.assigns.board
+
+    if not socket.assigns.loading and SymphonyElixirWeb.AssuranceObservations.source_current?(board) do
+      case GraphSnapshot.capture(board[:workflow_graph], socket.assigns.chat_project) do
+        {:ok, current} -> %{"graph" => GraphSnapshot.diff(baseline && baseline["graph_snapshot"], current)}
+        _ -> %{"graph" => %{}, "graph_unavailable" => true}
+      end
+    else
+      %{"graph" => %{}, "graph_unavailable" => true}
+    end
+  end
+
+  defp focus_graph_options(socket, params) do
+    if params["focus"] == "true" or socket.assigns.graph_options["mode"] == "overview",
+      do: assign(socket, :graph_options, GraphNavigation.update(socket.assigns.graph_options, %{"mode" => "focus", "anchor" => params["id"], "page" => 0, "query" => ""})),
+      else: socket
+  end
+
+  defp initialize_graph_anchor(socket) do
+    options = socket.assigns.graph_options
+    task_id = socket.assigns.graph_history_task || socket.assigns.chat_task_id
+
+    group? = is_binary(options["group"]) and options["group"] != ""
+    focus? = is_binary(task_id) and options["mode"] not in ["overview", "tasks"]
+
+    if socket.assigns.board_view == "graph" and is_nil(options["anchor"]) and (group? or focus?) do
+      anchor = task_id || first_graph_task(socket.assigns.graph_index, options)
+      assign(socket, :graph_options, GraphNavigation.update(options, %{"anchor" => anchor}))
+    else
+      socket
+    end
+  end
+
+  defp first_graph_task(index, options) do
+    projection = GraphProjection.project(index, nil, options)
+    Enum.find_value(projection["nodes"], & &1["task_id"])
+  end
+
+  defp assurance_readable?(socket), do: is_binary(socket.assigns.chat_project) and BrowserAuth.authorized?(socket.assigns.auth) and not read_only?(socket.assigns.board)
+  defp navigation_assurance(socket, true), do: refresh_assurance(socket, true)
+  defp navigation_assurance(socket, false), do: socket
+  defp navigation_dialog("settings"), do: :settings
+  defp navigation_dialog("coverage"), do: :assurance
+  defp navigation_dialog(_), do: nil
+
+  defp refresh_graph_index(socket) do
+    board = if socket.assigns.graph_baseline, do: historical_graph_board(socket.assigns.board, socket.assigns.graph_baseline), else: socket.assigns.board
+
+    project = socket.assigns.chat_project
+
+    visible =
+      if socket.assigns.graph_baseline do
+        :all
+      else
+        TaskFilters.visible_ids(board, socket.assigns.url_filters, project)
+      end
+
+    key = :crypto.hash(:sha256, :erlang.term_to_binary({board[:workflow_graph], board[:source_error], board[:runtime_error], visible, get_in(board, [:assurance, "tasks"])}))
+    index = if key == socket.assigns.graph_index_key, do: socket.assigns.graph_index, else: GraphProjection.index(board, visible)
+    assign(socket, graph_board: board, graph_index: index, graph_index_key: key)
+  end
+
+  defp historical_graph_board(board, baseline) do
+    graph = baseline["graph_snapshot"]["graph"]
+    tasks = for node <- graph["nodes"], node["type"] == "task", do: %{id: node["task_id"]}
+
+    board
+    |> Map.put(:workflow_graph, graph)
+    |> Map.put(:tasks, tasks)
+    |> Map.put(:assurance, %{})
+    |> Map.put(:graph_version, baseline["ref"])
+    |> Map.put(:source_error, nil)
+    |> Map.put(:runtime_error, nil)
+  end
+
+  defp plan_selection_focus(socket, id, %{"focus" => "true"}), do: push_event(socket, "focus-plan-task", %{id: id, view: "graph"})
+  defp plan_selection_focus(socket, _id, _params), do: socket
+
+  defp select_graph_baseline(socket, nil) do
+    socket
+    |> clear_graph_pending(nil)
+    |> assign(graph_requested_baseline: nil, graph_baseline: nil, graph_history_task: nil)
+  end
+
+  defp select_graph_baseline(socket, ref) do
+    ref = if is_binary(ref) and Regex.match?(~r/\A[a-f0-9]{64}\z/, ref), do: ref
+    select_requested_graph_baseline(socket, ref)
+  end
+
+  defp select_requested_graph_baseline(socket, nil), do: select_graph_baseline(socket, nil)
+
+  defp select_requested_graph_baseline(socket, ref) do
+    baseline = Enum.find(socket.assigns.assurance_snapshot["baselines"] || [], &(&1["ref"] == ref and is_map(&1["graph_snapshot"])))
+    socket = socket |> clear_graph_pending(ref) |> assign(:graph_requested_baseline, ref)
+
+    case baseline do
+      nil ->
+        assign(socket, :graph_baseline, nil)
+
+      baseline ->
+        options = GraphNavigation.update(socket.assigns.graph_options, %{"gaps_only" => false})
+        assign(socket, graph_baseline: baseline, graph_options: options)
+    end
+  end
+
+  defp historical_graph?(assigns), do: is_binary(assigns.graph_requested_baseline)
+
+  defp clear_graph_pending(socket, ref) do
+    if socket.assigns.graph_requested_baseline != ref do
+      current_dialog = socket.assigns.dialog
+      dialog = if current_dialog in [:confirm, :new_task, :queue_task, :rework], do: nil, else: current_dialog
+      assign(socket, pending_command: nil, dialog: dialog)
+    else
+      socket
+    end
+  end
+
+  defp assurance_mutation(socket, action, params) do
+    context = %{
+      project: socket.assigns.chat_project,
+      auth: socket.assigns.auth,
+      server: assurance_server(),
+      board: socket.assigns.board,
+      loading: socket.assigns.loading,
+      read_only: read_only?(socket.assigns.board) or not is_nil(socket.assigns.assurance_baseline_ref) or historical_graph?(socket.assigns)
+    }
+
+    AssuranceWorkspace.mutate(context, action, params)
+  end
+
   defp refresh_board(socket), do: socket |> refresh_local_board() |> refresh_source_board()
 
   defp refresh_local_board(socket) do
@@ -1134,7 +1481,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     selected = socket.assigns.selected
     current = selected && Enum.find(board.tasks, &(&1.id == selected.id))
     :ok = BoardCache.put(socket.assigns.board_scope, board)
-    socket |> assign(:board, board) |> assign(:selected, current)
+    socket |> assign(:board, board) |> assign(:selected, current) |> refresh_assurance() |> refresh_graph_index()
   end
 
   defp refresh_control(board, scope, payload) do
@@ -1678,7 +2025,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp design_request(event, project, params, assigns) do
     cond do
       project != assigns.chat_project or assigns.board_view != "idea" -> {:error, :design_project_mismatch}
-      read_only?(assigns.board) -> {:error, :read_only}
+      read_only?(assigns.board) or historical_graph?(assigns) -> {:error, :read_only}
       not BrowserAuth.authorized?(assigns.auth) -> {:error, :unauthorized}
       true -> design_action(event, project, params, assigns.auth)
     end
@@ -1694,8 +2041,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp specification_request?(event, params, assigns) do
     is_map(params) and assigns.board_view == "design" and params["project"] == assigns.chat_project and
-      BrowserAuth.authorized?(assigns.auth) and (not read_only?(assigns.board) or event in ~w(spec-section spec-open-version spec-return-draft spec-reload spec-cancel-review))
+      BrowserAuth.authorized?(assigns.auth) and (not specification_read_only?(assigns) or event in ~w(spec-section spec-open-version spec-return-draft spec-reload spec-cancel-review))
   end
+
+  defp specification_read_only?(assigns), do: read_only?(assigns.board) or historical_graph?(assigns)
 
   defp maybe_load_specification(%{assigns: %{board_view: "design", chat_project: project, specification_project: opened}} = socket) when project != opened,
     do: load_specification(socket)
@@ -1985,12 +2334,21 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp board_location(socket), do: board_path(board_location_params(socket.assigns))
 
   defp board_location_params(assigns) do
-    params = Map.merge(assigns.url_filters, retained_design_source(assigns))
+    params = assigns.url_filters |> Map.merge(retained_design_source(assigns)) |> Map.merge(GraphNavigation.params(assigns.graph_options))
+    params = graph_location_params(params, assigns)
     params = if assigns.chat_task_id, do: Map.put(params, "chat_task", assigns.chat_task_id), else: params
     params = if assigns.chat_session_id, do: Map.put(params, "chat_session", assigns.chat_session_id), else: params
     params = if assigns.dialog == :task && assigns.linked_task, do: Map.put(params, "task", assigns.linked_task), else: params
-    if assigns.dialog == :settings, do: Map.put(params, "panel", "settings"), else: params
+
+    cond do
+      assigns.dialog == :settings -> Map.put(params, "panel", "settings")
+      assigns.dialog == :assurance -> Map.put(params, "panel", "coverage")
+      true -> params
+    end
   end
+
+  defp graph_location_params(params, %{url_filters: %{"view" => "graph"}, graph_requested_baseline: ref}) when is_binary(ref), do: Map.put(params, "baseline", ref)
+  defp graph_location_params(params, _assigns), do: params
 
   defp retained_design_source(%{url_filters: %{"view" => "idea"} = filters, design_source_context: %{project: project, params: params}} = assigns) do
     if selected_project(assigns.board, filters) == project, do: params, else: %{}
@@ -2197,6 +2555,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp compact_updated_at(_), do: "Updated time unknown"
+  defp dialog_title(:assurance, _, _), do: "Coverage & versions"
   defp dialog_title(:settings, _, _), do: "Settings"
   defp dialog_title(:queue_task, _, _), do: "Move task to Work"
   defp dialog_title(:rework, task, _), do: "Return #{task.identifier} to Work"

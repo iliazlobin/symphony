@@ -157,8 +157,8 @@ defmodule SymphonyElixir.GitHub.Board do
           nodes {
             __typename
             ... on CheckRun {
-              name status conclusion detailsUrl startedAt completedAt
-              checkSuite { workflowRun { workflow { name } url runNumber event } }
+              id name status conclusion detailsUrl startedAt completedAt
+              checkSuite { app { slug } workflowRun { workflow { name } url runNumber event } }
             }
             ... on StatusContext { context state targetUrl }
           }
@@ -338,6 +338,8 @@ defmodule SymphonyElixir.GitHub.Board do
 
     %{
       kind: "check_run",
+      id: optional_text(run["id"]),
+      app_slug: optional_text(get_in(run, ["checkSuite", "app", "slug"])),
       name: name,
       status: String.downcase(status),
       conclusion: if(status == "COMPLETED", do: enum(run["conclusion"], ~w(ACTION_REQUIRED CANCELLED FAILURE NEUTRAL SKIPPED STALE STARTUP_FAILURE SUCCESS TIMED_OUT)), else: "unknown"),

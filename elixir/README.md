@@ -636,6 +636,32 @@ this source change alone does not configure a Google client or change the deploy
 make all
 ```
 
+On macOS, use `TMPDIR=/private/tmp make all` so private-storage fixtures receive
+canonical paths rather than `/var` aliases. This preserves the storage path checks.
+
+For a synthetic 1,000-task/3,000-dependency review, use the endpoint-only fixture with
+isolated state. Stop the existing workspace through the
+[service runbook](../profiles/events-concierge/README.md#operate) before reusing port 8778.
+From this directory, with the pinned Elixir/OTP runtime:
+
+```bash
+mix run --no-start tools/task_graph_preview.exs --check
+mix run --no-start tools/task_graph_preview.exs --port 8778
+```
+
+The launcher prints its synthetic Settings token and creates temporary private Coverage
+state. Enter or EOF stops the preview and removes that state. It starts no scheduler or
+model runtime; execution, intake and publication commands are disabled. The fixture
+includes a 400-prerequisite hub, cycles, disconnected work and reviewed/current changes.
+This preview is for UI review and does not establish deployed behavior.
+Restart the original workspace after stopping the preview.
+The [graph benchmark](../tools/benchmark_workflow_graph.exs) reports index construction,
+bounded projection and layout/render timings separately:
+
+```bash
+mix run --no-start ../tools/benchmark_workflow_graph.exs
+```
+
 Run the real external end-to-end test only when you want Symphony to create disposable Linear
 resources and launch a real `codex app-server` session:
 
@@ -920,7 +946,22 @@ graph; **Show on board** returns to Kanban. Graph supports background drag, whee
 zoom, **Fit**, **Center selected** and keyboard controls.
 Graph shows task dependencies only. Waiting is task status; malformed declarations
 and unavailable evidence remain visible beside the affected task.
+Above 80 matching tasks, Graph defaults to a milestone or task-kind overview when
+no task is selected, or a focused neighborhood when a task is selected.
+Open a group for paged tasks, or search the complete loaded graph and focus a task's
+upstream prerequisites, downstream dependents or both at one or two hops. Each page
+renders at most 80 nodes and 300 arrows; counts disclose nodes, arrows and filtered
+connections outside the displayed page. Search results are also paged. Prerequisites
+outside a filter remain context, and display limits never remove scheduler blockers.
+Graph navigation uses the loaded index and does not reread the tracker on selection.
+Ordinary node clicks retain the current neighborhood, group and page. **Focus** or
+search selection rebuilds the neighborhood around the chosen task. New focused/group
+canvases center on the selected or first card; **Fit** shows the complete displayed page.
 Selecting a graph node highlights it immediately without recentering or moving focus.
+The neighborhood stays anchored until an explicit Focus action, search result or
+task cross-link changes it. Group browsing retains group members; Focus reveals
+their external prerequisites. A new neighborhood opens at a readable zoom, while
+saved cameras and an explicit Fit retain the operator's chosen scale.
 Rapid selections keep the latest intent while the server validates and opens the
 conversation; rejected stale selections return to the server's current task. Server
 patches restore the viewport before painting. Only explicit Center selected, view
@@ -950,6 +991,53 @@ Coding workers verify their subscription before model execution. The host profil
 [dedicated login or explicit reuse of the laptop login](../profiles/events-concierge/README.md#coding-worker-sign-in)
 through an authentication-only client; both modes keep coding inside the isolated container.
 Permanent sign-in failures retain task usage and stop retries, including failures during a turn.
+
+## Coverage
+
+Open **Coverage** for the selected project to edit functional/non-functional requirements,
+explicit exclusions, acceptance criteria, required check names and criterion/task links.
+A link pins the current task revision and exact candidate source/PR subject when available.
+Dependency annotations retain their reason and required output; they do not edit the
+task's scheduler prerequisites. Save the draft, then mark it reviewed to retain an
+immutable requirement, task and dependency snapshot. **Versions** compares saved criteria,
+links and dependencies, and shows task/edge additions, removals and changes against the
+current loaded graph. A saved graph opens with its own navigation camera; historical
+selection leaves the live task/chat selection intact. Versions without a graph snapshot
+report that limitation rather than inventing historical tracker state.
+Comparisons use current task names for additions/changes and saved names for removals.
+Historical links retain their version through sign-in. An unavailable version stays
+read-only until **Live graph** is selected; it never substitutes current task controls.
+
+A criterion is covered only when its reviewed text, links and dependency annotations
+still match, every linked task revision/subject is current, and every required check has
+an exact fresh passing host receipt with no conflicting result.
+The current adapter recognizes native independent candidate review and named GitHub
+Actions checks on the same candidate head, from complete board data no older than
+120 seconds. Their required check names are `independent-review` and `ci:<check name>`.
+A CI rollup, chat report, manual evidence declaration or human Done state
+does not substitute for these receipts. Missing subjects, unlinked tasks, unreviewed
+changes, stale revisions and unavailable sources remain visible as gaps.
+
+Release declarations pin a reviewed baseline, included tasks, integrated SHA, artifact
+digest, target and configuration reference. Trusted integrated-source, artifact,
+deployment and runtime receipt adapters are not implemented; these missing receipts
+keep release readiness incomplete. Coverage never queues work, accepts a task, publishes,
+merges or deploys. Human acceptance and scheduler admission retain their existing owners.
+
+The [Coverage store](lib/symphony_elixir/assurance/store.ex) uses
+`<chat.state_path>/assurance/journal.json` when chat storage is enabled. One supervised
+owner holds the private `.owner.lock`; every read/write checks fresh browser authority,
+project/configuration scope, owner and journal digest. Mutations also check the expected
+durable revision. Atomic writes retain drafts, reviewed versions, evidence and releases
+across restart. The journal capacity is 32 MB; individual documents and graph snapshots
+are bounded to 8 MB, and snapshots to 10,000 tasks and 50,000 dependencies. Full storage
+rejects new writes while preserving existing records, with no automatic history pruning.
+
+Include the Assurance directory in private state backups. Stop its owner before restoring
+it; preserve its ownership, permissions and configuration scope, then restart and read
+back the saved versions. Changed scope, missing ownership or externally altered journal
+content stops writes; correct the cause instead of replacing history. This local journal
+is not shared storage or independent backup, and no operation publishes to Notion.
 
 ## License
 

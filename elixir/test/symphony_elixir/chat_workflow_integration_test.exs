@@ -6,6 +6,9 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
   alias SymphonyElixirWeb.{BrowserAuth, Endpoint, TaskBoard}
   @endpoint Endpoint
   @project "github:example/integration"
+  # Real Store turns persist receipts and thread state before reporting events.
+  # Allow those durable steps to settle; negative and runtime deadlines stay strict.
+  @event_timeout 5_000
 
   # Only routes the optional server argument to this test's isolated real Store.
   # Conversation state, tool dispatch, persistence, previews and receipts are real.
@@ -291,7 +294,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     assert has_element?(index, "#chat-thread-list:not([hidden])")
 
     assert {:ok, _} = Store.send_message(@project, background["id"], "Wait for thread status", "thread-status", ctx.auth, ctx.server)
-    assert_receive {:waiting_for_thread_status, runtime}, 2_000
+    assert_receive {:waiting_for_thread_status, runtime}, @event_timeout
     assert eventually(fn -> has_element?(view, selector, "Running") end)
     assert eventually(fn -> has_element?(index, selector, "Running") end)
     assert has_element?(view, "#chat-message-input", "Keep this unsent draft")
@@ -343,8 +346,8 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     {view, _conn} = chat_view(ctx)
     render_submit(view, "send-message", %{"message" => "Review work"})
     refute has_element?(view, ".chat-notice"), render(view) |> Floki.parse_document!() |> Floki.find(".chat-notice") |> Floki.text()
-    assert_receive {:model_started, _, nil, "Review work"}
-    assert_receive {:real_tool_results, [status, search, details]}
+    assert_receive {:model_started, _, nil, "Review work"}, @event_timeout
+    assert_receive {:real_tool_results, [status, search, details]}, @event_timeout
     assert [%{"type" => "status"}] = status["widgets"]
     assert [%{"type" => "tasks", "tasks" => [%{"issue_id" => "2"}]}] = search["widgets"]
     assert [%{"type" => "task", "task" => %{"description" => "Depends on: none"}}] = details["widgets"]
@@ -371,7 +374,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     {resumed, _} = chat_view(ctx, chat["id"])
     assert render(resumed) =~ "The retry task needs attention."
     render_submit(resumed, "send-message", %{"message" => "Continue"})
-    assert_receive {:model_started, _, "native-integration-thread", "Continue"}
+    assert_receive {:model_started, _, "native-integration-thread", "Continue"}, @event_timeout
   end
 
   test "create previews get durable IDs, execute only after confirmation and show real receipts", ctx do
@@ -385,7 +388,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     assert has_element?(view, ".chat-widget-proposal", "Verify retry behavior.")
     assert Agent.get(ctx.requests, & &1) == []
     render_click(view, "decide", %{"id" => proposal["id"], "decision" => "confirm"})
-    assert_receive {:github_request, "POST", "/repos/example/integration/issues", body}
+    assert_receive {:github_request, "POST", "/repos/example/integration/issues", body}, @event_timeout
     assert body["labels"] == []
     assert body["body"] =~ "<!-- symphony-chat:#{proposal["id"]} -->"
     complete = wait_chat(ctx, &(hd(&1["proposals"])["status"] == "completed"))
@@ -404,7 +407,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     assert has_element?(view, ".chat-widget-proposal", "ready")
     assert Agent.get(ctx.requests, & &1) == []
     render_click(view, "decide", %{"id" => proposal["id"], "decision" => "confirm"})
-    assert_receive {:native_command, command, fingerprint, true}
+    assert_receive {:native_command, command, fingerprint, true}, @event_timeout
     assert fingerprint == ctx.auth.tracker_fingerprint
 
     assert command == %{
@@ -494,13 +497,13 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
   test "logout broadcasts socket disconnection and the resulting browser cannot read streamed history", ctx do
     {view, conn} = chat_view(ctx)
     render_submit(view, "send-message", %{"message" => "Wait for logout"})
-    assert_receive {:awaiting_logout, runtime}
+    assert_receive {:awaiting_logout, runtime}, @event_timeout
     socket_id = Plug.Conn.get_session(conn, "live_socket_id")
     :ok = Endpoint.subscribe(socket_id)
     csrf = Plug.CSRFProtection.get_csrf_token()
     logged_out = post(conn, "/operator/session/logout", %{"_csrf_token" => csrf})
     assert redirected_to(logged_out) == "/?panel=settings"
-    assert_receive %Phoenix.Socket.Broadcast{topic: ^socket_id, event: "disconnect"}
+    assert_receive %Phoenix.Socket.Broadcast{topic: ^socket_id, event: "disconnect"}, @event_timeout
     send(runtime, :after_logout)
     {:ok, anonymous, html} = live(recycle(logged_out), "/chat?project=" <> URI.encode_www_form(@project))
     assert html =~ "Unlock chat"
@@ -553,7 +556,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     view = with_target(view, "#chat-app")
     view |> element("#chat-composer") |> render_submit(%{"message" => "Use this view"})
     expected = snapshot
-    assert_receive {:view_seen, ^expected, %{"context_status" => "available", "snapshot" => ^expected, "current_tasks" => [%{"issue_id" => "2"}]}}
+    assert_receive {:view_seen, ^expected, %{"context_status" => "available", "snapshot" => ^expected, "current_tasks" => [%{"issue_id" => "2"}]}}, @event_timeout
     chat = wait_chat(ctx, &(&1["status"] == "idle"))
     user = Enum.find(chat["messages"], &(&1["role"] == "user"))
     assert user["view_context"] == expected
@@ -562,7 +565,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     refute has_element?(view, "#session-context-content")
     assert has_element?(view, "#session-chat-content:not([hidden])")
     view |> element("#chat-composer") |> render_submit(%{"message" => "Use this view"})
-    assert_receive {:view_seen, nil, %{"context_status" => "unavailable", "snapshot" => nil, "current_tasks" => []}}
+    assert_receive {:view_seen, nil, %{"context_status" => "unavailable", "snapshot" => nil, "current_tasks" => []}}, @event_timeout
     chat = wait_chat(ctx, &(&1["status"] == "idle" and length(&1["messages"]) == 4))
     user_messages = Enum.filter(chat["messages"], &(&1["role"] == "user"))
     assert Enum.map(user_messages, & &1["view_context"]) == [expected, nil]
@@ -577,8 +580,8 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     assert {:ok, task_chat} = Store.ensure_conversation(@project, task_id, ctx.auth, ctx.server)
     assert has_element?(view, "#chat-app[data-chat-id='#{task_chat["id"]}']")
     view |> element("#chat-composer") |> render_submit(%{"message" => "Wait for thread status"})
-    assert_receive {:model_started, _, nil, "Wait for thread status"}
-    assert_receive {:waiting_for_thread_status, runtime}
+    assert_receive {:model_started, _, nil, "Wait for thread status"}, @event_timeout
+    assert_receive {:waiting_for_thread_status, runtime}, @event_timeout
     assert eventually(fn -> has_element?(view, "#send-message-button", "Queue") end)
     view |> element("#chat-composer") |> render_submit(%{"message" => "Follow up on this task"})
     assert has_element?(view, "#chat-queue", "1 queued")
@@ -594,7 +597,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     refute has_element?(view, "#chat-queue")
     view |> element("#chat-composer") |> render_change(%{"message" => "Keep the orchestration draft"})
     send(runtime, :finish_status)
-    assert_receive {:model_started, _, "native-integration-thread", "Follow up on this task"}
+    assert_receive {:model_started, _, "native-integration-thread", "Follow up on this task"}, @event_timeout
 
     assert eventually(fn ->
              {:ok, current} = Store.get(@project, task_chat["id"], ctx.auth, ctx.server)
@@ -622,7 +625,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     view = with_target(view, "#chat-app")
     assert {:ok, chat} = Store.ensure_conversation(@project, task_id, ctx.auth, ctx.server)
     view |> element("#chat-composer") |> render_submit(%{"message" => "Wait for thread status"})
-    assert_receive {:waiting_for_thread_status, _runtime}
+    assert_receive {:waiting_for_thread_status, _runtime}, @event_timeout
     assert {:ok, running} = Store.get(@project, chat["id"], ctx.auth, ctx.server)
     stopped_id = List.last(running["messages"])["id"]
     chat_id = chat["id"]
@@ -632,7 +635,7 @@ defmodule SymphonyElixir.ChatWorkflowIntegrationTest do
     assert eventually(fn -> has_element?(view, "#resume-queue-button") end)
     assert has_element?(view, "#message-#{stopped_id} .message-outcome", "Stopped")
     view |> element("#resume-queue-button") |> render_click()
-    assert_receive {:model_started, _, "native-integration-thread", "Continue after stop"}
+    assert_receive {:model_started, _, "native-integration-thread", "Continue after stop"}, @event_timeout
     wait_chat(ctx, &(&1["status"] == "idle" and length(&1["messages"]) == 4))
     assert eventually(fn -> not has_element?(view, "#chat-queue") end)
     assert has_element?(view, "#message-#{stopped_id} .message-outcome", "Stopped")

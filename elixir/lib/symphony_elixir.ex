@@ -44,6 +44,7 @@ defmodule SymphonyElixir.Application do
       SymphonyElixir.Chat.Store,
       SymphonyElixir.Design.Store,
       SymphonyElixir.Specification.Store,
+      SymphonyElixir.Assurance.Store,
       SymphonyElixirWeb.BrowserSessions,
       SymphonyElixirWeb.BoardCache,
       SymphonyElixir.Chat.PRUpdates,

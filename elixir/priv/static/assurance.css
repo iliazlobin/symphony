@@ -1,0 +1,33 @@
+.assurance-workspace { display: grid; gap: 14px; min-width: 0; }
+.assurance-tabs, .assurance-inline-form, .assurance-toolbar, .assurance-linked-task { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.assurance-tabs { border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+.assurance-toolbar { justify-content: space-between; }
+.assurance-toolbar p, .assurance-task-context { margin: 0; }
+.assurance-form { display: grid; gap: 10px; margin: 12px 0; }
+.assurance-form label { display: grid; gap: 5px; font-size: 13px; font-weight: 600; }
+.assurance-form input, .assurance-form textarea, .assurance-form select { width: 100%; box-sizing: border-box; background: var(--panel, #fff); color: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit; }
+.assurance-form .button { justify-self: start; }
+.assurance-receipt-selection label { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-weight: 400; }
+.assurance-receipt-selection input[type=checkbox] { width: auto; }
+.assurance-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.assurance-requirement, .assurance-release, .assurance-version { border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+.assurance-requirement header, .assurance-release header, .assurance-version { display: flex; align-items: start; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.assurance-requirement h3, .assurance-release h3 { margin: 0 0 4px; font-size: 15px; }
+.assurance-criterion { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.assurance-criterion p { margin: 4px 0 8px; overflow-wrap: anywhere; }
+.assurance-editor summary { cursor: pointer; font-size: 13px; font-weight: 600; padding: 7px 0; }
+.assurance-state { font-size: 12px; border-radius: 4px; background: var(--bg, #edf1f6); padding: 3px 7px; white-space: nowrap; }
+.assurance-task-link { border: 0; padding: 2px 0; background: transparent; color: var(--accent, #3267ad); text-align: left; text-decoration: underline; cursor: pointer; font: inherit; font-size: 13px; }
+.assurance-task-link:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.assurance-gap, .assurance-error { color: var(--warn); font-size: 13px; }
+.assurance-error, .assurance-notice { background: var(--bg, #f4f6fa); border-radius: 6px; padding: 10px 12px; margin: 0; }
+.assurance-facts { display: grid; gap: 6px; font-size: 13px; }
+.assurance-facts div { display: grid; grid-template-columns: 65px 1fr; gap: 8px; }
+.assurance-facts dd { margin: 0; overflow-wrap: anywhere; }
+.assurance-workspace code { overflow-wrap: anywhere; }
+.assurance-version .muted { margin-left: 10px; font-size: 12px; }
+.assurance-difference ul { display: grid; gap: 8px; padding-left: 18px; }
+.assurance-receipts article { border-top: 1px solid var(--line); padding-top: 10px; font-size: 13px; }
+.assurance-dependencies article { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; }
+.assurance-dependencies p { overflow-wrap: anywhere; }
+@media (max-width: 640px) { .assurance-fields { grid-template-columns: 1fr; } .assurance-workspace { gap: 10px; } }

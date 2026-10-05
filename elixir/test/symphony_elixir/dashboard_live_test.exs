@@ -4,6 +4,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
   alias Plug.Conn.Query
+  alias SymphonyElixir.Assurance.Store
   alias SymphonyElixir.Specification.Document
   alias SymphonyElixirWeb.{BoardCache, BrowserAuth, Endpoint, Presenter, TaskBoard}
   @endpoint Endpoint
@@ -326,6 +327,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     design_state = %{owner: owner, project: "github:example/fixture", revision: 0, draft: nil, reviewed: %{}}
     design = start_supervised!({Agent, fn -> design_state end}, id: :design_fixture)
     {specification, specification_root} = specification_fixture(context)
+    assurance = assurance_fixture(context)
     previous_endpoint = Application.get_env(:symphony_elixir, Endpoint, [])
 
     endpoint_config =
@@ -342,6 +344,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
         design_fixture: design,
         specification_store: if(context[:specification_fixture], do: FixtureSpecification),
         specification_fixture: specification,
+        assurance_store: assurance,
         snapshot_timeout_ms: 100,
         board_read_only: context[:read_only] || false,
         snapshot_loader: if(context[:snapshot_fixture], do: fn -> %{error: %{code: "fixture_snapshot_unavailable"}} end),
@@ -352,7 +355,10 @@ defmodule SymphonyElixir.DashboardLiveTest do
     start_supervised!({Endpoint, []})
     on_exit(fn -> Application.put_env(:symphony_elixir, Endpoint, previous_endpoint) end)
     fixture = %{runtime: runtime, board: board, threads: threads, intake: intake, design: design}
-    Map.merge(fixture, %{specification: specification, specification_root: specification_root})
+
+    fixture
+    |> Map.put(:assurance, assurance)
+    |> Map.merge(%{specification: specification, specification_root: specification_root})
   end
 
   @tag :project_directory
@@ -1858,7 +1864,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
       filters = if mode == "kanban", do: filters, else: Map.put(filters, "view", mode)
       render_patch(view, "/?" <> URI.encode_query(filters))
       render_click(view, "open-settings", %{"tab" => "connections"})
-      expected = "/?" <> URI.encode_query(Map.put(filters, "panel", "settings"))
+      returned = if mode == "graph", do: Map.put(filters, "graph_anchor", task), else: filters
+      expected = "/?" <> URI.encode_query(Map.put(returned, "panel", "settings"))
       assert has_element?(view, "#settings-connections form[action='/operator/session'] input[name=return_to][value='#{expected}']")
       render_click(view, "close-dialog")
       assert :sys.get_state(view.pid).socket.assigns.board_view == mode
@@ -2087,6 +2094,105 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute_receive {:settings_command, _}
   end
 
+  test "chat unlock posts the current graph view, filters, selected task and neighborhood", ctx do
+    {view, _html} = board_view()
+
+    params = %{
+      "view" => "graph",
+      "project" => "github:example/fixture",
+      "priority" => "P1",
+      "chat_task" => "github:example/fixture:2",
+      "graph_mode" => "focus",
+      "graph_anchor" => "github:example/fixture:2",
+      "graph_direction" => "upstream",
+      "graph_hops" => "2",
+      "graph_query" => "GH-2"
+    }
+
+    destination = "/?" <> URI.encode_query(params)
+    render_patch(view, destination)
+    assert has_element?(view, "#graph-view")
+    assert has_element?(view, "#management-chat-dock form[action='/operator/session'] input[name=return_to][value='#{destination}']")
+    render_click(view, "graph-options", %{"direction" => "downstream"})
+    returned = "/?" <> URI.encode_query(Map.put(params, "graph_direction", "downstream"))
+    assert has_element?(view, "#management-chat-dock input[name=return_to][value='#{returned}']")
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:settings_command, _}
+  end
+
+  @tag :assurance_fixture
+  test "a signed-out historical graph keeps its requested version through both unlock forms and real sign-in", ctx do
+    owner = authorized_board_view()
+    render_click(owner, "open-assurance")
+    baseline = assurance_baseline(owner)
+    refresh(owner, ctx.runtime, changed_graph_title(ctx.board, "2", "Current title after review"))
+    task = "github:example/fixture:2"
+    params = %{"view" => "graph", "baseline" => baseline["ref"], "chat_task" => task, "graph_anchor" => task}
+    destination = "/?" <> URI.encode_query(params)
+    {signed_out, _} = board_view()
+    render_patch(signed_out, destination)
+    assigns = :sys.get_state(signed_out.pid).socket.assigns
+    assert assigns.assurance_snapshot == %{}
+    assert is_nil(assigns.graph_baseline)
+    assert assigns.graph_requested_baseline == baseline["ref"]
+    assert has_element?(signed_out, ".graph-version-notice", "Reviewed graph unavailable")
+    refute has_element?(signed_out, "#workflow-graph")
+    assert has_element?(signed_out, "#management-chat-dock input[name=return_to][value='#{destination}']")
+    render_click(signed_out, "open-settings", %{"tab" => "connections"})
+    settings_destination = "/?" <> URI.encode_query(Map.put(params, "panel", "settings"))
+    assert has_element?(signed_out, "#settings-connections input[name=return_to][value='#{settings_destination}']")
+
+    conn = %{build_conn() | host: "localhost"} |> Plug.Conn.put_private(:plug_skip_csrf_protection, false) |> get(destination)
+    [csrf] = conn.resp_body |> Floki.parse_document!() |> Floki.find("meta[name=csrf-token]") |> Floki.attribute("content")
+
+    logged_in =
+      conn
+      |> recycle()
+      |> Plug.Conn.put_private(:plug_skip_csrf_protection, false)
+      |> post("/operator/session", %{"_csrf_token" => csrf, "operator_token" => System.get_env("SYMPHONY_CONTROL_TOKEN"), "return_to" => destination})
+
+    assert redirected_to(logged_in) == destination
+    {:ok, resumed, _} = live(recycle(logged_in), destination)
+    render_async(resumed)
+    assert :sys.get_state(resumed.pid).socket.assigns.graph_baseline["ref"] == baseline["ref"]
+    assert has_element?(resumed, "[data-plan-task-id='#{task}'] .plan-node-title", "Ready fixture")
+    refute has_element?(resumed, "[data-plan-task-id='#{task}'] .plan-node-title", "Current title after review")
+    render_click(resumed, "live-graph")
+    assert is_nil(:sys.get_state(resumed.pid).socket.assigns.graph_requested_baseline)
+    assert has_element?(resumed, "[data-plan-task-id='#{task}'] .plan-node-title", "Current title after review")
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
+  end
+
+  @tag :assurance_fixture
+  test "unavailable version references restrict writes until explicit live navigation without granting access", ctx do
+    view = authorized_board_view()
+    before = :sys.get_state(ctx.assurance).journal
+    ref = String.duplicate("a", 64)
+    render_patch(view, "/?" <> URI.encode_query(%{"view" => "graph", "baseline" => ref}))
+    assert :sys.get_state(view.pid).socket.assigns.graph_requested_baseline == ref
+    assert is_nil(:sys.get_state(view.pid).socket.assigns.graph_baseline)
+    assert has_element?(view, ".graph-version-notice", "unavailable")
+    render_click(view, "prepare-command", %{"action" => "pause"})
+    assert render(view) =~ "This board is read-only"
+    render_click(view, "open-card", %{"id" => "github:example/fixture:2"})
+    refute has_element?(view, "#board-dialog[data-kind=task]")
+    assurance_submit(view, "save-requirement", %{"title" => "Forged historical write", "kind" => "functional"})
+    assert :sys.get_state(ctx.assurance).journal == before
+    render_click(view, "live-graph")
+    assert is_nil(:sys.get_state(view.pid).socket.assigns.graph_requested_baseline)
+    assert has_element?(view, "#workflow-graph[data-graph-historical=false]")
+
+    for malformed <- ["bad", String.duplicate("A", 64)] do
+      render_patch(view, "/?" <> URI.encode_query(%{"view" => "graph", "baseline" => malformed}))
+      assert is_nil(:sys.get_state(view.pid).socket.assigns.graph_requested_baseline)
+      refute has_element?(view, ".graph-version-notice")
+    end
+
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
+  end
+
   @tag :specification_fixture
   test "a failed specification reload preserves unsaved edits and disables writes until storage recovers", ctx do
     view = authorized_board_view()
@@ -2181,6 +2287,39 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert saved_specification(view)["review_count"] == 0
     assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
     refute_receive {:settings_command, _}
+  end
+
+  @tag :specification_fixture
+  @tag :assurance_fixture
+  test "a historical graph blocks specification writes even with retained Design selection", ctx do
+    view = authorized_board_view()
+    project = "github:example/fixture"
+    render_click(view, "switch-view", %{"view" => "design"})
+    render_click(view, "spec-add-item", %{"project" => project, "section" => "brief"})
+    [item] = :sys.get_state(view.pid).socket.assigns.specification_draft["sections"]["brief"]["items"]
+    values = %{"items" => %{item["id"] => %{"body" => "Authorized current specification."}}}
+    view |> form(".specification-form", values) |> render_submit()
+    saved = saved_specification(view)
+    params = specification_params(view) |> put_in(["items", item["id"], "body"], "Forbidden historical overwrite.")
+    journal = Path.join(ctx.specification_root, "journal.json")
+    bytes = File.read!(journal)
+
+    render_click(view, "switch-view", %{"view" => "graph"})
+    render_click(view, "open-assurance")
+    baseline = assurance_baseline(view)
+    render_click(view, "assurance-view-baseline", %{"ref" => baseline["ref"]})
+    historical = :sys.get_state(view.pid).socket
+    assert historical.assigns.graph_baseline["ref"] == baseline["ref"]
+    retained = Phoenix.Component.assign(historical, board_view: "design")
+
+    assert {:noreply, rejected} =
+             SymphonyElixirWeb.DashboardLive.handle_event("spec-save", params, retained)
+
+    assert rejected.assigns.specification_notice =~ "sign in to edit its specification"
+    assert File.read!(journal) == bytes
+    assert saved_specification(view) == saved
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
   end
 
   test "legacy canvas Design navigation normalizes to Idea through Settings and unlock without entering task filters", ctx do
@@ -2564,7 +2703,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#selected-task-navigation [data-board-view-link=graph]")
     assert has_element?(view, "#selected-task-navigation [data-board-view-link=kanban]")
     assert has_element?(view, "#selected-task-navigation [data-board-view-link=gantt]")
-    assert has_element?(view, "#kanban-view[hidden] .task-card")
+    refute has_element?(view, "#kanban-view .task-card")
+    assert has_element?(view, "#task-board-app[data-task-catalog]")
     refute has_element?(view, "#board-dialog")
     assert :sys.get_state(view.pid).socket.assigns.chat_task_id == "github:example/fixture:2"
     assert :sys.get_state(view.pid).socket.assigns.url_filters == Map.put(filters, "view", "graph")
@@ -2656,6 +2796,459 @@ defmodule SymphonyElixir.DashboardLiveTest do
     render(view)
     assert_receive :snapshot_read
     assert :sys.get_state(view.pid).socket.assigns.payload_revision == revision + 1
+  end
+
+  @tag :assurance_fixture
+  @tag :threads_fixture
+  test "coverage forms persist scope, link current tasks and compare a read-only graph baseline", ctx do
+    view = authorized_board_view()
+    task_id = "github:example/fixture:2"
+    render_click(view, "select-plan-task", %{"id" => task_id})
+    view |> element("#coverage-button") |> render_click()
+    assert has_element?(view, "#board-dialog[data-kind=assurance] #assurance-workspace")
+
+    view
+    |> form("form[phx-submit=assurance-save-requirement]", %{"title" => "Reject expired tokens", "kind" => "functional"})
+    |> render_submit()
+
+    requirement = hd(assurance_snapshot(view)["draft"]["requirements"])
+
+    view
+    |> form("form[phx-submit=assurance-save-criterion]", %{"text" => "An expired token leaves the password unchanged", "required_checks" => "token-expiry\nsecurity"})
+    |> render_submit()
+
+    criterion = hd(hd(assurance_snapshot(view)["draft"]["requirements"])["criteria"])
+    view |> element("form[phx-submit=assurance-link-task]") |> render_submit()
+    linked = hd(assurance_snapshot(view)["draft"]["task_links"])
+    assert linked["task_id"] == task_id
+    assert linked["task_revision"] == SymphonyElixirWeb.AssuranceObservations.revision(Enum.find(ctx.board.tasks, &(&1.id == task_id)))
+    refute linked["task_revision"] == "browser-supplied"
+    assert has_element?(view, ".assurance-state", "Unverified")
+
+    assurance_submit(view, "save-requirement", %{"requirement_id" => requirement["id"], "title" => "Reject expired tokens safely", "kind" => "nonfunctional"})
+
+    assurance_submit(view, "save-criterion", %{
+      "requirement_id" => requirement["id"],
+      "criterion_id" => criterion["id"],
+      "text" => "Expired tokens leave both password and sessions unchanged",
+      "required_checks" => "token-expiry\nsecurity"
+    })
+
+    render_click(view, "assurance-gaps", %{"only" => "true"})
+    assert :sys.get_state(view.pid).socket.assigns.assurance_gaps
+    render_click(view, "assurance-tab", %{"tab" => "versions"})
+    view |> element("form[phx-submit=assurance-save-baseline]") |> render_submit()
+    baseline = assurance_snapshot(view)["reviewed"]
+    assert is_map(baseline["graph_snapshot"])
+    assert baseline["document"]["task_links"] == [linked]
+
+    changed = changed_graph_title(ctx.board, "2", "Ready fixture revised")
+    refresh(view, ctx.runtime, changed)
+    render_click(view, "assurance-compare", %{"ref" => baseline["ref"]})
+    difference = :sys.get_state(view.pid).socket.assigns.assurance_difference
+    assert ("task:" <> task_id) in difference["graph"]["nodes"]["changed"]
+    assert has_element?(view, ".assurance-difference", "task GH-2 · Ready fixture revised")
+    assert difference["compared_ref"] == baseline["ref"]
+
+    render_click(view, "assurance-view-baseline", %{"ref" => baseline["ref"]})
+    assert has_element?(view, "#task-board-app[data-board-view=graph]")
+    assert has_element?(view, ".graph-version-notice", "Status is from this snapshot")
+    assert has_element?(view, "#workflow-graph[data-graph-historical=true]")
+    assert has_element?(view, "#workflow-graph[data-projection-key^='#{baseline["ref"]}|']")
+    refute has_element?(view, "#kanban-view .task-card")
+    assert has_element?(view, "[data-plan-task-id='#{task_id}'] .plan-node-title", "Ready fixture")
+    refute has_element?(view, "[data-plan-task-id='#{task_id}'] .plan-node-title", "Ready fixture revised")
+    render_click(view, "select-plan-task", %{"id" => "github:example/fixture:1"})
+    assert :sys.get_state(view.pid).socket.assigns.chat_task_id == task_id
+    assert :sys.get_state(view.pid).socket.assigns.graph_history_task == "github:example/fixture:1"
+
+    before = :sys.get_state(ctx.assurance).journal
+    assurance_submit(view, "remove-requirement", %{"id" => requirement["id"]})
+    assert :sys.get_state(ctx.assurance).journal == before
+    render_click(view, "open-card", %{"id" => task_id})
+    refute has_element?(view, "#board-dialog[data-kind=task]")
+
+    render_click(view, "live-graph")
+    refute has_element?(view, ".graph-version-notice")
+    assert has_element?(view, "#workflow-graph[data-graph-historical=false]")
+    assert is_nil(:sys.get_state(view.pid).socket.assigns.graph_baseline)
+    assert has_element?(view, "[data-plan-task-id='#{task_id}'] .plan-node-title", "Ready fixture revised")
+    render_click(view, "open-assurance")
+    render_click(view, "assurance-tab", %{"tab" => "requirements"})
+    assurance_submit(view, "unlink-task", %{"task_id" => task_id, "criterion_id" => criterion["id"]})
+    assurance_submit(view, "remove-criterion", %{"requirement_id" => requirement["id"], "id" => criterion["id"]})
+    assurance_submit(view, "remove-requirement", %{"id" => requirement["id"]})
+    assert assurance_snapshot(view)["draft"]["requirements"] == []
+    assert assurance_snapshot(view)["draft"]["task_links"] == []
+    assert {:ok, ^baseline} = Store.reviewed("github:example/fixture", baseline["ref"], live_auth(view), ctx.assurance)
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    assert Enum.all?(Map.values(Agent.get(ctx.threads, & &1)), &(&1["messages"] == []))
+    refute_received {:settings_command, _}
+    refute_received {:intake_prepared, _, _}
+    refute_received {:intake_decided, _, _}
+  end
+
+  @tag :assurance_fixture
+  test "coverage rejects competing revisions, historical edits and unauthenticated writes", ctx do
+    view = authorized_board_view()
+    render_click(view, "open-assurance")
+    assurance_submit(view, "save-requirement", %{"title" => "Original outcome", "kind" => "functional"})
+    saved = assurance_snapshot(view)
+    requirement = hd(saved["draft"]["requirements"])
+    competing = put_in(saved["draft"], ["requirements", Access.at(0), "title"], "Concurrent outcome")
+    assert {:ok, latest} = Store.save("github:example/fixture", saved["storage_revision"], competing, live_auth(view), ctx.assurance)
+
+    render_submit(view, "assurance-save-requirement", %{
+      "storage_revision" => to_string(saved["storage_revision"]),
+      "requirement_id" => requirement["id"],
+      "title" => "Stale overwrite",
+      "kind" => "functional"
+    })
+
+    assert has_element?(view, ".assurance-error", "another session")
+    assert assurance_snapshot(view)["draft"] == competing
+    assert assurance_snapshot(view)["storage_revision"] == latest["storage_revision"]
+
+    assurance_submit(view, "save-criterion", %{"requirement_id" => requirement["id"], "text" => "A request is rejected", "required_checks" => "rejection"})
+    assurance_submit(view, "save-baseline", %{})
+    baseline = assurance_snapshot(view)["reviewed"]
+    render_click(view, "assurance-select-baseline", %{"ref" => baseline["ref"]})
+    before = :sys.get_state(ctx.assurance).journal
+    refute has_element?(view, "form[phx-submit=assurance-save-requirement]")
+    assurance_submit(view, "remove-requirement", %{"id" => requirement["id"]})
+    assert :sys.get_state(ctx.assurance).journal == before
+
+    {unauthorized, _} = board_view()
+    refute has_element?(unauthorized, "#coverage-button")
+    render_click(unauthorized, "open-assurance")
+    render_submit(unauthorized, "assurance-save-requirement", %{"storage_revision" => to_string(before["storage_revision"]), "title" => "Forged outcome", "kind" => "functional"})
+    assert has_element?(unauthorized, ".assurance-error", "cannot edit")
+    assert :sys.get_state(ctx.assurance).journal == before
+
+    render_click(view, "assurance-select-baseline", %{"ref" => ""})
+    readonly = Map.put(ctx.board, :read_only, true)
+    refresh(view, ctx.runtime, readonly)
+    assurance_submit(view, "remove-requirement", %{"id" => requirement["id"]})
+    assert :sys.get_state(ctx.assurance).journal == before
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
+    refute_received {:intake_prepared, _, _}
+  end
+
+  @tag :assurance_fixture
+  test "prerequisite annotation forms persist metadata without changing source edges or dispatch", ctx do
+    source = Enum.map(issues(), fn issue -> if issue.id == "1", do: %{issue | description: "Consumes an agreed contract\nDepends on: #2"}, else: issue end)
+    board = TaskBoard.project(source, ctx.board.runtime, ctx.board.control, Config.settings!())
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    task = "github:example/fixture:1"
+    prerequisite = "github:example/fixture:2"
+    render_click(view, "select-plan-task", %{"id" => task})
+    render_click(view, "open-assurance")
+    assert has_element?(view, "form[phx-submit=assurance-save-dependency]")
+    view |> form("form[phx-submit=assurance-save-dependency]", %{"reason" => "Consumers need an agreed interface", "output" => "Reviewed API contract"}) |> render_submit()
+
+    assert assurance_snapshot(view)["draft"]["dependencies"] == [
+             %{"task_id" => task, "depends_on" => prerequisite, "reason" => "Consumers need an agreed interface", "output" => "Reviewed API contract", "reviewed_ref" => nil}
+           ]
+
+    assert :sys.get_state(view.pid).socket.assigns.board.workflow_graph == board.workflow_graph
+    view |> element("[phx-click=assurance-remove-dependency]") |> render_click()
+    assert assurance_snapshot(view)["draft"]["dependencies"] == []
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    assert GenServer.call(ctx.runtime, :board).workflow_graph == board.workflow_graph
+    refute_received {:settings_command, _}
+    refute_received {:intake_prepared, _, _}
+  end
+
+  @tag :assurance_fixture
+  @tag :threads_fixture
+  test "graph groups reset cleanly and global search explicitly focuses a task outside filters" do
+    view = authorized_board_view()
+    render_click(view, "switch-view", %{"view" => "graph", "filters" => %{"q" => "Backlog"}})
+    render_click(view, "graph-options", %{"mode" => "overview"})
+    group = hd(:sys.get_state(view.pid).socket.assigns.graph_index.groups["milestone"].nodes)["id"]
+    render_click(view, "graph-options", %{"mode" => "tasks", "group" => group})
+    view |> form("form[phx-change=graph-options]", %{"group_by" => "task_kind"}) |> render_change()
+    options = :sys.get_state(view.pid).socket.assigns.graph_options
+    assert options["group_by"] == "task_kind"
+    refute options["group"]
+    assert has_element?(view, "[data-plan-task-id='github:example/fixture:1']")
+
+    view |> form("form[phx-submit=graph-search]", %{"query" => "Ready fixture"}) |> render_submit()
+    task_id = "github:example/fixture:2"
+    assert has_element?(view, "[data-graph-search-result][phx-value-id='#{task_id}']", "Outside filters")
+    view |> element("[data-graph-search-result][phx-value-id='#{task_id}']") |> render_click()
+    assert_push_event(view, "focus-plan-task", %{id: ^task_id, view: "graph"})
+    assert :sys.get_state(view.pid).socket.assigns.chat_task_id == task_id
+    assert :sys.get_state(view.pid).socket.assigns.url_filters["q"] == "Backlog"
+    assert :sys.get_state(view.pid).socket.assigns.graph_options["mode"] == "focus"
+    assert has_element?(view, "[data-plan-task-id='#{task_id}'][data-filtered=true]")
+    refute has_element?(view, "#kanban-view .task-card")
+    catalog = view |> element("#task-board-app") |> render() |> Floki.parse_fragment!() |> Floki.attribute("data-task-catalog") |> hd() |> Jason.decode!()
+    assert Enum.map(catalog, & &1["taskId"]) |> Enum.sort() == Enum.map(1..5, &"github:example/fixture:#{&1}")
+    refute_received {:settings_command, _}
+  end
+
+  @tag :assurance_fixture
+  @tag :threads_fixture
+  test "task selections reuse the indexed graph without assurance store calls and source failures invalidate it", ctx do
+    view = authorized_board_view()
+    render_click(view, "switch-view", %{"view" => "graph"})
+    owner = self()
+
+    :sys.replace_state(view.pid, fn state ->
+      :ok = Phoenix.PubSub.unsubscribe(SymphonyElixir.PubSub, "observability:dashboard")
+      Process.put(:assurance_fixture_graph_index, state.socket.assigns.graph_index)
+      state
+    end)
+
+    assert :erlang.trace(ctx.assurance, true, [:receive, {:tracer, self()}]) == 1
+
+    for id <- ~w(1 2 3 2) do
+      render_click(view, "select-plan-task", %{"id" => "github:example/fixture:#{id}"})
+
+      :sys.replace_state(view.pid, fn state ->
+        send(owner, {:graph_index_reused, :erts_debug.same(Process.get(:assurance_fixture_graph_index), state.socket.assigns.graph_index)})
+        state
+      end)
+
+      assert_receive {:graph_index_reused, true}
+    end
+
+    refute_receive {:trace, _, :receive, {:"$gen_call", _, _}}, 20
+    assert :erlang.trace(ctx.assurance, false, [:receive]) == 1
+    first = :sys.get_state(view.pid).socket.assigns.graph_index_key
+    refresh(view, ctx.runtime, Map.put(ctx.board, :source_error, "Tracker unavailable"))
+    current = :sys.get_state(view.pid).socket.assigns
+    refute current.graph_index_key == first
+    refute current.graph_index.available
+    assert has_element?(view, "#workflow-graph .board-warning")
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
+  end
+
+  @tag :assurance_fixture
+  @tag :threads_fixture
+  test "focused selection retains its anchor and layout until explicitly refocused", ctx do
+    source = Enum.map(issues(), fn issue -> if issue.id == "1", do: %{issue | description: "Consumes a contract\nDepends on: #2"}, else: issue end)
+    board = TaskBoard.project(source, ctx.board.runtime, ctx.board.control, Config.settings!())
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    first = "github:example/fixture:1"
+    second = "github:example/fixture:2"
+    render_click(view, "switch-view", %{"view" => "graph", "id" => first})
+    assert :sys.get_state(view.pid).socket.assigns.graph_options["anchor"] == first
+    positions = graph_positions(view)
+    render_click(view, "select-plan-task", %{"id" => second})
+    assert :sys.get_state(view.pid).socket.assigns.chat_task_id == second
+    assert :sys.get_state(view.pid).socket.assigns.graph_options["anchor"] == first
+    assert graph_positions(view) == positions
+    render_click(view, "graph-options", %{"mode" => "focus"})
+    assert :sys.get_state(view.pid).socket.assigns.graph_options["anchor"] == second
+    render_click(view, "select-plan-task", %{"id" => first, "focus" => "true"})
+    assert :sys.get_state(view.pid).socket.assigns.graph_options["anchor"] == first
+    assert_push_event(view, "focus-plan-task", %{id: ^first, view: "graph"})
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
+  end
+
+  defp graph_positions(view) do
+    view
+    |> element("#workflow-graph")
+    |> render()
+    |> Floki.parse_fragment!()
+    |> Floki.find("[data-plan-node]")
+    |> Enum.map(fn node -> {Floki.attribute(node, "data-node-id"), Floki.attribute(node, "transform")} end)
+  end
+
+  @tag :assurance_fixture
+  @tag :threads_fixture
+  test "historical search reveals tasks outside a large overview without changing current chat", ctx do
+    board = large_assurance_board(ctx.board, 100)
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    current_task = "github:example/fixture:2"
+    historical_task = "github:example/fixture:100"
+    render_click(view, "select-plan-task", %{"id" => current_task})
+    render_click(view, "open-assurance")
+    baseline = assurance_baseline(view)
+    render_click(view, "assurance-view-baseline", %{"ref" => baseline["ref"]})
+    render_click(view, "graph-options", %{"mode" => "overview", "page" => "2"})
+    refute has_element?(view, "[data-plan-task-id='#{historical_task}']")
+    view |> form("form[phx-submit=graph-search]", %{"query" => "Historical task 100"}) |> render_submit()
+    view |> element("[data-graph-search-result][phx-value-id='#{historical_task}']") |> render_click()
+
+    assigns = :sys.get_state(view.pid).socket.assigns
+    assert assigns.graph_options["mode"] == "focus"
+    assert assigns.graph_options["page"] == 0
+    assert is_nil(assigns.graph_options["query"])
+    assert assigns.graph_history_task == historical_task
+    assert assigns.chat_task_id == current_task
+    assert_push_event(view, "focus-plan-task", %{id: ^historical_task, view: "graph"})
+    assert has_element?(view, "#workflow-graph[data-graph-historical=true]")
+    assert has_element?(view, "[data-plan-task-id='#{historical_task}'][data-selected=true]")
+    assert has_element?(view, "#selected-task-navigation[data-selected-task-id='#{current_task}']")
+    assert view |> element("#workflow-graph") |> render() |> Floki.parse_fragment!() |> Floki.find("[data-plan-node]") |> length() <= 80
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
+  end
+
+  @tag :assurance_fixture
+  test "expired cached source cannot be treated as a current graph comparison", ctx do
+    view = authorized_board_view()
+    render_click(view, "open-assurance")
+    baseline = assurance_baseline(view)
+    stale = Map.put(ctx.board, :generated_at, DateTime.utc_now() |> DateTime.add(-121, :second) |> DateTime.to_iso8601())
+    refresh(view, ctx.runtime, stale)
+    render_click(view, "assurance-tab", %{"tab" => "versions"})
+    render_click(view, "assurance-compare", %{"ref" => baseline["ref"]})
+    assert :sys.get_state(view.pid).socket.assigns.assurance_difference["graph_unavailable"]
+    assert has_element?(view, ".assurance-difference", "comparison unavailable")
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+  end
+
+  @tag :assurance_fixture
+  test "source failure makes graph comparison unavailable while preserving scope differences", ctx do
+    view = authorized_board_view()
+    render_click(view, "open-assurance")
+    baseline = assurance_baseline(view)
+    requirement = hd(assurance_snapshot(view)["draft"]["requirements"])
+    assurance_submit(view, "save-requirement", %{"requirement_id" => requirement["id"], "title" => "Changed agreed scope", "kind" => "functional"})
+    refresh(view, ctx.runtime, Map.put(ctx.board, :source_error, "Tracker unavailable"))
+    render_click(view, "assurance-tab", %{"tab" => "versions"})
+    render_click(view, "assurance-compare", %{"ref" => baseline["ref"]})
+    difference = :sys.get_state(view.pid).socket.assigns.assurance_difference
+    assert requirement["id"] in difference["requirements"]["changed"]
+    assert difference["graph"] == %{}
+    assert difference["graph_unavailable"] == true
+    assert has_element?(view, ".assurance-difference", "requirement Changed agreed scope")
+    assert has_element?(view, ".assurance-difference", "unavailable")
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
+  end
+
+  @tag :assurance_fixture
+  test "read-only source clears previously verified criterion and graph badges", ctx do
+    board = reviewed_assurance_board(ctx.board)
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    seed_verified_assurance(view)
+    assert has_element?(view, ".assurance-criterion", "Current evidence passed")
+    assert get_in(:sys.get_state(view.pid).socket.assigns.board, [:assurance, "tasks", "github:example/fixture:2", "status"]) == "verified"
+    before = :sys.get_state(ctx.assurance).journal
+    readonly = board |> changed_graph_title("2", "Changed read-only task") |> Map.put(:read_only, true)
+    refresh(view, ctx.runtime, readonly)
+    assert_assurance_unavailable(view)
+    assert :sys.get_state(ctx.assurance).journal == before
+    refute_received {:settings_command, _}
+  end
+
+  @tag :assurance_fixture
+  test "expired identity clears previously verified criterion and graph badges", ctx do
+    board = reviewed_assurance_board(ctx.board)
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    seed_verified_assurance(view)
+    assert has_element?(view, ".assurance-criterion", "Current evidence passed")
+    before = :sys.get_state(ctx.assurance).journal
+    System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("rotated-token", 4))
+    refresh(view, ctx.runtime, changed_graph_title(board, "2", "Changed unauthorized task"))
+    assert_assurance_unavailable(view)
+    assert :sys.get_state(ctx.assurance).journal == before
+    refute_received {:settings_command, _}
+  end
+
+  defp assurance_baseline(view) do
+    assurance_submit(view, "save-requirement", %{"title" => "Agreed scope", "kind" => "functional"})
+    requirement = hd(assurance_snapshot(view)["draft"]["requirements"])
+    assurance_submit(view, "save-criterion", %{"requirement_id" => requirement["id"], "text" => "An observable outcome", "required_checks" => "scope"})
+    assurance_submit(view, "save-baseline", %{})
+    assurance_snapshot(view)["reviewed"]
+  end
+
+  defp large_assurance_board(board, count) do
+    source = hd(issues())
+
+    extra =
+      for n <- 6..count do
+        id = to_string(n)
+        %{source | id: id, identifier: "GH-" <> id, title: "Historical task " <> id, url: "https://github.com/example/fixture/issues/" <> id}
+      end
+
+    TaskBoard.project(issues() ++ extra, board.runtime, board.control, Config.settings!())
+  end
+
+  defp reviewed_assurance_board(board) do
+    sha = String.duplicate("a", 40)
+    base = String.duplicate("b", 40)
+
+    work = %{
+      "id" => "work",
+      "head_sha" => sha,
+      "base_sha" => base,
+      "phase" => "owner_review",
+      "goal_revision" => 1,
+      "publication" => %{"pr_number" => 7, "pr_url" => "https://github.com/example/fixture/pull/7"},
+      "handoff" => %{
+        "work_id" => "work",
+        "candidate_sha" => sha,
+        "base_sha" => base,
+        "goal_revision" => 1,
+        "run_id" => "run",
+        "review" => %{"candidate_sha" => sha, "verdict" => "approve", "findings" => []},
+        "checks" => []
+      }
+    }
+
+    board
+    |> update_task("2", &Map.put(&1, :ledger, %{"pr_work" => %{"work" => work}}))
+    |> update_task("2", &Map.put(&1, :github_status, "available"))
+    |> update_task("2", &Map.put(&1, :pull_requests, [%{number: 7, url: "https://github.com/example/fixture/pull/7", head_sha: sha}]))
+    |> put_in([:control, "issues", "2"], %{"pr_work" => %{"work" => work}})
+  end
+
+  defp seed_verified_assurance(view) do
+    render_click(view, "select-plan-task", %{"id" => "github:example/fixture:2"})
+    render_click(view, "open-assurance")
+    assurance_submit(view, "save-requirement", %{"title" => "Approved change", "kind" => "functional"})
+    requirement = hd(assurance_snapshot(view)["draft"]["requirements"])
+    assurance_submit(view, "save-criterion", %{"requirement_id" => requirement["id"], "text" => "The candidate has independent approval", "required_checks" => "independent-review"})
+    criterion = hd(hd(assurance_snapshot(view)["draft"]["requirements"])["criteria"])
+    assurance_submit(view, "link-task", %{"task_id" => "github:example/fixture:2", "criterion_id" => criterion["id"]})
+    assurance_submit(view, "save-baseline", %{})
+  end
+
+  defp assert_assurance_unavailable(view) do
+    assigns = :sys.get_state(view.pid).socket.assigns
+    assert assigns.assurance_projection == %{}
+    for key <- [:assurance, :assurance_observations, :assurance_evidence, :assurance_baselines], do: refute(Map.has_key?(assigns.board, key))
+    refute has_element?(view, ".assurance-criterion", "Current evidence passed")
+    render_click(view, "switch-view", %{"view" => "graph"})
+    refute has_element?(view, "[data-coverage-status=verified]")
+  end
+
+  defp assurance_fixture(%{assurance_fixture: true}) do
+    {:ok, root} = SymphonyElixir.PathSafety.canonicalize(Path.join(Path.dirname(Workflow.workflow_file_path()), "assurance-live"))
+    on_exit(fn -> File.rm_rf(root) end)
+    store = start_supervised!({Store, name: nil, state_dir: root, project: "github:example/fixture", scope: fn -> "live-fixture" end})
+    assert is_nil(:sys.get_state(store).fault)
+    store
+  end
+
+  defp assurance_fixture(_context), do: nil
+  defp assurance_snapshot(view), do: :sys.get_state(view.pid).socket.assigns.assurance_snapshot
+  defp live_auth(view), do: :sys.get_state(view.pid).socket.assigns.auth
+
+  defp assurance_submit(view, action, fields) do
+    revision = assurance_snapshot(view)["storage_revision"] || 0
+    render_submit(view, "assurance-" <> action, Map.put(fields, "storage_revision", to_string(revision)))
+  end
+
+  defp changed_graph_title(board, id, title) do
+    task_id = "github:example/fixture:" <> id
+    nodes = Enum.map(board.workflow_graph["nodes"], fn node -> if node["task_id"] == task_id, do: Map.put(node, "title", title), else: node end)
+    board |> update_task(id, &Map.put(&1, :title, title)) |> Map.put(:workflow_graph, Map.put(board.workflow_graph, "nodes", nodes))
   end
 
   defp drain_navigation_reads do
@@ -3330,6 +3923,50 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert render(view) =~ "This board is read-only"
     refute has_element?(view, "#board-dialog")
     assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+  end
+
+  @tag :assurance_fixture
+  test "historical graph URLs clear pending commands and reject a retained forged confirmation", ctx do
+    :ok = GenServer.call(ctx.runtime, {:board, settings_board(ctx.board)})
+    view = authorized_board_view()
+    render_click(view, "open-assurance")
+    baseline = assurance_baseline(view)
+    render_click(view, "switch-view", %{"view" => "graph"})
+    render_click(view, "open-settings")
+    render_submit(view, "save-concurrency", %{"limit" => "2"})
+    pending = :sys.get_state(view.pid).socket.assigns.pending_command
+    assert pending.action == "set_concurrency"
+    assert pending.revision == 0
+    assert has_element?(view, "#board-dialog button[phx-click=confirm-command]")
+
+    render_patch(view, "/?" <> URI.encode_query(%{"view" => "graph", "baseline" => baseline["ref"]}))
+    historical = :sys.get_state(view.pid).socket
+    assert historical.assigns.graph_baseline["ref"] == baseline["ref"]
+    assert is_nil(historical.assigns.pending_command)
+    refute has_element?(view, "#board-dialog button[phx-click=confirm-command]")
+
+    retained = Phoenix.Component.assign(historical, pending_command: pending, dialog: :confirm)
+
+    assert {:noreply, rejected} =
+             SymphonyElixirWeb.DashboardLive.handle_event("confirm-command", %{}, retained)
+
+    assert is_nil(rejected.assigns.pending_command)
+    assert is_nil(rejected.assigns.dialog)
+    assert rejected.assigns.notice =~ "This board is read-only"
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
+
+    for {event, params} <- [
+          {"new-task", %{}},
+          {"prepare-command", %{"action" => "pause"}},
+          {"save-concurrency", %{"limit" => "1"}}
+        ] do
+      render_click(view, event, params)
+      assert render(view) =~ "This board is read-only"
+    end
+
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
   end
 
   @tag snapshot_fixture: true
