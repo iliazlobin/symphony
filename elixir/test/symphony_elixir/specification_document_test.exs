@@ -100,6 +100,49 @@ defmodule SymphonyElixir.Specification.DocumentTest do
     assert {:error, :invalid_specification_form} = Document.add(put_in(document, ["sections", "data", "diagrams"], Enum.map(1..30, &Map.put(diagram, "id", "diagram#{&1}"))), "data", "diagrams")
   end
 
+  test "criteria are optional on existing documents and preserve stable bounded identities" do
+    {:ok, document} = Document.add(Document.new(@project), "requirements", "items")
+    [item] = document["sections"]["requirements"]["items"]
+    ref = Document.content_ref(document)
+    {:ok, added} = Document.add_criterion(document, item["id"])
+    [criterion] = added["sections"]["requirements"]["items"] |> hd() |> Map.fetch!("criteria")
+    fields = %{item["id"] => Map.take(item, ~w(kind title body)) |> Map.put("criteria", %{criterion["id"] => %{"statement" => "p95 below 500ms", "method" => "analysis"}})}
+    assert {:ok, edited} = Document.edit(added, "requirements", %{"items" => fields})
+    assert Document.valid?(edited, @project)
+    refute Document.content_ref(edited) == ref
+    assert {:ok, ^document} = Document.remove_criterion(edited, item["id"], criterion["id"])
+    assert Document.content_ref(document) == ref
+    assert Document.methods() == ~w(test analysis inspection review)
+    assert {:error, _} = Document.add_criterion(document, "foreign")
+    assert {:error, _} = Document.add_criterion(%{}, item["id"])
+    assert {:error, _} = Document.remove_criterion(added, item["id"], "foreign")
+    refute Document.valid?(put_in(added, ["sections", "requirements", "items", Access.at(0), "criteria", Access.at(0), "id"], item["id"]), @project)
+
+    for criteria <- [
+          nil,
+          %{},
+          [%{}],
+          [Map.put(criterion, "method", "deploy")],
+          [Map.put(criterion, "extra", true)],
+          [Map.put(criterion, "statement", <<255>>)],
+          [Map.put(criterion, "statement", String.duplicate("x", 4001))],
+          [criterion, criterion],
+          Enum.map(1..31, &Map.put(criterion, "id", "criterion-#{&1}"))
+        ] do
+      invalid = put_in(added, ["sections", "requirements", "items", Access.at(0), "criteria"], criteria)
+      refute Document.valid?(invalid, @project)
+    end
+
+    wrong_section = put_in(document, ["sections", "brief", "items"], [%{"id" => "brief-one", "kind" => "goal", "title" => "Goal", "body" => "", "criteria" => [criterion]}])
+    refute Document.valid?(wrong_section, @project)
+
+    for input <- [Map.delete(fields[item["id"]], "criteria"), Map.put(fields[item["id"]], "criteria", nil), Map.put(fields[item["id"]], "criteria", %{"foreign" => %{}})] do
+      assert {:error, _} = Document.edit(added, "requirements", %{"items" => %{item["id"] => input}})
+    end
+
+    assert {:error, _} = Document.edit(added, "requirements", %{"items" => %{}})
+  end
+
   test "content references ignore map ordering but include source, stable identity and semantic order" do
     document = Document.new(@project)
     reordered = Map.new(Enum.reverse(Map.to_list(document)))

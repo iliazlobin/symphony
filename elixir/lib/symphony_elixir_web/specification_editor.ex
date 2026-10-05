@@ -7,6 +7,7 @@ defmodule SymphonyElixirWeb.SpecificationEditor do
     if bound?(draft, state, params, section) do
       params = Map.reject(params, fn {key, value} -> key in ["items", "diagrams"] and is_nil(value) end)
       params = params |> normalize_inputs("items", ~w(kind title body)) |> normalize_inputs("diagrams", ~w(title source))
+      params = normalize_criteria(params)
       normalize(Document.edit(draft, section, params))
     else
       {:error, :invalid_specification_edit}
@@ -21,6 +22,8 @@ defmodule SymphonyElixirWeb.SpecificationEditor do
         "spec-add-diagram" -> Document.add(draft, section, "diagrams")
         "spec-remove-item" -> Document.remove(draft, section, "items", id)
         "spec-remove-diagram" -> Document.remove(draft, section, "diagrams", id)
+        "spec-add-criterion" when section == "requirements" -> Document.add_criterion(draft, id)
+        "spec-remove-criterion" when section == "requirements" and is_map(id) -> Document.remove_criterion(draft, id["item"], id["criterion"])
         _ -> {:error, :invalid_specification_edit}
       end
 
@@ -63,6 +66,18 @@ defmodule SymphonyElixirWeb.SpecificationEditor do
   end
 
   defp normalize_row(row, _fields), do: row
+
+  defp normalize_criteria(%{"items" => items} = params) when is_map(items) do
+    Map.put(
+      params,
+      "items",
+      Map.new(items, fn {id, row} ->
+        {id, if(is_map(row), do: normalize_inputs(row, "criteria", ~w(statement method)), else: row)}
+      end)
+    )
+  end
+
+  defp normalize_criteria(params), do: params
 
   defp normalize({:ok, document}), do: {:ok, document}
   defp normalize({:error, _reason}), do: {:error, :invalid_specification_edit}

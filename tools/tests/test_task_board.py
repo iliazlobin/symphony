@@ -286,10 +286,12 @@ assert.equal(zoomed.get("--chat-menu-space"),"372px");
 const assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
 const window = {}, document = {addEventListener(){}};
 vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),{window,document,AbortController});
-let details = [], listeners = new Map();
+let details = [], listeners = new Map(), scrolls = 0;
+const item = {dataset:{specItemId:"requirement-one"}, scrollIntoView(options) {assert.equal(options.block,"nearest");scrolls++;}};
 const el = {
+  dataset:{},
   addEventListener:(name,handler)=>listeners.set(name,handler),
-  querySelectorAll(selector) {assert.equal(selector,"details.specification-history[id]");return details;}
+  querySelectorAll(selector) {if(selector === "[data-spec-item-id]") return [item];assert.equal(selector,"details.specification-history[id]");return details;}
 };
 const hook = {...window.SymphonyHooks.SpecificationWorkspace,el,
   pushEvent(){throw new Error("Disclosure must not dispatch backend commands");}};
@@ -313,6 +315,12 @@ assert.equal(details[0].open,false);
 hook.beforeUpdate();details=[];hook.updated();hook.beforeUpdate();
 details=[{id:"specification-project-history",open:false}];hook.updated();
 assert.equal(details[0].open,false);
+// A task source focuses its stable requirement once; ordinary refreshes preserve scrolling.
+el.dataset.specificationFocus="requirement-one";hook.updated();assert.equal(scrolls,1);
+hook.updated();assert.equal(scrolls,1);
+el.dataset.specificationFocus="missing";hook.updated();assert.equal(scrolls,1);
+el.dataset.specificationFocus="";hook.updated();
+el.dataset.specificationFocus="requirement-one";hook.updated();assert.equal(scrolls,2);
 hook.destroyed();assert.equal(hook.abort.signal.aborted,true);
 '''
         root = pathlib.Path(__file__).resolve().parents[2]

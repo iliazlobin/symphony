@@ -274,6 +274,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     def save(project, revision, document, auth), do: Store.save(project, revision, document, auth, server())
     def review(project, revision, auth), do: Store.review(project, revision, auth, server())
     def reviewed(project, ref, auth), do: Store.reviewed(project, ref, auth, server())
+    def source(project, ref, auth), do: Store.source(project, ref, auth, server())
     defp server, do: Endpoint.config(:specification_fixture)
   end
 
@@ -658,6 +659,39 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   @tag snapshot_fixture: true
+  test "refresh requests during an older read coalesce into one fresh source read", ctx do
+    owner = self()
+    sequence = start_supervised!({Agent, fn -> 0 end}, id: :source_reads)
+    fresh = update_task(ctx.board, "1", &Map.put(&1, :title, "Current task scope"))
+    :ok = BoardCache.put(BoardCache.scope(ctx.runtime), ctx.board)
+
+    configure_board_loaders(fn _, _ ->
+      read = Agent.get_and_update(sequence, &{&1, &1 + 1})
+
+      if read == 0 do
+        send(owner, {:older_read, self()})
+
+        receive do
+          :release -> ctx.board
+        end
+      else
+        send(owner, :fresh_read)
+        fresh
+      end
+    end)
+
+    {:ok, view, _} = live(build_conn(), "/")
+    assert_receive {:older_read, reader}, 1_000
+    render_click(view, "refresh")
+    render_click(view, "refresh")
+    send(reader, :release)
+    render_async(view)
+    assert_receive :fresh_read, 1_000
+    render_async(view)
+    assert has_element?(view, "[data-task-id='github:example/fixture:1']", "Current task scope")
+    assert Agent.get(sequence, & &1) == 2
+  end
+
   test "unavailable or disabled controls suppress stale dispatch guidance", ctx do
     {view, _} = board_view()
     open_task(view, "2")
@@ -1942,6 +1976,71 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
     refute_receive {:intake_prepared, _, _}
     refute_receive {:settings_command, _}
+  end
+
+  @tag :specification_fixture
+  test "reviewed requirement criteria prepare a durable task preview and source navigation opens its exact version", ctx do
+    view = authorized_board_view()
+    project = "github:example/fixture"
+    render_click(view, "switch-view", %{"view" => "design"})
+    render_click(view, "spec-section", %{"project" => project, "section" => "requirements"})
+    render_click(view, "spec-add-item", %{"project" => project, "section" => "requirements"})
+    [item] = :sys.get_state(view.pid).socket.assigns.specification_draft["sections"]["requirements"]["items"]
+    render_click(view, "spec-add-criterion", %{"project" => project, "section" => "requirements", "id" => item["id"]})
+    [criterion] = hd(:sys.get_state(view.pid).socket.assigns.specification_draft["sections"]["requirements"]["items"])["criteria"]
+
+    fields = %{
+      "items" => %{
+        item["id"] => %{
+          "title" => "Relevant search",
+          "body" => "Return matching events",
+          "kind" => "functional",
+          "criteria" => %{criterion["id"] => %{"statement" => "Filter by place", "method" => "test"}}
+        }
+      }
+    }
+
+    view |> form(".specification-form", fields) |> render_submit()
+    view |> element("button[phx-click=spec-review]") |> render_click()
+    view |> element("button[phx-click=spec-confirm-review]") |> render_click()
+    saved = saved_specification(view)
+    ref = saved["reviewed"]["ref"]
+    source = saved["draft"]
+    assert has_element?(view, "[phx-click=spec-prepare-task]:not([disabled])")
+    view |> element("button[phx-click=spec-prepare-task]") |> render_click()
+    assert_receive {:intake_prepared, id, args}
+    assert args["body"] =~ "Specification source: #{ref}/#{source["document_id"]}/requirements/#{item["id"]}/#{criterion["id"]}"
+    assert has_element?(view, "#task-intake-panel .intake-preview-body", "Filter by place")
+    refute has_element?(view, "#task-intake-panel .intake-preview-body", "Specification source:")
+    assert has_element?(view, "#task-intake-panel a", "Reviewed specification")
+    assert has_element?(view, "#task-intake-panel button[phx-value-decision=confirm]")
+    assert saved_specification(view) == saved
+    assert :sys.get_state(ctx.intake).records[id]
+    refute_receive {:intake_decided, _, _}
+    refute_receive {:settings_command, _}
+    render_click(view, "close-dialog")
+
+    url = SymphonyElixirWeb.SpecificationActions.source_url(project, args["body"])
+    render_patch(view, url)
+    assert has_element?(view, ".specification-form fieldset[disabled]")
+    assert has_element?(view, "[data-spec-focused=true][data-spec-item-id='#{item["id"]}']")
+    refute has_element?(view, "button[phx-click=spec-prepare-task]")
+    assert :sys.get_state(view.pid).socket.assigns.specification_history["ref"] == ref
+    view |> element("button[phx-click=spec-return-draft]") |> render_click()
+    assert_patch(view, "/?" <> URI.encode_query(%{"project" => project, "view" => "design"}))
+    assert is_nil(:sys.get_state(view.pid).socket.assigns.specification_history)
+    assert is_nil(:sys.get_state(view.pid).socket.assigns.specification_task_url)
+    changed = fields |> put_in(["items", item["id"], "body"], "A changed requirement")
+    view |> form(".specification-form", changed) |> render_change()
+    assert has_element?(view, "[phx-click=spec-prepare-task][disabled]")
+    params = %{"project" => project, "ref" => ref, "item" => item["id"], "storage_revision" => saved["storage_revision"]}
+    render_click(view, "spec-prepare-task", params)
+    assert has_element?(view, "#design-view", "Save and review the requirement")
+    refute_receive {:intake_prepared, _, _}
+    render_patch(view, url)
+    assert has_element?(view, "#design-view", "Your draft has unsaved changes")
+    assert has_element?(view, ".specification-form textarea", "A changed requirement")
+    assert saved_specification(view) == saved
   end
 
   @tag :specification_fixture

@@ -887,24 +887,48 @@ Notion record. The Events Concierge example remains illustrative.
 
 **Design** is the separate structured specification: Brief, Requirements, Data,
 Architecture and Decisions. Items have stable IDs, a section-specific kind, title and
-editable details. Named Mermaid diagrams retain their source and show a local preview;
+editable details. Requirements optionally contain stable acceptance criteria: an observable
+statement and a verification method (test, analysis, inspection or review). Named Mermaid diagrams retain their source and show a local preview;
 syntax feedback does not erase the source. **Save specification** saves the draft.
 **Review specification** previews that saved version; **Save reviewed version** retains
 an immutable copy. Open a past version read-only and return to the current draft.
 Idea scenes are never automatically imported or interpreted as an approved specification.
+
+**Prepare task** opens the existing durable Backlog preview for a saved, reviewed
+requirement with complete criteria. Inspect its scope and explicitly confirm creation.
+The task retains the specification content reference, document, requirement and criterion
+IDs; its source link opens that exact version read-only, with links back to the task.
+Descriptions and criteria are quoted so design text cannot declare scheduling prerequisites.
+Select task prerequisites separately; preparation and creation do not start coding.
+
+Requirements show task coverage from the saved creation receipt and current issue title/body.
+A label without a matching receipt cannot establish coverage. Pending or uncertain creation
+uses the existing reconciliation flow; reopening the same preview reuses its identity.
+Changed task scope is marked for comparison. Unavailable journal/board data is unknown.
+Coverage refreshes with the board and creation receipts; draft edits recompute it locally.
+Refresh requests during a source read coalesce into one fresh read after it settles,
+including after an outage; the latest request is not discarded.
+Candidate review/checks remain separate: they confirm the exact work revision and commit,
+not individual criteria. Human Done does not make a criterion verified. Later specification
+versions retain older task links; new versions do not inherit those bindings automatically.
 
 Specification storage is `<control.state_path>.specification/journal.json`, owned by
 `Specification.Store` independently of chat availability. Authentication, configured
 project scope, exclusive ownership and journal digest guard every read/write. Saves and
 reviews also require the caller's expected storage revision. Specifications are bounded
 to 1 MB, 200 items and 30 diagrams per section; titles allow 256 UTF-16 units, item details
-24,000 and Mermaid source 60,000. The journal is bounded to 32 MB; full storage stops changes
+24,000 and Mermaid source 60,000. Requirements allow 30 criteria, each with a 4,000-unit statement;
+task previews retain the existing 200-byte title and 4,000-byte description/verification limits.
+Oversized requirements require explicit splitting; content is never silently truncated. The journal is bounded to 32 MB; full storage stops changes
 without pruning history. Include this private directory in state backups; local durability
 does not establish cross-machine storage or an independent backup. Conflicting
 saves keep your open edits; compare them before using **Reload saved draft**. An empty
 specification cannot become reviewed. Specification versions do not accept tasks,
 start workers or change execution budgets. Iteration branches, task packs and release
-mapping remain planned. Existing `view=design` task source links resolve to Idea;
+mapping and criterion-specific verification receipts remain planned. Old specification documents
+and review hashes remain unchanged when criteria are absent. A service rollback must still
+understand criteria before reading a journal containing them; preserve the journal instead
+of rewriting it for an older reader. Existing `view=design` task source links resolve to Idea;
 plain `view=design` opens the specification.
 
 Kanban / Graph / Gantt share filters,

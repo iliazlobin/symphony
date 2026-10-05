@@ -1494,6 +1494,7 @@
   const specificationRenderers = new Map();
   const SpecificationWorkspace = {
     mounted() {
+      this.focusSource();
       this.abort = new AbortController();
       this.el.addEventListener("keydown", event => {
         const tab = event.target.closest('[role="tab"]');
@@ -1508,9 +1509,17 @@
       this.historyDisclosure = new Map([...this.el.querySelectorAll("details.specification-history[id]")].map(details => [details.id, details.open]));
     },
     updated() {
+      this.focusSource();
       this.el.querySelectorAll("details.specification-history[id]").forEach(details => {
         if (this.historyDisclosure?.has(details.id)) details.open = this.historyDisclosure.get(details.id);
       });
+    },
+    focusSource() {
+      const id = this.el.dataset.specificationFocus;
+      if (!id) { this.focusedSource = null; return; }
+      if (this.focusedSource === id) return;
+      const item = [...this.el.querySelectorAll("[data-spec-item-id]")].find(node => node.dataset.specItemId === id);
+      if (item) { this.focusedSource = id; item.scrollIntoView({block: "nearest", behavior: "auto"}); }
     },
     destroyed() { this.abort.abort(); }
   };

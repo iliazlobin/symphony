@@ -65,6 +65,27 @@ defmodule SymphonyElixir.Specification.StoreTest do
     assert {:ok, %{"specification" => ^changed}} = Store.reviewed(@project, next["ref"], :operator, restarted)
   end
 
+  test "acceptance criteria persist beside older immutable documents and keep their original content references", c do
+    pid = start_supervised!({Store, c.opts})
+    {:ok, _} = Store.save(@project, 0, c.document, :operator, pid)
+    {:ok, initial} = Store.review(@project, 1, :operator, pid)
+    old_ref = initial["reviewed"]["ref"]
+    {:ok, changed} = Document.add(c.document, "requirements", "items")
+    [item] = changed["sections"]["requirements"]["items"]
+    {:ok, changed} = Document.add_criterion(changed, item["id"])
+    changed = put_in(changed, ["sections", "requirements", "items", Access.at(0), "criteria", Access.at(0), "statement"], "p95 under 500ms")
+    {:ok, _} = Store.save(@project, 2, changed, :operator, pid)
+    {:ok, reviewed} = Store.review(@project, 3, :operator, pid)
+    new_ref = reviewed["reviewed"]["ref"]
+    refute old_ref == new_ref
+    :ok = stop_supervised(Store)
+    owner = start_owner(c.opts)
+    assert {:ok, %{"specification" => old}} = Store.reviewed(@project, old_ref, :operator, owner)
+    assert old == c.document and Document.content_ref(old) == old_ref
+    assert {:ok, %{"specification" => ^changed}} = Store.reviewed(@project, new_ref, :operator, owner)
+    assert {:ok, %{"storage_revision" => 4, "draft" => ^changed}} = Store.read(@project, :operator, owner)
+  end
+
   test "source captures one immutable review and its current draft in the same owner operation", c do
     pid = start_supervised!({Store, c.opts})
     assert {:error, :specification_review_not_found} = Store.source(@project, "unknown", :operator, pid)
