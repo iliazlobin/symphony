@@ -16,7 +16,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
 
-from aiohttp import ClientSession, web
+from aiohttp import ClientSession, WSMsgType, web
 from yarl import URL
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -153,10 +153,13 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
             app = web.Application()
             async def endpoint(request, project=slug):
                 if request.path == "/live/websocket":
-                    ws = web.WebSocketResponse()
+                    ws = web.WebSocketResponse(max_msg_size=2 * workspace_module.MAX_WEBSOCKET_MESSAGE)
                     await ws.prepare(request)
                     async for message in ws:
-                        await ws.send_str(request.headers.get("Cookie", "") if message.data == "cookie" else project + ":" + message.data)
+                        if message.data == "oversized-reply":
+                            await ws.send_str("x" * (workspace_module.MAX_WEBSOCKET_MESSAGE + 1))
+                        else:
+                            await ws.send_str(request.headers.get("Cookie", "") if message.data == "cookie" else project + ":" + message.data)
                     return ws
                 payload = {"project": project, "path": request.path, "auth": request.headers.get("Authorization"), "cookie": request.headers.get("Cookie")}
                 if request.path == "/auth/google/callback":
@@ -213,6 +216,29 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await symphony.receive()).data, "symphony:two")
                 await events.send_str("three")
                 self.assertEqual((await events.receive()).data, "events:three")
+
+    async def test_large_idea_frames_round_trip_without_raising_the_http_body_limit(self):
+        payload = "x" * 4_000_000
+        headers = {"Host": "localhost:8778"}
+        async with self.client.ws_connect(self.url + "/projects/events/live/websocket", headers=headers,
+                                         max_msg_size=workspace_module.MAX_WEBSOCKET_MESSAGE) as websocket:
+            await websocket.send_str(payload)
+            message = await websocket.receive(timeout=5)
+            self.assertEqual(message.type, WSMsgType.TEXT)
+            self.assertEqual(message.data, "events:" + payload)
+        async with self.client.post(self.url + "/projects/events/api/v1/control", headers=headers,
+                                    data=io.BytesIO(b"x" * (workspace_module.MAX_BODY + 1))) as response:
+            self.assertEqual(response.status, 413)
+
+    async def test_excessive_websocket_frames_are_rejected_in_both_directions(self):
+        for payload in ("x" * (workspace_module.MAX_WEBSOCKET_MESSAGE + 1), "oversized-reply"):
+            with self.subTest(direction="request" if payload != "oversized-reply" else "reply"):
+                async with self.client.ws_connect(self.url + "/projects/events/live/websocket",
+                                                 headers={"Host": "localhost:8778"},
+                                                 max_msg_size=2 * workspace_module.MAX_WEBSOCKET_MESSAGE) as websocket:
+                    await websocket.send_str(payload)
+                    message = await websocket.receive(timeout=5)
+                    self.assertEqual(message.type, WSMsgType.CLOSE)
 
     async def test_proxy_does_not_replace_browser_session_after_project_switch_or_logout(self):
         # Exercise production client construction, not the fixture's clients.
