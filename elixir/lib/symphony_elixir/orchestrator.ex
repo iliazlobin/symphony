@@ -150,7 +150,7 @@ defmodule SymphonyElixir.Orchestrator do
         state =
           cond do
             not is_nil(state.control_fault) -> release_issue_claim(state, issue_id)
-            hold == "worker_auth_required" -> block_worker_auth_failure(state, issue_id, running_entry)
+            not is_nil(hold) -> block_worker_failure(state, issue_id, running_entry, hold, reason)
             true -> handle_agent_down(reason, state, issue_id, running_entry, session_id)
           end
 
@@ -338,11 +338,10 @@ defmodule SymphonyElixir.Orchestrator do
   defp worker_failure_hold(%{control: nil}, _id, _entry, _reason), do: nil
 
   defp worker_failure_hold(state, id, entry, reason) do
-    if matching_run?(state, id, entry[:run_id]) and WorkerFailure.authentication_required?(reason),
-      do: "worker_auth_required"
+    if matching_run?(state, id, entry[:run_id]), do: WorkerFailure.hold_reason(reason)
   end
 
-  defp block_worker_auth_failure(state, issue_id, entry) do
+  defp block_worker_failure(state, issue_id, entry, hold, reason) do
     # finish_control already persisted settlement and the hold in one write. Never
     # install a second hold after settlement: a restart between writes could admit work.
     blocked = %{
@@ -352,10 +351,10 @@ defmodule SymphonyElixir.Orchestrator do
       worker_host: entry[:worker_host],
       workspace_path: entry[:workspace_path],
       session_id: running_entry_session_id(entry),
-      error: "Worker sign-in required",
+      error: WorkerFailure.summary(reason),
       blocked_at: DateTime.utc_now(),
       last_codex_message: nil,
-      last_codex_event: :worker_auth_required,
+      last_codex_event: if(hold == "worker_auth_required", do: :worker_auth_required, else: :workspace_baseline_changed),
       last_codex_timestamp: entry[:last_codex_timestamp]
     }
 

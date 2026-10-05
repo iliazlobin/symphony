@@ -570,6 +570,25 @@ defmodule SymphonyElixir.Chat.ToolsTest do
     assert auth["execution_status"] == "Worker sign-in required"
     assert auth["execution_note"] =~ "coding worker's Codex sign-in"
     refute Jason.encode!(result) =~ "private-model-token"
+
+    baseline = %{held | hold: "workspace_baseline_changed"}
+    Application.put_env(:symphony_elixir, :chat_test_board, %{ctx.board | tasks: [baseline]})
+    assert {:ok, %{"widgets" => [%{"task" => recovery}]} = result} = Tools.call("symphony_task_details", %{"task_id" => baseline.issue_id}, ctx.context)
+    assert recovery["blocker_reason"] == "Workspace baseline needs recovery"
+    assert recovery["execution_status"] == "Workspace baseline needs recovery"
+    assert recovery["execution_note"] =~ "Preserve the retained checkout"
+    refute Jason.encode!(result) =~ "private-model-token"
+
+    for {task, control, status} <- [
+          {%{baseline | runtime: %{status: "running"}}, ctx.board.control, "Running"},
+          {%{baseline | stage: "done"}, ctx.board.control, "Done"},
+          {baseline, %{"enabled" => false}, "Queued"}
+        ] do
+      Application.put_env(:symphony_elixir, :chat_test_board, %{ctx.board | tasks: [task], control: control})
+      assert {:ok, %{"widgets" => [%{"task" => observed}]}} = Tools.call("symphony_task_details", %{"task_id" => task.issue_id}, ctx.context)
+      assert observed["execution_status"] == status
+      assert observed["blocker_reason"] == nil
+    end
   end
 
   test "a queued task at its attempt limit exposes the board hold and never promises admission", ctx do

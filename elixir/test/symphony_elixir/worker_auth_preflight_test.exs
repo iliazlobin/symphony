@@ -152,11 +152,16 @@ defmodule SymphonyElixir.WorkerAuthPreflightTest do
   end
 
   test "preflight deadline includes a silent provider and guardian cleanup", ctx do
-    configure(ctx, "timeout", read_timeout_ms: 500)
+    deadline_ms = 2_000
+    configure(ctx, "timeout", read_timeout_ms: deadline_ms)
     started = System.monotonic_time(:millisecond)
     assert {:error, {:startup_failed, :worker_auth, :response_timeout}} = AppServer.start_session(ctx.workspace)
-    assert System.monotonic_time(:millisecond) - started < 2_000
-    refute Enum.any?(trace(ctx), &(&1["method"] in ["thread/start", "turn/start"]))
+    assert System.monotonic_time(:millisecond) - started < deadline_ms + 2_000
+    methods = Enum.map(trace(ctx), & &1["method"])
+    assert "account/read" in methods
+    assert "getAuthStatus" in methods
+    assert "account/rateLimits/read" in methods
+    refute Enum.any?(methods, &(&1 in ["thread/start", "turn/start"]))
     assert_stopped(ctx)
   end
 

@@ -25,6 +25,12 @@ defmodule SymphonyElixir.WorkerFailure do
   def authentication_required?(reason) when is_binary(reason), do: legacy_auth_failure?(reason)
   def authentication_required?(_reason), do: false
 
+  @spec hold_reason(term()) :: String.t() | nil
+  def hold_reason(%__MODULE__{reason: reason}), do: hold_reason(reason)
+  def hold_reason({%__MODULE__{} = failure, _stack}), do: hold_reason(failure)
+  def hold_reason(:workspace_baseline_changed), do: "workspace_baseline_changed"
+  def hold_reason(reason), do: if(authentication_required?(reason), do: "worker_auth_required")
+
   @spec summary(term()) :: String.t()
   def summary(%__MODULE__{reason: reason}), do: summary(reason)
   def summary({%__MODULE__{} = failure, _stack}), do: summary(failure)
@@ -55,6 +61,7 @@ defmodule SymphonyElixir.WorkerFailure do
   end
 
   defp safe_summary(:normal), do: "Worker completed"
+  defp safe_summary(:workspace_baseline_changed), do: "Workspace baseline needs recovery"
   defp safe_summary(:turn_timeout), do: "Worker response timed out; retry scheduled"
   defp safe_summary(:response_timeout), do: "Worker startup timed out; retry scheduled"
   defp safe_summary({:startup_failed, _phase, reason}), do: safe_summary(reason)
@@ -66,6 +73,7 @@ defmodule SymphonyElixir.WorkerFailure do
   defp safe_summary("codex turn requires approval" = reason), do: reason
   defp safe_summary("codex MCP elicitation requires operator input" = reason), do: reason
   defp safe_summary("Worker completed" = reason), do: reason
+  defp safe_summary("Workspace baseline needs recovery" = reason), do: reason
   defp safe_summary("Worker response timed out; retry scheduled" = reason), do: reason
   defp safe_summary("Worker startup timed out; retry scheduled" = reason), do: reason
   defp safe_summary("Worker response failed; retry scheduled" = reason), do: reason

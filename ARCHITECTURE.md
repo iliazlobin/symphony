@@ -245,6 +245,12 @@ prove that its container has stopped.
 - Commands carry an idempotency key and expected operator revision. A successful
   response follows an atomic, synced ledger write. Failed persistence blocks
   admission and stops owned workers.
+- A controlled `before_run` hook can report a retained checkout's incompatible
+  baseline through the reserved exit/marker contract. The matching reservation and
+  `workspace_baseline_changed` hold settle atomically; failed persistence fails
+  closed. The hold survives restart and prevents automatic retries. Other hook
+  stages, ordinary errors and worker prose cannot create this typed hold. Checkout
+  recovery and any new attempt cycle remain explicit operator decisions.
 - Issue runtime has an independent OTP deadline, so a slow tracker poll cannot
   leave the coding worker running indefinitely. Token limits apply when usage
   events arrive and can overshoot by the last reporting increment.

@@ -340,6 +340,43 @@ defmodule SymphonyElixir.ControlLedgerTest do
     assert GenServer.call(pid, :snapshot)["issues"]["7"]["pr_work"][@work]["phase"] == "owner_review"
   end
 
+  test "baseline recovery selects fresh work while preserving the hold and lifetime evidence until explicit retry", ctx do
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    evidence = reviewed_handoff("retained-run") |> Map.drop(~w(work_id expected_head_sha goal_revision))
+    retained = issue(%{"hold" => "workspace_baseline_changed", "handoff" => evidence})
+    seed_issues(pid, %{"7" => retained})
+
+    assert_rejected_without_change(pid, ctx.settings.state_path, command("retry", 0, "7"), :budget_exhausted)
+    create = create_work(0)
+    assert {:ok, %{"revision" => 1}, false} = GenServer.call(pid, {:command, create, @work_context})
+    created = GenServer.call(pid, :snapshot)["issues"]["7"]
+    assert created["hold"] == "workspace_baseline_changed"
+    assert created["attempt_base"] == retained["attempts"]
+    assert created["cycle_attempts"] == 0
+    assert Map.take(created, ~w(attempts tokens runtime_ms)) == Map.take(retained, ~w(attempts tokens runtime_ms))
+    assert created["legacy_handoff"] == evidence
+    assert created["pr_work"][@work]["workspace_key"] != "GH-7"
+    assert created["pr_work"][@work]["base_sha"] == @base
+    assert {:error, :not_admitted} = GenServer.call(pid, {:reserve, "7"})
+    assert {:ok, _, true} = GenServer.call(pid, {:command, create, @work_context})
+    assert GenServer.call(pid, :snapshot)["issues"]["7"] == created
+
+    retry = command("retry", 1, "7")
+    assert {:ok, %{"revision" => 2}, false} = GenServer.call(pid, {:command, retry})
+    released = GenServer.call(pid, :snapshot)["issues"]["7"]
+    assert released["hold"] == nil
+    assert Map.drop(released, ~w(hold)) == Map.drop(created, ~w(hold))
+    assert {:error, :not_admitted} = GenServer.call(pid, {:reserve, "7"})
+
+    stop_supervised!(Owner)
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    assert GenServer.call(pid, :snapshot)["issues"]["7"] == released
+    assert {:ok, %{"revision" => 3}, false} = GenServer.call(pid, {:command, command("resume", 2)})
+    assert {:ok, run, _} = GenServer.call(pid, {:reserve, "7"})
+    assert GenServer.call(pid, :snapshot)["issues"]["7"]["active"]["work_id"] == @work
+    assert :ok = GenServer.call(pid, {:finish, "7", run, "cancelled"})
+  end
+
   test "cancelling a legacy reviewed candidate cannot hide its continuation requirement", ctx do
     pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
     assert {:ok, _, false} = GenServer.call(pid, {:command, command("resume", 0)})

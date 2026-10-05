@@ -716,6 +716,21 @@ authorize worker activation, broader permissions, automatic merge or deployment.
    the result. Rebuild and independently review any candidate carried onto the new base;
    retain completed task receipts and budgets without retrying them merely to migrate.
 
+The `before_run` guard checks that each retained checkout contains the approved
+baseline. A checkout left on an older baseline enters **Workspace baseline needs
+recovery** after the guarded preflight fails; Symphony settles that reserved attempt
+and records a durable hold instead of scheduling another automatic retry. It does
+not reset, rebase or delete the checkout, refund usage, or renew attempts.
+
+Preserve old-base work and its evidence. Reconcile any candidate explicitly and keep
+execution paused during recovery. Confirm a new PR working session with a distinct
+work ID and the approved baseline; this confirmation grants its bounded attempt cycle
+while preserving lifetime usage. The baseline hold remains until an explicit native
+retry releases it. Check the selected work and current control revision before that
+retry, then verify the fresh-work identity and remaining budgets before resuming.
+Retrying the same legacy workspace does not repair its ancestry. A baseline change or
+controller release alone grants neither additional attempts nor human acceptance.
+
 ## Verification and recovery
 
 Run `python3 -m unittest discover -s tools/tests -v` and `make all` in `elixir/`.
