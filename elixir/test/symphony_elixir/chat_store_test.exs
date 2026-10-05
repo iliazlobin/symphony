@@ -1773,6 +1773,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert {:ok, _} = Store.send_message(c.project, chat["id"], "auth resume", "auth-resume", c.auth, c.server)
     Agent.update(c.access, fn _ -> false end)
     send(active, :finish)
+    wait_revoked_dispatch(c, chat)
     refute_receive {:runtime, _, _, "auth resume"}
     Agent.update(c.access, fn _ -> true end)
     paused = wait_chat(c, chat, & &1["queue_paused"])
@@ -1793,6 +1794,7 @@ defmodule SymphonyElixir.Chat.StoreTest do
     assert thread_summary(c, waiting)["display_status"] == "queued"
     Agent.update(c.access, fn _ -> false end)
     send(first_pid, :finish)
+    wait_revoked_dispatch(c, waiting)
     refute_receive {:runtime, _, _, "capacity followup"}
     Agent.update(c.access, fn _ -> true end)
     paused = wait_chat(c, waiting, & &1["queue_paused"])
@@ -1902,6 +1904,21 @@ defmodule SymphonyElixir.Chat.StoreTest do
   end
 
   defp disk_chat(c, chat), do: c.root |> Path.join(chat["id"] <> ".json") |> File.read!() |> Jason.decode!()
+
+  # Reads remain unauthorized during revocation. Observe the owned fixture's
+  # completed dispatch decision before restoring access, rather than racing it.
+  defp wait_revoked_dispatch(c, chat, attempts \\ 100) do
+    current = :sys.get_state(c.server).chats[chat["id"]]
+
+    if current["queue_paused"] do
+      assert current["error"] =~ "Sign in and resume"
+      current
+    else
+      assert attempts > 0, "revoked dispatch did not pause the retained queue"
+      Process.sleep(10)
+      wait_revoked_dispatch(c, chat, attempts - 1)
+    end
+  end
 
   defp wait_chat(c, chat, predicate, attempts \\ 100) do
     {:ok, current} = Store.get(c.project, chat["id"], c.auth, c.server)
