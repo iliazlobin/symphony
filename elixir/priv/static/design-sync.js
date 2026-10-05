@@ -126,14 +126,14 @@
       if (!this.canWrite()) { this.status("Save the draft to this project before reviewing it."); return; }
       this.hook.flush(); this.hook.save(); this.panel(true);
       const confirm = this.el.querySelector("[data-design-confirm-review]"); if (confirm) confirm.hidden = false;
-      const description = this.el.querySelector("[data-design-review-description]"); if (description) description.textContent = "Save this version as the design baseline. You can keep editing a new draft.";
+      const description = this.el.querySelector("[data-design-review-description]"); if (description) description.textContent = "Keep a reviewed snapshot of this idea. The specification is managed in Design.";
       const changes = this.hook.canvas?.changes(this.baseline) || [];
       const list = this.el.querySelector("[data-design-change-list]"); list?.replaceChildren();
       for (const change of changes) {
         const row = this.el.ownerDocument.createElement("li"); row.textContent = `${change.change} · ${change.section} · ${change.title}`; list?.append(row);
       }
       if (!changes.length && list) {
-        const row = this.el.ownerDocument.createElement("li"); row.textContent = "No design changes since the reviewed version."; list.append(row);
+        const row = this.el.ownerDocument.createElement("li"); row.textContent = "No changes since the reviewed idea snapshot."; list.append(row);
       }
       const label = this.el.querySelector("[data-design-review-label]");
       if (label) label.textContent = this.reviewed ? "Previous version remains available to linked tasks." : "First reviewed version";
@@ -144,11 +144,11 @@
       const reply = await this.request("design-review", {storage_revision: this.revision});
       if (this.abort.signal.aborted) return;
       if (!reply.ok) { this.error(reply.error); return; }
-      this.accept(reply.data); await this.loadBaseline(); this.panel(false); this.status("Design reviewed · keep editing the next draft");
+      this.accept(reply.data); await this.loadBaseline(); this.panel(false); this.status("Idea snapshot reviewed · keep brainstorming");
     }
     async plan(section, item) {
       if (!this.hook.canvas?.canSave()) { this.status("Undo or export the unsaved drawing before preparing a task."); return; }
-      if (!this.reviewed) { this.status("Review this design version before preparing tasks."); return; }
+      if (!this.reviewed) { this.status("Review this idea snapshot before preparing tasks."); return; }
       if (!await this.saveCurrent()) { this.status("Save the current drawing before preparing a task. Check the storage message if saving is blocked."); return; }
       const reply = await this.request("prepare-design-task", {ref: this.reviewed.ref, section, item});
       if (!reply.ok) this.error(reply.error);
@@ -192,17 +192,17 @@
     error(code) {
       const errors = {
         stale_design_revision: "Project draft changed elsewhere · reload; your browser copy is kept",
-        design_document_mismatch: "Different design documents · open the project draft; the browser copy is kept",
-        design_request_unconfirmed: "Design request not confirmed · reload to check; your browser copy is kept",
+        design_document_mismatch: "Different idea documents · open the project draft; the browser copy is kept",
+        design_request_unconfirmed: "Idea request not confirmed · reload to check; your browser copy is kept",
         design_scope_changed: "Project configuration changed · reload before saving",
-        design_storage_full: "Design storage is full · history and browser edits are kept",
-        design_storage_locked: "Another engine owns this design · use that engine",
+        design_storage_full: "Idea storage is full · history and browser edits are kept",
+        design_storage_locked: "Another engine owns this idea · use that engine",
         design_item_not_reviewed: "Select an item in the reviewed version, or review your changes first",
         design_task_pending: "A task preview is already pending · finish it before preparing another",
         design_item_too_large: "Shorten this item to a scoped outcome before preparing a task",
-        unauthorized: "Sign in again to open or save this project design"
+        unauthorized: "Sign in again to open or save this project idea"
       };
-      this.status(errors[code] || "Project design unavailable · your browser draft is kept");
+      this.status(errors[code] || "Project idea unavailable · your browser draft is kept");
     }
     recovery(message, saved, importing) {
       const panel = this.el.querySelector("[data-design-recovery]"); if (!panel) return;

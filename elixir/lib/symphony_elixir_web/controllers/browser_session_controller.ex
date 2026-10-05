@@ -197,7 +197,7 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
         params = URI.decode_query(query)
 
         Enum.all?(params, fn {key, item} -> key in fields and String.valid?(item) and byte_size(item) <= 2_000 and not Regex.match?(~r/[\x00-\x1f\x7f]/, item) end) and
-          params["view"] in [nil, "design", "graph", "gantt", "kanban"] and params["panel"] in [nil, "settings"]
+          params["view"] in [nil, "idea", "design", "graph", "gantt", "kanban"] and params["panel"] in [nil, "settings"]
 
       _ ->
         false

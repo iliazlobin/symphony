@@ -3,6 +3,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
+  alias Plug.Conn.Query
+  alias SymphonyElixir.Specification.Document
   alias SymphonyElixirWeb.{BoardCache, BrowserAuth, Endpoint, Presenter, TaskBoard}
   @endpoint Endpoint
 
@@ -266,6 +268,15 @@ defmodule SymphonyElixir.DashboardLiveTest do
     defp summary(state), do: %{"storage_revision" => state.revision, "draft" => state.draft, "reviewed_ref" => state.reviewed["ref"]}
   end
 
+  defmodule FixtureSpecification do
+    alias SymphonyElixir.Specification.Store
+    def read(project, auth), do: Store.read(project, auth, server())
+    def save(project, revision, document, auth), do: Store.save(project, revision, document, auth, server())
+    def review(project, revision, auth), do: Store.review(project, revision, auth, server())
+    def reviewed(project, ref, auth), do: Store.reviewed(project, ref, auth, server())
+    defp server, do: Endpoint.config(:specification_fixture)
+  end
+
   setup context do
     config = %{
       tracker: %{
@@ -314,6 +325,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     owner = self()
     design_state = %{owner: owner, project: "github:example/fixture", revision: 0, draft: nil, reviewed: %{}}
     design = start_supervised!({Agent, fn -> design_state end}, id: :design_fixture)
+    {specification, specification_root} = specification_fixture(context)
     previous_endpoint = Application.get_env(:symphony_elixir, Endpoint, [])
 
     endpoint_config =
@@ -328,6 +340,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
         intake_fixture: intake,
         design_store: FixtureDesign,
         design_fixture: design,
+        specification_store: if(context[:specification_fixture], do: FixtureSpecification),
+        specification_fixture: specification,
         snapshot_timeout_ms: 100,
         board_read_only: context[:read_only] || false,
         snapshot_loader: if(context[:snapshot_fixture], do: fn -> %{error: %{code: "fixture_snapshot_unavailable"}} end),
@@ -337,7 +351,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     Application.put_env(:symphony_elixir, Endpoint, endpoint_config)
     start_supervised!({Endpoint, []})
     on_exit(fn -> Application.put_env(:symphony_elixir, Endpoint, previous_endpoint) end)
-    %{runtime: runtime, board: board, threads: threads, intake: intake, design: design}
+    fixture = %{runtime: runtime, board: board, threads: threads, intake: intake, design: design}
+    Map.merge(fixture, %{specification: specification, specification_root: specification_root})
   end
 
   @tag :project_directory
@@ -1810,15 +1825,22 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#lane-review [data-task-id='github:example/fixture:4']")
   end
 
-  test "Design precedes planning views, keeps board focus and never dispatches", ctx do
+  test "Idea precedes structured Design, keeps board focus and never dispatches", ctx do
     view = authorized_board_view()
     task = "github:example/fixture:2"
     render_patch(view, "/?" <> URI.encode_query(%{"chat_task" => task, "priority" => "P1"}))
-    view |> element("#view-design") |> render_click()
-    assert has_element?(view, "#board-view-picker #view-design:first-child[aria-current=page]")
-    assert has_element?(view, "#design-view [data-design-project='github:example/fixture']")
+    view |> element("#view-idea") |> render_click()
+    assert has_element?(view, "#board-view-picker #view-idea:first-child[aria-current=page]")
+    assert has_element?(view, "#view-idea + #view-design")
+    assert has_element?(view, "#idea-view [data-design-project='github:example/fixture'][phx-hook=DesignWorkspace]")
     assert has_element?(view, "#chat-app[data-design-mode=true]")
     assert :sys.get_state(view.pid).socket.assigns.chat_task_id == task
+    view |> element("#view-design") |> render_click()
+    assert has_element?(view, "#view-design[aria-current=page]")
+    assert has_element?(view, "#design-view")
+    refute has_element?(view, "#idea-view, #chat-app, [data-design-project]")
+    assert :sys.get_state(view.pid).socket.assigns.chat_task_id == task
+    assert :sys.get_state(view.pid).socket.assigns.url_filters == %{"priority" => "P1", "view" => "design"}
     render_click(view, "switch-view", %{"view" => "kanban"})
     assert has_element?(view, "#chat-app[data-design-mode=false]")
     assert has_element?(view, "#lane-work [data-task-id='#{task}'][data-selected=true]")
@@ -1831,7 +1853,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     {view, _html} = board_view()
     task = "github:example/fixture:2"
 
-    for mode <- ["design", "graph", "gantt", "kanban"] do
+    for mode <- ["idea", "design", "graph", "gantt", "kanban"] do
       filters = %{"project" => "github:example/fixture", "priority" => "P1", "chat_task" => task}
       filters = if mode == "kanban", do: filters, else: Map.put(filters, "view", mode)
       render_patch(view, "/?" <> URI.encode_query(filters))
@@ -1847,7 +1869,321 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute_receive {:settings_command, _}
   end
 
-  test "historical Design navigation survives Settings and unlock return without entering task filters", ctx do
+  @tag :specification_fixture
+  test "structured Design saves and reviews exact content without chat or task execution", ctx do
+    view = authorized_board_view()
+    project = "github:example/fixture"
+    render_click(view, "switch-view", %{"view" => "design"})
+    assert has_element?(view, "#design-view [data-specification-project='#{project}']")
+    refute has_element?(view, "#chat-app, [data-design-project], [data-design-canvas]")
+    assert Endpoint.config(:chat_store) == UnavailableChatApi
+    assert saved_specification(view)["draft"] == nil
+
+    render_click(view, "spec-add-item", %{"project" => project, "section" => "brief"})
+    render_click(view, "spec-add-diagram", %{"project" => project, "section" => "brief"})
+    draft = :sys.get_state(view.pid).socket.assigns.specification_draft
+    [item] = draft["sections"]["brief"]["items"]
+    [diagram] = draft["sections"]["brief"]["diagrams"]
+
+    values = %{
+      "items" => %{item["id"] => %{"title" => "Discovery scope", "body" => "Find relevant local events."}},
+      "diagrams" => %{diagram["id"] => %{"title" => "Discovery flow", "source" => "flowchart TD\n  U[User] --> W[Web client]"}}
+    }
+
+    view |> form(".specification-form", values) |> render_change()
+    assert has_element?(view, "[data-spec-status]", "Unsaved changes")
+    assert saved_specification(view)["storage_revision"] == 0
+    refute File.exists?(Path.join(ctx.specification_root, "journal.json"))
+    view |> form(".specification-form", values) |> render_submit()
+    first = saved_specification(view)
+    assert first["storage_revision"] == 1
+    assert first["review_count"] == 0
+    assert first["draft"]["sections"]["brief"]["items"] == [Map.merge(item, values["items"][item["id"]])]
+    assert has_element?(view, "[data-spec-mermaid]", "U[User] --> W[Web client]")
+
+    view |> element("button[phx-click=spec-review]") |> render_click()
+    assert has_element?(view, ".specification-review")
+    assert saved_specification(view)["review_count"] == 0
+    view |> element("button[phx-click=spec-cancel-review]") |> render_click()
+    refute has_element?(view, ".specification-review")
+    render_click(view, "spec-confirm-review", %{"project" => project, "storage_revision" => "1"})
+    assert saved_specification(view)["review_count"] == 0
+    view |> element("button[phx-click=spec-review]") |> render_click()
+    view |> element("button[phx-click=spec-confirm-review]") |> render_click()
+    reviewed = saved_specification(view)
+    ref = reviewed["reviewed"]["ref"]
+    assert reviewed["storage_revision"] == 2
+    assert reviewed["review_count"] == 1
+
+    pending = %{"items" => %{item["id"] => %{"body" => "A later working draft."}}}
+    view |> form(".specification-form", pending) |> render_change()
+    view |> element("button[phx-click=spec-open-version][phx-value-ref='#{ref}']") |> render_click()
+    assert has_element?(view, "[data-spec-status]", "Reviewed version · read-only")
+    assert has_element?(view, ".specification-form fieldset[disabled]")
+    assert has_element?(view, ".specification-form textarea", "Find relevant local events.")
+    render_click(view, "spec-remove-item", %{"project" => project, "section" => "brief", "id" => item["id"]})
+    assert saved_specification(view) == reviewed
+    view |> element("button[phx-click=spec-return-draft]") |> render_click()
+    assert has_element?(view, ".specification-form textarea", "A later working draft.")
+    assert has_element?(view, "[data-spec-status]", "Unsaved changes")
+
+    render_click(view, "switch-view", %{"view" => "idea"})
+    render_click(view, "switch-view", %{"view" => "design"})
+    assert has_element?(view, ".specification-form textarea", "A later working draft.")
+    view |> form(".specification-form", pending) |> render_submit()
+    view |> element("button[phx-click=spec-review]") |> render_click()
+    view |> element("button[phx-click=spec-confirm-review]") |> render_click()
+    assert saved_specification(view)["review_count"] == 2
+    auth = :sys.get_state(view.pid).socket.assigns.auth
+    assert {:ok, %{"specification" => original}} = FixtureSpecification.reviewed(project, ref, auth)
+    assert original == first["draft"]
+    assert Agent.get(ctx.design, & &1.revision) == 0
+    assert :sys.get_state(ctx.intake).records == %{}
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:intake_prepared, _, _}
+    refute_receive {:settings_command, _}
+  end
+
+  @tag :specification_fixture
+  test "browser unused-input markers preserve successive edits and save only specification fields", ctx do
+    view = authorized_board_view()
+    project = "github:example/fixture"
+    render_click(view, "switch-view", %{"view" => "design"})
+    render_click(view, "spec-add-item", %{"project" => project, "section" => "brief"})
+    render_click(view, "spec-add-diagram", %{"project" => project, "section" => "brief"})
+    view |> form(".specification-form") |> render_submit()
+    initial = saved_specification(view)
+    [item] = initial["draft"]["sections"]["brief"]["items"]
+    [diagram] = initial["draft"]["sections"]["brief"]["diagrams"]
+    refute has_element?(view, "[data-spec-status]", "Unsaved changes")
+
+    serialized = fn params, target ->
+      params |> Map.put("_target", target) |> Query.encode() |> Query.decode()
+    end
+
+    first =
+      specification_params(view)
+      |> put_in(["items", item["id"], "title"], "Discovery scope")
+      |> update_in(["items", item["id"]], &Map.merge(&1, %{"_unused_kind" => "", "_unused_body" => ""}))
+      |> update_in(["diagrams", diagram["id"]], &Map.merge(&1, %{"_unused_title" => "", "_unused_source" => ""}))
+      |> serialized.(["items", item["id"], "title"])
+
+    render_change(view, "spec-edit", first)
+    assert has_element?(view, "[data-spec-status]", "Unsaved changes")
+    assert has_element?(view, ".specification-form input[name$='[title]'][value='Discovery scope']")
+    refute has_element?(view, "#design-view", "This edit no longer matches")
+    assert saved_specification(view) == initial
+
+    second =
+      specification_params(view)
+      |> put_in(["items", item["id"], "body"], "Find relevant local events.")
+      |> update_in(["items", item["id"]], &Map.put(&1, "_unused_kind", ""))
+      |> update_in(["diagrams", diagram["id"]], &Map.merge(&1, %{"_unused_title" => "", "_unused_source" => ""}))
+      |> serialized.(["items", item["id"], "body"])
+
+    render_change(view, "spec-edit", second)
+
+    third =
+      specification_params(view)
+      |> put_in(["diagrams", diagram["id"], "title"], "Discovery flow")
+      |> update_in(["items", item["id"]], &Map.put(&1, "_unused_kind", ""))
+      |> update_in(["diagrams", diagram["id"]], &Map.put(&1, "_unused_source", ""))
+      |> serialized.(["diagrams", diagram["id"], "title"])
+
+    render_change(view, "spec-edit", third)
+
+    last =
+      specification_params(view)
+      |> put_in(["diagrams", diagram["id"], "source"], "flowchart TD\nU[User] --> W[Web client]")
+      |> update_in(["items", item["id"]], &Map.put(&1, "_unused_kind", ""))
+      |> serialized.(["diagrams", diagram["id"], "source"])
+
+    render_change(view, "spec-edit", last)
+    render_submit(view, "spec-save", last)
+    saved = saved_specification(view)
+    assert saved["storage_revision"] == 2
+    assert saved["draft"]["sections"]["brief"]["items"] == [Map.merge(item, %{"title" => "Discovery scope", "body" => "Find relevant local events."})]
+    assert saved["draft"]["sections"]["brief"]["diagrams"] == [Map.merge(diagram, %{"title" => "Discovery flow", "source" => "flowchart TD\nU[User] --> W[Web client]"})]
+    refute File.read!(Path.join(ctx.specification_root, "journal.json")) =~ "_unused_"
+    refute has_element?(view, "[data-spec-status]", "Unsaved changes")
+
+    rejected = specification_params(view) |> put_in(["items", item["id"], "_unused_id"], "")
+    render_change(view, "spec-edit", rejected)
+    assert has_element?(view, "#design-view", "This edit no longer matches")
+    assert :sys.get_state(view.pid).socket.assigns.specification_draft == saved["draft"]
+    assert saved_specification(view) == saved
+  end
+
+  @tag :specification_fixture
+  test "specification form context changes sections without clobbering edits or accepting old section events" do
+    view = authorized_board_view()
+    project = "github:example/fixture"
+    render_click(view, "switch-view", %{"view" => "design"})
+    render_click(view, "spec-add-item", %{"project" => project, "section" => "brief"})
+    render_click(view, "spec-add-diagram", %{"project" => project, "section" => "brief"})
+    draft = :sys.get_state(view.pid).socket.assigns.specification_draft
+    [item] = draft["sections"]["brief"]["items"]
+    [diagram] = draft["sections"]["brief"]["diagrams"]
+    brief_form = view |> render() |> Floki.parse_document!() |> Floki.attribute(".specification-form", "id")
+    view |> form(".specification-form", %{"items" => %{item["id"] => %{"title" => "Discovery scope"}}}) |> render_change()
+    values = %{"diagrams" => %{diagram["id"] => %{"title" => "Discovery flow", "source" => "flowchart TD\nA-->B"}}}
+    view |> form(".specification-form", values) |> render_change()
+    stale = specification_params(view)
+    retained = :sys.get_state(view.pid).socket.assigns.specification_draft
+    assert retained["sections"]["brief"]["items"] |> hd() |> Map.fetch!("title") == "Discovery scope"
+    assert retained["sections"]["brief"]["diagrams"] |> hd() |> Map.fetch!("title") == "Discovery flow"
+    assert retained["sections"]["brief"]["diagrams"] |> hd() |> Map.fetch!("source") == "flowchart TD\nA-->B"
+
+    render_click(view, "spec-section", %{"project" => project, "section" => "architecture"})
+    refute view |> render() |> Floki.parse_document!() |> Floki.attribute(".specification-form", "id") == brief_form
+    render_change(view, "spec-edit", stale)
+    assert :sys.get_state(view.pid).socket.assigns.specification_draft == retained
+    assert has_element?(view, "#design-view", "This edit no longer matches the open section")
+
+    render_click(view, "spec-section", %{"project" => project, "section" => "data"})
+    render_click(view, "spec-add-item", %{"project" => project, "section" => "data"})
+    [entity] = :sys.get_state(view.pid).socket.assigns.specification_draft["sections"]["data"]["items"]
+    assert has_element?(view, ".specification-form input[name=section][id][value=data]")
+    view |> form(".specification-form", %{"items" => %{entity["id"] => %{"title" => "Event", "body" => "id: UUID"}}}) |> render_submit()
+    saved = saved_specification(view)
+    assert saved["draft"]["sections"]["brief"] == retained["sections"]["brief"]
+    assert saved["draft"]["sections"]["data"]["items"] |> hd() |> Map.fetch!("body") == "id: UUID"
+    assert has_element?(view, ".specification-form input[name=storage_revision][id][value='1']")
+    render_click(view, "spec-section", %{"project" => project, "section" => "brief"})
+    assert view |> render() |> Floki.parse_document!() |> Floki.attribute(".specification-form", "id") == brief_form
+    assert has_element?(view, ".specification-form input[name$='[title]'][id][value='Discovery scope']")
+    assert has_element?(view, ".specification-form input[name$='[title]'][id][value='Discovery flow']")
+    assert has_element?(view, ".specification-form textarea[name$='[source]'][id]", "A-->B")
+    render_change(view, "spec-edit", stale)
+    assert :sys.get_state(view.pid).socket.assigns.specification_draft == saved["draft"]
+  end
+
+  @tag :specification_fixture
+  test "a concurrent specification save retains local edits until an explicit reload", ctx do
+    view = authorized_board_view()
+    project = "github:example/fixture"
+    render_click(view, "switch-view", %{"view" => "design"})
+    render_click(view, "spec-add-item", %{"project" => project, "section" => "brief"})
+    [item] = :sys.get_state(view.pid).socket.assigns.specification_draft["sections"]["brief"]["items"]
+    view |> form(".specification-form", %{"items" => %{item["id"] => %{"body" => "Saved proposal."}}}) |> render_submit()
+    initial = saved_specification(view)
+    view |> form(".specification-form", %{"items" => %{item["id"] => %{"body" => "Unsaved local changes."}}}) |> render_change()
+    elsewhere = put_in(initial["draft"], ["sections", "brief", "items", Access.at(0), "body"], "Saved by another browser.")
+    auth = :sys.get_state(view.pid).socket.assigns.auth
+    assert {:ok, %{"storage_revision" => 2}} = FixtureSpecification.save(project, 1, elsewhere, auth)
+
+    view |> form(".specification-form") |> render_submit()
+    assert has_element?(view, "#design-view", "The saved specification changed elsewhere")
+    assert has_element?(view, ".specification-form textarea", "Unsaved local changes.")
+    assert saved_specification(view)["draft"] == elsewhere
+    render_click(view, "switch-view", %{"view" => "idea"})
+    render_click(view, "switch-view", %{"view" => "design"})
+    assert has_element?(view, ".specification-form textarea", "Unsaved local changes.")
+    view |> element("button[phx-click=spec-reload]") |> render_click()
+    assert has_element?(view, ".specification-form textarea", "Saved by another browser.")
+    assert :sys.get_state(view.pid).socket.assigns.specification_draft == elsewhere
+    assert saved_specification(view)["review_count"] == 0
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:settings_command, _}
+  end
+
+  @tag :specification_fixture
+  test "a failed specification reload preserves unsaved edits and disables writes until storage recovers", ctx do
+    view = authorized_board_view()
+    project = "github:example/fixture"
+    render_click(view, "switch-view", %{"view" => "design"})
+    render_click(view, "spec-add-item", %{"project" => project, "section" => "brief"})
+    [item] = :sys.get_state(view.pid).socket.assigns.specification_draft["sections"]["brief"]["items"]
+    view |> form(".specification-form", %{"items" => %{item["id"] => %{"body" => "Saved project scope."}}}) |> render_submit()
+    saved = saved_specification(view)
+    view |> form(".specification-form", %{"items" => %{item["id"] => %{"body" => "Unsaved work to preserve."}}}) |> render_change()
+    pending = :sys.get_state(view.pid).socket.assigns.specification_draft
+    params = specification_params(view)
+    bytes = File.read!(Path.join(ctx.specification_root, "journal.json"))
+
+    :ok = stop_supervised(SymphonyElixir.Specification.Store)
+    view |> element("button[phx-click=spec-reload]") |> render_click()
+    assert has_element?(view, "#design-view", "Your open draft is retained")
+    assert has_element?(view, ".specification-form textarea", "Unsaved work to preserve.")
+    assert has_element?(view, ".specification-form fieldset[disabled]")
+    assert :sys.get_state(view.pid).socket.assigns.specification_draft == pending
+    render_submit(view, "spec-save", params)
+    assert File.read!(Path.join(ctx.specification_root, "journal.json")) == bytes
+
+    owner = start_supervised!({SymphonyElixir.Specification.Store, specification_opts(ctx.specification_root)})
+    configured = Application.get_env(:symphony_elixir, Endpoint)
+    Endpoint.config_change([{Endpoint, Keyword.put(configured, :specification_fixture, owner)}], [])
+    view |> element("button[phx-click=spec-reload]") |> render_click()
+    assert has_element?(view, ".specification-form textarea", "Saved project scope.")
+    refute has_element?(view, ".specification-form fieldset[disabled]")
+    assert :sys.get_state(view.pid).socket.assigns.specification_draft == saved["draft"]
+    assert saved_specification(view) == saved
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:settings_command, _}
+  end
+
+  @tag :specification_fixture
+  test "forged specification events from other views, projects or revoked sessions never write", ctx do
+    view = authorized_board_view()
+    project = "github:example/fixture"
+    render_click(view, "switch-view", %{"view" => "design"})
+    render_click(view, "spec-add-item", %{"project" => project, "section" => "brief"})
+    [item] = :sys.get_state(view.pid).socket.assigns.specification_draft["sections"]["brief"]["items"]
+    view |> form(".specification-form", %{"items" => %{item["id"] => %{"body" => "Authorized saved draft."}}}) |> render_submit()
+    saved = saved_specification(view)
+    journal = Path.join(ctx.specification_root, "journal.json")
+    bytes = File.read!(journal)
+    params = specification_params(view, %{"items" => %{item["id"] => Map.put(item, "body", "Forbidden overwrite.") |> Map.delete("id")}})
+
+    for mode <- ~w(idea kanban graph gantt) do
+      render_click(view, "switch-view", %{"view" => mode})
+      render_click(view, "spec-add-item", %{"project" => project, "section" => "brief"})
+      render_submit(view, "spec-save", params)
+      assert File.read!(journal) == bytes
+    end
+
+    render_click(view, "switch-view", %{"view" => "design"})
+    render_submit(view, "spec-save", Map.put(params, "project", "github:other/project"))
+    render_click(view, "spec-add-item", %{"project" => project, "section" => "architecture"})
+    render_change(view, "spec-edit", Map.put(params, "document_id", "another-document"))
+    render_change(view, "spec-edit", Map.put(params, "storage_revision", "0"))
+    assert :sys.get_state(view.pid).socket.assigns.specification_draft == saved["draft"]
+    assert File.read!(journal) == bytes
+    System.put_env("SYMPHONY_CONTROL_TOKEN", String.duplicate("rotated", 8))
+    render_submit(view, "spec-save", params)
+    render_click(view, "spec-add-item", %{"project" => project, "section" => "brief"})
+    assert :sys.get_state(view.pid).socket.assigns.specification_draft == saved["draft"]
+    assert File.read!(journal) == bytes
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    assert :sys.get_state(ctx.intake).records == %{}
+    refute_receive {:settings_command, _}
+  end
+
+  @tag :specification_fixture
+  @tag read_only: true
+  test "read-only Design presents a saved specification without enabling or accepting edits", ctx do
+    view = authorized_board_view()
+    project = "github:example/fixture"
+    auth = :sys.get_state(view.pid).socket.assigns.auth
+    document = Document.new(project)
+    {:ok, document} = Document.add(document, "brief", "items")
+    document = put_in(document, ["sections", "brief", "items", Access.at(0), "body"], "Read-only project scope.")
+    assert {:ok, %{"storage_revision" => 1}} = FixtureSpecification.save(project, 0, document, auth)
+    journal = Path.join(ctx.specification_root, "journal.json")
+    bytes = File.read!(journal)
+    render_click(view, "switch-view", %{"view" => "design"})
+    assert has_element?(view, ".specification-form textarea", "Read-only project scope.")
+    assert has_element?(view, ".specification-form fieldset[disabled]")
+    render_submit(view, "spec-save", specification_params(view))
+    render_click(view, "spec-add-item", %{"project" => project, "section" => "brief"})
+    render_click(view, "spec-confirm-review", %{"project" => project, "storage_revision" => "1"})
+    assert File.read!(journal) == bytes
+    assert saved_specification(view)["review_count"] == 0
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_receive {:settings_command, _}
+  end
+
+  test "legacy canvas Design navigation normalizes to Idea through Settings and unlock without entering task filters", ctx do
     {view, _html} = board_view()
 
     params = %{
@@ -1860,9 +2196,13 @@ defmodule SymphonyElixir.DashboardLiveTest do
       "design_task" => "github:example/fixture:2"
     }
 
+    legacy_source = "/?" <> URI.encode_query(params)
+    params = Map.put(params, "view", "idea")
     source = "/?" <> URI.encode_query(params)
     returned = "/?" <> URI.encode_query(Map.put(params, "panel", "settings"))
-    render_patch(view, source)
+    render_patch(view, legacy_source)
+    assert has_element?(view, "#idea-view [data-design-project='github:example/fixture']")
+    refute has_element?(view, "#design-view")
     assert :sys.get_state(view.pid).socket.assigns.url_filters == Map.take(params, ~w(project view priority))
     render_click(view, "open-settings")
     render_click(view, "settings-tab", %{"tab" => "connections"})
@@ -1884,9 +2224,9 @@ defmodule SymphonyElixir.DashboardLiveTest do
     render_click(view, "switch-view", %{"view" => "graph"})
     assert_patch(view, "/?" <> URI.encode_query(Map.take(params, ~w(project priority)) |> Map.put("view", "graph")))
     assert :sys.get_state(view.pid).socket.assigns.design_source_context == %{}
-    render_patch(view, source)
-    render_click(view, "board-filters", %{"project" => "github:other/project", "view" => "design"})
-    assert_patch(view, "/?" <> URI.encode_query(%{"project" => "github:other/project", "view" => "design"}))
+    render_patch(view, legacy_source)
+    render_click(view, "board-filters", %{"project" => "github:other/project", "view" => "idea"})
+    assert_patch(view, "/?" <> URI.encode_query(%{"project" => "github:other/project", "view" => "idea"}))
     assert :sys.get_state(view.pid).socket.assigns.design_source_context == %{}
     assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
     refute_receive {:design_call, _, _, _}
@@ -1900,6 +2240,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
 
     for changes <- [%{"design_ref" => "bad"}, %{"design_section" => "outside"}, %{"design_item" => "event/invalid"}] do
       render_patch(view, "/?" <> URI.encode_query(Map.merge(source, changes)))
+      assert has_element?(view, "#design-view")
+      refute has_element?(view, "#idea-view, #chat-app, [data-design-project]")
       assert :sys.get_state(view.pid).socket.assigns.design_source_context == %{}
       render_click(view, "open-settings")
       render_click(view, "settings-tab", %{"tab" => "connections"})
@@ -1909,17 +2251,19 @@ defmodule SymphonyElixir.DashboardLiveTest do
     end
 
     render_patch(view, "/?" <> URI.encode_query(Map.put(source, "design_task", "github:other/project:2")))
+    assert has_element?(view, "#idea-view")
+    assert :sys.get_state(view.pid).socket.assigns.board_view == "idea"
     assert :sys.get_state(view.pid).socket.assigns.design_source_context.params == Map.take(source, ~w(design_ref design_section design_item))
     assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
     refute_receive {:settings_command, _}
   end
 
-  test "Design lifecycle uses scoped owner replies and opens the exact task preview without executing", ctx do
+  test "Idea lifecycle retains Design owner replies and opens the exact task preview without executing", ctx do
     view = authorized_board_view()
     project = "github:example/fixture"
     scene = design_scene()
     ref = String.duplicate("a", 64)
-    render_click(view, "switch-view", %{"view" => "design"})
+    render_click(view, "switch-view", %{"view" => "idea"})
     render_hook(view, "design-load", %{"project" => project})
     assert_reply(view, %{ok: true, data: %{"storage_revision" => 0, "draft" => nil}})
     assert_receive {:design_call, :read, ^project, %{}}
@@ -1936,6 +2280,16 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert_reply(view, %{ok: true, data: %{"ref" => ^ref, "scene" => ^scene}})
     assert_receive {:design_call, :reviewed, ^project, %{ref: ^ref}}
 
+    canvas_state = Agent.get(ctx.design, & &1)
+    render_click(view, "switch-view", %{"view" => "design"})
+    render_hook(view, "design-save", %{"project" => project, "storage_revision" => 2, "scene" => scene})
+    assert_reply(view, %{ok: false, error: "design_project_mismatch"})
+    assert Agent.get(ctx.design, & &1) == canvas_state
+    render_click(view, "switch-view", %{"view" => "idea"})
+    render_hook(view, "design-reviewed", %{"project" => project, "ref" => ref})
+    assert_reply(view, %{ok: true, data: %{"ref" => ^ref, "scene" => ^scene}})
+    assert_receive {:design_call, :reviewed, ^project, %{ref: ^ref}}
+
     params = %{"project" => project, "ref" => ref, "section" => "data", "item" => "event"}
     render_hook(view, "prepare-design-task", params)
     assert_reply(view, %{ok: true})
@@ -1946,8 +2300,8 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert args["body"] =~ "Design source: #{ref}/fixture-design/data/event"
     assert args["body"] =~ "> Depends on: #99"
     assert has_element?(view, "#board-dialog[data-kind=new_task] .intake-preview-body", "Reviewed design excerpt")
-    source_url = "/?" <> URI.encode_query(%{"project" => project, "view" => "design", "design_ref" => ref, "design_section" => "data", "design_item" => "event"})
-    assert has_element?(view, "#task-intake-panel a[href='#{source_url}']", "Reviewed design")
+    source_url = "/?" <> URI.encode_query(%{"project" => project, "view" => "idea", "design_ref" => ref, "design_section" => "data", "design_item" => "event"})
+    assert has_element?(view, "#task-intake-panel a[href='#{source_url}']", "Reviewed idea")
     refute has_element?(view, "#task-intake-panel .intake-preview-body", "Design source:")
     assert get_in(:sys.get_state(ctx.intake).records[id], ["proposals", Access.at(0), "args", "body"]) == args["body"]
     assert has_element?(view, "#task-intake-panel button[phx-value-decision=confirm]", "Create task")
@@ -1982,9 +2336,9 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute_receive {:settings_command, _}
   end
 
-  test "Design events without project return bounded errors and preserve the mounted workspace", ctx do
+  test "Idea canvas events without project return bounded errors and preserve the mounted workspace", ctx do
     view = authorized_board_view()
-    render_click(view, "switch-view", %{"view" => "design"})
+    render_click(view, "switch-view", %{"view" => "idea"})
 
     for action <- ~w(design-load design-save design-review design-reviewed prepare-design-task), params <- [%{}, %{"scene" => design_scene()}] do
       render_hook(view, action, params)
@@ -2007,12 +2361,16 @@ defmodule SymphonyElixir.DashboardLiveTest do
     actions = ~w(design-load design-save design-review design-reviewed prepare-design-task)
     params = %{"project" => project, "storage_revision" => 0, "scene" => design_scene(), "ref" => String.duplicate("a", 64), "section" => "data", "item" => "event"}
 
-    for action <- actions do
-      render_hook(view, action, params)
-      assert_reply(view, %{ok: false, error: "design_project_mismatch"})
+    for mode <- ["kanban", "graph", "gantt", "design"] do
+      render_click(view, "switch-view", %{"view" => mode})
+
+      for action <- actions do
+        render_hook(view, action, params)
+        assert_reply(view, %{ok: false, error: "design_project_mismatch"})
+      end
     end
 
-    render_click(view, "switch-view", %{"view" => "design"})
+    render_click(view, "switch-view", %{"view" => "idea"})
 
     for action <- actions do
       render_hook(view, action, Map.put(params, "project", "github:other/project"))
@@ -2035,9 +2393,9 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   @tag read_only: true
-  test "read-only Design never calls storage or task preview owners", ctx do
+  test "read-only Idea never calls canvas storage or task preview owners", ctx do
     view = authorized_board_view()
-    render_click(view, "switch-view", %{"view" => "design"})
+    render_click(view, "switch-view", %{"view" => "idea"})
 
     for action <- ~w(design-load design-save design-review design-reviewed prepare-design-task) do
       render_hook(view, action, %{"project" => "github:example/fixture", "storage_revision" => 0, "scene" => design_scene()})
@@ -2052,7 +2410,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   @tag :threads_fixture
-  test "Details and task conversation link to the same reviewed Design item without task scope leaking", ctx do
+  test "Details and task conversation link to the same reviewed Idea item without task scope leaking", ctx do
     ref = String.duplicate("a", 64)
     source = "Acceptance\n\nDesign source: #{ref}/fixture-design/data/event"
     board = update_task(ctx.board, "2", &%{&1 | description: source})
@@ -2063,7 +2421,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     params = %{
       "priority" => "P1",
       "project" => "github:example/fixture",
-      "view" => "design",
+      "view" => "idea",
       "design_ref" => ref,
       "design_section" => "data",
       "design_item" => "event",
@@ -2071,13 +2429,13 @@ defmodule SymphonyElixir.DashboardLiveTest do
     }
 
     source_path = "/?" <> URI.encode_query(params)
-    assert has_element?(view, "#board-dialog a[href='#{source_path}']", "Design source")
+    assert has_element?(view, "#board-dialog a[href='#{source_path}']", "Idea source")
     refute has_element?(view, "#board-dialog .markdown-content", "Design source:")
     assert :sys.get_state(view.pid).socket.assigns.selected.description == source
-    assert has_element?(view, "#selected-task-context a[href='#{source_path}']", "Design source")
-    view |> element("#selected-task-context a", "Design source") |> render_click()
+    assert has_element?(view, "#selected-task-context a[href='#{source_path}']", "Idea source")
+    view |> element("#selected-task-context a", "Idea source") |> render_click()
     assert_patch(view, source_path)
-    assert has_element?(view, "#task-board-app[data-board-view=design]")
+    assert has_element?(view, "#task-board-app[data-board-view=idea]")
     refute has_element?(view, "#board-dialog, #selected-task-context")
     assert :sys.get_state(view.pid).socket.assigns.url_filters == Map.take(params, ~w(priority project view))
     render_click(view, "switch-view", %{"view" => "graph"})
@@ -3202,6 +3560,43 @@ defmodule SymphonyElixir.DashboardLiveTest do
         }
       }
     }
+  end
+
+  defp specification_fixture(%{specification_fixture: true}) do
+    path = Path.join(System.tmp_dir!(), "symphony-live-specification-#{System.unique_integer([:positive])}")
+    {:ok, root} = SymphonyElixir.PathSafety.canonicalize(path)
+    owner = start_supervised!({SymphonyElixir.Specification.Store, specification_opts(root)})
+    on_exit(fn -> File.rm_rf(root) end)
+    {owner, root}
+  end
+
+  defp specification_fixture(_context), do: {nil, nil}
+
+  defp specification_opts(root) do
+    [name: nil, state_dir: root, project: "github:example/fixture", scope: fn -> %{"fixture" => "live-specification"} end, authorize: &BrowserAuth.authorized?/1]
+  end
+
+  defp saved_specification(view) do
+    auth = :sys.get_state(view.pid).socket.assigns.auth
+    {:ok, saved} = FixtureSpecification.read("github:example/fixture", auth)
+    saved
+  end
+
+  defp specification_params(view, changes \\ %{}) do
+    assigns = :sys.get_state(view.pid).socket.assigns
+    draft = assigns.specification_draft
+    section = assigns.specification_section
+    part = draft["sections"][section]
+
+    %{
+      "project" => draft["project"],
+      "document_id" => draft["document_id"],
+      "section" => section,
+      "storage_revision" => Integer.to_string(assigns.specification_state["storage_revision"]),
+      "items" => Map.new(part["items"], fn item -> {item["id"], Map.take(item, ~w(kind title body))} end),
+      "diagrams" => Map.new(part["diagrams"], fn diagram -> {diagram["id"], Map.take(diagram, ~w(title source))} end)
+    }
+    |> Map.merge(changes)
   end
 
   defp intake_fields do

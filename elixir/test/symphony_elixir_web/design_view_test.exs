@@ -3,16 +3,19 @@ defmodule SymphonyElixirWeb.DesignViewTest do
   import Phoenix.LiveViewTest
   alias SymphonyElixirWeb.DesignView
 
-  test "a new project has five vertical steps and one accessible whiteboard" do
+  test "Idea retains five vertical steps and one accessible whiteboard" do
     html = render_component(&DesignView.content/1, project: "iliazlobin/sample", project_label: "Sample")
-    assert Floki.attribute(find(html, "[data-design-project]"), "aria-label") == ["Sample design workspace"]
+    assert Floki.text(find(html, "h2")) == "Idea"
+    assert Floki.attribute(find(html, "[data-design-project]"), "aria-label") == ["Sample idea workspace"]
+    assert Floki.attribute(find(html, "[data-design-project]"), "phx-hook") == ["DesignWorkspace"]
+    assert Floki.attribute(find(html, "[data-design-project]"), "data-design-durable") == ["true"]
     assert length(find(html, "[role=tab]")) == 5
     assert Floki.attribute(find(html, "[role=tablist]"), "aria-orientation") == ["vertical"]
     assert length(find(html, "[role=tabpanel]")) == 1
     assert Floki.attribute(find(html, "[role=tabpanel]"), "aria-labelledby") == ["design-tab-brief"]
     assert length(find(html, "[data-design-canvas]")) == 1
     assert Floki.attribute(find(html, "[data-design-canvas]"), "tabindex") == ["0"]
-    assert Floki.text(find(html, "[data-design-storage-label]")) == "Opening saved design…"
+    assert Floki.text(find(html, "[data-design-storage-label]")) == "Opening saved idea…"
     refute html =~ "saved in this browser"
     assert find(html, "form") == []
 
@@ -51,7 +54,7 @@ defmodule SymphonyElixirWeb.DesignViewTest do
     html = render_component(&DesignView.content/1, project: "iliazlobin/symphony", notion_url: url)
     assert Floki.attribute(find(html, "a"), "href") == [url]
     assert Floki.attribute(find(html, "a"), "rel") == ["noopener noreferrer"]
-    assert Floki.text(find(html, "a")) == "Published design ↗"
+    assert Floki.text(find(html, "a")) == "Project design notes ↗"
 
     for url <- [nil, "javascript:alert('x')", "http://app.notion.com/p/test", "https://evil.example/test"] do
       html = render_component(&DesignView.content/1, project: "iliazlobin/symphony", notion_url: url)
@@ -71,7 +74,7 @@ defmodule SymphonyElixirWeb.DesignViewTest do
     assert html =~ "&lt;script&gt;"
     assert find(html, "script") == []
     assert Floki.attribute(find(html, "[data-design-project]"), "data-design-project") == [project]
-    assert Floki.attribute(find(html, "[data-design-project]"), "aria-label") == ["#{project} design workspace"]
+    assert Floki.attribute(find(html, "[data-design-project]"), "aria-label") == ["#{project} idea workspace"]
   end
 
   test "switching projects remounts browser-owned content without carrying old navigation or fields" do

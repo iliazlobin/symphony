@@ -1037,9 +1037,9 @@ h2, h3, strong { font-weight: 500; }
 .card-filter-context { display: none; font-size: 10px; color: var(--muted); padding: 2px 0; }
 .task-card[data-filter-context=true] .card-filter-context { display: block; }
 .task-card[data-filter-context=true] { border-style: dashed; }
-/* Design is a working canvas; execution filters remain with the planning views. */
-.dashboard-shell[data-board-view=design] :is(#board-search,.board-summary,#board-context,.board-footer,#board-dispatch-guidance,[data-task-filters]) { display: none; }
-.dashboard-shell[data-board-view=design] .board-content { padding-top: 16px; }
+/* Idea and Design keep execution filters with the task views. */
+.dashboard-shell:is([data-board-view=idea],[data-board-view=design]) :is(#board-search,.board-summary,#board-context,.board-footer,#board-dispatch-guidance,[data-task-filters]) { display: none; }
+.dashboard-shell:is([data-board-view=idea],[data-board-view=design]) .board-content { padding-top: 16px; }
 .design-workspace { display: flex; flex-direction: column; gap: 16px; min-height: 0; flex: 1; color: var(--fg); }
 .design-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
 .design-title { display: flex; align-items: center; gap: 10px; }
@@ -1120,7 +1120,7 @@ h2, h3, strong { font-weight: 500; }
   .selected-task-context { padding: 8px 12px; max-height: 36%; }
   .project-state-overview { padding-bottom: 6px; gap: 4px; }
   .project-state-overview button { padding: 3px 7px; font-size: 10px; }
-  .dashboard-shell[data-board-view=design] .board-content { padding-top: 8px; }
+  .dashboard-shell:is([data-board-view=idea],[data-board-view=design]) .board-content { padding-top: 8px; }
 }
 @media (pointer: coarse) {
   .board-view-picker { height: auto; }
@@ -1143,3 +1143,40 @@ h2, h3, strong { font-weight: 500; }
 
 .task-execution-details > summary { color: var(--muted); font-size: 12px; cursor: pointer; }
 .task-execution-details[open] > summary { margin-bottom: 12px; }
+
+.dashboard-shell[data-board-view=design][data-chat-open=true] { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+
+.specification-workspace { gap: 12px; }
+.specification-editor { padding: 20px; }
+.specification-editor .design-panel-heading { margin-bottom: 16px; }
+.specification-form fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.specification-item, .specification-diagram { border: 1px solid var(--line); border-radius: 7px; padding: 14px; margin-bottom: 12px; background: var(--bg); }
+.specification-item > header, .specification-diagram > header { display: flex; align-items: end; gap: 10px; margin-bottom: 10px; }
+.specification-title { flex: 1; min-width: 0; }
+.specification-form label { display: block; color: var(--muted); font-size: 11px; }
+.specification-form label > span { display: block; margin-bottom: 5px; }
+.specification-form :is(input,select,textarea) { box-sizing: border-box; width: 100%; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--panel); color: var(--fg); padding: 8px 10px; font: inherit; font-size: 12px; line-height: 1.5; }
+.specification-form select { width: auto; min-width: 132px; }
+.specification-form textarea { resize: vertical; min-height: 92px; }
+.specification-diagram textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; min-height: 140px; }
+.specification-actions { position: sticky; bottom: 0; z-index: 1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 0 0; border-top: 1px solid var(--line); background: var(--panel); }
+.specification-actions .button-primary { margin-left: auto; }
+.specification-empty { color: var(--muted); line-height: 1.6; font-size: 12px; margin: 0 0 18px; }
+.specification-diagram [data-spec-preview] { overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; margin-top: 12px; padding: 12px; min-height: 96px; max-height: 480px; }
+.specification-diagram [data-spec-preview] svg { display: block; width: auto; max-width: 100%; height: auto; }
+.specification-diagram [data-spec-feedback] { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
+.specification-history { font-size: 11px; color: var(--muted); }
+.specification-history summary { cursor: pointer; }
+.specification-history ul { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 8px 0 0; margin: 0; }
+.specification-review { border: 1px solid var(--accent); border-radius: 7px; padding: 14px; background: var(--tint); font-size: 12px; }
+.specification-review h3 { font-size: 14px; margin: 0 0 8px; }
+.specification-review p { line-height: 1.5; margin: 0 0 12px; }
+.specification-review .button + .button { margin-left: 6px; }
+@media (max-width: 700px) {
+ .specification-editor { padding: 12px; }
+ .specification-item, .specification-diagram { padding: 10px; }
+ .specification-item > header, .specification-diagram > header { flex-wrap: wrap; }
+ .specification-title { flex-basis: 100%; }
+ .specification-form select { width: 100%; }
+ .specification-layout .design-outline-detail { display: none; }
+}

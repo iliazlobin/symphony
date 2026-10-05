@@ -55,6 +55,12 @@ class DesignAssetTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(data).hexdigest(), item["sha256"], name)
         self.assertEqual(manifest["assets"][manifest["entry"]["js"]]["type"], "application/javascript")
         self.assertEqual(manifest["assets"][manifest["entry"]["css"]]["type"], "text/css")
+        specification = manifest["specification"]["js"]
+        self.assertTrue(specification.startswith("specification/diagram-"))
+        self.assertEqual(manifest["assets"][specification]["type"], "application/javascript")
+        self.assertTrue(manifest["assets"][specification]["imports"])
+        self.assertTrue(all(name.startswith("specification/")
+                            for name in manifest["assets"][specification]["imports"]))
 
     def test_chunks_fonts_and_runtime_fallback_stay_inside_the_same_origin_bundle(self):
         manifest = json.loads((BUNDLE / "manifest.json").read_text())

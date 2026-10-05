@@ -1002,7 +1002,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
 
       <nav :if={@embedded && @authorized && is_nil(@unavailable) && !@loading} id="operator-scope" class="operator-breadcrumbs" data-agent-role={@agent.role} aria-label="Agent hierarchy">
         <button id="project-agent-breadcrumb" type="button" class="breadcrumb-project" phx-click="main-chat" phx-target={@myself} aria-current={if is_nil(@task_id), do: "location"} title="Project conversation" aria-label={"Open " <> @project_agent_title <> " conversation"}>Project</button>
-        <span :if={@design_mode} class="design-chat-mode">Design discussion</span>
+        <span :if={@design_mode} class="design-chat-mode">Idea discussion</span>
         <span :if={!@design_mode} class="breadcrumb-separator" aria-hidden="true">/</span>
         <details :if={@embedded && @authorized && is_nil(@unavailable)} hidden={@design_mode} id="issue-switcher" class="issue-switcher" phx-hook="IssueSwitcher">
           <summary aria-label="Choose task" title={if @task_id, do: embedded_title(@task_id, @task_title), else: "Project conversation"}><span class="breadcrumb-category">Task</span><span>{if @task_id, do: if(@issue, do: @issue.identifier, else: task_identifier(@task_id)), else: "All"}</span><span aria-hidden="true">⌄</span></summary>
@@ -1070,7 +1070,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
       </nav>
       <section :if={@embedded && @authorized && !@design_mode && @issue} id="selected-task-context" class="selected-task-context" aria-label="Selected task">
         <header class="selected-task-heading"><div><span>{@issue.identifier}</span><h2 title={@issue.title}>{@issue.title}</h2></div>
-          <div class="selected-task-links"><.link :if={@operator_design_url} class="button button-small" patch={@operator_design_url}>Design source</.link><button type="button" class="button button-small" phx-click="open-task" phx-value-id={@issue.id} aria-label={"Details: #{@issue.identifier}"}>Details</button></div>
+          <div class="selected-task-links"><.link :if={@operator_design_url} class="button button-small" patch={@operator_design_url}>Idea source</.link><button type="button" class="button button-small" phx-click="open-task" phx-value-id={@issue.id} aria-label={"Details: #{@issue.identifier}"}>Details</button></div>
         </header>
         <TaskOperator.panel id="task-chat-operator" compact={true} task={@issue} board={@operator_board} payload={@operator_payload} controls_available={@controls_available} />
       </section>
@@ -1140,7 +1140,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
           </details>
           <div id="session-chat-content" class="chat-scroll" role={if @embedded, do: "region", else: "tabpanel"} tabindex="0" aria-label={if @embedded, do: "Conversation"} aria-labelledby={if !@embedded, do: "session-chat-tab"} hidden={!@embedded && @session_tab != "chat"}>
             <div :if={@visible_messages == []} class="chat-empty">
-              <span class="chat-orbit" aria-hidden="true">∿</span><h1>{if @design_mode, do: "Let’s shape the design", else: if(@embedded && @task_id, do: "Let’s work on this task", else: "What’s next for #{project_label(@project)}?")}</h1>
+              <span class="chat-orbit" aria-hidden="true">∿</span><h1>{if @design_mode, do: "Let’s shape the idea", else: if(@embedded && @task_id, do: "Let’s work on this task", else: "What’s next for #{project_label(@project)}?")}</h1>
               <p>{if @design_mode, do: "Explore ideas and clarify decisions. Task creation comes later.", else: if(@embedded && @task_id, do: "Discuss progress, clarify the scope, or plan the next step. This chat stays with the task.", else: "Plan work, create or update tasks, and review project progress.")}</p>
               <div :if={!@design_mode && (!@embedded || is_nil(@task_id))} class="chat-starters">
                 <button type="button" data-chat-prompt="What is running and what is blocked?">What needs attention? <span aria-hidden="true">↗</span></button>

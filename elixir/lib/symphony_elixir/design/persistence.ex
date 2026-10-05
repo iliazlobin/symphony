@@ -38,13 +38,13 @@ defmodule SymphonyElixir.Design.Persistence do
   sys.stdin.buffer.read(1)
   """
 
-  @spec open(Path.t(), String.t(), String.t()) :: {:ok, map(), map()} | {:error, atom()}
-  def open(root, project, scope) do
+  @spec open(Path.t(), String.t(), String.t(), module()) :: {:ok, map(), map()} | {:error, atom()}
+  def open(root, project, scope, contract \\ __MODULE__) do
     with :ok <- private_root(root),
          {:ok, port} <- lock(root) do
       owner = %{root: root, lock: port, digest: nil, lock_identity: lock_identity(root)}
 
-      case load(owner, project, scope) do
+      case load(owner, project, scope, contract) do
         {:ok, journal, digest} when not is_nil(owner.lock_identity) ->
           {:ok, %{owner | digest: digest}, journal}
 
@@ -184,21 +184,24 @@ defmodule SymphonyElixir.Design.Persistence do
     end
   end
 
-  defp load(owner, project, scope) do
-    with {:ok, bytes} <- read_bytes(owner.root), do: decode_journal(bytes, project, scope)
+  defp load(owner, project, scope, contract) do
+    with {:ok, bytes} <- read_bytes(owner.root), do: decode_journal(bytes, project, scope, contract)
   end
 
-  defp decode_journal(nil, project, scope) do
+  defp decode_journal(nil, project, scope, _contract) do
     {:ok, %{"version" => 1, "project" => project, "scope" => scope, "storage_revision" => 0, "draft" => nil, "reviewed_ref" => nil, "reviews" => %{}}, nil}
   end
 
-  defp decode_journal(bytes, project, scope) do
-    with {:ok, journal} <- Jason.decode(bytes), true <- valid_journal?(journal, project, scope) do
+  defp decode_journal(bytes, project, scope, contract) do
+    with {:ok, journal} <- Jason.decode(bytes), true <- valid_contract_journal?(contract, journal, project, scope) do
       {:ok, journal, digest(bytes)}
     else
       _ -> {:error, :design_storage_unavailable}
     end
   end
+
+  defp valid_contract_journal?(__MODULE__, journal, project, scope), do: valid_journal?(journal, project, scope)
+  defp valid_contract_journal?(contract, journal, project, scope), do: contract.valid_journal?(journal, project, scope)
 
   defp read_bytes(root) do
     path = Path.join(root, "journal.json")

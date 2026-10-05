@@ -43,6 +43,7 @@ defmodule SymphonyElixir.Application do
       SymphonyElixir.LabelSync,
       SymphonyElixir.Chat.Store,
       SymphonyElixir.Design.Store,
+      SymphonyElixir.Specification.Store,
       SymphonyElixirWeb.BrowserSessions,
       SymphonyElixirWeb.BoardCache,
       SymphonyElixir.Chat.PRUpdates,

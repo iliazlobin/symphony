@@ -4,9 +4,12 @@
     "js": "editor-YPLGGQZB.js",
     "css": "editor-5WPBF6B4.css"
   },
+  "specification": {
+    "js": "specification/diagram-FPARK473.js"
+  },
   "sources": {
     ".gitignore": "4d56952b0fb13bf8f9b6c13a6d4c34a075bac3af447636a1df4335d7576e2f97",
-    "build.mjs": "c72fff289c2a331bd155d52217eaab4543ff8f05752b1a2ffa5646be4d7b920f",
+    "build.mjs": "9e73fee6e22f47979d4708b033719412845aeebbe9a33a585323efd733396f37",
     "design-editor.jsx": "380e8438432b1cf4855107b497c0ed7f50a3af1234a3d2d4f388760de67b2506",
     "design-scene.js": "d6cd470a7b2a65adf3e57c2ea03777199b85733079a77df979f1a5c7316ffc20",
     "licenses/excalidraw.txt": "1352d204fdb90d5e482c13139d848bc2c9300a9a7de358a0a558a23e72d0d8be",
@@ -14,8 +17,9 @@
     "licenses/fonts.txt": "4726649fbd98587e46b9ab5c1a8cd6c8ca5ebac5e8aab757b6e0298c4f1bf0b6",
     "licenses/radix-ui.txt": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
     "licenses/react-remove-scroll-bar.txt": "a79aae0c0f21990d9d963bb3c5a79cdcea9a46f8523ba55c58d7fe776b6ebc84",
-    "package-lock.json": "d1d077849fc8a6f63a71b59b1d45d44526d4d3e49936644a7eb74bce2fcc14b0",
-    "package.json": "e0dabb9b2e3875b3d507fec0e42f9bd54c8352f65d097c74bdcd59a60ff081aa"
+    "package-lock.json": "e573e195fb98d2b8734c4e4dbee0c3d88587152bf7d7c43650a8dcce04585d02",
+    "package.json": "fe32ae4ce15014fff9c7da5587be81099acba4b9ea55c57ab4e2b486fb0e4f24",
+    "specification-diagram.js": "44421175e736b9349ad6a9f12246200503f707476131079dea07cc3e536306f3"
   },
   "assets": {
     "THIRD_PARTY_NOTICES.txt": {
@@ -3685,6 +3689,1712 @@
       "type": "font/woff2",
       "sha256": "ae083037bfb691cf96205e109a287255f87a45a90848fe2a63cb0b3e7af3e904",
       "bytes": 47276
+    },
+    "specification/chunks/abnfDiagram-VCTEODGH-4OTD5TZX.js": {
+      "type": "application/javascript",
+      "sha256": "3297dc4f2e04ee787ea3377b2beb12ff089560dcb619d3257d4acd1b5142a662",
+      "bytes": 2294,
+      "imports": [
+        "specification/chunks/chunk-4TRA5KTL.js",
+        "specification/chunks/chunk-636VVVDD.js",
+        "specification/chunks/chunk-6RFNVN2Y.js",
+        "specification/chunks/chunk-6T7VVVJS.js",
+        "specification/chunks/chunk-AEV2EY3M.js",
+        "specification/chunks/chunk-AY2T5IWJ.js",
+        "specification/chunks/chunk-BZIFZK24.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-DQ45T5DO.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ETJNFAWY.js",
+        "specification/chunks/chunk-FUILQYD4.js",
+        "specification/chunks/chunk-I3BUPRDH.js",
+        "specification/chunks/chunk-KHYUAEOD.js",
+        "specification/chunks/chunk-KP5VONQ5.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NCOVM3YF.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-RC5FMJXD.js",
+        "specification/chunks/chunk-S7GMNZRD.js",
+        "specification/chunks/chunk-TMHDN3GZ.js",
+        "specification/chunks/chunk-Y2JHP2WH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/architecture-7GRP2DOG-ZFIMJKOK.js": {
+      "type": "application/javascript",
+      "sha256": "5421db3a67ed17ba8c5c0ca0cd4122b7b0ec52fe5ab210990127c5aa60199f10",
+      "bytes": 168,
+      "imports": [
+        "specification/chunks/chunk-BZIFZK24.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/architectureDiagram-5GKGNRK7-OEFEZERW.js": {
+      "type": "application/javascript",
+      "sha256": "55c6b761d1870a08f44ca3cce282f9ebd9ce7f8b57019a789d3d8e23cfe6d565",
+      "bytes": 152967,
+      "imports": [
+        "specification/chunks/chunk-4TRA5KTL.js",
+        "specification/chunks/chunk-636VVVDD.js",
+        "specification/chunks/chunk-6RFNVN2Y.js",
+        "specification/chunks/chunk-6T7VVVJS.js",
+        "specification/chunks/chunk-AEV2EY3M.js",
+        "specification/chunks/chunk-AY2T5IWJ.js",
+        "specification/chunks/chunk-BZIFZK24.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-DQ45T5DO.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ETJNFAWY.js",
+        "specification/chunks/chunk-I3BUPRDH.js",
+        "specification/chunks/chunk-KHYUAEOD.js",
+        "specification/chunks/chunk-KP5VONQ5.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NCOVM3YF.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-RC5FMJXD.js",
+        "specification/chunks/chunk-S7GMNZRD.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-TMHDN3GZ.js",
+        "specification/chunks/chunk-V3B7B56K.js",
+        "specification/chunks/chunk-Y2JHP2WH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/blockDiagram-I7D4REHJ-EXI56KLE.js": {
+      "type": "application/javascript",
+      "sha256": "2352d773e0155c98188effc0721a741d7e769d6538e124448c3e6ca2a714c0b0",
+      "bytes": 40278,
+      "imports": [
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-KW45TMZL.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NBH7YOBD.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-YIN5CSIF.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/c4Diagram-7LVT6UL2-5KJTZ3OK.js": {
+      "type": "application/javascript",
+      "sha256": "16ab0e9864f40fa3182ee1b0d1d341f0fe482d50925d8af8accab7df1eb23277",
+      "bytes": 65815,
+      "imports": [
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-PJSCIYDQ.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/chunk-4PWQDUV5.js": {
+      "type": "application/javascript",
+      "sha256": "4f18d9b606a5e8bf5eeaea5f8757dcfc4e20449d1b281835863675e93fbe7e78",
+      "bytes": 9729,
+      "imports": [
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/chunk-4TRA5KTL.js": {
+      "type": "application/javascript",
+      "sha256": "7db48f6b9cb613c2226023044f0780d4a000b1465e673eb134dff2b3fb8c621d",
+      "bytes": 921,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js"
+      ]
+    },
+    "specification/chunks/chunk-5PNAOZKR.js": {
+      "type": "application/javascript",
+      "sha256": "388173cfe9a8d7b3967fad8a2cf5533c6987e5d09de09baf7e97837bb67b5582",
+      "bytes": 261,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/chunk-636VVVDD.js": {
+      "type": "application/javascript",
+      "sha256": "bf520fcade4e17b8287a79288b99e2a5b9c54d4cc37da88b40ea990700edb77f",
+      "bytes": 1031,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js"
+      ]
+    },
+    "specification/chunks/chunk-6RFNVN2Y.js": {
+      "type": "application/javascript",
+      "sha256": "49bc2d4b3379402b1656c125cdd522778f40a5326d1aba62bc79edfb85b37b31",
+      "bytes": 829,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js"
+      ]
+    },
+    "specification/chunks/chunk-6T7VVVJS.js": {
+      "type": "application/javascript",
+      "sha256": "4b64ac8b70d3863f0639b65f4f76a52eeafd2c7fb2b478bfaf9eb040dd3bcea1",
+      "bytes": 3309,
+      "imports": [
+        "specification/chunks/architecture-7GRP2DOG-ZFIMJKOK.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/cynefin-OW5HDTMX-NF5XRMMB.js",
+        "specification/chunks/eventmodeling-NTZA5JFV-UR7KTVAN.js",
+        "specification/chunks/gitGraph-4MIJSDKK-KFZFBAND.js",
+        "specification/chunks/info-A6RAGUB7-AWICUF3M.js",
+        "specification/chunks/packet-AYTQ26CC-ECMM3KLO.js",
+        "specification/chunks/pie-WAS4IAKB-CD4DUFK4.js",
+        "specification/chunks/radar-RG4KPBEZ-RRPLBTQW.js",
+        "specification/chunks/railroad-74A4TZTK-P5WZRNXW.js",
+        "specification/chunks/railroad-abnf-HS5TGJTU-G63NTJWO.js",
+        "specification/chunks/railroad-ebnf-LZEXJU2U-IAHZ4NXE.js",
+        "specification/chunks/railroad-peg-WCYAUIDC-VIPV4WFH.js",
+        "specification/chunks/treeView-Q6P3EWNA-NCCGGRAW.js",
+        "specification/chunks/treemap-WGGIJYW6-PF5OWN6J.js",
+        "specification/chunks/wardley-WFR3VGLG-HBRG7BVH.js"
+      ]
+    },
+    "specification/chunks/chunk-AEV2EY3M.js": {
+      "type": "application/javascript",
+      "sha256": "93c94ac239ec813ef74626555bbf0e57b6518ff47d2272c455d8f95452eec90c",
+      "bytes": 458,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js"
+      ]
+    },
+    "specification/chunks/chunk-AY2T5IWJ.js": {
+      "type": "application/javascript",
+      "sha256": "8a1556ec4877cfd9caffb5defc6d5c1ad2d3f46abaac5a66a9ae5a2e42220ce3",
+      "bytes": 595,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js"
+      ]
+    },
+    "specification/chunks/chunk-B6DLVZHA.js": {
+      "type": "application/javascript",
+      "sha256": "a808a0b9549904d5c6a26f05b50176dbc2bbae52aabb9ef683c11d1f3c6823f6",
+      "bytes": 27373,
+      "imports": []
+    },
+    "specification/chunks/chunk-BZIFZK24.js": {
+      "type": "application/javascript",
+      "sha256": "cd615e43710aad67e63dd4a42a7d457c3267d42b87acecbfcf9d9099c95d58c2",
+      "bytes": 898,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js"
+      ]
+    },
+    "specification/chunks/chunk-CCAM6AE3.js": {
+      "type": "application/javascript",
+      "sha256": "dea882354663bd139c9a9ccfcc6ffa6d6904660fabb2bbe671bea85a6730a899",
+      "bytes": 667805,
+      "imports": []
+    },
+    "specification/chunks/chunk-CCAM6AE3.js.LEGAL.txt": {
+      "type": "text/plain",
+      "sha256": "d7775cb7e11ff052896456388b072b6c234c4ecf13254e902d1fd0a0a5d7288f",
+      "bytes": 603,
+      "imports": []
+    },
+    "specification/chunks/chunk-CMT3RCCI.js": {
+      "type": "application/javascript",
+      "sha256": "262f1d9e7559e8380d925c12a74d2902aec7260e11e90e24bbef2a2ef5fc8054",
+      "bytes": 10097,
+      "imports": [
+        "specification/chunks/chunk-4PWQDUV5.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-KW45TMZL.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-YIN5CSIF.js",
+        "specification/chunks/chunk-ZTZ26IMT.js",
+        "specification/chunks/sizeCapture-INFHLROL-JK3AK6ET.js"
+      ]
+    },
+    "specification/chunks/chunk-D5G3FANI.js": {
+      "type": "application/javascript",
+      "sha256": "426135e4a3af908fe384d70d3c39f1e5b2a15e68cf79acc0c1a09c0ad291e4b3",
+      "bytes": 105563,
+      "imports": [
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/chunk-DQ45T5DO.js": {
+      "type": "application/javascript",
+      "sha256": "74ed3d6c8aeb7543b48a8fbef0591d903c8c7b6e0ce1b8744a5cce429b3d38af",
+      "bytes": 1579,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js"
+      ]
+    },
+    "specification/chunks/chunk-EIBFAW37.js": {
+      "type": "application/javascript",
+      "sha256": "db25c7615162582a9a162279563ba063a43b7823caea8a77f0517f8d2dc5385e",
+      "bytes": 156,
+      "imports": []
+    },
+    "specification/chunks/chunk-ETJNFAWY.js": {
+      "type": "application/javascript",
+      "sha256": "4e50502bbe71c53d07c095d04180149c9490ca7d37494545889993e39516c7ff",
+      "bytes": 1048,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js"
+      ]
+    },
+    "specification/chunks/chunk-FUILQYD4.js": {
+      "type": "application/javascript",
+      "sha256": "353220f298246e38fbcd78ad04935144c2bc7fe5b91ed38483fe6c52aba039cd",
+      "bytes": 15725,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/chunk-HGIVUT2R.js": {
+      "type": "application/javascript",
+      "sha256": "89a6cf50c5b5bce446e2ab9004a14f1b15c774fd058d56203415e62861fe6423",
+      "bytes": 38374,
+      "imports": [
+        "specification/chunks/chunk-5PNAOZKR.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-O6PAMGGI.js",
+        "specification/chunks/chunk-PJSCIYDQ.js",
+        "specification/chunks/chunk-SVUIKGDO.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/chunk-I3BUPRDH.js": {
+      "type": "application/javascript",
+      "sha256": "6c4842bc1f078c96ceac74071cb52cf3eede12ef2553ff2676a34a9e7cba6a36",
+      "bytes": 492,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js"
+      ]
+    },
+    "specification/chunks/chunk-JRAHLUQM.js": {
+      "type": "application/javascript",
+      "sha256": "32fbfc3dba00282c453ee63e308be4ee619bc04beb48609a717708eda3928f88",
+      "bytes": 47128,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js"
+      ]
+    },
+    "specification/chunks/chunk-KHYUAEOD.js": {
+      "type": "application/javascript",
+      "sha256": "1a63bb671ee7b8f0976657dfc2d6b051ffbb0799213627e05adf339fa1ae9fab",
+      "bytes": 451,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js"
+      ]
+    },
+    "specification/chunks/chunk-KP5VONQ5.js": {
+      "type": "application/javascript",
+      "sha256": "603418bad985a83395db9676cd5bd2997f28c600f7617544679f7e4afa85f4c3",
+      "bytes": 1667,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js"
+      ]
+    },
+    "specification/chunks/chunk-KW45TMZL.js": {
+      "type": "application/javascript",
+      "sha256": "5a817130e019887da1c1d770df45d0a8efd76aedac4edcc36f21247bed2005e3",
+      "bytes": 36720,
+      "imports": [
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/chunk-L6KJ7TOU.js": {
+      "type": "application/javascript",
+      "sha256": "ba14456a7dacd790bda3db2f2a834dc256855db9207b62731b7cd15ff7d8dcc1",
+      "bytes": 1412,
+      "imports": [
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/chunk-L7BMR7WL.js": {
+      "type": "application/javascript",
+      "sha256": "ac8165a7d675319bbafb5263bf6c7291163f30e4f6cc1965dadcdea04f4cee82",
+      "bytes": 188,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js"
+      ]
+    },
+    "specification/chunks/chunk-LFFGVB2K.js": {
+      "type": "application/javascript",
+      "sha256": "f3ef932b26250eadb49fe947d387ac47ca349093a7835a46db8cfab07c917f99",
+      "bytes": 62035,
+      "imports": [
+        "specification/chunks/chunk-5PNAOZKR.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-JRAHLUQM.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NBH7YOBD.js",
+        "specification/chunks/chunk-O6PAMGGI.js",
+        "specification/chunks/chunk-PJSCIYDQ.js",
+        "specification/chunks/chunk-SVUIKGDO.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/chunk-LQN7U6FO.js": {
+      "type": "application/javascript",
+      "sha256": "b1c0d2c5740dc1aecf51b2bf2b0b3c80ba4794a9e281d73a2a4c476fac8a87a7",
+      "bytes": 18227,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/chunk-MIWTN2AJ.js": {
+      "type": "application/javascript",
+      "sha256": "944bf7c6b1fc71dd06e6e39add6b0a610e51dde8f3177805fc2ca4ab88b2bc48",
+      "bytes": 239087,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ZTZ26IMT.js",
+        "specification/chunks/katex-ESYZ2K7G.js"
+      ]
+    },
+    "specification/chunks/chunk-MIWTN2AJ.js.LEGAL.txt": {
+      "type": "text/plain",
+      "sha256": "0e0b3c3a66bbfd738d9b6fad06a36c73727c938fcdb7c79ea8bc2b26d22cf9ef",
+      "bytes": 417,
+      "imports": []
+    },
+    "specification/chunks/chunk-NBH7YOBD.js": {
+      "type": "application/javascript",
+      "sha256": "88d9ff0c7ed2b6836eb640415a2df19558038a17c876a62d99727fa19909330c",
+      "bytes": 359,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js"
+      ]
+    },
+    "specification/chunks/chunk-NCOVM3YF.js": {
+      "type": "application/javascript",
+      "sha256": "838d515866e7ec1b7276fc3150e4507022a204f3638b451f9591fe57bd1c345d",
+      "bytes": 220,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js"
+      ]
+    },
+    "specification/chunks/chunk-O6PAMGGI.js": {
+      "type": "application/javascript",
+      "sha256": "cc91aad3e7e2adbf91107a90599d8574800443b5dab93b3c2f65e477b7b7e3bf",
+      "bytes": 2527,
+      "imports": [
+        "specification/chunks/chunk-4PWQDUV5.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-KW45TMZL.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js",
+        "specification/chunks/cose-bilkent-JH36ORCC-IV7EPHSN.js",
+        "specification/chunks/dagre-GXQ25YYZ-DVEMWXDG.js",
+        "specification/chunks/swimlanes-42K2YHIH-24YR4XQR.js"
+      ]
+    },
+    "specification/chunks/chunk-PJSCIYDQ.js": {
+      "type": "application/javascript",
+      "sha256": "f769e0d8af5b227ceaf234eafd520d36aee64ee51fb84827c5d1cf1898655628",
+      "bytes": 2020,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/chunk-Q7FNVA5G.js": {
+      "type": "application/javascript",
+      "sha256": "ede62b6c1244f12867aab343562069c08287d85f5f85af5b994ee6e89fa3e310",
+      "bytes": 308,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/chunk-QYFW3LU7.js": {
+      "type": "application/javascript",
+      "sha256": "bc3eff10a669a04339454c25414e6fa23e012562e0609002e2012ea00b43167c",
+      "bytes": 5870,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/chunk-RC5FMJXD.js": {
+      "type": "application/javascript",
+      "sha256": "14fab05a86d7f484192bf43eeb92be3d6e647733cf5ebdd817ab229e31ea10e9",
+      "bytes": 1118,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js"
+      ]
+    },
+    "specification/chunks/chunk-S7GMNZRD.js": {
+      "type": "application/javascript",
+      "sha256": "947c1ba83cab658202d44c6d5c7f1e69fc0b251eb14e5d7292bc062d220696d2",
+      "bytes": 459,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js"
+      ]
+    },
+    "specification/chunks/chunk-SVUIKGDO.js": {
+      "type": "application/javascript",
+      "sha256": "b68ddb62fc4860f30132728062c6c54e4845870b3d158135de195a0b660972fb",
+      "bytes": 557,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/chunk-SZA4BFIV.js": {
+      "type": "application/javascript",
+      "sha256": "75bee99c9a62bdd118a84e65bc1414def714e97aed59ebb8e4768b2b5db9d7dd",
+      "bytes": 1942,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-MIWTN2AJ.js"
+      ]
+    },
+    "specification/chunks/chunk-TLOGCLGW.js": {
+      "type": "application/javascript",
+      "sha256": "373b504ca79d885bd660adf7d79ab2198c3bc3f1cd1071c60176edcc780cab19",
+      "bytes": 1895,
+      "imports": [
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/chunk-TMHDN3GZ.js": {
+      "type": "application/javascript",
+      "sha256": "742b51819ba0b2dee737f489f93b6d23f8c2e22eac8c0a37cbfdcfe6dc7e83ba",
+      "bytes": 453,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js"
+      ]
+    },
+    "specification/chunks/chunk-U6HU52HQ.js": {
+      "type": "application/javascript",
+      "sha256": "443216443b0c760f00c7c83c9a9636dc983405ba8dc64e0d938fd4d102895715",
+      "bytes": 49258,
+      "imports": [
+        "specification/chunks/chunk-5PNAOZKR.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NBH7YOBD.js",
+        "specification/chunks/chunk-O6PAMGGI.js",
+        "specification/chunks/chunk-PJSCIYDQ.js",
+        "specification/chunks/chunk-SVUIKGDO.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/chunk-UZNLKM6V.js": {
+      "type": "application/javascript",
+      "sha256": "e66f3270c4b1a744c726d8ad80edacf9caad4101f40c73db9ce5cc61bee9fd79",
+      "bytes": 25645,
+      "imports": [
+        "specification/chunks/chunk-YIN5CSIF.js"
+      ]
+    },
+    "specification/chunks/chunk-V3B7B56K.js": {
+      "type": "application/javascript",
+      "sha256": "7573c75bb398296fa429b280bfb61b128f6b218abea2fce0410ac337387a31b5",
+      "bytes": 443145,
+      "imports": []
+    },
+    "specification/chunks/chunk-V3B7B56K.js.LEGAL.txt": {
+      "type": "text/plain",
+      "sha256": "9aca14ef8d4b303c6666aa8d58ef291346f64af381a0aa1aecdbf238a06f2931",
+      "bytes": 760,
+      "imports": []
+    },
+    "specification/chunks/chunk-Y2JHP2WH.js": {
+      "type": "application/javascript",
+      "sha256": "0b1e8a2afb6fe05e1ef560d8e7e4e89d057951f8c8405c8dfb839c7b9dd14a25",
+      "bytes": 445,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js"
+      ]
+    },
+    "specification/chunks/chunk-Y6SLVHK3.js": {
+      "type": "application/javascript",
+      "sha256": "06b1bf39b7cee1b3c77db45b5dcd007b5b5af2cc32b2a9638637ba7a9006436c",
+      "bytes": 544,
+      "imports": []
+    },
+    "specification/chunks/chunk-YFKCEDPJ.js": {
+      "type": "application/javascript",
+      "sha256": "dd0e3498c9672af59c8d8a37b62786725eac3e5c5ee6ab73cf001b1dc4434fbd",
+      "bytes": 52558,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/chunk-YIN5CSIF.js": {
+      "type": "application/javascript",
+      "sha256": "7d2cf2a9fd3c3f6e5835963fac0531ae6d00c159bf532aa4455e811168834c0b",
+      "bytes": 37884,
+      "imports": []
+    },
+    "specification/chunks/chunk-YIN5CSIF.js.LEGAL.txt": {
+      "type": "text/plain",
+      "sha256": "e307472273e1ef372ca969af6d0a32f575f172970adc3b89dfad3600fc632107",
+      "bytes": 469,
+      "imports": []
+    },
+    "specification/chunks/chunk-ZTZ26IMT.js": {
+      "type": "application/javascript",
+      "sha256": "85a9eb2c77e514b46e8d50632789d968846adee1be52c39f876490b3b75f4ba1",
+      "bytes": 108714,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/classDiagram-ZZMXUADV-U7H2DCPS.js": {
+      "type": "application/javascript",
+      "sha256": "4a80bc7cde45a5b87e97c636c6d3dcb847e13d40669f2e057071e98e61369e30",
+      "bytes": 779,
+      "imports": [
+        "specification/chunks/chunk-4PWQDUV5.js",
+        "specification/chunks/chunk-5PNAOZKR.js",
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-KW45TMZL.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NBH7YOBD.js",
+        "specification/chunks/chunk-O6PAMGGI.js",
+        "specification/chunks/chunk-PJSCIYDQ.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-SVUIKGDO.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-U6HU52HQ.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/classDiagram-v2-VYDZK3BY-YGIUHV5C.js": {
+      "type": "application/javascript",
+      "sha256": "4a80bc7cde45a5b87e97c636c6d3dcb847e13d40669f2e057071e98e61369e30",
+      "bytes": 779,
+      "imports": [
+        "specification/chunks/chunk-4PWQDUV5.js",
+        "specification/chunks/chunk-5PNAOZKR.js",
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-KW45TMZL.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NBH7YOBD.js",
+        "specification/chunks/chunk-O6PAMGGI.js",
+        "specification/chunks/chunk-PJSCIYDQ.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-SVUIKGDO.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-U6HU52HQ.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/cose-bilkent-JH36ORCC-IV7EPHSN.js": {
+      "type": "application/javascript",
+      "sha256": "3159afcca81bd7d04a801f1dc270368aa4e4f66b43cece01134b040c424a52e0",
+      "bytes": 82453,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-V3B7B56K.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/cynefin-OW5HDTMX-NF5XRMMB.js": {
+      "type": "application/javascript",
+      "sha256": "6fd1319220c9fbbb5f716f86bf064d9b7ceec1c8aadd9d076af09f55b3732910",
+      "bytes": 158,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-S7GMNZRD.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/cynefinDiagram-5FMLGOSQ-N22JBLQW.js": {
+      "type": "application/javascript",
+      "sha256": "010c3d82782bfe10c54a2de8107f0c36d24ed09e69599866eb51faa38357c525",
+      "bytes": 10592,
+      "imports": [
+        "specification/chunks/chunk-4TRA5KTL.js",
+        "specification/chunks/chunk-636VVVDD.js",
+        "specification/chunks/chunk-6RFNVN2Y.js",
+        "specification/chunks/chunk-6T7VVVJS.js",
+        "specification/chunks/chunk-AEV2EY3M.js",
+        "specification/chunks/chunk-AY2T5IWJ.js",
+        "specification/chunks/chunk-BZIFZK24.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-DQ45T5DO.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ETJNFAWY.js",
+        "specification/chunks/chunk-I3BUPRDH.js",
+        "specification/chunks/chunk-KHYUAEOD.js",
+        "specification/chunks/chunk-KP5VONQ5.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NCOVM3YF.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-RC5FMJXD.js",
+        "specification/chunks/chunk-S7GMNZRD.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-TMHDN3GZ.js",
+        "specification/chunks/chunk-Y2JHP2WH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/dagre-GXQ25YYZ-DVEMWXDG.js": {
+      "type": "application/javascript",
+      "sha256": "13c16071ac470e658a028b615d46f13fdd1e6cc0d4454911deb73c43081acbc8",
+      "bytes": 11028,
+      "imports": [
+        "specification/chunks/chunk-4PWQDUV5.js",
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-CMT3RCCI.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-KW45TMZL.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-UZNLKM6V.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-YIN5CSIF.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/diagram-S7CK7UJ4-EU55SNOF.js": {
+      "type": "application/javascript",
+      "sha256": "1a54ffb7811de5a1811f3831de16934454a3e165f714c06b81c635afb9297bd0",
+      "bytes": 8717,
+      "imports": [
+        "specification/chunks/chunk-4TRA5KTL.js",
+        "specification/chunks/chunk-636VVVDD.js",
+        "specification/chunks/chunk-6RFNVN2Y.js",
+        "specification/chunks/chunk-6T7VVVJS.js",
+        "specification/chunks/chunk-AEV2EY3M.js",
+        "specification/chunks/chunk-AY2T5IWJ.js",
+        "specification/chunks/chunk-BZIFZK24.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-DQ45T5DO.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ETJNFAWY.js",
+        "specification/chunks/chunk-I3BUPRDH.js",
+        "specification/chunks/chunk-KHYUAEOD.js",
+        "specification/chunks/chunk-KP5VONQ5.js",
+        "specification/chunks/chunk-L7BMR7WL.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NCOVM3YF.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-RC5FMJXD.js",
+        "specification/chunks/chunk-S7GMNZRD.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-TMHDN3GZ.js",
+        "specification/chunks/chunk-Y2JHP2WH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/diagram-UQ7AKVKN-AY2QWDCG.js": {
+      "type": "application/javascript",
+      "sha256": "7f6268040bb2622ce295b5832350fe16d26c5f041b332f7dbe0304a03f20e300",
+      "bytes": 6601,
+      "imports": [
+        "specification/chunks/chunk-4TRA5KTL.js",
+        "specification/chunks/chunk-636VVVDD.js",
+        "specification/chunks/chunk-6RFNVN2Y.js",
+        "specification/chunks/chunk-6T7VVVJS.js",
+        "specification/chunks/chunk-AEV2EY3M.js",
+        "specification/chunks/chunk-AY2T5IWJ.js",
+        "specification/chunks/chunk-BZIFZK24.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-DQ45T5DO.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ETJNFAWY.js",
+        "specification/chunks/chunk-I3BUPRDH.js",
+        "specification/chunks/chunk-KHYUAEOD.js",
+        "specification/chunks/chunk-KP5VONQ5.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NCOVM3YF.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-RC5FMJXD.js",
+        "specification/chunks/chunk-S7GMNZRD.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-TMHDN3GZ.js",
+        "specification/chunks/chunk-Y2JHP2WH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/diagram-VSXAHHWV-FTANOSZU.js": {
+      "type": "application/javascript",
+      "sha256": "e6f437c4ecf79a17ae39c7ea61f8265f804acb2f38e29546895893d2c62450cb",
+      "bytes": 11217,
+      "imports": [
+        "specification/chunks/chunk-4TRA5KTL.js",
+        "specification/chunks/chunk-636VVVDD.js",
+        "specification/chunks/chunk-6RFNVN2Y.js",
+        "specification/chunks/chunk-6T7VVVJS.js",
+        "specification/chunks/chunk-AEV2EY3M.js",
+        "specification/chunks/chunk-AY2T5IWJ.js",
+        "specification/chunks/chunk-BZIFZK24.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-DQ45T5DO.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ETJNFAWY.js",
+        "specification/chunks/chunk-I3BUPRDH.js",
+        "specification/chunks/chunk-KHYUAEOD.js",
+        "specification/chunks/chunk-KP5VONQ5.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NCOVM3YF.js",
+        "specification/chunks/chunk-RC5FMJXD.js",
+        "specification/chunks/chunk-S7GMNZRD.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-TMHDN3GZ.js",
+        "specification/chunks/chunk-Y2JHP2WH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/diagram-VX7I27RA-K5ETDK6N.js": {
+      "type": "application/javascript",
+      "sha256": "b5c993754d4273e7fd6b5c79c2e82926f5c2b2b30b9893e0746e1c7de3bae06b",
+      "bytes": 11611,
+      "imports": [
+        "specification/chunks/chunk-4TRA5KTL.js",
+        "specification/chunks/chunk-636VVVDD.js",
+        "specification/chunks/chunk-6RFNVN2Y.js",
+        "specification/chunks/chunk-6T7VVVJS.js",
+        "specification/chunks/chunk-AEV2EY3M.js",
+        "specification/chunks/chunk-AY2T5IWJ.js",
+        "specification/chunks/chunk-BZIFZK24.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-DQ45T5DO.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ETJNFAWY.js",
+        "specification/chunks/chunk-I3BUPRDH.js",
+        "specification/chunks/chunk-KHYUAEOD.js",
+        "specification/chunks/chunk-KP5VONQ5.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NCOVM3YF.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-RC5FMJXD.js",
+        "specification/chunks/chunk-S7GMNZRD.js",
+        "specification/chunks/chunk-SVUIKGDO.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-TMHDN3GZ.js",
+        "specification/chunks/chunk-Y2JHP2WH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/diagram-Z3DM3KII-AUQPSDBN.js": {
+      "type": "application/javascript",
+      "sha256": "e483d2e327ca95fedcce655ec57418a470aeff2adca4548e6eae90d8645679a3",
+      "bytes": 4762,
+      "imports": [
+        "specification/chunks/chunk-4TRA5KTL.js",
+        "specification/chunks/chunk-636VVVDD.js",
+        "specification/chunks/chunk-6RFNVN2Y.js",
+        "specification/chunks/chunk-6T7VVVJS.js",
+        "specification/chunks/chunk-AEV2EY3M.js",
+        "specification/chunks/chunk-AY2T5IWJ.js",
+        "specification/chunks/chunk-BZIFZK24.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-DQ45T5DO.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ETJNFAWY.js",
+        "specification/chunks/chunk-I3BUPRDH.js",
+        "specification/chunks/chunk-KHYUAEOD.js",
+        "specification/chunks/chunk-KP5VONQ5.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NCOVM3YF.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-RC5FMJXD.js",
+        "specification/chunks/chunk-S7GMNZRD.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-TMHDN3GZ.js",
+        "specification/chunks/chunk-Y2JHP2WH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/ebnfDiagram-PWID7BFC-IZA2K7G7.js": {
+      "type": "application/javascript",
+      "sha256": "d085e3399a556c8cae1ad007e8e7660ffefbe87166ae215859f15087e1df5b76",
+      "bytes": 2508,
+      "imports": [
+        "specification/chunks/chunk-4TRA5KTL.js",
+        "specification/chunks/chunk-636VVVDD.js",
+        "specification/chunks/chunk-6RFNVN2Y.js",
+        "specification/chunks/chunk-6T7VVVJS.js",
+        "specification/chunks/chunk-AEV2EY3M.js",
+        "specification/chunks/chunk-AY2T5IWJ.js",
+        "specification/chunks/chunk-BZIFZK24.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-DQ45T5DO.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ETJNFAWY.js",
+        "specification/chunks/chunk-FUILQYD4.js",
+        "specification/chunks/chunk-I3BUPRDH.js",
+        "specification/chunks/chunk-KHYUAEOD.js",
+        "specification/chunks/chunk-KP5VONQ5.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NCOVM3YF.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-RC5FMJXD.js",
+        "specification/chunks/chunk-S7GMNZRD.js",
+        "specification/chunks/chunk-TMHDN3GZ.js",
+        "specification/chunks/chunk-Y2JHP2WH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/erDiagram-RLTQ6QDP-Z7CS6VVL.js": {
+      "type": "application/javascript",
+      "sha256": "a8d655820b0f3b7ad1c472c9bc8bc0dc5b176f356e77fd4cef1934e61726930b",
+      "bytes": 31108,
+      "imports": [
+        "specification/chunks/chunk-4PWQDUV5.js",
+        "specification/chunks/chunk-5PNAOZKR.js",
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-KW45TMZL.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-O6PAMGGI.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-SVUIKGDO.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/eventmodeling-NTZA5JFV-UR7KTVAN.js": {
+      "type": "application/javascript",
+      "sha256": "04ac8b6ba95048f24e775058f3e44a49822095cc8be38b66be787d996169fcf6",
+      "bytes": 170,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-KP5VONQ5.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/flowDiagram-HODETNUW-K2KKPIVT.js": {
+      "type": "application/javascript",
+      "sha256": "f5f87228018add00c449b80d800c9902cc7968fff4ddb7af313fd8596f67d8b4",
+      "bytes": 652,
+      "imports": [
+        "specification/chunks/chunk-4PWQDUV5.js",
+        "specification/chunks/chunk-5PNAOZKR.js",
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-JRAHLUQM.js",
+        "specification/chunks/chunk-KW45TMZL.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LFFGVB2K.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NBH7YOBD.js",
+        "specification/chunks/chunk-O6PAMGGI.js",
+        "specification/chunks/chunk-PJSCIYDQ.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-SVUIKGDO.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/ganttDiagram-EL5Y4UJY-T3R45CAL.js": {
+      "type": "application/javascript",
+      "sha256": "2bd9753d43d0604f94c53e41063c6776330419bc4edff6c55c6283244a41d07d",
+      "bytes": 50364,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/gitGraph-4MIJSDKK-KFZFBAND.js": {
+      "type": "application/javascript",
+      "sha256": "789a086d754dadab1d8d2f8b40c605f0b37f04ce751c0dc198d795b5fc1b29a7",
+      "bytes": 160,
+      "imports": [
+        "specification/chunks/chunk-AEV2EY3M.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/gitGraphDiagram-WWUBYQGX-RZQAA2WK.js": {
+      "type": "application/javascript",
+      "sha256": "4bcde0d0816fa75433dfca73cf0b6b49463e8f4bdd1801566cd2a1fb98c3d0a8",
+      "bytes": 29703,
+      "imports": [
+        "specification/chunks/chunk-4TRA5KTL.js",
+        "specification/chunks/chunk-636VVVDD.js",
+        "specification/chunks/chunk-6RFNVN2Y.js",
+        "specification/chunks/chunk-6T7VVVJS.js",
+        "specification/chunks/chunk-AEV2EY3M.js",
+        "specification/chunks/chunk-AY2T5IWJ.js",
+        "specification/chunks/chunk-BZIFZK24.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-DQ45T5DO.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ETJNFAWY.js",
+        "specification/chunks/chunk-I3BUPRDH.js",
+        "specification/chunks/chunk-KHYUAEOD.js",
+        "specification/chunks/chunk-KP5VONQ5.js",
+        "specification/chunks/chunk-L7BMR7WL.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NCOVM3YF.js",
+        "specification/chunks/chunk-RC5FMJXD.js",
+        "specification/chunks/chunk-S7GMNZRD.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-TMHDN3GZ.js",
+        "specification/chunks/chunk-Y2JHP2WH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/info-A6RAGUB7-AWICUF3M.js": {
+      "type": "application/javascript",
+      "sha256": "f332ea0fb11e466382f807a5addef5d711e0333e2c40984691f5853b9fe989d5",
+      "bytes": 152,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-TMHDN3GZ.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/infoDiagram-27XIBGKW-DEQE2I7J.js": {
+      "type": "application/javascript",
+      "sha256": "a3ea233d70496fe7978bd25d5fda5f4e891b3789e4f685e9e20287f864714a6e",
+      "bytes": 1112,
+      "imports": [
+        "specification/chunks/chunk-4TRA5KTL.js",
+        "specification/chunks/chunk-636VVVDD.js",
+        "specification/chunks/chunk-6RFNVN2Y.js",
+        "specification/chunks/chunk-6T7VVVJS.js",
+        "specification/chunks/chunk-AEV2EY3M.js",
+        "specification/chunks/chunk-AY2T5IWJ.js",
+        "specification/chunks/chunk-BZIFZK24.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-DQ45T5DO.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ETJNFAWY.js",
+        "specification/chunks/chunk-I3BUPRDH.js",
+        "specification/chunks/chunk-KHYUAEOD.js",
+        "specification/chunks/chunk-KP5VONQ5.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-RC5FMJXD.js",
+        "specification/chunks/chunk-S7GMNZRD.js",
+        "specification/chunks/chunk-TMHDN3GZ.js",
+        "specification/chunks/chunk-Y2JHP2WH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/ishikawaDiagram-5VMMS53U-SQ24CRK2.js": {
+      "type": "application/javascript",
+      "sha256": "2661d38449c1f1966460941e1d2e922a34a1699df458d0d2c7e161fc4de270c6",
+      "bytes": 17606,
+      "imports": [
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/journeyDiagram-3NMN7TZE-W2XUATJH.js": {
+      "type": "application/javascript",
+      "sha256": "beab262599fc4bef8a6c48b50bd72cac30b86a70b316e2a14a98a1ae1f4eaa3f",
+      "bytes": 23545,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NBH7YOBD.js",
+        "specification/chunks/chunk-PJSCIYDQ.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/kanban-definition-UXKFOSKX-G6DD45ZP.js": {
+      "type": "application/javascript",
+      "sha256": "45fbd2f38450ce934b2e46f1ca400bf9d606a63356b17aba882bed82751ccc15",
+      "bytes": 20780,
+      "imports": [
+        "specification/chunks/chunk-4PWQDUV5.js",
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-JRAHLUQM.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NBH7YOBD.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/katex-ESYZ2K7G.js": {
+      "type": "application/javascript",
+      "sha256": "6ee1c2cd3e4bea98219319856ce5488671bfcdb48d5b566333b67f9f4e009ec8",
+      "bytes": 267710,
+      "imports": [
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/mindmap-definition-YA3MSWOX-FWTONJCT.js": {
+      "type": "application/javascript",
+      "sha256": "aaf721432a4971b1c853fdd560e3ad31f5a8d0a288f72a0f96db4e0b75d11168",
+      "bytes": 23825,
+      "imports": [
+        "specification/chunks/chunk-4PWQDUV5.js",
+        "specification/chunks/chunk-5PNAOZKR.js",
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-KW45TMZL.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-O6PAMGGI.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-SVUIKGDO.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/packet-AYTQ26CC-ECMM3KLO.js": {
+      "type": "application/javascript",
+      "sha256": "90438eb93cd28d90daacf7a7d0c3727c4dcf861cf61b36f60fa578269c1c4f88",
+      "bytes": 156,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-Y2JHP2WH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/pegDiagram-XKGWAZYB-XBIBPG2T.js": {
+      "type": "application/javascript",
+      "sha256": "8ba2d4c5bce8276e6422e52ff153e9f58863a638d699efe7f8c44c15cc285718",
+      "bytes": 2450,
+      "imports": [
+        "specification/chunks/chunk-4TRA5KTL.js",
+        "specification/chunks/chunk-636VVVDD.js",
+        "specification/chunks/chunk-6RFNVN2Y.js",
+        "specification/chunks/chunk-6T7VVVJS.js",
+        "specification/chunks/chunk-AEV2EY3M.js",
+        "specification/chunks/chunk-AY2T5IWJ.js",
+        "specification/chunks/chunk-BZIFZK24.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-DQ45T5DO.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ETJNFAWY.js",
+        "specification/chunks/chunk-FUILQYD4.js",
+        "specification/chunks/chunk-I3BUPRDH.js",
+        "specification/chunks/chunk-KHYUAEOD.js",
+        "specification/chunks/chunk-KP5VONQ5.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NCOVM3YF.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-RC5FMJXD.js",
+        "specification/chunks/chunk-S7GMNZRD.js",
+        "specification/chunks/chunk-TMHDN3GZ.js",
+        "specification/chunks/chunk-Y2JHP2WH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/pie-WAS4IAKB-CD4DUFK4.js": {
+      "type": "application/javascript",
+      "sha256": "fecb958644c2f038da11d194f80d2f71cae8e3075b0fe3af7956aa09c771a0a2",
+      "bytes": 150,
+      "imports": [
+        "specification/chunks/chunk-AY2T5IWJ.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/pieDiagram-E7YTZNPT-QKFJDPHD.js": {
+      "type": "application/javascript",
+      "sha256": "fa8850181da41f5719c5b158100483064aa144876ed5f934cc13c9bf2767f090",
+      "bytes": 5609,
+      "imports": [
+        "specification/chunks/chunk-4TRA5KTL.js",
+        "specification/chunks/chunk-636VVVDD.js",
+        "specification/chunks/chunk-6RFNVN2Y.js",
+        "specification/chunks/chunk-6T7VVVJS.js",
+        "specification/chunks/chunk-AEV2EY3M.js",
+        "specification/chunks/chunk-AY2T5IWJ.js",
+        "specification/chunks/chunk-BZIFZK24.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-DQ45T5DO.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ETJNFAWY.js",
+        "specification/chunks/chunk-I3BUPRDH.js",
+        "specification/chunks/chunk-KHYUAEOD.js",
+        "specification/chunks/chunk-KP5VONQ5.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NCOVM3YF.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-RC5FMJXD.js",
+        "specification/chunks/chunk-S7GMNZRD.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-TMHDN3GZ.js",
+        "specification/chunks/chunk-Y2JHP2WH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/quadrantDiagram-AXDQQJYC-ZJNYWVZQ.js": {
+      "type": "application/javascript",
+      "sha256": "6f8536624cde0e4f3680ce33478790d7c46269b74f022c211686dd8ae3a8f0a3",
+      "bytes": 34046,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/radar-RG4KPBEZ-RRPLBTQW.js": {
+      "type": "application/javascript",
+      "sha256": "4c52df9c5e63c857ba69830c25785e95a1782c0fd7e0d88ef819f96794e200c0",
+      "bytes": 154,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-KHYUAEOD.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/railroad-74A4TZTK-P5WZRNXW.js": {
+      "type": "application/javascript",
+      "sha256": "139149357959f0d371f20d2e9e5f3e41da7263cf42d0ab276529bd3e1f929e11",
+      "bytes": 160,
+      "imports": [
+        "specification/chunks/chunk-636VVVDD.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/railroad-abnf-HS5TGJTU-G63NTJWO.js": {
+      "type": "application/javascript",
+      "sha256": "1bafce6bac5830642ab415bd9ec2a8d0762221e2a20bdb14aadbeacf6575ecbf",
+      "bytes": 168,
+      "imports": [
+        "specification/chunks/chunk-6RFNVN2Y.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/railroad-ebnf-LZEXJU2U-IAHZ4NXE.js": {
+      "type": "application/javascript",
+      "sha256": "04452744483cbcd58e4468feaf8e23ee3a8089087395a0b3fa32b2d271c9fa06",
+      "bytes": 168,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-RC5FMJXD.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/railroad-peg-WCYAUIDC-VIPV4WFH.js": {
+      "type": "application/javascript",
+      "sha256": "cad46138c416df6967725a7d401935b6a86d670166b9cdfd1d401683f9967310",
+      "bytes": 166,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-ETJNFAWY.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/railroadDiagram-O6MQD6OU-BR7WYKLO.js": {
+      "type": "application/javascript",
+      "sha256": "b69cd6143fdc114d4ca6ab0e6b57124c986478624237a09e822e8ac23fc40d11",
+      "bytes": 2116,
+      "imports": [
+        "specification/chunks/chunk-4TRA5KTL.js",
+        "specification/chunks/chunk-636VVVDD.js",
+        "specification/chunks/chunk-6RFNVN2Y.js",
+        "specification/chunks/chunk-6T7VVVJS.js",
+        "specification/chunks/chunk-AEV2EY3M.js",
+        "specification/chunks/chunk-AY2T5IWJ.js",
+        "specification/chunks/chunk-BZIFZK24.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-DQ45T5DO.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ETJNFAWY.js",
+        "specification/chunks/chunk-FUILQYD4.js",
+        "specification/chunks/chunk-I3BUPRDH.js",
+        "specification/chunks/chunk-KHYUAEOD.js",
+        "specification/chunks/chunk-KP5VONQ5.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NCOVM3YF.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-RC5FMJXD.js",
+        "specification/chunks/chunk-S7GMNZRD.js",
+        "specification/chunks/chunk-TMHDN3GZ.js",
+        "specification/chunks/chunk-Y2JHP2WH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/requirementDiagram-BXWQKSXE-7PIMJ24L.js": {
+      "type": "application/javascript",
+      "sha256": "383fba69dd923e4c076300e5227b0b884eca73b569f5660e315ef9665e6bfa70",
+      "bytes": 31413,
+      "imports": [
+        "specification/chunks/chunk-4PWQDUV5.js",
+        "specification/chunks/chunk-5PNAOZKR.js",
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-KW45TMZL.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-O6PAMGGI.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-SVUIKGDO.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/sankeyDiagram-P5KCCOFB-DQJ3EL2M.js": {
+      "type": "application/javascript",
+      "sha256": "4bbb97abed594e85082b6d2d4d7cbe42cf5f45fcf979e6c69faa2b39a4a8af1e",
+      "bytes": 23001,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/sequenceDiagram-WJ2MYXX4-Y356PIQL.js": {
+      "type": "application/javascript",
+      "sha256": "6e71f69690b9d0fef530da1a15700528cdd2c0577909a8264d133a54b5bebc25",
+      "bytes": 116936,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-JRAHLUQM.js",
+        "specification/chunks/chunk-L7BMR7WL.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-PJSCIYDQ.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/sizeCapture-INFHLROL-JK3AK6ET.js": {
+      "type": "application/javascript",
+      "sha256": "2a65cdea6d8a1963e72f697553934c5475219dccaedffe6bc9e314bbddf790e1",
+      "bytes": 919,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/stateDiagram-D77RDMKH-JJOUZN77.js": {
+      "type": "application/javascript",
+      "sha256": "0084321dc047885be1098c4d0f97604e9fa81995ce0eeee8cfbe0df994f061a5",
+      "bytes": 10680,
+      "imports": [
+        "specification/chunks/chunk-4PWQDUV5.js",
+        "specification/chunks/chunk-5PNAOZKR.js",
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-HGIVUT2R.js",
+        "specification/chunks/chunk-KW45TMZL.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-O6PAMGGI.js",
+        "specification/chunks/chunk-PJSCIYDQ.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-SVUIKGDO.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-UZNLKM6V.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-YIN5CSIF.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/stateDiagram-v2-MP3YSRHH-5EOCWJEL.js": {
+      "type": "application/javascript",
+      "sha256": "241cd8b099e0d72e6713ae7ed37ff812c0554032f480c761120f687c89bff875",
+      "bytes": 754,
+      "imports": [
+        "specification/chunks/chunk-4PWQDUV5.js",
+        "specification/chunks/chunk-5PNAOZKR.js",
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-HGIVUT2R.js",
+        "specification/chunks/chunk-KW45TMZL.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-O6PAMGGI.js",
+        "specification/chunks/chunk-PJSCIYDQ.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-SVUIKGDO.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/swimlanes-42K2YHIH-24YR4XQR.js": {
+      "type": "application/javascript",
+      "sha256": "1ed9d3a69d672d1e36191d8f478180e7d5ef4987200ed7c8eb7f65ad1057818f",
+      "bytes": 113509,
+      "imports": [
+        "specification/chunks/chunk-4PWQDUV5.js",
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-CMT3RCCI.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-KW45TMZL.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-YIN5CSIF.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/swimlanesDiagram-VR7AAH4N-J6VEARGV.js": {
+      "type": "application/javascript",
+      "sha256": "b525053850b370b5d8a3e2da29650c793d3f733e6b2bc61c4cf4ff396ee5c474",
+      "bytes": 852,
+      "imports": [
+        "specification/chunks/chunk-4PWQDUV5.js",
+        "specification/chunks/chunk-5PNAOZKR.js",
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-JRAHLUQM.js",
+        "specification/chunks/chunk-KW45TMZL.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LFFGVB2K.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NBH7YOBD.js",
+        "specification/chunks/chunk-O6PAMGGI.js",
+        "specification/chunks/chunk-PJSCIYDQ.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-SVUIKGDO.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/timeline-definition-24CTP7MA-AC3BT7X2.js": {
+      "type": "application/javascript",
+      "sha256": "ec4b613c5319bf927b1de00248c64f7e7f017c931235a103639eb657f478568f",
+      "bytes": 30814,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/treeView-Q6P3EWNA-NCCGGRAW.js": {
+      "type": "application/javascript",
+      "sha256": "7fe7df1a965193118904de6a7c52503f8e0c79626954f0d1787ddd324245831a",
+      "bytes": 160,
+      "imports": [
+        "specification/chunks/chunk-4TRA5KTL.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/treemap-WGGIJYW6-PF5OWN6J.js": {
+      "type": "application/javascript",
+      "sha256": "ab53ace57c15a6994ab7fd450d0a8f4d88809e4c1aac9c021dccc49f440e454a",
+      "bytes": 158,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-DQ45T5DO.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/vennDiagram-4TSXK5OY-UHOE5P6Z.js": {
+      "type": "application/javascript",
+      "sha256": "1dc4179b7cfd7b862d85b013445666a84f6b4afac5ad935e32d16658e30e6a7a",
+      "bytes": 41691,
+      "imports": [
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/wardley-WFR3VGLG-HBRG7BVH.js": {
+      "type": "application/javascript",
+      "sha256": "eafb2761738c5e6534cc066d1c3c5918de0861f0f20c6679401ebf4763b1bdcc",
+      "bytes": 158,
+      "imports": [
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-I3BUPRDH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js"
+      ]
+    },
+    "specification/chunks/wardleyDiagram-VM6X3IG4-RQ5TYSBO.js": {
+      "type": "application/javascript",
+      "sha256": "69b5bc64378e8beac3b1d48a686fdd07785ca32c134641a74e633edea2ce1949",
+      "bytes": 25891,
+      "imports": [
+        "specification/chunks/chunk-4TRA5KTL.js",
+        "specification/chunks/chunk-636VVVDD.js",
+        "specification/chunks/chunk-6RFNVN2Y.js",
+        "specification/chunks/chunk-6T7VVVJS.js",
+        "specification/chunks/chunk-AEV2EY3M.js",
+        "specification/chunks/chunk-AY2T5IWJ.js",
+        "specification/chunks/chunk-BZIFZK24.js",
+        "specification/chunks/chunk-CCAM6AE3.js",
+        "specification/chunks/chunk-DQ45T5DO.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-ETJNFAWY.js",
+        "specification/chunks/chunk-I3BUPRDH.js",
+        "specification/chunks/chunk-KHYUAEOD.js",
+        "specification/chunks/chunk-KP5VONQ5.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-NCOVM3YF.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-RC5FMJXD.js",
+        "specification/chunks/chunk-S7GMNZRD.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-TMHDN3GZ.js",
+        "specification/chunks/chunk-Y2JHP2WH.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/chunks/xychartDiagram-S5SC5T6Z-AW5JVN5U.js": {
+      "type": "application/javascript",
+      "sha256": "0c1d04ed589a04750f63f5e315aa0cde784fbc192a7c23fe1fb9ea45c6bb15a4",
+      "bytes": 43308,
+      "imports": [
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-ZTZ26IMT.js"
+      ]
+    },
+    "specification/diagram-FPARK473.js": {
+      "type": "application/javascript",
+      "sha256": "0b2787848c46fa9835bb863aae9bd09db86e56928a36bc17fbcf7489c26abc3a",
+      "bytes": 34342,
+      "imports": [
+        "specification/chunks/abnfDiagram-VCTEODGH-4OTD5TZX.js",
+        "specification/chunks/architectureDiagram-5GKGNRK7-OEFEZERW.js",
+        "specification/chunks/blockDiagram-I7D4REHJ-EXI56KLE.js",
+        "specification/chunks/c4Diagram-7LVT6UL2-5KJTZ3OK.js",
+        "specification/chunks/chunk-4PWQDUV5.js",
+        "specification/chunks/chunk-B6DLVZHA.js",
+        "specification/chunks/chunk-CMT3RCCI.js",
+        "specification/chunks/chunk-D5G3FANI.js",
+        "specification/chunks/chunk-EIBFAW37.js",
+        "specification/chunks/chunk-JRAHLUQM.js",
+        "specification/chunks/chunk-KW45TMZL.js",
+        "specification/chunks/chunk-L6KJ7TOU.js",
+        "specification/chunks/chunk-LQN7U6FO.js",
+        "specification/chunks/chunk-MIWTN2AJ.js",
+        "specification/chunks/chunk-O6PAMGGI.js",
+        "specification/chunks/chunk-Q7FNVA5G.js",
+        "specification/chunks/chunk-QYFW3LU7.js",
+        "specification/chunks/chunk-SZA4BFIV.js",
+        "specification/chunks/chunk-TLOGCLGW.js",
+        "specification/chunks/chunk-Y6SLVHK3.js",
+        "specification/chunks/chunk-YFKCEDPJ.js",
+        "specification/chunks/chunk-YIN5CSIF.js",
+        "specification/chunks/chunk-ZTZ26IMT.js",
+        "specification/chunks/classDiagram-ZZMXUADV-U7H2DCPS.js",
+        "specification/chunks/classDiagram-v2-VYDZK3BY-YGIUHV5C.js",
+        "specification/chunks/cynefinDiagram-5FMLGOSQ-N22JBLQW.js",
+        "specification/chunks/diagram-S7CK7UJ4-EU55SNOF.js",
+        "specification/chunks/diagram-UQ7AKVKN-AY2QWDCG.js",
+        "specification/chunks/diagram-VSXAHHWV-FTANOSZU.js",
+        "specification/chunks/diagram-VX7I27RA-K5ETDK6N.js",
+        "specification/chunks/diagram-Z3DM3KII-AUQPSDBN.js",
+        "specification/chunks/ebnfDiagram-PWID7BFC-IZA2K7G7.js",
+        "specification/chunks/erDiagram-RLTQ6QDP-Z7CS6VVL.js",
+        "specification/chunks/flowDiagram-HODETNUW-K2KKPIVT.js",
+        "specification/chunks/flowDiagram-HODETNUW-K2KKPIVT.js",
+        "specification/chunks/flowDiagram-HODETNUW-K2KKPIVT.js",
+        "specification/chunks/ganttDiagram-EL5Y4UJY-T3R45CAL.js",
+        "specification/chunks/gitGraphDiagram-WWUBYQGX-RZQAA2WK.js",
+        "specification/chunks/infoDiagram-27XIBGKW-DEQE2I7J.js",
+        "specification/chunks/ishikawaDiagram-5VMMS53U-SQ24CRK2.js",
+        "specification/chunks/journeyDiagram-3NMN7TZE-W2XUATJH.js",
+        "specification/chunks/kanban-definition-UXKFOSKX-G6DD45ZP.js",
+        "specification/chunks/mindmap-definition-YA3MSWOX-FWTONJCT.js",
+        "specification/chunks/pegDiagram-XKGWAZYB-XBIBPG2T.js",
+        "specification/chunks/pieDiagram-E7YTZNPT-QKFJDPHD.js",
+        "specification/chunks/quadrantDiagram-AXDQQJYC-ZJNYWVZQ.js",
+        "specification/chunks/railroadDiagram-O6MQD6OU-BR7WYKLO.js",
+        "specification/chunks/requirementDiagram-BXWQKSXE-7PIMJ24L.js",
+        "specification/chunks/sankeyDiagram-P5KCCOFB-DQJ3EL2M.js",
+        "specification/chunks/sequenceDiagram-WJ2MYXX4-Y356PIQL.js",
+        "specification/chunks/stateDiagram-D77RDMKH-JJOUZN77.js",
+        "specification/chunks/stateDiagram-v2-MP3YSRHH-5EOCWJEL.js",
+        "specification/chunks/swimlanesDiagram-VR7AAH4N-J6VEARGV.js",
+        "specification/chunks/timeline-definition-24CTP7MA-AC3BT7X2.js",
+        "specification/chunks/vennDiagram-4TSXK5OY-UHOE5P6Z.js",
+        "specification/chunks/wardleyDiagram-VM6X3IG4-RQ5TYSBO.js",
+        "specification/chunks/xychartDiagram-S5SC5T6Z-AW5JVN5U.js"
+      ]
+    },
+    "specification/diagram-FPARK473.js.LEGAL.txt": {
+      "type": "text/plain",
+      "sha256": "108b77c578b750eb21d34748148ce6a0c86e552be7e54ea96a6ffa103ccb9720",
+      "bytes": 172,
+      "imports": []
     }
   }
 }

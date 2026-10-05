@@ -208,7 +208,13 @@ defmodule SymphonyElixir.BrowserControlsTest do
           "panel" => "settings"
         })
 
-    for destination <- [board, String.replace(board, "view=design", "view=gantt"), String.replace(board, "view=design", "view=graph")] do
+    historical =
+      board <>
+        "&design_ref=" <>
+        String.duplicate("a", 64) <>
+        "&design_section=data&design_item=event&design_task=github%3Aexample%2Ffixture%3A2"
+
+    for destination <- [historical | Enum.map(~w(idea design gantt graph), &String.replace(board, "view=design", "view=" <> &1))] do
       {conn, csrf} = browser_page()
       signed_in = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => ctx.token, "return_to" => destination})
       assert redirected_to(signed_in) == destination
@@ -233,10 +239,13 @@ defmodule SymphonyElixir.BrowserControlsTest do
     previous = System.get_env("SYMPHONY_WORKSPACE_PROJECT")
     System.put_env("SYMPHONY_WORKSPACE_PROJECT", "events-concierge")
     on_exit(fn -> restore_env("SYMPHONY_WORKSPACE_PROJECT", previous) end)
-    destination = "/projects/events-concierge" <> board
-    {conn, csrf} = browser_page()
-    signed_in = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => ctx.token, "return_to" => destination})
-    assert redirected_to(signed_in) == destination
+
+    for path <- [historical, String.replace(board, "view=design", "view=idea")] do
+      destination = "/projects/events-concierge" <> path
+      {conn, csrf} = browser_page()
+      signed_in = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => ctx.token, "return_to" => destination})
+      assert redirected_to(signed_in) == destination
+    end
   end
 
   test "authorization rejects missing context, expiry, token rotation and unavailable token", ctx do

@@ -836,8 +836,8 @@ for commands, limitations and the existing GitHub task workflow.
 
 Use the [workspace service](../profiles/events-concierge/README.md#workspace-service)
 for one public listener and shared sign-in. Project → Task → Work selectors navigate
-within that origin. **Design / Kanban / Graph / Gantt** sit beside the project selector.
-Design keeps five vertical steps: brief, requirements, data, architecture and decisions.
+within that origin. **Idea / Design / Kanban / Graph / Gantt** sit beside the project selector.
+Idea keeps five vertical steps: brief, requirements, data, architecture and decisions.
 Each step embeds the self-hosted Excalidraw editor: draw shapes and text, connect arrows,
 resize, rotate, pan, zoom and undo. **Entity**, **Component** and **Note** insert editable
 groups for structured feedback. Entity fields use plain lines; relationship labels can
@@ -850,19 +850,19 @@ Structured suggestions open a change preview; **Apply** changes the working draf
 with undo, after checking the project and exact draft revision. New edits invalidate old
 suggestions. Freehand strokes remain editable annotations; model feedback covers the
 inserted notes, entities, components and connections. Notes over 600 characters remain intact; feedback can
-add a separate note or adjust its title/position. Design turns cannot create tasks,
+add a separate note or adjust its title/position. Idea turns cannot create tasks,
 delegate, change
 goals or propose execution actions. Each queued turn retains its mode. Operational
-history remains in planning views, and project switching retains Design.
+history remains in planning views, and project switching retains Idea.
 
 **Outline** lists tagged native items and edits the same text shown on the board; it is
 not a second model. **Review changes** compares the draft with its previous reviewed
-version. Marking a design reviewed stores an immutable source; it neither accepts a task
+version. Saving a reviewed Idea snapshot stores an immutable source; it neither accepts a task
 nor starts work. Keep editing the next draft. **Prepare task** opens the existing Backlog
 preview from an unchanged reviewed item. This is a Backlog starting point: inspect the
 excerpt before creating it, and refine its outcome/verification before admission.
 Drawing relationships do not automatically become task dependencies, priorities or
-estimates; set those through task planning. Its **Design source** link shows the immutable
+estimates; set those through task planning. Its **Idea source** link shows the immutable
 item excerpt beside the unchanged current canvas, with a return link to the task.
 A cancelled preview can be explicitly prepared again; an uncertain or completed
 submission reuses its durable intent.
@@ -875,15 +875,38 @@ Each scene is bounded to 4 MB and 500 native elements per step; the
 journal has a 32 MB capacity. When full, new saves and reviews stop; existing history
 and browser recovery remain intact, without automatic pruning. Restart retains both
 the draft and all reviewed sources. Project storage is local to this workspace,
-not cross-machine storage or independent backup. Include the Design directory in private
+not cross-machine storage or independent backup. Include the Idea journal directory in private
 state backups; retain its ownership and file permissions during recovery.
 
 Browser storage keeps a recovery copy. An existing browser draft requires explicit
 import; a different saved project draft can be opened while preserving the browser
 original. Concurrent or unconfirmed saves stop instead of overwriting or retrying.
 Review and task preparation require the currently visible drawing to be saved.
-No operation publishes to Notion automatically. **Published design** opens the existing
+No operation publishes to Notion automatically. **Project design notes** opens the existing
 Notion record. The Events Concierge example remains illustrative.
+
+**Design** is the separate structured specification: Brief, Requirements, Data,
+Architecture and Decisions. Items have stable IDs, a section-specific kind, title and
+editable details. Named Mermaid diagrams retain their source and show a local preview;
+syntax feedback does not erase the source. **Save specification** saves the draft.
+**Review specification** previews that saved version; **Save reviewed version** retains
+an immutable copy. Open a past version read-only and return to the current draft.
+Idea scenes are never automatically imported or interpreted as an approved specification.
+
+Specification storage is `<control.state_path>.specification/journal.json`, owned by
+`Specification.Store` independently of chat availability. Authentication, configured
+project scope, exclusive ownership and journal digest guard every read/write. Saves and
+reviews also require the caller's expected storage revision. Specifications are bounded
+to 1 MB, 200 items and 30 diagrams per section; titles allow 256 UTF-16 units, item details
+24,000 and Mermaid source 60,000. The journal is bounded to 32 MB; full storage stops changes
+without pruning history. Include this private directory in state backups; local durability
+does not establish cross-machine storage or an independent backup. Conflicting
+saves keep your open edits; compare them before using **Reload saved draft**. An empty
+specification cannot become reviewed. Specification versions do not accept tasks,
+start workers or change execution budgets. Iteration branches, task packs and release
+mapping remain planned. Existing `view=design` task source links resolve to Idea;
+plain `view=design` opens the specification.
+
 Kanban / Graph / Gantt share filters,
 selected task and retained Work chat. Selected-task context shows the current execution,
 next safe action and readiness; the task Details panel retains limits and evidence.

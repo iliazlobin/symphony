@@ -401,14 +401,26 @@ defmodule SymphonyElixir.GoogleBrowserTest do
   end
 
   test "Google sign-in completes back to the same board view, filters and task" do
-    destination = "/?" <> URI.encode_query(%{"view" => "design", "project" => "memory:default", "priority" => "P1", "chat_task" => "memory:default:2", "panel" => "settings"})
-    login = get(local_conn(), "/login")
-    started = post(browser_recycle(login), "/auth/google", %{"_csrf_token" => csrf(login), "return_to" => destination})
-    query = URI.decode_query(URI.parse(redirected_to(started)).query)
-    provider(query)
-    completed = get(browser_recycle(started), "/auth/google/callback?" <> URI.encode_query(%{"state" => query["state"], "code" => "fixture"}))
-    assert redirected_to(completed) == destination
-    assert BrowserAuth.authorized?(BrowserAuth.conn_context(completed))
+    params = %{"view" => "design", "project" => "memory:default", "priority" => "P1", "chat_task" => "memory:default:2", "panel" => "settings"}
+
+    historical =
+      Map.merge(params, %{
+        "design_ref" => String.duplicate("a", 64),
+        "design_section" => "data",
+        "design_item" => "event",
+        "design_task" => "memory:default:2"
+      })
+
+    for scoped <- [params, Map.put(params, "view", "idea"), historical] do
+      destination = "/?" <> URI.encode_query(scoped)
+      login = get(local_conn(), "/login")
+      started = post(browser_recycle(login), "/auth/google", %{"_csrf_token" => csrf(login), "return_to" => destination})
+      query = URI.decode_query(URI.parse(redirected_to(started)).query)
+      provider(query)
+      completed = get(browser_recycle(started), "/auth/google/callback?" <> URI.encode_query(%{"state" => query["state"], "code" => "fixture"}))
+      assert redirected_to(completed) == destination
+      assert BrowserAuth.authorized?(BrowserAuth.conn_context(completed))
+    end
   end
 
   test "successful callback creates a revocable session without retaining Google tokens" do

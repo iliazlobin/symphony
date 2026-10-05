@@ -46,6 +46,9 @@
       this.ignoreCardClickUntil = 0;
       this.scope = null;
       this.abort = new AbortController();
+      window.addEventListener("beforeunload", event => {
+        if (this.el.dataset.specificationDirty === "true") { event.preventDefault(); event.returnValue = ""; }
+      }, {signal: this.abort.signal});
       this.darkMode = window.matchMedia("(prefers-color-scheme: dark)");
       const on = (name, handler) => this.el.addEventListener(name, handler, {signal: this.abort.signal});
       this.cardMetadata = card => {
@@ -99,7 +102,7 @@
         return [["", "All projects"], ...local, ...remote.map(link => {
           const target = new URL(link.url, window.location.href);
           for (const key of [...boardFilters, "q", "sort", "task", "chat_task", "chat_session", "panel", "chat", "design_ref", "design_section", "design_item", "design_task"]) target.searchParams.delete(key);
-          if (["design", "graph", "gantt"].includes(this.el.dataset.boardView)) target.searchParams.set("view", this.el.dataset.boardView);
+          if (["idea", "design", "graph", "gantt"].includes(this.el.dataset.boardView)) target.searchParams.set("view", this.el.dataset.boardView);
           else target.searchParams.delete("view");
           return [link.id, link.label, target.href];
         })];
@@ -150,7 +153,7 @@
         this.urlKey = encoded;
         const parsed = parse(encoded, {});
         const filters = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-        if (initial && !Object.keys(filters).length && !["design", "graph", "gantt"].includes(this.el.dataset.boardView)) return;
+        if (initial && !Object.keys(filters).length && !["idea", "design", "graph", "gantt"].includes(this.el.dataset.boardView)) return;
         for (const key of boardFilters) this.prefs[key] = this.urlValues(key, filters[key]);
         this.prefs.query = typeof filters.q === "string" ? filters.q : "";
         this.prefs.sort = ["manual", "priority", "updated", "oldest", "title"].includes(filters.sort) ? filters.sort : "manual";
@@ -159,7 +162,7 @@
       };
       this.serializedFilters = (view = this.el.dataset.boardView) => {
         const filters = {q: this.prefs.query, sort: this.prefs.sort};
-        if (["design", "graph", "gantt"].includes(view)) filters.view = view;
+        if (["idea", "design", "graph", "gantt"].includes(view)) filters.view = view;
         for (const key of boardFilters) filters[key] = metadataFilters.includes(key) ? (this.prefs[key].length ? JSON.stringify(this.prefs[key]) : "") : this.prefs[key].join(",");
         for (const key of Object.keys(filters)) if (!filters[key] || (key === "sort" && filters[key] === "manual")) delete filters[key];
         return filters;
@@ -211,7 +214,7 @@
         this.el.querySelector("[data-board-sort]").value = this.prefs.sort;
         const view = this.el.dataset.boardView || "kanban";
         this.el.querySelectorAll("[data-kanban-display]").forEach(control => control.hidden = view !== "kanban");
-        this.el.querySelectorAll("[data-task-filters]").forEach(control => control.hidden = view === "design");
+        this.el.querySelectorAll("[data-task-filters]").forEach(control => control.hidden = ["idea", "design"].includes(view));
         this.el.querySelectorAll("[data-status-filter]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.statusFilter ? this.prefs.status.length === 1 && this.prefs.status[0] === button.dataset.statusFilter : !this.prefs.status.length)));
       };
       this.drawOptions = key => {
@@ -258,7 +261,7 @@
         status.textContent = message;
       };
       this.captureContext = () => {
-        if (this.el.dataset.chatOpen !== "true" || !this.el.dataset.chatProject) { this.contextKey = null; return; }
+        if (this.el.dataset.chatOpen !== "true" || !this.el.dataset.chatProject || ["idea", "design"].includes(this.el.dataset.boardView)) { this.contextKey = null; return; }
         const project = this.el.dataset.chatProject;
         const planning = ["graph", "gantt"].includes(this.el.dataset.boardView);
         const cards = [...this.el.querySelectorAll(".task-card[data-task-id]")].filter(card =>
@@ -266,14 +269,14 @@
         const board = this.el.querySelector(".board-main").getBoundingClientRect();
         const areaSelector = planning ? (this.el.dataset.boardView === "graph" ? '[data-plan-panel]:not([hidden]) .plan-canvas' : ".plan-gantt-scroll") : ".kanban-board";
         const area = this.el.querySelector(areaSelector)?.getBoundingClientRect() || board;
-        const dock = this.el.querySelector("#management-chat-dock").getBoundingClientRect();
+        const dock = this.el.querySelector("#management-chat-dock")?.getBoundingClientRect();
         const taskOpen = this.el.querySelector("#board-dialog[open]");
         const inViewport = element => {
           if (element.closest("[hidden]") || !element.getClientRects().length) return false;
           const rect = element.getBoundingClientRect();
           const visibleTop = Math.max(0, board.top, area.top, rect.top);
           const visibleBottom = Math.min(window.innerHeight, board.bottom, area.bottom, rect.bottom);
-          const coveredByDock = dock.top <= visibleTop && dock.bottom >= visibleBottom;
+          const coveredByDock = dock && dock.top <= visibleTop && dock.bottom >= visibleBottom;
           const rightEdge = Math.min(window.innerWidth, board.right, area.right, coveredByDock ? dock.left : Infinity);
           return !taskOpen && visibleBottom > visibleTop &&
             rect.right > Math.max(0, board.left, area.left) && rect.left < rightEdge;
@@ -286,8 +289,8 @@
         const snapshot = {
           version: 1, project_id: project,
           filters: {...Object.fromEntries(boardFilters.map(key => [key, key === "milestone" ? this.prefs[key].filter(value => value === "__none__" || value.startsWith(`milestone:${project}:`)) : this.prefs[key]])), q: this.prefs.query, sort: this.prefs.sort},
-          selected_task_id: this.el.dataset.boardView === "design" ? null : this.el.dataset.selectedTask || null,
-          visible_task_ids: this.el.dataset.boardView === "design" ? [] : visible, viewport_task_ids: this.el.dataset.boardView === "design" ? [] : viewport,
+          selected_task_id: this.el.dataset.selectedTask || null,
+          visible_task_ids: ["idea", "design"].includes(this.el.dataset.boardView) ? [] : visible, viewport_task_ids: ["idea", "design"].includes(this.el.dataset.boardView) ? [] : viewport,
           hidden_columns: [],
           board_checked_at: this.el.dataset.boardCheckedAt || null, truncated: cards.length > 50
         };
@@ -1126,7 +1129,7 @@
       }) : null;
       this.resize?.observe(this.el);
       this.handleEvent?.("focus-plan-task", ({id, view}) => {
-        if (!id || !["design", "graph", "gantt"].includes(view) || (view === "gantt") !== (this.mode === "timeline")) return;
+        if (!id || !["idea", "design", "graph", "gantt"].includes(view) || (view === "gantt") !== (this.mode === "timeline")) return;
         requestAnimationFrame(() => {
           if (view === "gantt") {
             const row = [...this.el.querySelectorAll("[data-plan-task-id]")].find(node => node.dataset.planTaskId === id);
@@ -1488,5 +1491,47 @@
     },
     destroyed() { this.flush(); this.canvas?.destroy(); this.sync?.destroy(); this.abort.abort(); }
   };
-  window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace, IssueSwitcher, IssuePRMenu, WorkflowCanvas, DesignWorkspace};
+  const specificationRenderers = new Map();
+  const SpecificationWorkspace = {
+    mounted() {
+      this.abort = new AbortController();
+      this.el.addEventListener("keydown", event => {
+        const tab = event.target.closest('[role="tab"]');
+        if (!tab || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+        const tabs = [...this.el.querySelectorAll('[role="tab"]')];
+        const index = tabs.indexOf(tab);
+        const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + tabs.length) % tabs.length;
+        event.preventDefault(); tabs[next].focus(); tabs[next].click();
+      }, {signal: this.abort.signal});
+    },
+    beforeUpdate() {
+      this.historyDisclosure = new Map([...this.el.querySelectorAll("details.specification-history[id]")].map(details => [details.id, details.open]));
+    },
+    updated() {
+      this.el.querySelectorAll("details.specification-history[id]").forEach(details => {
+        if (this.historyDisclosure?.has(details.id)) details.open = this.historyDisclosure.get(details.id);
+      });
+    },
+    destroyed() { this.abort.abort(); }
+  };
+  const SpecificationDiagram = {
+    mounted() {
+      this.active = true;
+      const url = this.el.dataset.specRenderer;
+      if (!url) return;
+      if (!specificationRenderers.has(url)) specificationRenderers.set(url, import(url));
+      const loading = specificationRenderers.get(url);
+      loading.then(module => {
+        if (this.active && this.el.isConnected) this.renderer = module.mountSpecificationDiagram(this.el);
+      }).catch(() => {
+        if (specificationRenderers.get(url) === loading) specificationRenderers.delete(url);
+        if (!this.active) return;
+        const feedback = this.el.querySelector("[data-spec-feedback]");
+        if (feedback) feedback.textContent = "Diagram preview unavailable. Your Mermaid source is retained.";
+      });
+    },
+    updated() { this.renderer?.update(); },
+    destroyed() { this.active = false; this.renderer?.destroy(); }
+  };
+  window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace, IssueSwitcher, IssuePRMenu, WorkflowCanvas, DesignWorkspace, SpecificationWorkspace, SpecificationDiagram};
 })();

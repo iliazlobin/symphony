@@ -83,7 +83,7 @@ picker.el.dataset.boardView="design";
 assert.deepEqual(plain(picker.hook.drawOptions("project")),[["github:example/remote","Remote project","http://localhost:8779/?view=design"]]);
 picker.hook.toggle("project","github:example/remote");
 assert.equal(picker.navigations.at(-1),"http://localhost:8779/?view=design");
-for (const view of ["graph","gantt","kanban"]) {
+for (const view of ["idea","design","graph","gantt","kanban"]) {
   picker.el.dataset.boardView=view;
   picker.hook.toggle("project","github:example/remote");
   assert.equal(picker.navigations.at(-1),"http://localhost:8779/" + (view === "kanban" ? "" : "?view=" + view));
@@ -93,10 +93,17 @@ scopedLink.el.dataset.boardView="gantt";
 scopedLink.hook.toggle("project","github:example/remote");
 assert.equal(scopedLink.navigations.at(-1),"http://localhost:8778/projects/remote/?view=gantt");
 // Display preferences affect the current view; task filters do not appear in Design.
-for (const view of ["design","graph","gantt","kanban"]) {
+for (const view of ["idea","design","graph","gantt","kanban"]) {
   picker.el.dataset.boardView=view;picker.hook.apply();
   assert.equal(picker.kanbanDisplay[0].hidden,view!=="kanban");
-  assert.equal(picker.taskFilters[0].hidden,view==="design");
+  assert.equal(picker.taskFilters[0].hidden,["idea","design"].includes(view));
+}
+// Idea has its own bounded canvas context; Specification has no task chat/dock.
+for (const view of ["idea","design"]) {
+  const planning=mount(); planning.el.dataset.boardView=view;
+  planning.el.dataset.chatOpen="true"; planning.el.dataset.chatProject="github:example/repo";
+  planning.el.querySelector=()=>{throw new Error("Planning views must not read task/dock geometry");};
+  const before=planning.sent.length; planning.hook.captureContext(); assert.equal(planning.sent.length,before);
 }
 const filters=mount({}, {project:"github:example/repo",status:"in_progress",priority:"P2",q:"running"},projects,projectLinks);
 const clickButton=(fixture,attributes,dataset={})=>{
@@ -266,6 +273,47 @@ const zoomed=fit({left:0,right:390,bottom:800},20,{offsetLeft:50,width:300,offse
 assert.equal(zoomed.get("--chat-menu-width"),"284px");
 assert.equal(zoomed.get("--chat-menu-offset"),"38px");
 assert.equal(zoomed.get("--chat-menu-space"),"372px");
+'''
+        root = pathlib.Path(__file__).resolve().parents[2]
+        completed = subprocess.run(
+            [shutil.which("node"), "-e", script, str(root / "elixir/priv/static/dashboard.js")],
+            capture_output=True, text=True, check=False, timeout=20,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_specification_history_disclosure_survives_patches_without_authority_events(self):
+        script = r'''
+const assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
+const window = {}, document = {addEventListener(){}};
+vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),{window,document,AbortController});
+let details = [], listeners = new Map();
+const el = {
+  addEventListener:(name,handler)=>listeners.set(name,handler),
+  querySelectorAll(selector) {assert.equal(selector,"details.specification-history[id]");return details;}
+};
+const hook = {...window.SymphonyHooks.SpecificationWorkspace,el,
+  pushEvent(){throw new Error("Disclosure must not dispatch backend commands");}};
+hook.mounted();
+// A fresh history list keeps its native closed default.
+hook.beforeUpdate();details=[{id:"specification-project-history",open:false}];hook.updated();
+assert.equal(details[0].open,false);
+// LiveView may replace the list while refreshing versions; preserve the user's opening.
+details[0].open=true;hook.beforeUpdate();
+details=[{id:"specification-project-history",open:false,versions:["old","new"]}];hook.updated();
+assert.equal(details[0].open,true);
+// Explicit closing is equally persistent, even against a newly open DOM node.
+details[0].open=false;hook.beforeUpdate();
+details=[{id:"specification-project-history",open:true}];hook.updated();
+assert.equal(details[0].open,false);
+// Disclosure state is scoped by stable identity and cannot leak to another project.
+details[0].open=true;hook.beforeUpdate();
+details=[{id:"specification-another-history",open:false}];hook.updated();
+assert.equal(details[0].open,false);
+// Removing history drops its state; a later fresh list starts closed again.
+hook.beforeUpdate();details=[];hook.updated();hook.beforeUpdate();
+details=[{id:"specification-project-history",open:false}];hook.updated();
+assert.equal(details[0].open,false);
+hook.destroyed();assert.equal(hook.abort.signal.aborted,true);
 '''
         root = pathlib.Path(__file__).resolve().parents[2]
         completed = subprocess.run(

@@ -91,6 +91,9 @@ defmodule SymphonyElixirWeb.StaticAssets do
   @spec design_editor_css_url() :: String.t()
   def design_editor_css_url, do: SymphonyElixirWeb.WorkspacePath.path(@design_editor_base <> @design_editor_manifest["entry"]["css"])
 
+  @spec specification_diagram_js_url() :: String.t()
+  def specification_diagram_js_url, do: SymphonyElixirWeb.WorkspacePath.path(@design_editor_base <> @design_editor_manifest["specification"]["js"])
+
   @spec design_editor_asset_path() :: String.t()
   def design_editor_asset_path, do: SymphonyElixirWeb.WorkspacePath.path(@design_editor_base)
 

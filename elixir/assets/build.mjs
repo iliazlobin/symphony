@@ -70,7 +70,24 @@ const result = await build({
 });
 if (fallbackPatches !== 1) throw new Error("Expected one pinned Excalidraw same-origin font patch.");
 if (radioIdPatches !== 1) throw new Error("Expected one pinned Excalidraw unique radio ID patch.");
-for (const file of result.outputFiles) files.set(slash(path.relative(destination, file.path)), Buffer.from(file.contents));
+// A separate bundle gives Specification its own Mermaid configuration, independent of the editor importer.
+const specificationResult = await build({
+  absWorkingDir: root,
+  entryPoints: ["specification-diagram.js"],
+  outdir: path.join(destination, "specification"),
+  entryNames: "diagram-[hash]",
+  chunkNames: "chunks/[name]-[hash]",
+  assetNames: "files/[name]-[hash]",
+  loader: {".woff2": "file"},
+  bundle: true, preserveSymlinks: true, splitting: true,
+  format: "esm", platform: "browser", target: ["es2022"],
+  minify: true, sourcemap: false, legalComments: "external",
+  metafile: true, write: false, conditions: ["production"],
+  define: {"process.env.NODE_ENV": '"production"'}
+});
+for (const generated of [result, specificationResult]) {
+  for (const file of generated.outputFiles) files.set(slash(path.relative(destination, file.path)), Buffer.from(file.contents));
+}
 
 async function walk(directory) {
   const found = [];
@@ -90,7 +107,7 @@ for (const filename of await walk(path.join(excalidraw, "fonts"))) {
 
 // Include the license files of packages whose code was included in the bundle.
 const packageRoots = new Set();
-for (const input of Object.keys(result.metafile.inputs)) {
+for (const input of Object.keys({...result.metafile.inputs, ...specificationResult.metafile.inputs})) {
   const pieces = slash(input).split("node_modules/");
   if (pieces.length < 2) continue;
   const tail = pieces.at(-1).split("/");
@@ -115,11 +132,14 @@ files.set("THIRD_PARTY_NOTICES.txt", Buffer.from(notices));
 
 const inputs = (await walk(root)).filter(filename => !slash(path.relative(root, filename)).startsWith("node_modules/"));
 const sources = Object.fromEntries(await Promise.all(inputs.map(async filename => [slash(path.relative(root, filename)), digest(await readFile(filename))])));
-const outputs = Object.entries(result.metafile.outputs);
+const outputs = Object.entries({...result.metafile.outputs, ...specificationResult.metafile.outputs});
 const entry = outputs.find(([, info]) => info.entryPoint === "design-editor.jsx");
 if (!entry) throw new Error("Excalidraw entry was not generated.");
 const entryPath = slash(path.relative(destination, path.resolve(root, entry[0])));
 const cssPath = slash(path.relative(destination, path.resolve(root, entry[1].cssBundle)));
+const specificationEntry = outputs.find(([, info]) => info.entryPoint === "specification-diagram.js");
+if (!specificationEntry) throw new Error("Specification diagram entry was not generated.");
+const specificationPath = slash(path.relative(destination, path.resolve(root, specificationEntry[0])));
 const contentType = filename => filename.endsWith(".js") ? "application/javascript" : filename.endsWith(".css") ? "text/css" : filename.endsWith(".woff2") ? "font/woff2" : "text/plain";
 const assets = Object.fromEntries([...files.entries()].sort(([a], [b]) => compare(a, b)).map(([filename, bytes]) => [filename, {type: contentType(filename), sha256: digest(bytes), bytes: bytes.length}]));
 for (const [filename, details] of outputs) {
@@ -131,7 +151,7 @@ for (const [filename, details] of outputs) {
     return target;
   }).sort(compare);
 }
-const manifest = {version: 1, entry: {js: entryPath, css: cssPath}, sources, assets};
+const manifest = {version: 1, entry: {js: entryPath, css: cssPath}, specification: {js: specificationPath}, sources, assets};
 files.set("manifest.json", Buffer.from(JSON.stringify(manifest, null, 2) + "\n"));
 if (check) {
   const actual = (await walk(destination)).map(filename => slash(path.relative(destination, filename))).sort();

@@ -1205,7 +1205,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     assert {:ok, ^chat} = FixtureStore.get("alpha", "a1", nil)
   end
 
-  test "Design welcomes a new discussion despite existing operational history and leaves queue status visible", ctx do
+  test "Idea welcomes a new discussion despite existing operational history and leaves queue status visible", ctx do
     {:ok, chat} = FixtureStore.get("alpha", "a1", nil)
     queued = [%{"id" => "existing-queued", "role" => "user", "text" => "Previously authorized request"}]
     chat = chat |> Map.put("queue", queued) |> Map.put("queue_paused", true) |> Map.put("agent_notice", "Delivery needs attention")
@@ -1213,7 +1213,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     view = embedded_view(ctx, nil)
     assert has_element?(view, "#message-m1", "Alpha secret")
     send(view.pid, {:design_mode, true})
-    assert eventually(fn -> has_element?(view, ".chat-empty h1", "Let’s shape the design") end)
+    assert eventually(fn -> has_element?(view, ".chat-empty h1", "Let’s shape the idea") end)
     refute has_element?(view, "#message-m1")
     refute has_element?(view, "#agent-progress")
     refute has_element?(view, ".chat-starters")
@@ -1289,7 +1289,7 @@ defmodule SymphonyElixir.ChatLiveTest do
     refute has_element?(view, "#message-history-51")
   end
 
-  test "design history is paginated after operational messages are filtered and rejects expired access", ctx do
+  test "Idea history is paginated after operational messages are filtered and rejects expired access", ctx do
     {:ok, original} = FixtureStore.get("alpha", "a1", nil)
     context = %{"version" => 1, "project_id" => "alpha", "mode" => "design"}
     history = for n <- 1..90, do: history_message(n) |> Map.put("view_context", if(rem(n, 2) == 0, do: context, else: view_context()))

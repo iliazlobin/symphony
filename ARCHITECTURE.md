@@ -94,7 +94,7 @@ commands to the native API and owns no scheduling state.
   Backlog → Work and Review → Done execute directly from the authenticated board with
   exact-revision and replay checks. Local state appears immediately while GitHub routing
   labels synchronize asynchronously. `TaskIntake` retains Backlog preview receipts;
-  project chat and reviewed Design items are the visible intake paths. Unknown outcomes
+  project chat and reviewed Idea items are the visible intake paths. Unknown outcomes
   require reconciliation.
   Concurrency changes persist in the ledger and affect admission only: they never
   interrupt existing work or reset budgets. The workflow's configured concurrency
@@ -105,9 +105,17 @@ commands to the native API and owns no scheduling state.
   and immutable reviewed versions through the private
   [`Design.Persistence`](elixir/lib/symphony_elixir/design/persistence.ex) journal.
   [`DesignActions`](elixir/lib/symphony_elixir_web/design_actions.ex) binds an unchanged
-  reviewed item to the existing Backlog preview. Design review grants no execution
+  reviewed item to the existing Backlog preview. Idea snapshot review grants no execution
   authority, and drawing relationships remain separate from task dependencies.
   See [Design operation and recovery](elixir/README.md#multiple-project-boards).
+- [`Specification.Store`](elixir/lib/symphony_elixir/specification/store.ex) separately
+  owns structured Design drafts and immutable reviewed versions under the control state
+  path. [`Document`](elixir/lib/symphony_elixir/specification/document.ex) bounds stable
+  items and Mermaid source; [`Specification.Persistence`](elixir/lib/symphony_elixir/specification/persistence.ex)
+  validates its journal over the existing private atomic transport. Specification items
+  never derive implicitly from Idea geometry.
+  Editing and review check project authority and expected journal revision; specification
+  review grants no task acceptance or execution authority.
 - [`ReadOnlyBoard`](elixir/lib/symphony_elixir_web/read_only_board.ex) supports a
   separate local UI against a configured controller. The
   [`web launcher`](tools/symphony_web.py) starts only the web dependencies and reads

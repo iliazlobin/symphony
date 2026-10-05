@@ -58,7 +58,7 @@ defmodule SymphonyElixirWeb.DesignActions do
           "/?" <>
             URI.encode_query(%{
               "project" => project,
-              "view" => "design",
+              "view" => "idea",
               "design_ref" => source.ref,
               "design_section" => source.section,
               "design_item" => source.item

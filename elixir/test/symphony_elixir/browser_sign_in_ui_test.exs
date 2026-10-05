@@ -67,9 +67,15 @@ defmodule SymphonyElixir.BrowserSignInUITest do
   end
 
   test "both Settings providers submit the current scoped return location" do
-    destination = "/projects/events-concierge/?view=design&priority=P1&chat_task=task&panel=settings"
+    historical =
+      "/projects/events-concierge/?view=design&design_ref=" <>
+        String.duplicate("a", 64) <>
+        "&design_section=data&design_item=event&panel=settings"
 
-    for {provider, action} <- [{"google", "/auth/google"}, {"local_token", "/operator/session"}] do
+    destinations =
+      [historical | Enum.map(~w(idea design), &("/projects/events-concierge/?view=" <> &1 <> "&priority=P1&chat_task=task&panel=settings"))]
+
+    for {provider, action} <- [{"google", "/auth/google"}, {"local_token", "/operator/session"}], destination <- destinations do
       configure(provider)
       document = settings_html(return_to: destination) |> Floki.parse_document!()
       assert Floki.attribute(document, "form[action='#{action}'] input[name='return_to']", "value") == [destination]
