@@ -2044,6 +2044,36 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   @tag :specification_fixture
+  test "receipt-backed coverage becomes unknown after an exited board read and recovers", ctx do
+    {view, linked} = linked_specification_view(ctx)
+    configure_board_loaders(fn _, _ -> raise "Board source failed" end)
+    render_click(view, "refresh")
+    render_async(view)
+    assert has_element?(view, "[data-spec-coverage=search]", "Task coverage unavailable")
+    refute has_element?(view, "[data-spec-coverage=search]", "1 criterion linked")
+
+    configure_board_loaders(fn server, _ -> GenServer.call(server, :board) end)
+    refresh(view, ctx.runtime, linked)
+    assert has_element?(view, "[data-spec-coverage=search]", "1 criterion linked to a task")
+  end
+
+  @tag :specification_fixture
+  test "retained scope during a controller failure cannot confirm coverage and recovery compares fresh scope", ctx do
+    {view, linked} = linked_specification_view(ctx)
+    changed = update_task(linked, "1", &Map.put(&1, :description, "A changed task scope"))
+    refresh(view, ctx.runtime, %{changed | runtime_error: "Controller unavailable"})
+    retained = :sys.get_state(view.pid).socket.assigns.board.tasks |> Enum.find(&(&1.issue_id == "1"))
+    assert retained.description != "A changed task scope"
+    assert has_element?(view, "[data-spec-coverage=search]", "Task coverage unavailable")
+    refute has_element?(view, "[data-spec-coverage=search]", "1 criterion linked")
+
+    refresh(view, ctx.runtime, changed)
+    assert has_element?(view, "[data-spec-coverage=search]", "Linked task scope changed")
+    refresh(view, ctx.runtime, linked)
+    assert has_element?(view, "[data-spec-coverage=search]", "1 criterion linked to a task")
+  end
+
+  @tag :specification_fixture
   test "browser unused-input markers preserve successive edits and save only specification fields", ctx do
     view = authorized_board_view()
     project = "github:example/fixture"
@@ -3679,6 +3709,45 @@ defmodule SymphonyElixir.DashboardLiveTest do
     auth = :sys.get_state(view.pid).socket.assigns.auth
     {:ok, saved} = FixtureSpecification.read("github:example/fixture", auth)
     saved
+  end
+
+  defp linked_specification_view(ctx) do
+    view = authorized_board_view()
+    auth = :sys.get_state(view.pid).socket.assigns.auth
+    project = "github:example/fixture"
+    id = String.duplicate("e", 32)
+
+    document =
+      put_in(Document.new(project), ["sections", "requirements", "items"], [
+        %{
+          "id" => "search",
+          "kind" => "functional",
+          "title" => "Relevant search",
+          "body" => "Return matching events",
+          "criteria" => [%{"id" => "place", "statement" => "Filter by place", "method" => "test"}]
+        }
+      ])
+
+    {:ok, _} = FixtureSpecification.save(project, 0, document, auth)
+    {:ok, reviewed} = FixtureSpecification.review(project, 1, auth)
+    {:ok, args} = SymphonyElixir.Specification.TaskLinks.action_args(document, reviewed["reviewed"]["ref"], "search")
+
+    proposal = %{
+      "id" => id,
+      "action" => "create_task",
+      "args" => Map.delete(args, "action"),
+      "status" => "completed",
+      "receipt" => %{"widgets" => [%{"type" => "receipt", "proposal_id" => id, "task_id" => project <> ":1"}]}
+    }
+
+    record = %{"id" => id, "project_id" => project, "kind" => "board_action", "proposals" => [proposal]}
+    :sys.replace_state(ctx.intake, &put_in(&1, [:records, id], record))
+    linked = update_task(ctx.board, "1", &Map.merge(&1, %{title: args["title"], description: args["body"] <> "\n\n<!-- symphony-chat:#{id} -->"}))
+    refresh(view, ctx.runtime, linked)
+    render_click(view, "switch-view", %{"view" => "design"})
+    render_click(view, "spec-section", %{"project" => project, "section" => "requirements"})
+    assert has_element?(view, "[data-spec-coverage=search]", "1 criterion linked to a task")
+    {view, linked}
   end
 
   defp specification_params(view, changes \\ %{}) do

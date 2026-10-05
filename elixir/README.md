@@ -905,6 +905,8 @@ Requirements show task coverage from the saved creation receipt and current issu
 A label without a matching receipt cannot establish coverage. Pending or uncertain creation
 uses the existing reconciliation flow; reopening the same preview reuses its identity.
 Changed task scope is marked for comparison. Unavailable journal/board data is unknown.
+Failed source or controller refreshes retain the last complete task list, but that
+retained scope cannot confirm current coverage. A complete refresh restores coverage.
 Coverage refreshes with the board and creation receipts; draft edits recompute it locally.
 Refresh requests during a source read coalesce into one fresh read after it settles,
 including after an outage; the latest request is not discarded.
