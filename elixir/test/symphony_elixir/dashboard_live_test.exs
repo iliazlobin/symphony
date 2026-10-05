@@ -4,7 +4,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
   alias Plug.Conn.Query
-  alias SymphonyElixir.Specification.Document
+  alias SymphonyElixir.Specification.{Document, TaskLinks}
   alias SymphonyElixirWeb.{BoardCache, BrowserAuth, Endpoint, Presenter, TaskBoard}
   @endpoint Endpoint
 
@@ -3730,7 +3730,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
 
     {:ok, _} = FixtureSpecification.save(project, 0, document, auth)
     {:ok, reviewed} = FixtureSpecification.review(project, 1, auth)
-    {:ok, args} = SymphonyElixir.Specification.TaskLinks.action_args(document, reviewed["reviewed"]["ref"], "search")
+    {:ok, args} = TaskLinks.action_args(document, reviewed["reviewed"]["ref"], "search")
 
     proposal = %{
       "id" => id,

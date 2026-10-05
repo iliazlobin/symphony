@@ -217,7 +217,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def handle_async(:board, {:exit, _reason}, socket) do
     if socket.assigns.board_scope == BoardCache.scope(orchestrator()) do
       board = Map.put(socket.assigns.board, :source_error, "Board refresh failed; showing last-known tasks.")
-      {:noreply, socket |> assign(:board, board) |> assign(:loading, false) |> refresh_specification_coverage() |> continue_board_refresh()}
+
+      socket =
+        socket
+        |> assign(:board, board)
+        |> assign(:loading, false)
+        |> refresh_specification_coverage()
+        |> continue_board_refresh()
+
+      {:noreply, socket}
     else
       {:noreply, socket |> assign(:loading, false) |> refresh_board()}
     end
