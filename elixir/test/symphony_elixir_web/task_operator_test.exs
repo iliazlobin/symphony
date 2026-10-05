@@ -64,6 +64,22 @@ defmodule SymphonyElixirWeb.TaskOperatorTest do
     assert paused.primary_action.event == "open-settings"
   end
 
+  test "baseline recovery asks for scoped recovery without retrying or renewing attempts" do
+    task = task(%{hold: "workspace_baseline_changed", runtime: %{status: "blocked"}})
+    summary = TaskOperator.summary(task, board(), %{})
+    assert summary.attention?
+    assert summary.blocker.kind == "recovery"
+    assert summary.blocker.label == "Workspace baseline needs recovery"
+    assert summary.primary_action.label == "Discuss recovery"
+    assert summary.primary_action.event == "operator-question"
+    assert summary.blocker.detail =~ "Preserve the retained checkout"
+    refute summary.execution.retry?
+    refute summary.execution.renew_attempts?
+    html = panel(task)
+    refute html =~ "phx-click=\"prepare-command\""
+    refute html =~ "phx-value-renew_attempts"
+  end
+
   test "candidate readiness uses exact native work and observed PR head" do
     task = reviewed_task()
     summary = TaskOperator.summary(task, board(), %{})

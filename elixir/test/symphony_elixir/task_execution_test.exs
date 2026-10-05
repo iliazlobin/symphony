@@ -178,6 +178,61 @@ defmodule SymphonyElixir.TaskExecutionTest do
     refute summary.retry?
   end
 
+  test "idle Work reports remaining prerequisites without implying worker capacity" do
+    waiting =
+      task(%{
+        stage: "ready",
+        ledger: %{"attempts" => 0, "tokens" => 0, "runtime_ms" => 0},
+        dependencies: [%{"issue_id" => "18"}, %{"issue_id" => "19"}],
+        dependency_blockers: [%{id: "19", identifier: "GH-19", state: "awaiting_acceptance"}, %{id: "<invalid>"}, %{id: 18}, :invalid],
+        dependency_error: "Dependencies require human-accepted Done in this project."
+      })
+
+    for mode <- ["running", "paused", "draining"] do
+      summary = TaskExecution.summary(waiting, Map.put(control(), "mode", mode))
+      assert summary.status == "Waiting for prerequisites"
+      assert summary.note == "GH-19 must be accepted as Done before this task can start."
+      refute summary.note =~ "GH-18"
+      refute summary.note =~ "available worker"
+      assert summary.cancel?
+      refute summary.retry?
+      refute summary.renew_attempts?
+    end
+
+    summary = TaskExecution.summary(Map.put(waiting, :dependency_blockers, []), control())
+    assert summary.note == "Prerequisite tasks must be accepted as Done before this task can start."
+  end
+
+  test "invalid prerequisites explain correction without overriding authoritative execution state" do
+    reason = "Dependency cycle: revise the declared prerequisites before work can start."
+    waiting = task(%{stage: "ready", ledger: %{"attempts" => 0, "tokens" => 0, "runtime_ms" => 0}, dependency_error: reason})
+    summary = TaskExecution.summary(waiting, control())
+    assert summary.status == "Dependency needs correction"
+    assert summary.note == reason
+    assert summary.cancel?
+    refute summary.retry?
+
+    for {updates, expected} <- [
+          {%{runtime: %{status: "running"}}, "Running"},
+          {%{runtime: %{status: "retrying"}}, "Retry scheduled"},
+          {%{hold: "worker_auth_required"}, "Worker sign-in required"},
+          {%{hold: "input_required"}, "Needs input"},
+          {%{hold: "interrupted"}, "Interrupted"},
+          {%{ledger: %{"attempts" => 2, "tokens" => 0, "runtime_ms" => 0}}, "Limit reached"},
+          {%{ledger: %{"active" => %{}}}, "Needs reconciliation"},
+          {%{hold: "owner_review", handoff: %{"review" => %{"verdict" => "approve"}}}, "Awaiting your review"},
+          {%{stage: "done"}, "Done"},
+          {%{stage: "backlog"}, "Not queued"},
+          {%{source_missing: true}, "Status unavailable"}
+        ] do
+      assert TaskExecution.summary(Map.merge(waiting, updates), control()).status == expected, inspect(updates)
+    end
+
+    assert TaskExecution.summary(waiting, control(), true).status == "Status unavailable"
+    assert TaskExecution.summary(waiting, Map.put(control(), "fault", "unavailable")).status == "Status unavailable"
+    assert TaskExecution.summary(waiting, %{"enabled" => false}).status == "Queued"
+  end
+
   test "owner review verdicts never offer a retry that would omit review findings" do
     for {verdict, expected} <- [{"request_changes", "Changes requested"}, {"blocked", "Review blocked"}, {nil, "Review pending"}] do
       task = task(%{hold: "owner_review", handoff: %{"review" => %{"verdict" => verdict}}})
@@ -260,6 +315,27 @@ defmodule SymphonyElixir.TaskExecutionTest do
       refute summary.note =~ "refresh token"
       assert TaskExecution.summary(task(%{runtime: %{status: status, error: error}}), %{"enabled" => false}).status == "Worker sign-in required"
     end
+  end
+
+  test "baseline recovery preserves evidence and never offers a retry into the retained checkout" do
+    held = task(%{stage: "ready", hold: "workspace_baseline_changed"})
+
+    for ledger <- [held.ledger, %{"attempts" => 1, "tokens" => 10, "runtime_ms" => 50}, %{}],
+        runtime <- [nil, %{status: "blocked", error: "Workspace baseline needs recovery"}] do
+      summary = TaskExecution.summary(%{held | ledger: ledger, runtime: runtime}, control())
+      assert summary.status == "Workspace baseline needs recovery"
+      assert summary.note =~ "Preserve the retained checkout"
+      assert summary.note =~ "fresh workspace"
+      refute summary.retry?
+      refute summary.renew_attempts?
+      refute summary.cancel?
+    end
+
+    assert TaskExecution.summary(%{held | runtime: %{status: "running"}}, control()).status == "Running"
+    assert TaskExecution.summary(put_in(held, [:ledger, "active"], %{}), control()).status == "Needs reconciliation"
+    assert TaskExecution.summary(held, control(), true).status == "Status unavailable"
+    assert TaskExecution.summary(%{held | stage: "done"}, control()).status == "Done"
+    refute TaskExecution.summary(held, %{"enabled" => false}).retry?
   end
 
   test "settled owner review wins over a normal completion continuation timer" do

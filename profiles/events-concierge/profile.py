@@ -30,6 +30,18 @@ PROJECTS = {
     "iliazlobin/events-concierge": {"slug": "events-concierge", "port": 8778, "policy": "symphony-codex"},
     "iliazlobin/symphony": {"slug": "symphony", "port": 8779, "policy": "symphony-self-codex"},
 }
+WORKSPACE_BASELINE_CHANGED_EXIT = 78
+WORKSPACE_BASELINE_CHANGED_MARKER = "SYMPHONY_WORKSPACE_BASELINE_CHANGED"
+
+
+class CommandError(ControlError):
+    def __init__(self, message: str, returncode: int):
+        super().__init__(message)
+        self.returncode = returncode
+
+
+class WorkspaceBaselineChanged(ControlError):
+    """A retained checkout cannot run from the currently approved source baseline."""
 
 
 def project_settings(repository: str) -> dict:
@@ -51,7 +63,7 @@ def run(*args: str, cwd: Path | None = None, env: dict | None = None) -> str:
     result = subprocess.run(list(args), cwd=cwd, env=env, capture_output=True, text=True, timeout=120)
     if result.returncode:
         # Commands never include credentials; avoid echoing environments or token outputs.
-        raise ControlError(f"{args[0]} failed: {result.stderr.strip()[:1500]}")
+        raise CommandError(f"{args[0]} failed: {result.stderr.strip()[:1500]}", result.returncode)
     return result.stdout.strip()
 
 
@@ -242,7 +254,21 @@ def before_run(config: dict) -> dict:
         raise ControlError("Unexpected task branch")
     if run("git", "remote", "get-url", "origin", cwd=current) != repository_remote(config):
         raise ControlError("Unexpected source remote")
-    run("git", "merge-base", "--is-ancestor", config["base_sha"], "HEAD", cwd=current)
+    try:
+        run("git", "cat-file", "-e", config["base_sha"] + "^{commit}", cwd=current)
+    except CommandError:
+        # A retained clone may predate the pin. Verify the exact approved commit in
+        # its trusted source without fetching into or altering retained evidence.
+        run("git", "cat-file", "-e", config["base_sha"] + "^{commit}", cwd=Path(config["source_path"]))
+        raise WorkspaceBaselineChanged("Workspace baseline needs recovery") from None
+    try:
+        run("git", "merge-base", "--is-ancestor", config["base_sha"], "HEAD", cwd=current)
+    except CommandError as exc:
+        # Git status 1 means a valid non-ancestor, not an unavailable/corrupt object.
+        # The trusted before-run hook reserves a fixed outcome for this prerequisite.
+        if exc.returncode == 1:
+            raise WorkspaceBaselineChanged("Workspace baseline needs recovery") from None
+        raise
     if (current / ".env").exists():
         raise ControlError("Application credentials are not permitted in task workspaces")
     return {"workspace": str(current), "branch": branch, "resuming": True}
@@ -535,6 +561,9 @@ def main(repository: str = REPOSITORY, profile_bin: Path | None = None) -> int:
                 }
         print(json.dumps(result, indent=2))
         return 0
+    except WorkspaceBaselineChanged:
+        print(WORKSPACE_BASELINE_CHANGED_MARKER, file=sys.stderr)
+        return WORKSPACE_BASELINE_CHANGED_EXIT
     except (ControlError, OSError, KeyError, ValueError, subprocess.TimeoutExpired) as exc:
         print(str(exc), file=sys.stderr)
         return 1

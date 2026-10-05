@@ -3329,6 +3329,53 @@ defmodule SymphonyElixir.DashboardLiveTest do
     refute has_element?(view, "#board-dialog")
   end
 
+  test "queued cards identify unaccepted prerequisites and clear the wait after scoped acceptance",
+       ctx do
+    source =
+      Enum.map(issues(), fn issue ->
+        if issue.id == "2", do: %{issue | description: "Depends on: #1"}, else: issue
+      end)
+
+    control = Map.put(ctx.board.control, "mode", "running")
+    board = TaskBoard.project(source, ctx.board.runtime, control, Config.settings!())
+    :ok = GenServer.call(ctx.runtime, {:board, board})
+    view = authorized_board_view()
+    card = "#lane-work [data-task-id='github:example/fixture:2'] .execution-summary"
+
+    assert has_element?(view, card, "Waiting for prerequisites")
+    assert has_element?(view, card, "GH-1")
+    refute has_element?(view, card, "available worker")
+    assert has_element?(view, "[data-task-id='github:example/fixture:2'][data-attention=false]")
+
+    open_task(view, "2")
+    assert has_element?(view, "#task-detail-operator", "Waiting for prerequisites")
+    refute_received {:settings_command, _}
+
+    acceptance = %{
+      "command_id" => "fixture-human-acceptance",
+      "project_id" => "github:example/fixture",
+      "tracker_fingerprint" => control["tracker_fingerprint"],
+      "candidate_sha" => nil,
+      "tracker_state" => "closed",
+      "issue_updated_at" => "2026-09-14T11:00:00Z",
+      "accepted_at" => "2026-09-14T12:00:00Z"
+    }
+
+    control =
+      put_in(control, ["issues", "1"], %{"hold" => "accepted", "acceptance" => acceptance})
+
+    refresh(
+      view,
+      ctx.runtime,
+      TaskBoard.project(source, ctx.board.runtime, control, Config.settings!())
+    )
+
+    assert has_element?(view, card, "Queued")
+    refute has_element?(view, card, "Waiting for prerequisites")
+    refute has_element?(view, card, "GH-1")
+    refute_received {:settings_command, _}
+  end
+
   test "card dependency indicators link to a focused graph and malformed view is ignored" do
     view = authorized_board_view()
     assert has_element?(view, "[data-task-id='github:example/fixture:1'] .card-dependencies a[aria-label*='prerequisites']")

@@ -190,6 +190,9 @@ defmodule SymphonyElixirWeb.TaskOperator do
   defp blocker(_task, %{status: "Worker sign-in required"} = execution),
     do: block("authentication", "Coding worker sign-in required", execution.note, true)
 
+  defp blocker(_task, %{status: "Workspace baseline needs recovery"} = execution),
+    do: block("recovery", execution.status, execution.note, true)
+
   defp blocker(%{stage: "review"} = task, _execution), do: block("review", "Your review is needed", review_guidance(task), true)
 
   defp blocker(_task, %{renew_attempts?: true}),

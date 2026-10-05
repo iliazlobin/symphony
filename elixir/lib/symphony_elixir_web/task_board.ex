@@ -327,6 +327,7 @@ defmodule SymphonyElixirWeb.TaskBoard do
       description: issue.description,
       labels: issue.labels,
       dependencies: declared_dependencies(issue, admitted),
+      dependency_blockers: admitted.blocked_by,
       dependency_error: (admitted.native_ref || %{})["admission_reason"],
       task_kind: TaskKind.from_labels(issue.labels),
       milestone: issue.milestone,

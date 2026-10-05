@@ -3,6 +3,7 @@ import importlib.util
 import hashlib
 import json
 import configparser
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -10,6 +11,7 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+from contextlib import redirect_stderr
 
 spec = importlib.util.spec_from_file_location("ec_profile", Path(__file__).resolve().parents[2] / "profiles/events-concierge/profile.py")
 profile = importlib.util.module_from_spec(spec)
@@ -588,6 +590,102 @@ class ProfileTests(unittest.TestCase):
                 (task / ".env").write_text("FAKE=canary")
                 with self.assertRaises(profile.ControlError):
                     profile.before_run(config)
+            finally:
+                os.chdir(original)
+
+    def test_retained_baseline_mismatch_is_typed_and_preserves_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            source, workspaces, home = root / "source", root / "workspaces", root / "home"
+            for directory in (source, workspaces, home):
+                directory.mkdir()
+            def git(*args):
+                return profile.run("git", *args, cwd=source)
+            git("init", "-b", "main")
+            git("config", "user.name", "Fixture")
+            git("config", "user.email", "fixture@example.invalid")
+            (source / "sample").write_text("first baseline")
+            git("add", "sample")
+            git("commit", "-m", "First baseline")
+            old_base = git("rev-parse", "HEAD")
+            (source / "sample").write_text("approved next baseline")
+            git("commit", "-am", "Next baseline")
+            new_base = git("rev-parse", "HEAD")
+            task = workspaces / "GH-19"
+            task.mkdir()
+            config = {"repository": profile.REPOSITORY, "workspace_root": str(workspaces),
+                      "source_path": str(source), "base_sha": old_base, "worker_home": str(home)}
+            original = Path.cwd()
+            try:
+                os.chdir(task)
+                profile.workspace_create(config)
+                # Preserve even unpublished work: a prerequisite must never reset it.
+                (task / "sample").write_text("retained user change")
+                (task / "notes").write_text("retained evidence")
+                before = {path: path.read_bytes() for path in [task / "sample", task / "notes", task / ".git/index", task / ".git/config"]}
+                status = profile.run("git", "status", "--porcelain", cwd=task)
+                advanced = dict(config, base_sha=new_base)
+                with self.assertRaisesRegex(profile.WorkspaceBaselineChanged, "baseline needs recovery"):
+                    profile.before_run(advanced)
+                output = io.StringIO()
+                with patch.object(profile, "load_config", return_value=advanced), \
+                        patch.object(profile.sys, "argv", ["profile.py", "before-run"]), redirect_stderr(output):
+                    self.assertEqual(profile.main(), 78)
+                self.assertEqual(output.getvalue(), "SYMPHONY_WORKSPACE_BASELINE_CHANGED\n")
+                self.assertEqual(profile.run("git", "rev-parse", "HEAD", cwd=task), old_base)
+                self.assertEqual(profile.run("git", "branch", "--show-current", cwd=task), "codex/gh-19")
+                self.assertEqual(profile.run("git", "status", "--porcelain", cwd=task), status)
+                self.assertEqual({path: path.read_bytes() for path in before}, before)
+                # An invalid object is a command failure, not proof of a valid mismatch.
+                missing = dict(config, base_sha="0" * 40)
+                with self.assertRaises(profile.CommandError) as failure:
+                    profile.before_run(missing)
+                self.assertEqual(failure.exception.returncode, 128)
+                output = io.StringIO()
+                with patch.object(profile, "load_config", return_value=missing), \
+                        patch.object(profile.sys, "argv", ["profile.py", "before-run"]), redirect_stderr(output):
+                    self.assertEqual(profile.main(), 1)
+                self.assertNotIn("SYMPHONY_WORKSPACE_BASELINE_CHANGED", output.getvalue())
+            finally:
+                os.chdir(original)
+
+    def test_retained_clone_without_approved_object_requires_recovery_without_fetch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            source, workspaces, home = root / "source", root / "workspaces", root / "home"
+            for directory in (source, workspaces, home):
+                directory.mkdir()
+            def git(*args):
+                return profile.run("git", *args, cwd=source)
+            git("init", "-b", "main")
+            git("config", "user.name", "Fixture")
+            git("config", "user.email", "fixture@example.invalid")
+            (source / "sample").write_text("old baseline")
+            git("add", "sample")
+            git("commit", "-m", "Old baseline")
+            old_base = git("rev-parse", "HEAD")
+            task = workspaces / "GH-19"
+            task.mkdir()
+            config = {"repository": profile.REPOSITORY, "workspace_root": str(workspaces),
+                      "source_path": str(source), "base_sha": old_base, "worker_home": str(home)}
+            original = Path.cwd()
+            try:
+                os.chdir(task)
+                profile.workspace_create(config)
+                (source / "sample").write_text("new approved baseline")
+                git("commit", "-am", "New baseline")
+                new_base = git("rev-parse", "HEAD")
+                advanced = dict(config, base_sha=new_base)
+                with self.assertRaises(profile.CommandError):
+                    profile.run("git", "cat-file", "-e", new_base + "^{commit}", cwd=task)
+                before = {path: path.read_bytes() for path in [source / "sample", source / ".git/index", source / ".git/config", task / "sample", task / ".git/index", task / ".git/config"]}
+                with self.assertRaises(profile.WorkspaceBaselineChanged):
+                    profile.before_run(advanced)
+                self.assertEqual(profile.run("git", "rev-parse", "HEAD", cwd=task), old_base)
+                self.assertEqual(git("rev-parse", "HEAD"), new_base)
+                with self.assertRaises(profile.CommandError):
+                    profile.run("git", "cat-file", "-e", new_base + "^{commit}", cwd=task)
+                self.assertEqual({path: path.read_bytes() for path in before}, before)
             finally:
                 os.chdir(original)
 
