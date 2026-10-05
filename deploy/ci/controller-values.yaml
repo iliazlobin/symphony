@@ -1,0 +1,41 @@
+replicaCount: 1
+fullnameOverride: symphony-ci-controller
+image:
+  repository: ghcr.io/actions/gha-runner-scale-set-controller
+  tag: 0.15.0@sha256:162dfb5bfbda9e7e49fbed67d428994c9ced55b41a37a18b75b46dab0aa98d37
+  pullPolicy: IfNotPresent
+serviceAccount:
+  create: true
+  name: symphony-ci-controller
+nodeSelector:
+  cloud.google.com/gke-nodepool: shared-dev
+podLabels:
+  symphony-ci-role: controller
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+flags:
+  watchSingleNamespace: symphony-ci-runners
+  logLevel: info
+  logFormat: json
+  autoscalingRunnerSetMaxConcurrentReconciles: 1
+  autoscalingListenerMaxConcurrentReconciles: 1
+  ephemeralRunnerSetMaxConcurrentReconciles: 1
+  ephemeralRunnerMaxConcurrentReconciles: 1
+  terminatedRunnerPodGracePeriodSeconds: 0
+  healthProbeBindAddress: ':8081'

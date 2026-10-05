@@ -1,0 +1,130 @@
+"""Prevent CI routing changes from granting job access to cluster or app state."""
+
+import ipaddress
+import json
+from pathlib import Path
+import unittest
+
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[2]
+CI = ROOT / "deploy/ci"
+
+
+class PrivateCITests(unittest.TestCase):
+    def setUp(self):
+        self.runner = yaml.safe_load((CI / "runner-values.yaml").read_text())
+        self.controller = yaml.safe_load((CI / "controller-values.yaml").read_text())
+        self.resources = list(yaml.safe_load_all((CI / "foundation.yaml").read_text()))
+
+    def test_job_has_no_cluster_identity_or_persistent_mounts(self):
+        spec = self.runner["template"]["spec"]
+        self.assertFalse(spec["automountServiceAccountToken"])
+        self.assertEqual(spec["serviceAccountName"], "symphony-ci-job")
+        self.assertEqual(spec["runtimeClassName"], "gvisor")
+        self.assertNotIn("containerMode", self.runner)
+        self.assertEqual(spec["nodeSelector"], {"node-restriction.kubernetes.io/workload": "symphony-ci"})
+        self.assertFalse(any(spec.get(key) for key in ("hostPID", "hostIPC", "hostNetwork")))
+        self.assertLessEqual(spec["activeDeadlineSeconds"], 3600)
+        self.assertTrue(all(set(volume) == {"name", "emptyDir"} for volume in spec["volumes"]))
+        sa = next(r for r in self.resources if r["kind"] == "ServiceAccount")
+        self.assertFalse(sa["automountServiceAccountToken"])
+        self.assertFalse(sa["metadata"].get("annotations"))
+        self.assertFalse(any(r["kind"] in ("RoleBinding", "ClusterRoleBinding", "PersistentVolumeClaim", "Secret") for r in self.resources))
+        for container in spec["initContainers"] + spec["containers"]:
+            security = container["securityContext"]
+            self.assertFalse(security["allowPrivilegeEscalation"])
+            self.assertTrue(security["readOnlyRootFilesystem"])
+            self.assertEqual(security["capabilities"], {"drop": ["ALL"]})
+            self.assertFalse(security.get("privileged"))
+            self.assertFalse(container.get("envFrom"))
+            self.assertFalse(any("valueFrom" in e for e in container.get("env", [])))
+        self.assertEqual(spec["containers"][0]["resources"]["requests"]["cpu"], "2")
+
+    def test_control_and_job_namespaces_have_distinct_privileges(self):
+        self.assertEqual(self.controller["flags"]["watchSingleNamespace"], "symphony-ci-runners")
+        self.assertEqual(self.runner["controllerServiceAccount"], {"namespace": "symphony-ci-system", "name": "symphony-ci-controller"})
+        self.assertEqual(self.runner["githubConfigSecret"], "symphony-ci-github-app")
+        self.assertEqual(self.runner["githubConfigUrl"], "https://github.com/iliazlobin/symphony")
+        self.assertEqual(self.runner["listenerTemplate"]["spec"]["nodeSelector"], {"cloud.google.com/gke-nodepool": "shared-dev"})
+        for namespace in (r for r in self.resources if r["kind"] == "Namespace"):
+            self.assertEqual(namespace["metadata"]["labels"]["pod-security.kubernetes.io/enforce"], "restricted")
+
+    def test_public_https_never_allows_private_or_metadata_destinations(self):
+        policies = [r for r in self.resources if r["kind"] == "NetworkPolicy" and r["metadata"]["namespace"] == "symphony-ci-runners"]
+        # Policies are additive; another allow rule could undo the intended boundary.
+        self.assertEqual({p["metadata"]["name"] for p in policies},
+                         {"default-deny", "dns-and-public-https"})
+        self.assertEqual(len(policies), 2)
+        deny = next(p for p in policies if p["metadata"]["name"] == "default-deny")
+        self.assertEqual(set(deny["spec"]["policyTypes"]), {"Ingress", "Egress"})
+        self.assertFalse(any(p["spec"].get("ingress") for p in policies))
+        allow = next(p for p in policies if p["metadata"]["name"] == "dns-and-public-https")
+        self.assertEqual(allow["spec"]["podSelector"], {"matchLabels": {"symphony-ci-role": "runner"}})
+        for destination in ("10.48.0.1", "10.40.0.2", "169.254.169.254", "172.16.0.1", "192.168.1.1", "100.64.0.1"):
+            address = ipaddress.ip_address(destination)
+            for rule in allow["spec"]["egress"]:
+                for port in rule["ports"]:
+                    if port["port"] == 53:
+                        continue
+                    self.assertEqual(port, {"protocol": "TCP", "port": 443})
+                    for peer in rule["to"]:
+                        block = peer["ipBlock"]
+                        permitted = address in ipaddress.ip_network(block["cidr"]) and not any(address in ipaddress.ip_network(excluded) for excluded in block.get("except", []))
+                        self.assertFalse(permitted, destination)
+
+    def test_concurrency_and_storage_are_bounded(self):
+        self.assertEqual((self.runner["minRunners"], self.runner["maxRunners"]), (0, 1))
+        quota = next(r for r in self.resources if r["kind"] == "ResourceQuota")["spec"]["hard"]
+        self.assertEqual(quota["pods"], "1")
+        self.assertEqual(quota["persistentvolumeclaims"], "0")
+        self.assertEqual(quota["services.loadbalancers"], "0")
+        self.assertEqual(quota["services.nodeports"], "0")
+
+    def test_pilot_is_opt_in_and_required_coverage_is_preserved(self):
+        pilot = yaml.safe_load((ROOT / ".github/workflows/private-ci-smoke.yml").read_text())
+        # PyYAML's YAML 1.1 loader interprets the GitHub `on` key as True.
+        self.assertEqual(pilot.get("on", pilot.get(True)), {"workflow_dispatch": None})
+        self.assertEqual(pilot["permissions"], {"contents": "read"})
+        self.assertEqual(pilot["jobs"]["clean-replacement"]["needs"], "isolated-runner")
+        for job in pilot["jobs"].values():
+            self.assertEqual(job["runs-on"], "symphony-ci")
+            self.assertNotIn("container", job)
+            self.assertNotIn("services", job)
+            checkout = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout@"))
+            self.assertFalse(checkout["with"]["persist-credentials"])
+        for filename, name in (("make-all.yml", "make-all"), ("pr-description-lint.yml", "validate-pr-description")):
+            workflow = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
+            job = workflow["jobs"][name]
+            # Bootstrap leaves hosted routing intact until the pilot is verified.
+            self.assertIn(job["runs-on"], ("ubuntu-latest", "symphony-ci"))
+            self.assertNotIn("container", job)
+            self.assertNotIn("services", job)
+        make = (ROOT / ".github/workflows/make-all.yml").read_text()
+        for command in ("make all", "npm ci --ignore-scripts", "npm run check", "unittest discover -s tools/tests -v"):
+            self.assertIn(command, make)
+        release = yaml.safe_load((ROOT / ".github/workflows/burrito-release.yml").read_text())
+        targets = {m["target"] for m in release["jobs"]["smoke"]["strategy"]["matrix"]["include"]}
+        self.assertEqual(targets, {"linux_x86_64", "linux_arm64", "macos_x86_64", "macos_arm64"})
+
+    def test_build_and_chart_inputs_have_immutable_pins(self):
+        versions = json.loads((CI / "versions.json").read_text())
+        dockerfile = (CI / "Dockerfile").read_text()
+        for key in ("runner_archive_sha256", "node_archive_sha256"):
+            self.assertIn("ADD --checksum=sha256:" + versions[key], dockerfile)
+        self.assertIn("@sha256:", dockerfile)
+        self.assertIn("USER 1001:1001", dockerfile)
+        self.assertNotIn("COPY ", dockerfile)
+        self.assertIn("sha256:", self.controller["image"]["tag"])
+        for chart in versions["charts"].values():
+            self.assertRegex(chart["oci_digest"], r"^sha256:[0-9a-f]{64}$")
+            self.assertRegex(chart["archive_sha256"], r"^[0-9a-f]{64}$")
+        install = (CI / "install.sh").read_text()
+        self.assertIn("hashlib.sha256", install)
+        self.assertNotIn("--from-literal", install)
+        self.assertNotIn("--from-file", install)
+
+
+if __name__ == "__main__":
+    unittest.main()
