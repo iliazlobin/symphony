@@ -934,6 +934,8 @@ one estimated day; edit the draft start or per-task days to refine the projectio
 Start/duration/scale preferences stay in this browser per project, with an explicit
 not-saved indicator if storage fails. They are not shared scheduler state. Unknown
 prerequisites and cycles remain unscheduled. Filtered neighbors retain context.
+Task IDs in timeline rows and task details open the issue tracker; the repository
+label in task details opens its recorded repository. Missing or invalid URLs remain plain text.
 These views never queue work, change priority or record acceptance.
 Dependencies declare delivery, design, technical or process prerequisites and optional reasons:
 `Depends on: #19 (technical: approved baseline)`. Source ingestion retains these edges

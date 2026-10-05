@@ -3225,6 +3225,28 @@ defmodule SymphonyElixir.DashboardLiveTest do
     end
   end
 
+  test "task details retain compact links to their repository and issue" do
+    {view, _} = board_view()
+    open_task(view, "1")
+    assert has_element?(view, ".task-resource-context a[href='https://github.com/example/fixture'][target=_blank][rel='noopener noreferrer']", "example/fixture")
+    assert has_element?(view, ".task-resource-context a[href='https://github.com/example/fixture/issues/1'][target=_blank][rel='noopener noreferrer']", "GH-1")
+    assert has_element?(view, "#board-dialog[data-kind=task]")
+    refute has_element?(view, ".task-resource-context a[phx-click]")
+  end
+
+  test "unavailable task detail resource links remain readable and inert", ctx do
+    {view, _} = board_view()
+
+    for url <- [nil, "javascript:alert(1)", "https://user:secret@example.com/1", "https://example.com\\@evil.com/1", "https://example.com/\n1", "https://example.com/\u00001", "https://[broken/1"] do
+      board = update_task(ctx.board, "1", &Map.merge(&1, %{url: url, links: [%{kind: "repository", label: "Repository", url: url}]}))
+      refresh(view, ctx.runtime, board)
+      open_task(view, "1")
+      refute has_element?(view, ".task-resource-context a")
+      assert has_element?(view, ".task-resource-context", "example/fixture")
+      assert has_element?(view, ".task-resource-context", "GH-1")
+    end
+  end
+
   test "all supplied evidence links reject unsafe URLs and a bare candidate SHA creates no link", ctx do
     changed =
       update_task(

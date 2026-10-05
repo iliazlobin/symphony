@@ -994,8 +994,8 @@ h2, h3, strong { font-weight: 500; }
 .plan-row-title { flex: 1; min-width: 0; border: 0; padding: 0; background: transparent; color: var(--fg); text-align: left; font: inherit; font-size: 11px; line-height: 1.25; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; cursor: pointer; }
 .plan-row-title:hover { color: var(--accent); text-decoration: underline; }
 .plan-gantt-table .plan-node-meta { font-size: 9px; gap: 5px; flex-wrap: nowrap; overflow: hidden; white-space: nowrap; margin-top: 3px; }
-.plan-gantt-table .plan-node-meta > span { overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
-.plan-gantt-table .plan-node-meta > span:nth-last-child(1) { flex-shrink: 1; }
+.plan-gantt-table .plan-node-meta > :is(span, a) { overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+.plan-gantt-table .plan-node-meta > :is(span, a):last-child { flex-shrink: 1; }
 .plan-calendar-estimate { display: flex; align-items: center; gap: 2px; color: var(--muted); font-size: 10px; flex-shrink: 0; }
 .plan-calendar-estimate input { width: 32px; height: 22px; border: 1px solid var(--line); border-radius: 4px; padding: 0 2px; background: var(--panel); color: var(--fg); font: inherit; text-align: center; box-sizing: border-box; appearance: textfield; }
 .plan-calendar-estimate input::-webkit-inner-spin-button { appearance: none; }

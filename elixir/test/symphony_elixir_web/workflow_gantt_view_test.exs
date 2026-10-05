@@ -51,6 +51,40 @@ defmodule SymphonyElixirWeb.WorkflowGanttViewTest do
     assert find(html, ".plan-accessible-list") == []
   end
 
+  test "timeline resource links preserve internal details, selection and draft estimates" do
+    url = "https://github.com/example/fixture/issues/19"
+    html = draw([task(19, "work", %{"url" => url})], [], selected_id: "issue:19", plan_options: %{"durations" => %{"issue:19" => 3}})
+    link = find(html, ".plan-node-meta a")
+    assert Floki.attribute(link, "href") == [url]
+    assert Floki.attribute(link, "target") == ["_blank"]
+    assert Floki.attribute(link, "rel") == ["noopener noreferrer"]
+    assert Floki.attribute(link, "aria-label") == ["Open GH-19 in the issue tracker"]
+    assert Floki.text(link) == "GH-19"
+    assert Floki.attribute(link, "phx-click") == []
+    assert length(find(html, "tr[data-selected=true]")) == 1
+    assert Floki.attribute(find(html, ".plan-row-title"), "phx-click") == ["open-card"]
+    assert Floki.attribute(find(html, "[data-calendar-duration]"), "value") == ["3"]
+  end
+
+  test "missing or unsafe timeline resource URLs remain plain text" do
+    for url <- [
+          nil,
+          %{},
+          "javascript:alert(1)",
+          "//example.com/issues/1",
+          "https://user:secret@example.com/1",
+          "https://example.com\\@evil.com/1",
+          "https://example.com/\n1",
+          "https://example.com/\u00001",
+          "https://[broken/1"
+        ] do
+      html = draw([task(1, "work", %{"url" => url})], [])
+      assert find(html, ".plan-node-meta a") == []
+      assert Floki.text(find(html, ".plan-node-meta")) =~ "GH-1"
+      assert length(find(html, "[data-calendar-duration]")) == 1
+    end
+  end
+
   test "selected filtered task stays visible and expands the calendar bounds without changing filters" do
     options = %{"durations" => %{"issue:1" => 60, "issue:2" => 30}}
     html = draw([task(1, "work"), task(2, "work")], [dep(2, 1)], visible_task_ids: [], selected_id: "issue:2", plan_options: options)

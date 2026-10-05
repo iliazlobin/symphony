@@ -1044,7 +1044,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 loading={@loading} csrf_token={@csrf_token} return_to={@settings_return_to} total_tokens={get_in(@payload, [:codex_totals, :total_tokens]) || "Unavailable"}
                 runtime_duration={runtime_duration(@payload)} rate_limits={pretty(@payload[:rate_limits])} />
             <% :task -> %>
-              <p class="muted">{@selected.project_label} · {@selected.identifier} · {lane_label(task_lane(@selected))}</p>
+              <p class="muted task-resource-context"><a :if={repository_url(@selected)} href={repository_url(@selected)} target="_blank" rel="noopener noreferrer" aria-label={"Open #{@selected.project_label} repository"}>{@selected.project_label}</a><span :if={!repository_url(@selected)}>{@selected.project_label}</span> · <a :if={safe_url(@selected.url)} href={safe_url(@selected.url)} target="_blank" rel="noopener noreferrer" aria-label={"Open #{@selected.identifier} in the issue tracker"}>{@selected.identifier}</a><span :if={!safe_url(@selected.url)}>{@selected.identifier}</span> · {lane_label(task_lane(@selected))}</p>
               <TaskOperator.panel id="task-detail-operator" task={@selected} board={@board} payload={@payload} controls_available={!@read_only && @controls_available} />
               <.feedback_details task={@selected} />
               <details class="dialog-section task-execution-details"><summary>Usage &amp; limits</summary>
@@ -1411,6 +1411,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp nonempty(_), do: nil
 
   defp context_links(board), do: board |> Map.get(:context_links, []) |> records() |> valid_links()
+
+  defp repository_url(task) do
+    case task_links(task, ["repo"]) do
+      [%{url: url} | _] -> url
+      _ -> nil
+    end
+  end
 
   defp task_links(task, kinds) do
     supplied = records(Map.get(task, :links, []))
@@ -2240,11 +2247,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp command_error(:unauthorized), do: "Operator session unavailable or expired. Unlock controls in Settings."
   defp command_error(reason), do: "Command not confirmed (#{inspect(reason)}). A repeated confirmation uses the same command ID."
 
-  defp safe_url(url) when is_binary(url) do
-    if String.contains?(url, ["\\", "\n", "\r", "\t"]), do: nil, else: safe_uri(URI.parse(url), url)
+  defp safe_url(value) when is_binary(value) do
+    with false <- String.match?(value, ~r/[\\\x00-\x20\x7f]/),
+         {:ok, %URI{scheme: scheme, host: host, userinfo: nil}} <- URI.new(value),
+         true <- scheme in ["http", "https"] and is_binary(host) and host != "" do
+      value
+    else
+      _ -> nil
+    end
   end
 
   defp safe_url(_), do: nil
-  defp safe_uri(%URI{scheme: scheme, host: host, userinfo: nil}, url) when scheme in ["http", "https"] and is_binary(host) and host != "", do: url
-  defp safe_uri(_uri, _url), do: nil
 end
