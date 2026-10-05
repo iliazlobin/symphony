@@ -78,7 +78,7 @@ defmodule SymphonyElixirWeb.WorkflowGanttViewTest do
           "https://example.com/\u00001",
           "https://[broken/1"
         ] do
-      html = draw([task(1, "work", %{"url" => url})], [])
+      html = draw([task(1, "work", %{"url" => url})], [], [])
       assert find(html, ".plan-node-meta a") == []
       assert Floki.text(find(html, ".plan-node-meta")) =~ "GH-1"
       assert length(find(html, "[data-calendar-duration]")) == 1
