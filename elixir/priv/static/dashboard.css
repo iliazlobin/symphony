@@ -170,7 +170,7 @@ input, select {
 
 /* Columns stay side by side, with scrolling contained to the board. */
 .board-content { padding: 12px 20px 0; flex: 1; min-width: 0; }
-.board-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 0 4px 10px; color: var(--muted); font-size: 11px; }
+.board-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; min-height: calc(var(--control-height) + 10px); padding: 0 4px 10px; color: var(--muted); font-size: 11px; }
 .summary-right { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-left: auto; }
 .selected-task-navigation { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
 .selected-task-navigation > span { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }

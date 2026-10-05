@@ -164,15 +164,14 @@ defmodule SymphonyElixirWeb.WorkflowGraphView do
   defp related_edge?(_edge, nil), do: false
   defp related_edge?(edge, node), do: node["id"] in [edge["source"], edge["target"]]
 
-  defp projection_key(options, version),
-    do:
-      to_string(version || "live") <>
-        "|" <>
-        Enum.map_join(
-          ~w(mode direction hops group_by group anchor page gaps_only),
-          ":",
-          &to_string(options[&1])
-        )
+  defp projection_key(options, version) do
+    keys =
+      if options["mode"] == "focus",
+        do: ~w(mode direction hops group_by group anchor page gaps_only),
+        else: ~w(mode group_by group page gaps_only)
+
+    to_string(version || "live") <> "|" <> Enum.map_join(keys, ":", &to_string(options[&1]))
+  end
 
   defp edge_description(edge), do: edge["reason"] || "Declared task dependency"
 

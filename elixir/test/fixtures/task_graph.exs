@@ -42,7 +42,7 @@ defmodule SymphonyElixirWeb.TaskGraphFixture do
           description: "Synthetic navigation fixture.\nDepends on: none",
           state: "open",
           priority: rem(id, 4) + 1,
-          labels: ["ready", if(rem(id, 3) == 0, do: "kind:delivery", else: "kind:security"), "preview"],
+          labels: ["ready", if(rem(id, 3) == 0, do: "kind:feature", else: "kind:security"), "preview"],
           dispatchable: true,
           native_ref: %{"repo" => tracker.provider["repo"]},
           milestone: %{id: to_string(rem(id, 20) + 1), title: "Milestone #{rem(id, 20) + 1}", state: "open", url: nil}

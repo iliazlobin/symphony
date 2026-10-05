@@ -584,6 +584,20 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert initial =~ "160 arrows outside this canvas"
   end
 
+  test "first group selection keeps the same projection camera even when its anchor was unset" do
+    nodes = Enum.map(1..50, &task(&1, "work", %{"milestone" => %{"id" => 17, "title" => "Target"}}))
+    options = %{"mode" => "tasks", "group" => "group:milestone:issue:17"}
+    initial = draw(nodes, [], graph_options: options)
+    selected = draw(nodes, [], selected_id: "issue:25", graph_options: options)
+    next = draw(nodes, [], selected_id: "issue:30", graph_options: Map.put(options, "anchor", "issue:25"))
+
+    assert positions(initial) == positions(selected)
+    assert positions(selected) == positions(next)
+    camera = Floki.attribute(find(initial, "#workflow-graph"), "data-projection-key")
+    assert Floki.attribute(find(selected, "#workflow-graph"), "data-projection-key") == camera
+    assert Floki.attribute(find(next, "#workflow-graph"), "data-projection-key") == camera
+  end
+
   test "late selected task and its direct prerequisite survive the rendering bound" do
     html = draw(Enum.map(1..125, &task(&1, "work")), [dep(125, 1)], selected_id: "issue:125")
     assert length(find(html, "#plan-dependencies-panel .plan-node")) == 2
