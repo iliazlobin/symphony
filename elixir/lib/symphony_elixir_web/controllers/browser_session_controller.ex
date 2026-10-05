@@ -193,11 +193,14 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
   defp board_destination?(value) when is_binary(value) and byte_size(value) <= 20_000 do
     case URI.parse(value) do
       %URI{scheme: nil, host: nil, path: "/", fragment: nil, query: query} when is_binary(query) ->
-        fields = ~w(project status priority kind milestone label assignee q sort view task chat_task chat_session panel design_ref design_section design_item design_task)
+        fields =
+          ~w(project status priority kind milestone label assignee q sort view task chat_task chat_session panel design_ref design_section design_item design_task baseline) ++
+            ~w(graph_mode graph_direction graph_hops graph_group_by graph_group graph_anchor graph_page graph_query graph_search_page graph_gaps_only)
+
         params = URI.decode_query(query)
 
         Enum.all?(params, fn {key, item} -> key in fields and String.valid?(item) and byte_size(item) <= 2_000 and not Regex.match?(~r/[\x00-\x1f\x7f]/, item) end) and
-          params["view"] in [nil, "idea", "design", "graph", "gantt", "kanban"] and params["panel"] in [nil, "settings"]
+          params["view"] in [nil, "idea", "design", "graph", "gantt", "kanban"] and params["panel"] in [nil, "settings", "coverage"]
 
       _ ->
         false

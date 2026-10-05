@@ -14,6 +14,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
      assign(socket,
        auth: nil,
        csrf_token: "",
+       return_to: nil,
        embedded: false,
        read_only: false,
        design_mode: false,
@@ -73,6 +74,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
           :id,
           :auth,
           :csrf_token,
+          :return_to,
           :embedded,
           :project_id,
           :chat_id,
@@ -951,6 +953,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
     selected_session = selected_session(sessions, assigns.session_id, assigns.chat)
     task_name = task_agent_name(issue, assigns.task_id, assigns.task_title)
     messages = visible_messages(assigns.chat, assigns.design_mode)
+    default_return = SymphonyElixirWeb.WorkspacePath.path(if(assigns.embedded, do: "/?assistant=1", else: "/chat"))
 
     assigns =
       assign(assigns,
@@ -968,6 +971,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
         pr_evidence: pr_evidence(issue && issue[:github_status], length(prs)),
         authorized: BrowserAuth.authorized?(assigns.auth),
         google_auth: BrowserAuth.google_enabled?(),
+        login_return_to: assigns.return_to || default_return,
         running: running?(assigns.chat),
         executing: executing?(assigns.chat),
         busy: busy?(assigns.chat),
@@ -1090,11 +1094,11 @@ defmodule SymphonyElixirWeb.ChatPanel do
         <span class="chat-orbit" aria-hidden="true">∿</span><h1>Your project conversations</h1>
         <p>{if @google_auth, do: "Sign in to read chat history and manage work.", else: "Unlock this browser to read chat history and manage work."}</p>
         <form :if={@google_auth} action={SymphonyElixirWeb.WorkspacePath.path("/auth/google")} method="post" class="chat-login-form">
-          <input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={SymphonyElixirWeb.WorkspacePath.path(if(@embedded, do: "/?assistant=1", else: "/chat"))} />
+          <input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={@login_return_to} />
           <button class="button button-primary">Sign in with Google</button>
         </form>
         <form :if={!@google_auth} action={SymphonyElixirWeb.WorkspacePath.path("/operator/session")} method="post" class="chat-login-form">
-          <input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={SymphonyElixirWeb.WorkspacePath.path(if(@embedded, do: "/?assistant=1", else: "/chat"))} />
+          <input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={@login_return_to} />
           <label class="field">Operator token<input type="password" name="operator_token" autocomplete="off" required /></label>
           <button class="button button-primary">Unlock chat</button>
         </form>

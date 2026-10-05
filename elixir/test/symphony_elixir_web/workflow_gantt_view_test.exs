@@ -36,7 +36,8 @@ defmodule SymphonyElixirWeb.WorkflowGanttViewTest do
     refute html =~ "data-task-id="
     assert html =~ "phx-click=\"select-plan-task\""
     assert html =~ "phx-click=\"open-card\""
-    assert find(html, ".plan-inspector, [data-board-view-link]") == []
+    assert find(html, ".plan-inspector") == []
+    assert length(find(html, ".card-dependencies a")) == 6
     assert find(html, ".plan-accessible-list") == []
     refute html =~ "Text view"
     refute html =~ "dependency notice"
@@ -49,6 +50,42 @@ defmodule SymphonyElixirWeb.WorkflowGanttViewTest do
     assert Floki.attribute(find(html, ".plan-gantt-bar"), "aria-description") == ["Prerequisite GH-1: awaiting acceptance"]
     assert find(html, ".plan-gantt-arrows .plan-edge") == []
     assert find(html, ".plan-accessible-list") == []
+  end
+
+  test "timeline resource links preserve internal details, selection and draft estimates" do
+    url = "https://github.com/example/fixture/issues/19"
+    html = draw([task(19, "work", %{"url" => url})], [], selected_id: "issue:19", plan_options: %{"durations" => %{"issue:19" => 3}})
+    link = find(html, ".task-reference[href]")
+    assert Floki.attribute(link, "href") == [url]
+    assert Floki.attribute(link, "target") == ["_blank"]
+    assert Floki.attribute(link, "rel") == ["noopener noreferrer"]
+    assert Floki.attribute(link, "aria-label") == ["Open GH-19 in the issue tracker"]
+    assert Floki.text(link) == "GH-19"
+    assert Floki.attribute(link, "phx-click") == []
+    assert length(find(html, "tr[data-selected=true]")) == 1
+    assert Floki.attribute(find(html, ".plan-row-title"), "phx-click") == ["open-card"]
+    assert Floki.attribute(find(html, "[data-calendar-duration]"), "value") == ["3"]
+    assert length(find(html, ".lane-dot-work")) == 1
+    assert Floki.attribute(find(html, ".card-dependencies a"), "data-board-view-task") == ["issue:19", "issue:19"]
+  end
+
+  test "missing or unsafe timeline resource URLs remain plain text" do
+    for url <- [
+          nil,
+          %{},
+          "javascript:alert(1)",
+          "//example.com/issues/1",
+          "https://user:secret@example.com/1",
+          "https://example.com\\@evil.com/1",
+          "https://example.com/\n1",
+          "https://example.com/\u00001",
+          "https://[broken/1"
+        ] do
+      html = draw([task(1, "work", %{"url" => url})], [], [])
+      assert find(html, ".task-reference[href]") == []
+      assert Floki.text(find(html, ".plan-node-meta")) =~ "GH-1"
+      assert length(find(html, "[data-calendar-duration]")) == 1
+    end
   end
 
   test "selected filtered task stays visible and expands the calendar bounds without changing filters" do
@@ -135,7 +172,8 @@ defmodule SymphonyElixirWeb.WorkflowGanttViewTest do
     assert html =~ "General"
     assert html =~ "Unknown"
     assert Floki.attribute(find(html, ".plan-row-title"), "title") == [title]
-    assert find(html, ".plan-inspector, [data-board-view-link]") == []
+    assert find(html, ".plan-inspector") == []
+    assert length(find(html, ".card-dependencies a")) == 2
     html = draw([task(1, "work"), task(2, "review")], [Map.merge(dep(2, 1), %{"reason" => "<img onerror=bad()>", "kind" => "technical", "status" => "satisfied"})], selected_id: "issue:1")
     assert Floki.attribute(find(html, "tr[data-plan-task-id='issue:2'] .plan-gantt-bar"), "aria-description") == ["Prerequisite GH-1: accepted (technical: <img onerror=bad()>)"]
     refute html =~ "<img onerror"

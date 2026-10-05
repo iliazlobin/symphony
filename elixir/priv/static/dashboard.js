@@ -59,6 +59,21 @@
           milestone: milestone && typeof milestone === "object" && !Array.isArray(milestone) && milestone.id && typeof milestone.title === "string" ? milestone : null
         };
       };
+      this.taskRecords = () => {
+        const cards = [...this.el.querySelectorAll(".task-card[data-task-id]")];
+        if (cards.length) return cards;
+        const catalog = parse(this.el.dataset.taskCatalog, []);
+        return Array.isArray(catalog) ? catalog.filter(record => record && typeof record === "object" && !Array.isArray(record) && typeof record.taskId === "string").map(dataset => ({dataset})) : [];
+      };
+      this.taskStage = card => card.closest?.("[data-stage]")?.dataset.stage || card.dataset.stage || card.dataset.lane || laneForStatus(card.dataset.status);
+      this.taskMatches = card => {
+        const d = card.dataset, stage = this.taskStage(card);
+        const {labels, assignees, milestone} = this.cardMetadata(card);
+        const metadata = {label: labels.map(label => "label:" + label), assignee: assignees.map(login => "assignee:" + login), milestone: milestone ? [`milestone:${d.project}:${milestone.id}`] : []};
+        const metadataMatches = metadataFilters.every(key => !this.prefs[key].length || this.prefs[key].some(value => value === "__none__" ? !metadata[key].length : metadata[key].includes(value)));
+        const searchable = [d.title, d.identifier, d.kind, milestone?.title, ...labels, ...assignees.map(login => "@" + login)].join(" ").toLowerCase();
+        return (!this.prefs.kind.length || this.prefs.kind.includes(d.kind || "general")) && metadataMatches && (!this.prefs.project.length || this.prefs.project.includes(d.project)) && (!this.prefs.priority.length || this.prefs.priority.includes(d.priority)) && (!this.prefs.status.length || this.prefs.status.includes(stage) || this.prefs.status.includes(d.status) || (this.prefs.status.includes("attention") && d.attention === "true")) && (!this.prefs.query || searchable.includes(this.prefs.query.toLowerCase()));
+      };
       this.metadataLabel = (key, value) => {
         if (value === invalidURLFilter) return "Unsupported filter";
         if (value === "__none__") return emptyMetadata[key];
@@ -71,7 +86,7 @@
       this.refreshMetadata = () => {
         const options = Object.fromEntries(metadataFilters.map(key => [key, new Map()]));
         const projects = parse(this.el.dataset.projects, []);
-        const cards = [...this.el.querySelectorAll(".task-card[data-task-id]")];
+        const cards = this.records = this.taskRecords();
         const multipleProjects = new Set([...projects.map(project => project.id), ...cards.map(card => card.dataset.project)]).size > 1;
         for (const card of cards) {
           const {labels, assignees, milestone} = this.cardMetadata(card);
@@ -264,8 +279,8 @@
         if (this.el.dataset.chatOpen !== "true" || !this.el.dataset.chatProject || ["idea", "design"].includes(this.el.dataset.boardView)) { this.contextKey = null; return; }
         const project = this.el.dataset.chatProject;
         const planning = ["graph", "gantt"].includes(this.el.dataset.boardView);
-        const cards = [...this.el.querySelectorAll(".task-card[data-task-id]")].filter(card =>
-          card.dataset.project === project && !card.hidden && card.dataset.filterContext !== "true" && (planning || (!card.closest("[hidden]") && card.getClientRects().length > 0)));
+        const cards = (this.records || this.taskRecords()).filter(card =>
+          card.dataset.project === project && this.taskMatches(card) && (planning || (!card.closest?.("[hidden]") && card.getClientRects?.().length > 0)));
         const board = this.el.querySelector(".board-main").getBoundingClientRect();
         const areaSelector = planning ? (this.el.dataset.boardView === "graph" ? '[data-plan-panel]:not([hidden]) .plan-canvas' : ".plan-gantt-scroll") : ".kanban-board";
         const area = this.el.querySelector(areaSelector)?.getBoundingClientRect() || board;
@@ -309,23 +324,20 @@
         this.load();
         this.readURL();
         this.applyAppearance();
-        const cards = [...this.el.querySelectorAll(".task-card[data-task-id]")];
+        const cards = this.records;
         const linkedTask = this.el.dataset.selectedTask || new URLSearchParams(window.location.search).get("task");
         let matched = 0;
         for (const card of cards) {
-          const d = card.dataset, stage = card.closest("[data-stage]").dataset.stage;
-          const {labels, assignees, milestone} = this.cardMetadata(card);
-          const metadata = {label: labels.map(label => "label:" + label), assignee: assignees.map(login => "assignee:" + login), milestone: milestone ? [`milestone:${d.project}:${milestone.id}`] : []};
-          const metadataMatches = metadataFilters.every(key => !this.prefs[key].length || this.prefs[key].some(value => value === "__none__" ? !metadata[key].length : metadata[key].includes(value)));
-          const searchable = [d.title, d.identifier, d.kind, milestone?.title, ...labels, ...assignees.map(login => "@" + login)].join(" ").toLowerCase();
-          const matches = (!this.prefs.kind.length || this.prefs.kind.includes(d.kind || "general")) && metadataMatches && (!this.prefs.project.length || this.prefs.project.includes(d.project)) && (!this.prefs.priority.length || this.prefs.priority.includes(d.priority)) && (!this.prefs.status.length || this.prefs.status.includes(stage) || this.prefs.status.includes(d.status) || (this.prefs.status.includes("attention") && d.attention === "true")) && (!this.prefs.query || searchable.includes(this.prefs.query.toLowerCase()));
+          const d = card.dataset, matches = this.taskMatches(card);
           card.dataset.filterContext = String(!matches && d.taskId === linkedTask);
           card.hidden = !matches && card.dataset.filterContext !== "true";
           if (matches) matched++;
         }
         this.el.querySelector("[data-result-count]").textContent = `${matched} of ${cards.length} tasks`;
         for (const [stage] of lanes) {
-          const lane = this.el.querySelector(`[data-stage="${stage}"]`), container = lane.querySelector("[data-lane-cards]");
+          const lane = this.el.querySelector(`[data-stage="${stage}"]`);
+          if (!lane) continue;
+          const container = lane.querySelector("[data-lane-cards]");
           const items = [...container.children];
           const rank = id => { const order = this.prefs.order[stage]; const index = Array.isArray(order) ? order.indexOf(id) : -1; return index < 0 ? 100000 : index; };
           const date = value => Date.parse(value) || 0;
@@ -337,7 +349,8 @@
           lane.querySelector("[data-lane-empty]").hidden = items.some(item => !item.hidden);
           lane.querySelector("[data-lane-empty]").textContent = matched ? "No matching tasks" : "No tasks match";
         }
-        const linkedStage = cards.find(card => card.dataset.taskId === linkedTask)?.closest("[data-stage]").dataset.stage;
+        const selectedCard = cards.find(card => card.dataset.taskId === linkedTask);
+        const linkedStage = selectedCard && this.taskStage(selectedCard);
         const mobileContext = JSON.stringify([...boardFilters.map(key => this.prefs[key]), this.prefs.query, linkedTask, linkedStage]);
         const contextChanged = this.mobileContext !== mobileContext;
         this.mobileContext = mobileContext;
@@ -346,8 +359,14 @@
         const current = this.el.querySelector(`[data-stage="${this.prefs.lane}"]`);
         if (!current || (contextChanged && !linkedStage && matched && !current.querySelector(".task-card:not([hidden])"))) this.prefs.lane = lanes.find(([stage]) => this.el.querySelector(`[data-stage="${stage}"] .task-card:not([hidden])`))?.[0] || "work";
         this.el.querySelectorAll("[data-stage]").forEach(el => el.dataset.mobileActive = String(el.dataset.stage === this.prefs.lane));
-        const mobile = this.el.querySelector("[data-mobile-lane]"); mobile.value = this.prefs.lane;
-        for (const option of mobile.options) option.textContent = `${lanes.find(([s]) => s === option.value)[1]} (${this.el.querySelector(`[data-stage="${option.value}"] [data-lane-count]`).textContent})`;
+        const mobile = this.el.querySelector("[data-mobile-lane]");
+        if (mobile) {
+          mobile.value = this.prefs.lane;
+          for (const option of mobile.options) {
+            const count = this.el.querySelector(`[data-stage="${option.value}"] [data-lane-count]`)?.textContent ?? cards.filter(card => this.taskStage(card) === option.value && !card.hidden && card.dataset.filterContext !== "true").length;
+            option.textContent = `${lanes.find(([s]) => s === option.value)[1]} (${count})`;
+          }
+        }
         this.el.querySelector("[data-filter-chips]").innerHTML = boardFilters.filter(key => key !== "project").flatMap(key => this.prefs[key].map(value => { const label = value === invalidURLFilter ? "Unsupported filter" : this.options(key).find(([id]) => id === value)?.[1] || value; return `<button type="button" class="filter-chip" data-remove-key="${key}" data-remove-value="${escapeText(value)}" aria-label="Remove ${key} filter ${escapeText(label)}">${escapeText(label)} <span aria-hidden="true">×</span></button>`; })).join("");
         for (const key of boardFilters) {
           const projects = key === "project" ? this.options(key) : [];
@@ -490,11 +509,13 @@
       this.focusDialog = () => (this.el.querySelector(this.closeSelector) || this.el.querySelector("[data-dialog-focus]"))?.focus({preventScroll: true});
       document.addEventListener("click", event => {
         // Scope and task navigation replace details themselves. An extra close patch can overwrite their destination.
-        if (event.target.closest("a[data-phx-link], [data-board-view-link], #board-project-picker, #board-toolbar, #board-search, [data-status-filter], #operator-scope, .task-card[data-task-id], [data-plan-task-id], [phx-click=\"open-settings\"], [phx-click=\"open-task\"], [phx-click=\"select-task\"], [phx-click=\"main-chat\"], [phx-click=\"select-issue\"], [phx-click=\"select-pr-session\"], [phx-click=\"operator-question\"]")) return;
+        if (event.target.closest("a[data-phx-link], [data-board-view-link], [data-indicator-trigger], [data-indicator-detail], #board-project-picker, #board-toolbar, #board-search, [data-status-filter], #operator-scope, .task-card[data-task-id], [data-plan-task-id], [phx-click=\"open-settings\"], [phx-click=\"open-task\"], [phx-click=\"select-task\"], [phx-click=\"main-chat\"], [phx-click=\"select-issue\"], [phx-click=\"select-pr-session\"], [phx-click=\"operator-question\"]")) return;
         if (this.nonmodal && this.el.open && !this.el.contains(event.target)) this.closeDialog();
       }, {capture: true, signal: this.abort.signal});
       document.addEventListener("keydown", event => {
         if (this.nonmodal && this.el.open && event.key === "Escape") {
+          // The first Escape dismisses the explanation without closing its task details.
+          if (event.defaultPrevented || document.querySelectorAll('.status-indicator[data-indicator-open="true"]').length) return;
           event.preventDefault(); event.stopPropagation();
           if (!event.repeat) this.closeDialog();
         }
@@ -551,6 +572,125 @@
         [target, replacement, document.getElementById("settings-button"), document.getElementById("filter-status")].find(visible)?.focus({preventScroll: true});
       });
     }
+  };
+  const StatusIndicator = {
+    mounted() {
+      this.abort = new AbortController();
+      this.open = false;
+      this.pinned = false;
+      this.hovered = false;
+      this.dismissed = false;
+      this.trigger = () => this.el.querySelector("[data-indicator-trigger]");
+      this.detail = () => this.el.querySelector("[data-indicator-detail]");
+      this.clearClose = () => { clearTimeout(this.closeTimer); this.closeTimer = null; };
+      this.sync = () => {
+        this.el.dataset.indicatorOpen = String(this.open);
+        this.trigger()?.setAttribute("aria-expanded", String(this.open));
+      };
+      this.fit = () => {
+        if (!this.open) return;
+        const trigger = this.trigger(), detail = this.detail();
+        if (!trigger || !detail) return;
+        const viewport = window.visualViewport;
+        const left = viewport?.offsetLeft || 0, top = viewport?.offsetTop || 0;
+        const width = viewport?.width || window.innerWidth, height = viewport?.height || window.innerHeight;
+        const anchor = trigger.getBoundingClientRect();
+        if (anchor.bottom < top || anchor.top > top + height || anchor.right < left || anchor.left > left + width) { this.hide(); return; }
+        detail.style.inset = "auto";
+        detail.style.margin = "0";
+        detail.style.maxWidth = Math.min(340, Math.max(0, width - 24)) + "px";
+        detail.style.maxHeight = Math.max(0, height - 24) + "px";
+        const bounds = detail.getBoundingClientRect();
+        const x = Math.max(left + 12, Math.min(anchor.left, left + width - bounds.width - 12));
+        const below = anchor.bottom + 8;
+        const y = below + bounds.height <= top + height - 12 ? below : anchor.top - bounds.height - 8;
+        detail.style.left = Math.round(x) + "px";
+        detail.style.top = Math.round(Math.max(top + 12, Math.min(y, top + height - bounds.height - 12))) + "px";
+      };
+      this.show = () => {
+        this.clearClose();
+        const detail = this.detail();
+        if (this.dismissed || !detail?.isConnected || typeof detail.showPopover !== "function") return;
+        if (!detail.matches(":popover-open")) detail.showPopover();
+        this.open = true;
+        this.sync();
+        this.fit();
+      };
+      this.hide = () => {
+        this.clearClose();
+        this.pinned = false;
+        this.dismissed = true;
+        const detail = this.detail();
+        if (typeof detail?.hidePopover === "function" && detail.matches(":popover-open")) detail.hidePopover();
+        this.open = false;
+        this.sync();
+      };
+      this.scheduleClose = () => {
+        this.clearClose();
+        if (this.pinned || this.hovered) return;
+        this.closeTimer = setTimeout(() => {
+          this.closeTimer = null;
+          if (!this.pinned && !this.hovered && !this.el.contains(document.activeElement)) this.hide();
+        }, 120);
+      };
+      this.bindDetail = () => {
+        const detail = this.detail();
+        if (this.boundDetail === detail) return;
+        this.detailAbort?.abort();
+        this.boundDetail = detail;
+        this.detailAbort = new AbortController();
+        detail?.addEventListener("beforetoggle", event => {
+          this.open = event.newState === "open";
+          if (!this.open) { this.clearClose(); this.pinned = false; this.dismissed = true; }
+          this.sync();
+        }, {signal: this.detailAbort.signal});
+      };
+      const on = (name, handler) => this.el.addEventListener(name, handler, {signal: this.abort.signal});
+      on("pointerover", event => {
+        if (event.pointerType === "touch" || this.el.contains(event.relatedTarget)) return;
+        this.hovered = true; this.dismissed = false; this.show();
+      });
+      on("pointerout", event => {
+        if (this.el.contains(event.relatedTarget)) return;
+        this.hovered = false; this.scheduleClose();
+      });
+      on("focusin", event => {
+        if (!this.el.contains(event.relatedTarget)) this.dismissed = false;
+        this.show();
+      });
+      on("focusout", () => this.scheduleClose());
+      on("click", event => {
+        event.stopPropagation();
+        if (!event.target.closest("[data-indicator-trigger]")) return;
+        // Leave the native invoker's default behavior intact when the enhancement is unavailable.
+        if (typeof this.detail()?.showPopover !== "function" || typeof this.detail()?.hidePopover !== "function") return;
+        event.preventDefault();
+        if (this.open && this.pinned) this.hide();
+        else { this.pinned = true; this.dismissed = false; this.show(); }
+      });
+      document.addEventListener("keydown", event => {
+        if (event.key !== "Escape" || !this.open) return;
+        event.preventDefault(); event.stopPropagation(); this.hide();
+      }, {capture: true, signal: this.abort.signal});
+      document.addEventListener("scroll", this.fit, {capture: true, passive: true, signal: this.abort.signal});
+      window.addEventListener("resize", this.fit, {signal: this.abort.signal});
+      window.visualViewport?.addEventListener("resize", this.fit, {signal: this.abort.signal});
+      window.visualViewport?.addEventListener("scroll", this.fit, {signal: this.abort.signal});
+      this.bindDetail();
+      this.sync();
+    },
+    beforeUpdate() { this.retained = {open: this.open, pinned: this.pinned, dismissed: this.dismissed}; },
+    updated() {
+      this.bindDetail();
+      if (this.retained) {
+        this.pinned = this.retained.pinned;
+        this.dismissed = this.retained.dismissed;
+        if (this.retained.open) this.show();
+        else { this.open = false; this.sync(); }
+        this.retained = null;
+      } else { this.sync(); this.fit(); }
+    },
+    destroyed() { this.hide(); this.detailAbort?.abort(); this.abort.abort(); }
   };
   const ChatWorkspace = {
     mounted() {
@@ -902,6 +1042,7 @@
           node.dataset.related = String(related.has(node.dataset.nodeId));
           node.querySelector(".plan-node-select")?.setAttribute?.("aria-pressed", String(node === selected));
         });
+        if (this.el.dataset.graphHistorical === "true") return;
         const toolbar = this.el.closest("#task-board-app")?.querySelector("#selected-task-navigation");
         if (!selected || !toolbar) return;
         toolbar.dataset.selectedTaskId = id;
@@ -924,7 +1065,7 @@
         if (this.selectionRequest || !this.pendingSelection) return;
         const request = this.pendingSelection;
         this.selectionRequest = request;
-        this.pushEvent("select-plan-task", {id: request.id}, reply => {
+        this.pushEvent("select-plan-task", {id: request.id, ...(request.focus ? {focus: "true"} : {})}, reply => {
           if (this.abort.signal.aborted || this.selectionRequest !== request) return;
           this.selectionRequest = null;
           if (this.pendingSelection !== request) { this.sendSelection(); return; }
@@ -942,7 +1083,8 @@
         const rect = this.canvas()?.getBoundingClientRect();
         return rect && rect.width > 0 && rect.height > 0 ? rect : null;
       };
-      this.camera = () => this.cameras.get(this.mode);
+      this.cameraKey = () => this.mode + (this.el.dataset.projectionKey ? ":" + this.el.dataset.projectionKey : "");
+      this.camera = () => this.cameras.get(this.cameraKey());
       this.paint = () => {
         const svg = this.svg(), size = this.size(), camera = this.camera();
         if (!svg || !size || !camera) return;
@@ -956,7 +1098,7 @@
         const width = Math.max(1, Number(svg.dataset.contentWidth) || 1);
         const height = Math.max(1, Number(svg.dataset.contentHeight) || 1);
         const scale = Math.min(1.25, Math.max(0.02, Math.min((size.width - 48) / width, (size.height - 48) / height)));
-        this.cameras.set(this.mode, {scale, x: (width - size.width / scale) / 2, y: (height - size.height / scale) / 2});
+        this.cameras.set(this.cameraKey(), {scale, x: (width - size.width / scale) / 2, y: (height - size.height / scale) / 2});
         this.paint();
       };
       this.zoom = (factor, point = null) => {
@@ -965,7 +1107,7 @@
         const x = point ? point.x - size.left : size.width / 2;
         const y = point ? point.y - size.top : size.height / 2;
         const scale = Math.min(4, Math.max(0.02, camera.scale * factor));
-        this.cameras.set(this.mode, {scale,
+        this.cameras.set(this.cameraKey(), {scale,
           x: camera.x + x / camera.scale - x / scale,
           y: camera.y + y / camera.scale - y / scale});
         this.paint();
@@ -977,7 +1119,7 @@
         const width = Number(node.dataset.nodeWidth), height = Number(node.dataset.nodeHeight);
         if (![x, y, width, height].every(Number.isFinite)) return;
         const scale = Math.max(camera.scale, Math.min(1, size.width / (width + 100), size.height / (height + 100)));
-        this.cameras.set(this.mode, {scale, x: x + width / 2 - size.width / (2 * scale), y: y + height / 2 - size.height / (2 * scale)});
+        this.cameras.set(this.cameraKey(), {scale, x: x + width / 2 - size.width / (2 * scale), y: y + height / 2 - size.height / (2 * scale)});
         this.paint();
       };
       this.centerSelected = () => {
@@ -994,7 +1136,16 @@
           if (this.observedCanvas) this.resize?.observe(this.observedCanvas);
           this.previousSize = this.size();
         }
-        if (this.camera()) this.paint(); else this.fit();
+        if (this.camera()) this.paint();
+        else {
+          this.fit();
+          if (this.el.dataset.graphMode === "focus" || (this.el.dataset.graphMode === "tasks" && this.el.dataset.graphGroup)) {
+            const svg = this.svg(), nodes = [...(svg?.querySelectorAll("[data-plan-node]") || [])];
+            const selected = nodes.find(node => node.dataset.planTaskId === this.el.dataset.selectedTaskId);
+            this.centerNode(selected || nodes[0]);
+          }
+        }
+        if (this.cameras.size > 20) this.cameras.delete(this.cameras.keys().next().value);
       };
       this.resetGesture = () => {
         const points = [...this.pointers.values()], camera = this.camera();
@@ -1016,7 +1167,7 @@
           const started = this.selectionClock();
           const timing = {feedbackMs: null, settledMs: null};
           this.selectionTiming = timing; this.paintSelectionTiming();
-          this.pendingSelection = {id, started, timing};
+          this.pendingSelection = {id, started, timing, focus: selection.hasAttribute("data-graph-search-result")};
           this.paintSelection(id);
           requestAnimationFrame(() => {
             if (!this.abort.signal.aborted && this.selectionTiming === timing) {
@@ -1098,11 +1249,11 @@
           const center = {x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2};
           const distance = Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y);
           const scale = Math.min(4, Math.max(0.02, gesture.camera.scale * distance / gesture.distance));
-          this.cameras.set(this.mode, {scale,
+          this.cameras.set(this.cameraKey(), {scale,
             x: gesture.camera.x + (gesture.center.x - size.left) / gesture.camera.scale - (center.x - size.left) / scale,
             y: gesture.camera.y + (gesture.center.y - size.top) / gesture.camera.scale - (center.y - size.top) / scale});
         } else {
-          this.cameras.set(this.mode, {...gesture.camera,
+          this.cameras.set(this.cameraKey(), {...gesture.camera,
             x: gesture.camera.x - (event.clientX - gesture.x) / gesture.camera.scale,
             y: gesture.camera.y - (event.clientY - gesture.y) / gesture.camera.scale});
         }
@@ -1533,5 +1684,5 @@
     updated() { this.renderer?.update(); },
     destroyed() { this.active = false; this.renderer?.destroy(); }
   };
-  window.SymphonyHooks = {TaskBoard, BoardDialog, ChatWorkspace, IssueSwitcher, IssuePRMenu, WorkflowCanvas, DesignWorkspace, SpecificationWorkspace, SpecificationDiagram};
+  window.SymphonyHooks = {TaskBoard, BoardDialog, StatusIndicator, ChatWorkspace, IssueSwitcher, IssuePRMenu, WorkflowCanvas, DesignWorkspace, SpecificationWorkspace, SpecificationDiagram};
 })();
