@@ -4,6 +4,26 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
   alias Phoenix.LiveView.{Diff, Socket}
   alias SymphonyElixirWeb.WorkflowGraphView
 
+  test "task nodes use Kanban resource links, badges and compact dependency navigation" do
+    url = "https://github.com/example/fixture/issues/19"
+    html = draw([task(19, "work", %{"url" => url, "task_kind" => "maintenance", "priority" => 1}), task(20, "backlog")], [dep(20, 19)])
+    node = find(html, "[data-node-id='task:19']")
+    link = Floki.find(node, ".task-reference[href]")
+    assert Floki.attribute(link, "href") == [url]
+    assert Floki.attribute(link, "target") == ["_blank"]
+    assert Floki.attribute(link, "rel") == ["noopener noreferrer"]
+    assert Floki.attribute(link, "phx-click") == []
+    assert Floki.text(Floki.find(node, ".card-task-kind")) == "Maintenance"
+    assert Floki.text(Floki.find(node, ".priority[data-priority=P1]")) == "P1"
+    assert length(Floki.find(node, ".lane-dot-work")) == 1
+    assert Enum.map(Floki.find(node, ".card-dependencies a"), &Floki.text/1) == ["↑0", "↓1"]
+    assert Floki.attribute(Floki.find(node, ".plan-node-title"), "phx-click") == ["open-card"]
+
+    unsafe = draw([task(1, "work", %{"url" => "javascript:alert(1)"}), task(2, "work", %{"url" => url, "missing" => true})])
+    assert find(unsafe, ".task-reference[href]") == []
+    assert find(unsafe, "[data-node-id='task:2'] .card-dependencies") == []
+  end
+
   test "dependency layers are independent of lifecycle and peer ordering is stable" do
     nodes = [
       task(1, "done"),
@@ -59,7 +79,8 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
              "Prerequisite GH-1: awaiting acceptance (technical: Requires schema); Dependent GH-3: awaiting acceptance (technical: Requires schema)"
            ]
 
-    assert find(html, ".plan-inspector, [data-board-view-link]") == []
+    assert find(html, ".plan-inspector") == []
+    assert length(find(html, ".card-dependencies a")) == 6
 
     assert length(find(html, "[data-node-id='task:1'] .plan-node-select[phx-value-id='issue:1']")) ==
              1
@@ -459,7 +480,8 @@ defmodule SymphonyElixirWeb.WorkflowGraphViewTest do
     assert length(find(html, "[data-plan-node]")) == 80
     assert length(find(html, ".plan-edge")) <= 300
     assert html =~ "321 tasks"
-    assert html =~ "↑400 prerequisites"
+    assert Floki.text(find(html, "[data-node-id='task:1'] .card-dependencies")) =~ "↑400"
+    assert html =~ "400 prerequisites for GH-1; open graph"
     assert html =~ "Page 1/6"
     assert length(find(html, "button[phx-click='graph-options'][phx-value-page='1']")) == 1
     assert html =~ "data-projection-key"

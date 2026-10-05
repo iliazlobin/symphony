@@ -2,6 +2,7 @@ defmodule SymphonyElixirWeb.WorkflowGraphView do
   @moduledoc "Interactive read-only task dependency diagram."
   use Phoenix.Component
   alias SymphonyElixirWeb.GraphProjection
+  alias SymphonyElixirWeb.TaskPresentation
 
   @lanes ~w(backlog work in_progress review done)
   @node_width 260
@@ -17,6 +18,9 @@ defmodule SymphonyElixirWeb.WorkflowGraphView do
   attr(:visible_task_ids, :any, default: :all)
   attr(:graph_index, :map, default: nil)
   attr(:graph_options, :map, default: %{})
+  attr(:baseline_ref, :string, default: nil)
+  attr(:chat_task_id, :string, default: nil)
+  attr(:chat_session_id, :string, default: nil)
 
   @spec content(map()) :: Phoenix.LiveView.Rendered.t()
   def content(assigns) do
@@ -136,15 +140,16 @@ defmodule SymphonyElixirWeb.WorkflowGraphView do
                   <div class="plan-node-card">
                     <button :if={node["type"] == "group"} type="button" class="plan-node-select" phx-click="graph-options" phx-value-mode="tasks" phx-value-group={node["group_id"]} phx-value-page="0" aria-label={"Browse #{node["title"]}: #{node["task_count"]} tasks"}></button>
                     <button :if={node["type"] != "group" && !node["missing"]} type="button" class="plan-node-select" aria-description={node["dependency_description"]} aria-pressed={to_string(!is_nil(@selected) && @selected["id"] == node["id"])} phx-click="select-plan-task" phx-value-id={node["task_id"]} aria-label={"Open #{node_name(node)} task agent"}></button>
-                    <div class="plan-node-meta"><span>{node_name(node)}</span><span :if={node["priority"]}>P{node["priority"]}</span></div>
-                    <button :if={node["task_id"] && !node["missing"]} type="button" class="plan-node-title" phx-click="open-card" phx-value-id={node["task_id"]} title={node_title(node)}>{node_title(node)}</button>
+                    <TaskPresentation.identity :if={node["type"] != "group"} class="plan-node-meta" identifier={node_name(node)} url={if !node["missing"], do: node["url"]} kind={node["task_kind"]} priority={node["priority"]} />
+                    <div :if={node["type"] == "group"} class="plan-node-meta"><span>{node_name(node)}</span></div>
+                    <div :if={node["task_id"] && !node["missing"]} class="card-title-row"><span class={"lane-dot lane-dot-#{node["lane"]}"} aria-hidden="true"></span><button type="button" class="plan-node-title" phx-click="open-card" phx-value-id={node["task_id"]} title={node_title(node)}>{node_title(node)}</button></div>
                     <button :if={node["type"] == "group"} type="button" class="plan-node-title" phx-click="graph-options" phx-value-mode="tasks" phx-value-group={node["group_id"]} phx-value-page="0" title={node_title(node)}>{node_title(node)}</button>
                     <span :if={node["type"] != "group" && (!node["task_id"] || node["missing"])} class="plan-node-title" title={node_title(node)}>{node_title(node)}</span>
-                    <div class="plan-node-meta"><span>{node_status(node)}</span><span :if={node["task_kind"] && node["task_kind"] != "general"}>{String.capitalize(node["task_kind"])}</span></div>
+                    <div class="plan-node-meta"><span>{node_status(node)}</span></div>
                     <span :if={node["type"] != "group" && node["graph_error"]} class="plan-node-note">{node["graph_error"]}</span>
                     <span :if={node["type"] != "group" && !node["graph_error"] && node["waiting_count"] > 0} class="plan-node-dependency-status" title={node["waiting_label"]}>{node["waiting_label"]}</span>
                     <span :if={node["type"] == "group"} class="plan-node-context">{node["accepted_count"]} accepted · {node["internal_edges"]} internal dependencies</span>
-                    <span :if={node["type"] != "group"} class="plan-node-context">↑{node["upstream_count"] || 0} prerequisites · ↓{node["downstream_count"] || 0} dependents</span>
+                    <TaskPresentation.dependencies :if={node["task_id"] && !node["missing"] && node["type"] != "group"} task_id={node["task_id"]} identifier={node_name(node)} upstream={node["upstream_count"] || 0} downstream={node["downstream_count"] || 0} filters={@filters} baseline_ref={@baseline_ref} live_task_id={@chat_task_id} session={if @baseline_ref || node["task_id"] == @chat_task_id, do: @chat_session_id} />
                     <span :if={is_map(node["coverage"])} class="plan-node-coverage" title={coverage_description(node["coverage"])}>{coverage_label(node["coverage"])}</span>
                     <span :if={node["visible"] == false} class="plan-node-context">Outside filters</span>
                   </div>
@@ -235,7 +240,7 @@ defmodule SymphonyElixirWeb.WorkflowGraphView do
 
     max(
       @node_height,
-      88 + title_height + status_height + context_height +
+      96 + title_height + status_height + context_height +
         if(is_map(node["coverage"]), do: 20, else: 0)
     )
   end

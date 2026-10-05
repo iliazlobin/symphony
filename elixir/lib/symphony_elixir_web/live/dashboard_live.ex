@@ -11,7 +11,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, ChatPanel, Endpoint, Markdown, SettingsPanel, TaskIntakePanel}
   alias SymphonyElixirWeb.{BoardCache, ChatNavigation, ObservabilityPubSub, Presenter}
   alias SymphonyElixirWeb.SpecificationEditor
-  alias SymphonyElixirWeb.{TaskBoard, TaskExecution, TaskFilters, TaskOperator, TaskRework}
+  alias SymphonyElixirWeb.{TaskBoard, TaskExecution, TaskFilters, TaskOperator, TaskPresentation, TaskRework}
 
   alias SymphonyElixir.Assurance.{GraphSnapshot, Store}
   alias SymphonyElixirWeb.{AssuranceWorkspace, GraphNavigation, GraphProjection}
@@ -1100,9 +1100,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 data-status={task.stage} data-lane={task_lane(task)} data-task-id={task.id} data-selected={to_string(@chat_task_id == task.id)} data-project={task.project} data-priority={priority(task.priority)} data-attention={to_string(not is_nil(task.attention))}
                 data-labels={Jason.encode!(subject_tags(Map.get(task, :labels, [])))} data-milestone={Jason.encode!(Map.get(task, :milestone))} data-assignees={Jason.encode!(Map.get(task, :assignees, []))}
                 data-kind={task_kind(task)} data-title={task.title} data-identifier={task.identifier} data-created={task.created_at || ""} data-updated={task.updated_at || ""}>
-                <div class="card-top"><a :if={safe_url(task.url)} href={safe_url(task.url)} target="_blank" rel="noopener noreferrer"
-                  aria-label={"Open #{task.identifier} in the issue tracker"}>{task.identifier}</a><span :if={!safe_url(task.url)}>{task.identifier}</span>
-                  <span class="card-task-kind" data-task-kind={task_kind(task)}>{kind_label(task_kind(task))}</span><span class="priority" data-priority={priority(task.priority)}>{priority(task.priority)}</span></div>
+                <TaskPresentation.identity class="card-top" identifier={task.identifier} url={task.url} kind={task_kind(task)} priority={task.priority} />
                 <div class="card-title-row"><span class={"lane-dot lane-dot-#{stage}"} aria-hidden="true"></span>
                   <span class="card-title-text"><.link id={"open-#{card_id(task)}"} class="card-title" patch={task_detail_path(@url_filters, task.id, @chat_task_id, @chat_session_id)}>{task.title}</.link></span>
                 </div>
@@ -1128,7 +1126,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <div :if={task_links(task, ["repo", "candidate", "checks"]) != []} class="card-reference-links"><a :for={link <- task_links(task, ["repo", "candidate", "checks"])} href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
                 <p :if={current_activity(task, @payload)} class="card-activity">{current_activity(task, @payload)}</p>
                 <div class="card-bottom"><time datetime={task.updated_at} title={updated_at(task.updated_at)}>{compact_updated_at(task.updated_at)}</time>
-                  <.dependency_links task={task} node={@dependency_nodes[task.id]} filters={@url_filters} />
+                  <.dependency_links task={task} node={@dependency_nodes[task.id]} filters={@url_filters} session={if task.id == @chat_task_id, do: @chat_session_id} />
                 </div>
               </article>
             </div>
@@ -1143,10 +1141,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <p :if={@graph_requested_baseline && !@graph_baseline} class="board-notice graph-version-notice">Reviewed graph unavailable. Sign in to load this version, or return to the live graph.
             <button type="button" class="button button-small" phx-click="live-graph">Live graph</button>
           </p>
-          <SymphonyElixirWeb.WorkflowGraphView.content :if={!@graph_requested_baseline || @graph_baseline} board={@graph_board} project={@chat_project} filters={@url_filters} selected_id={@graph_history_task || @selected_plan_id} visible_task_ids={@visible_task_ids} graph_index={@graph_index} graph_options={@graph_options} />
+          <SymphonyElixirWeb.WorkflowGraphView.content :if={!@graph_requested_baseline || @graph_baseline} board={@graph_board} project={@chat_project} filters={@url_filters} selected_id={@graph_history_task || @selected_plan_id} visible_task_ids={@visible_task_ids} graph_index={@graph_index} graph_options={@graph_options} baseline_ref={@graph_baseline && @graph_baseline["ref"]} chat_task_id={@chat_task_id} chat_session_id={@chat_session_id} />
         </div>
         <div :if={@board_view == "gantt"} id="gantt-view" class="board-view-panel" aria-label="Gantt view">
-          <SymphonyElixirWeb.WorkflowGanttView.content board={@board} project={@chat_project} filters={@url_filters} selected_id={@chat_task_id} visible_task_ids={@visible_task_ids} plan_options={@calendar_plan} />
+          <SymphonyElixirWeb.WorkflowGanttView.content board={@board} project={@chat_project} filters={@url_filters} selected_id={@chat_task_id} session={@chat_session_id} visible_task_ids={@visible_task_ids} plan_options={@calendar_plan} />
         </div>
       </div>
       <div id="board-context" class="board-context" aria-label="Board data and execution status">
@@ -2261,10 +2259,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp dependency_links(assigns) do
     ~H"""
-    <span :if={@node} class="card-dependencies" aria-label="Task dependencies">
-      <.link patch={view_path(@filters, "graph", @task.id, @session)} data-board-view-link="graph" data-board-view-task={@task.id} aria-label={"#{@node["upstream_count"]} prerequisites for #{@task.identifier}; open graph"} title="Prerequisites · open graph"><span aria-hidden="true">↑</span>{@node["upstream_count"]}</.link>
-      <.link patch={view_path(@filters, "graph", @task.id, @session)} data-board-view-link="graph" data-board-view-task={@task.id} aria-label={"#{@node["downstream_count"]} dependent tasks for #{@task.identifier}; open graph"} title="Dependents · open graph"><span aria-hidden="true">↓</span>{@node["downstream_count"]}</.link>
-    </span>
+    <TaskPresentation.dependencies :if={@node} task_id={@task.id} identifier={@task.identifier} upstream={@node["upstream_count"]} downstream={@node["downstream_count"]} filters={@filters} session={@session} />
     """
   end
 
@@ -2439,8 +2434,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp task_kind(task), do: task[:task_kind] || TaskKind.from_labels(task[:labels])
-  defp kind_label("invalid"), do: "Needs classification"
-  defp kind_label(kind), do: String.capitalize(kind)
 
   defp card_work_status(assigns) do
     works = ChatNavigation.work_sessions(assigns.task)
@@ -2606,15 +2599,5 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp command_error(:unauthorized), do: "Operator session unavailable or expired. Unlock controls in Settings."
   defp command_error(reason), do: "Command not confirmed (#{inspect(reason)}). A repeated confirmation uses the same command ID."
 
-  defp safe_url(value) when is_binary(value) do
-    with false <- String.match?(value, ~r/[\\\x00-\x20\x7f]/),
-         {:ok, %URI{scheme: scheme, host: host, userinfo: nil}} <- URI.new(value),
-         true <- scheme in ["http", "https"] and is_binary(host) and host != "" do
-      value
-    else
-      _ -> nil
-    end
-  end
-
-  defp safe_url(_), do: nil
+  defp safe_url(value), do: TaskPresentation.safe_url(value)
 end

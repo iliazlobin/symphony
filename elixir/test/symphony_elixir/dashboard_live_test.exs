@@ -3089,6 +3089,13 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#workflow-graph[data-graph-historical=true]")
     assert has_element?(view, "[data-plan-task-id='#{historical_task}'][data-selected=true]")
     assert has_element?(view, "#selected-task-navigation[data-selected-task-id='#{current_task}']")
+    chat_id = assigns.chat_id
+    view |> element("[data-plan-task-id='#{historical_task}'] .card-dependencies a[title='Prerequisites · open graph']") |> render_click()
+    after_link = :sys.get_state(view.pid).socket.assigns
+    assert after_link.graph_baseline["ref"] == baseline["ref"]
+    assert after_link.graph_options["anchor"] == historical_task
+    assert after_link.chat_task_id == current_task
+    assert after_link.chat_id == chat_id
     assert view |> element("#workflow-graph") |> render() |> Floki.parse_fragment!() |> Floki.find("[data-plan-node]") |> length() <= 80
     assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
     refute_received {:settings_command, _}
@@ -3337,6 +3344,28 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert has_element?(view, "#task-board-app[data-board-view=gantt]")
     assert :sys.get_state(view.pid).socket.assigns.url_filters["view"] == "gantt"
     assert has_element?(view, "#gantt-view", "No matching tasks")
+  end
+
+  test "task identity and dependency controls remain consistent across planning views" do
+    view = authorized_board_view()
+    task_id = "github:example/fixture:2"
+
+    snapshots =
+      for mode <- ~w(kanban graph gantt) do
+        render_click(view, "switch-view", %{"view" => mode, "id" => task_id})
+        selector = if mode == "kanban", do: "article[data-task-id='#{task_id}']", else: "[data-plan-task-id='#{task_id}']"
+        tree = view |> element(selector) |> render() |> Floki.parse_fragment!()
+        assert Floki.attribute(Floki.find(tree, ".card-dependencies a"), "data-board-view-task") == [task_id, task_id]
+
+        {
+          Floki.attribute(Floki.find(tree, ".task-reference[href]"), "href"),
+          Floki.text(Floki.find(tree, ".card-task-kind")),
+          Floki.text(Floki.find(tree, ".priority"))
+        }
+      end
+
+    assert [identity, identity, identity] = snapshots
+    assert {[_url], "General", "P2"} = identity
   end
 
   @tag :threads_fixture

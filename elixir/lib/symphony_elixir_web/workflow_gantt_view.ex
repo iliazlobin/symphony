@@ -1,6 +1,7 @@
 defmodule SymphonyElixirWeb.WorkflowGanttView do
   @moduledoc "Calendar timeline with recorded facts and explicitly estimated browser drafts."
   use Phoenix.Component
+  alias SymphonyElixirWeb.TaskPresentation
   alias SymphonyElixirWeb.WorkflowPlan
 
   @day_width 36
@@ -10,6 +11,7 @@ defmodule SymphonyElixirWeb.WorkflowGanttView do
   attr(:project, :string, default: nil)
   attr(:filters, :map, default: %{})
   attr(:selected_id, :string, default: nil)
+  attr(:session, :string, default: nil)
   attr(:visible_task_ids, :any, default: :all)
   attr(:plan_options, :map, default: %{})
   attr(:today, :any, default: nil)
@@ -63,7 +65,13 @@ defmodule SymphonyElixirWeb.WorkflowGanttView do
             <caption class="sr-only">Dates are UTC. Dashed bars are editable draft estimates, not execution promises. Solid segments show recorded active execution; diamonds show human acceptance. Arrows point from prerequisite to dependent.</caption>
             <thead><tr><th scope="col" class="plan-row-name">Task <span class="plan-caption">· estimate</span></th><th scope="col" class="plan-calendar-header"><div class="plan-calendar-months"><span :for={group <- @months} style={group_style(group)}>{group.title}</span></div><div class="plan-calendar-weeks"><span :for={group <- @weeks} style={group_style(group)}>Week of {group.title}</span></div><div class="plan-calendar-days"><span :for={day <- @days} data-calendar-date={Date.to_iso8601(day)} data-today={to_string(Date.to_iso8601(day) == @calendar["today_on"])} title={Calendar.strftime(day, "%A, %B %-d, %Y")}>{day.day}</span></div></th></tr></thead>
             <tbody><tr :for={row <- @rows} id={dom_id("gantt-row", row["id"])} data-plan-task-id={row["task_id"]} data-plan-visible={to_string(row["visible"])} data-selected={to_string(!is_nil(@selected) && @selected["id"] == row["id"])} data-lane={row["lane"]} data-timeline-kind={row["timeline"]["kind"]}>
-              <th scope="row" class="plan-row-name"><div class="plan-row-heading"><button type="button" class="plan-row-title" phx-click="open-card" phx-value-id={row["task_id"]} title={row["title"]}>{row["title"] || row["identifier"]}</button><label :if={row["lane"] != "done"} class="plan-calendar-estimate"><input type="number" min="1" max="365" value={row["timeline"]["duration_days"] || 1} data-calendar-duration data-calendar-task-id={row["task_id"]} aria-label={"Estimated days for #{row["identifier"] || row["title"]}"} />d</label></div><div class="plan-node-meta"><a :if={safe_url(row["url"])} href={safe_url(row["url"])} target="_blank" rel="noopener noreferrer" aria-label={"Open #{row["identifier"]} in the issue tracker"}>{row["identifier"]}</a><span :if={!safe_url(row["url"])}>{row["identifier"]}</span><span :if={row["priority"]}>P{row["priority"]}</span><span>{kind_name(row["task_kind"])}</span><span>{lane_name(row["lane"])}</span><span :if={milestone_title(row)} title={milestone_title(row)}>{milestone_title(row)}</span><span :if={row["visible"] == false} class="plan-node-context">Outside filters</span></div></th>
+              <th scope="row" class="plan-row-name">
+                <div class="plan-row-heading"><span class={"lane-dot lane-dot-#{row["lane"]}"} title={lane_name(row["lane"])} aria-label={lane_name(row["lane"])}></span><button type="button" class="plan-row-title" phx-click="open-card" phx-value-id={row["task_id"]} title={row_title(row)}>{row["title"] || row["identifier"]}</button><label :if={row["lane"] != "done"} class="plan-calendar-estimate"><input type="number" min="1" max="365" value={row["timeline"]["duration_days"] || 1} data-calendar-duration data-calendar-task-id={row["task_id"]} aria-label={"Estimated days for #{row["identifier"] || row["title"]}"} />d</label></div>
+                <TaskPresentation.identity class="plan-node-meta" identifier={row["identifier"]} url={row["url"]} kind={row["task_kind"]} priority={row["priority"]}>
+                  <TaskPresentation.dependencies task_id={row["task_id"]} identifier={row["identifier"]} upstream={row["upstream_count"] || 0} downstream={row["downstream_count"] || 0} filters={@filters} session={if row["task_id"] == @selected_id, do: @session} />
+                </TaskPresentation.identity>
+                <span :if={row["visible"] == false} class="sr-only">Outside filters</span>
+              </th>
               <td class="plan-gantt-track">
                 <button type="button" class={if row["timeline"]["kind"] == "unscheduled", do: "plan-gantt-unresolved", else: "plan-gantt-bar"} style={bar_style(row, @start, length(@days))} phx-click="select-plan-task" phx-value-id={row["task_id"]} aria-pressed={to_string(!is_nil(@selected) && @selected["id"] == row["id"])} aria-label={bar_label(row)} aria-description={row["dependency_description"]} title={bar_label(row)} data-planning-status={row["planning_status"]} data-timeline-kind={row["timeline"]["kind"]} data-timeline-start-offset={start_offset(row, @start)} data-timeline-days={row["timeline"]["duration_days"]}>
                   <span :if={row["timeline"]["kind"] == "running"} class="plan-gantt-recorded" style={recorded_style(row, @start)} aria-hidden="true"></span><span class="plan-gantt-label">{bar_status(row)}</span>
@@ -83,24 +91,12 @@ defmodule SymphonyElixirWeb.WorkflowGanttView do
   defp context_rows(rows, %{"visible" => false} = selected), do: [selected | rows]
   defp context_rows(rows, _selected), do: rows
 
-  defp safe_url(value) when is_binary(value) do
-    with false <- String.match?(value, ~r/[\\\x00-\x20\x7f]/),
-         {:ok, %URI{scheme: scheme, host: host, userinfo: nil}} <- URI.new(value),
-         true <- scheme in ["http", "https"] and is_binary(host) and host != "" do
-      value
-    else
-      _ -> nil
-    end
-  end
-
-  defp safe_url(_value), do: nil
-  defp kind_name(kind) when is_binary(kind), do: String.capitalize(kind)
-  defp kind_name(_), do: "General"
   defp lane_name("in_progress"), do: "In progress"
   defp lane_name(lane) when is_binary(lane), do: String.capitalize(lane)
   defp lane_name(_lane), do: "Unknown"
   defp milestone_title(%{"milestone" => %{"title" => title}}) when is_binary(title), do: title
   defp milestone_title(_row), do: nil
+  defp row_title(row), do: Enum.join(Enum.filter([row["title"] || row["identifier"], milestone_title(row)], &is_binary/1), " · ")
   defp group_style(group), do: "width:calc(var(--timeline-day-width, 36px) * #{group.days})"
 
   defp date_groups(days, key, title) do
