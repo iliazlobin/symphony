@@ -51,6 +51,14 @@ defmodule SymphonyElixir.AgentProtocolTest do
     assert TaskKind.from_labels(["kind:bug", "kind:security"]) == "invalid"
   end
 
+  test "subject tags exclude workflow and intent labels across casing and malformed metadata" do
+    for label <- ~w(ready RUNNING Backlog review done KIND:feature Priority:P1 Symphony:pilot WORK:deployment),
+        do: refute(TaskKind.subject_tag?(label))
+
+    for label <- ["category:performance", "frontend", "Graph", "prereview"], do: assert(TaskKind.subject_tag?(label))
+    for label <- [nil, 42, %{"name" => "frontend"}], do: refute(TaskKind.subject_tag?(label))
+  end
+
   test "readiness is commit, base, work and instruction revision specific; checks do not accept tasks" do
     assert WorkEvidence.result(nil) == nil
     work = reviewed()

@@ -6,7 +6,6 @@ defmodule SymphonyElixirWeb.TaskFilters do
 
   @filters ~w(project status priority kind milestone label assignee)
   @metadata ~w(milestone label assignee)
-  @routing ~w(ready running backlog review done)
   @statuses ~w(backlog work in_progress review done ready running attention)
   @priorities ~w(P1 P2 P3 P4 —)
 
@@ -108,12 +107,11 @@ defmodule SymphonyElixirWeb.TaskFilters do
     }
   end
 
-  defp subject_tags(labels), do: labels |> strings() |> Enum.reject(&reserved_tag?/1)
-  defp reserved_tag?(label), do: String.downcase(label) in @routing or String.match?(label, ~r/\A(?:kind:|priority:|symphony:|work:)/i)
+  defp subject_tags(labels), do: labels |> strings() |> Enum.filter(&TaskKind.subject_tag?/1)
 
   defp valid_metadata?(_key, "__none__"), do: true
   defp valid_metadata?("milestone", value), do: String.match?(value, ~r/\Amilestone:.+:[1-9][0-9]*\z/) and not String.contains?(value, <<0>>)
-  defp valid_metadata?("label", "label:" <> label), do: label != "" and not reserved_tag?(label) and not String.contains?(label, <<0>>)
+  defp valid_metadata?("label", "label:" <> label), do: label != "" and TaskKind.subject_tag?(label) and not String.contains?(label, <<0>>)
   defp valid_metadata?("assignee", "assignee:" <> login), do: login != "" and not String.contains?(login, <<0>>)
   defp valid_metadata?(_key, _value), do: false
 
