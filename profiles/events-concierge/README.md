@@ -519,6 +519,8 @@ or unlink its socket to force a replacement.
 An engine failure returns an unavailable
 response until its supervised restart. Startup waits up to 180 seconds for real engine
 health; each health request is bounded by five seconds and the remaining deadline.
+HTTP request bodies remain bounded to 1 MiB. LiveView WebSocket messages allow 8 MiB
+for the editor's 4,000,000-byte Idea scenes and their protocol envelopes.
 Broker failure denies authorization. Logout
 revokes the shared grant; each active view rechecks it. Workspace restart signs out
 browsers; durable project conversations remain.

@@ -30,6 +30,9 @@ from symphony_control import ControlError, load_config, read_private
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_BODY = 1_048_576
+# Idea scenes permit 4,000,000 encoded bytes. LiveView replies/events need
+# envelope headroom; retain a separate bound from ordinary HTTP request bodies.
+MAX_WEBSOCKET_MESSAGE = 8_388_608
 ENGINE_STARTUP_TIMEOUT = 180
 ENGINE_HEALTHCHECK_TIMEOUT = 5
 HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"}
@@ -279,8 +282,8 @@ class Workspace:
         # aiohttp owns framing, masking, fragmentation and the opening handshake.
         protocols = tuple(part.strip() for part in request.headers.get("Sec-WebSocket-Protocol", "").split(",") if part.strip())
         headers = [(key, value) for key, value in headers if not key.lower().startswith("sec-websocket-")]
-        async with client.ws_connect(target, headers=headers, protocols=protocols, max_msg_size=MAX_BODY, heartbeat=30) as upstream:
-            downstream = web.WebSocketResponse(protocols=protocols, max_msg_size=MAX_BODY, heartbeat=30)
+        async with client.ws_connect(target, headers=headers, protocols=protocols, max_msg_size=MAX_WEBSOCKET_MESSAGE, heartbeat=30) as upstream:
+            downstream = web.WebSocketResponse(protocols=protocols, max_msg_size=MAX_WEBSOCKET_MESSAGE, heartbeat=30)
             await downstream.prepare(request)
 
             async def copy(source, destination):
