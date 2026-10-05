@@ -1,7 +1,7 @@
 defmodule SymphonyElixirWeb.WorkflowGraph do
   @moduledoc "Read-only project/task/work graph from the board and native ledger; graph edges never grant agent authority."
 
-  alias SymphonyElixir.{TaskDependencies, TaskIdentity, TaskRouting}
+  alias SymphonyElixir.{TaskDependencies, TaskIdentity, TaskKind, TaskRouting}
 
   @normal_wait "Dependencies require human-accepted Done in this project."
 
@@ -182,13 +182,7 @@ defmodule SymphonyElixirWeb.WorkflowGraph do
 
   defp subject_tags(labels) do
     labels
-    |> Enum.filter(&is_binary/1)
-    |> Enum.reject(fn label ->
-      normalized = String.downcase(label)
-
-      String.match?(normalized, ~r/\A(?:kind:|priority:|symphony:|work:)/) or
-        normalized in ~w(ready running backlog review done)
-    end)
+    |> Enum.filter(&TaskKind.subject_tag?/1)
     |> Enum.uniq()
     |> Enum.sort()
   end

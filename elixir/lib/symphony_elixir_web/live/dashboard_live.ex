@@ -2158,10 +2158,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp session_id(task), do: task.runtime && (task.runtime[:session_id] || task.runtime["session_id"])
 
   defp subject_tags(labels) do
-    Enum.reject(labels, fn label ->
-      String.match?(String.downcase(label), ~r/\A(?:kind:|priority:|symphony:|work:)/) or
-        String.downcase(label) in ["ready", "running", "backlog", "review", "done"]
-    end)
+    Enum.filter(labels, &TaskKind.subject_tag?/1)
   end
 
   defp task_lane(%{stage: "running"}), do: "in_progress"
