@@ -1189,6 +1189,67 @@ h2, h3, strong { font-weight: 500; }
 .specification-diagram [data-spec-feedback] { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
 .specification-history { font-size: 11px; color: var(--muted); }
 .specification-history summary { cursor: pointer; }
+.design-outline-title small { margin-left: 8px; color: var(--muted); font-weight: 400; }
+.specification-editor .design-panel-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.spec-object-search input { box-sizing: border-box; width: 220px; max-width: 100%; border: 1px solid var(--line); border-radius: var(--control-radius); padding: 7px 9px; background: var(--panel); color: var(--fg); font: inherit; font-size: 12px; }
+.specification-import { font-size: 11px; color: var(--muted); margin-bottom: 12px; }
+.specification-import > summary { cursor: pointer; }
+.specification-import form { padding: 10px 0; }
+.specification-import fieldset { border: 0; margin: 0; padding: 0; }
+.specification-import label { display: grid; gap: 5px; }
+.specification-import textarea { box-sizing: border-box; width: 100%; margin: 0 0 8px; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 5px; padding: 8px; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.specification-object { border: 1px solid var(--line); border-radius: 7px; margin-bottom: 8px; background: var(--bg); }
+.specification-object > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 10px 12px; list-style: none; font-size: 12px; }
+.specification-object > summary::-webkit-details-marker { display: none; }
+.specification-object > summary::before { content: '›'; color: var(--muted); font-size: 16px; }
+.specification-object[open] > summary::before { transform: rotate(90deg); }
+.specification-object > summary strong { flex: 1; min-width: 100px; overflow-wrap: anywhere; font-weight: 500; }
+.specification-object > summary small { color: var(--muted); white-space: nowrap; font-size: 10px; }
+.spec-object-kind { background: var(--soft); border-radius: 4px; padding: 3px 6px; color: var(--accent); font-size: 10px; white-space: nowrap; }
+.spec-object-state { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.spec-object-state[data-state=target], .spec-object-state[data-state=deferred] { color: var(--warn); }
+.spec-object-state[data-state=verified] { color: var(--good); }
+.spec-object-editor { border-top: 1px solid var(--line); padding: 12px; }
+.spec-object-heading { display: flex; gap: 8px; align-items: end; margin-bottom: 10px; }
+.spec-object-properties { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 10px 0; }
+.specification-object :is(input, select) { font-size: 12px; padding: 6px 8px; min-height: 32px; width: 100%; min-width: 0; }
+.specification-object textarea { min-height: 46px; padding: 6px 8px; }
+.spec-object-summary { margin: 0; }
+.spec-object-members { margin-top: 12px; }
+.spec-object-members > header { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.spec-object-members h4 { margin: 0; font-size: 11px; font-weight: 500; }
+.spec-object-members .button { padding: 4px 7px; min-height: 26px; font-size: 11px; }
+.spec-object-table-scroll { max-width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 5px; }
+.spec-object-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.spec-object-table th { font-size: 10px; color: var(--muted); text-align: left; background: var(--soft); padding: 5px 7px; white-space: nowrap; font-weight: 400; }
+.spec-object-table td { padding: 4px; min-width: 95px; border-top: 1px solid var(--line); vertical-align: top; }
+.spec-object-table td:first-child { min-width: 160px; }
+.spec-object-table td:last-child { width: 24px; min-width: 24px; }
+.spec-object-table :is(input,select) { font-size: 11px; padding: 4px 5px; min-height: 28px; border-color: transparent; background: var(--panel); }
+.spec-object-table :is(input,select):hover { border-color: var(--line); }
+.spec-object-link { display: block; border: 0; background: none; color: var(--accent); font: inherit; font-size: 10px; cursor: pointer; padding: 3px 0; text-align: left; }
+.spec-object-source-links { display: flex; gap: 6px 12px; flex-wrap: wrap; margin: 6px 0 0; font-size: 11px; }
+.spec-object-source-links a { color: var(--accent); }
+.spec-object-notes { margin-top: 12px; color: var(--muted); font-size: 11px; }
+.spec-object-notes > summary { cursor: pointer; padding: 4px 0; }
+.spec-object-meta > summary { cursor: pointer; font-size: 11px; color: var(--muted); }
+.spec-object-meta > header { margin: 6px 0; }
+.spec-object-table textarea { font-size: 11px; padding: 4px 5px; min-height: 28px; width: 100%; border-color: transparent; }
+.spec-object-table textarea:hover { border-color: var(--line); }
+.spec-object-notes label { margin-top: 6px; }
+.spec-add-object { position: relative; }
+.spec-add-object > summary { cursor: pointer; list-style: none; }
+.spec-add-object > div { position: absolute; bottom: calc(100% + 6px); left: 0; min-width: 160px; display: grid; gap: 4px; padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 16px #00000012; }
+.spec-add-object > div button { text-align: left; }
+.specification-object :is(summary, input, select, textarea, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (max-width: 700px) {
+ .specification-editor .design-panel-heading { flex-wrap: wrap; }
+ .spec-object-search, .spec-object-search input { width: 100%; }
+ .spec-object-heading { flex-wrap: wrap; }
+ .spec-object-properties { grid-template-columns: minmax(0, 1fr); }
+ .specification-object > summary { flex-wrap: wrap; }
+ .specification-object > summary strong { flex-basis: 60%; }
+}
 .specification-history ul { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 8px 0 0; margin: 0; }
 .specification-review { border: 1px solid var(--accent); border-radius: 7px; padding: 14px; background: var(--tint); font-size: 12px; }
 .specification-review h3 { font-size: 14px; margin: 0 0 8px; }

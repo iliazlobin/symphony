@@ -281,17 +281,25 @@ assert.equal(zoomed.get("--chat-menu-space"),"372px");
         )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
-    def test_specification_history_disclosure_survives_patches_without_authority_events(self):
+    def test_specification_disclosure_filter_and_crosslinks_survive_patches_without_authority_events(self):
         script = r'''
 const assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
 const window = {}, document = {addEventListener(){}};
 vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),{window,document,AbortController});
-let details = [], listeners = new Map();
+let details = [], objects = [], listeners = new Map(), events = new Map();
+const search = {value:"", matches:selector=>selector==="[data-spec-search]"};
 const el = {
+  dataset:{specificationSection:"brief"},
   addEventListener:(name,handler)=>listeners.set(name,handler),
-  querySelectorAll(selector) {assert.equal(selector,"details.specification-history[id]");return details;}
+  querySelector:selector=>selector==="[data-spec-search]" ? search : null,
+  querySelectorAll(selector) {
+    if(selector==="details.specification-history[id], details[data-spec-disclosure][id]") return details;
+    if(["[data-spec-search-text]","[data-spec-item-id]"].includes(selector)) return objects;
+    throw new Error("Unexpected selector: "+selector);
+  }
 };
 const hook = {...window.SymphonyHooks.SpecificationWorkspace,el,
+  handleEvent:(name,handler)=>events.set(name,handler),
   pushEvent(){throw new Error("Disclosure must not dispatch backend commands");}};
 hook.mounted();
 // A fresh history list keeps its native closed default.
@@ -313,6 +321,27 @@ assert.equal(details[0].open,false);
 hook.beforeUpdate();details=[];hook.updated();hook.beforeUpdate();
 details=[{id:"specification-project-history",open:false}];hook.updated();
 assert.equal(details[0].open,false);
+// Object disclosures and local search persist through edits without shifting focus.
+let focused=0, scrolled=0;
+const object = (id,title) => ({id,open:false,hidden:false,dataset:{specItemId:id,specSearchText:title},
+  scrollIntoView(options){assert.equal(options.block,"nearest");scrolled++;},
+  querySelector:selector=>selector==="summary" ? {focus(){focused++;}} : null});
+objects=[object("event","Entity Event"),object("source","Entity Source")];
+details=objects;objects[0].open=true;search.value=" Event ";listeners.get("input")({target:search});
+assert.equal(objects[0].hidden,false);assert.equal(objects[1].hidden,true);
+hook.beforeUpdate();objects=[object("event","Entity Event"),object("source","Entity Source")];
+details=objects;search.value="";hook.updated();
+assert.equal(search.value," Event ");assert.equal(objects[0].open,true);assert.equal(objects[1].hidden,true);
+assert.equal(focused,0);assert.equal(scrolled,0);
+// Changing sections clears only this section's local filter.
+el.dataset.specificationSection="data";hook.beforeUpdate();hook.updated();
+assert.equal(search.value,"");assert.equal(objects[1].hidden,false);
+// Explicit links reveal and focus their target; missing links have no side effects.
+events.get("focus-spec-object")({id:"missing"});assert.equal(focused,0);
+search.value="Event";listeners.get("input")({target:search});
+events.get("focus-spec-object")({id:"source"});
+assert.equal(search.value,"");assert.equal(objects[1].open,true);assert.equal(objects[1].hidden,false);
+assert.equal(focused,1);assert.equal(scrolled,1);
 hook.destroyed();assert.equal(hook.abort.signal.aborted,true);
 '''
         root = pathlib.Path(__file__).resolve().parents[2]

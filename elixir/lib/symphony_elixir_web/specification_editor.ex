@@ -1,30 +1,46 @@
 defmodule SymphonyElixirWeb.SpecificationEditor do
   @moduledoc "Validates browser edits against the owned specification draft and its revision."
   alias SymphonyElixir.Specification.Document
+  alias SymphonyElixir.Specification.Object
 
   @spec edit(map(), map(), map(), String.t()) :: {:ok, map()} | {:error, atom()}
   def edit(draft, state, params, section) do
     if bound?(draft, state, params, section) do
       params = Map.reject(params, fn {key, value} -> key in ["items", "diagrams"] and is_nil(value) end)
-      params = params |> normalize_inputs("items", ~w(kind title body)) |> normalize_inputs("diagrams", ~w(title source))
+      params = normalize_items(params, draft, section) |> normalize_inputs("diagrams", ~w(title source))
       normalize(Document.edit(draft, section, params))
     else
       {:error, :invalid_specification_edit}
     end
   end
 
-  @spec change(map(), String.t(), String.t(), term()) :: {:ok, map()} | {:error, atom()}
-  def change(draft, section, action, id) do
+  @spec change(map(), String.t(), String.t(), term(), map()) :: {:ok, map()} | {:error, atom()}
+  def change(draft, section, action, id, options \\ %{}) do
     result =
       case action do
-        "spec-add-item" -> Document.add(draft, section, "items")
+        "spec-add-item" -> Document.add(draft, section, "items", options["kind"])
         "spec-add-diagram" -> Document.add(draft, section, "diagrams")
         "spec-remove-item" -> Document.remove(draft, section, "items", id)
         "spec-remove-diagram" -> Document.remove(draft, section, "diagrams", id)
+        "spec-add-member" -> Document.member(draft, section, id, options["group"], "add")
+        "spec-remove-member" -> Document.member(draft, section, id, options["group"], "remove", options["row_id"])
         _ -> {:error, :invalid_specification_edit}
       end
 
     normalize(result)
+  end
+
+  defp normalize_items(params, %{"version" => 1}, _section), do: normalize_inputs(params, "items", ~w(kind title body))
+
+  defp normalize_items(params, draft, section) do
+    case params["items"] do
+      rows when is_map(rows) ->
+        known = Map.new(draft["sections"][section]["items"], &{&1["id"], &1})
+        Map.put(params, "items", Map.new(rows, fn {id, row} -> {id, if(known[id], do: Object.normalize(known[id], row), else: row)} end))
+
+      _ ->
+        params
+    end
   end
 
   @spec revision(term()) :: non_neg_integer() | nil

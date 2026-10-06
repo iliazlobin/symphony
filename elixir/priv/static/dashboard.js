@@ -1646,6 +1646,24 @@
   const SpecificationWorkspace = {
     mounted() {
       this.abort = new AbortController();
+      this.section = this.el.dataset.specificationSection;
+      this.query = "";
+      this.el.addEventListener("input", event => {
+        if (!event.target.matches("[data-spec-search]")) return;
+        this.query = event.target.value;
+        this.filterObjects(this.query);
+      }, {signal: this.abort.signal});
+      this.handleEvent("focus-spec-object", ({id}) => {
+        const object = [...this.el.querySelectorAll("[data-spec-item-id]")].find(element => element.dataset.specItemId === id);
+        if (!object) return;
+        const search = this.el.querySelector("[data-spec-search]");
+        if (search) search.value = "";
+        this.query = "";
+        this.filterObjects("");
+        object.open = true;
+        object.scrollIntoView({block: "nearest", behavior: "smooth"});
+        object.querySelector("summary")?.focus({preventScroll: true});
+      });
       this.el.addEventListener("keydown", event => {
         const tab = event.target.closest('[role="tab"]');
         if (!tab || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
@@ -1656,11 +1674,24 @@
       }, {signal: this.abort.signal});
     },
     beforeUpdate() {
-      this.historyDisclosure = new Map([...this.el.querySelectorAll("details.specification-history[id]")].map(details => [details.id, details.open]));
+      this.historyDisclosure = new Map([...this.el.querySelectorAll("details.specification-history[id], details[data-spec-disclosure][id]")].map(details => [details.id, details.open]));
     },
     updated() {
-      this.el.querySelectorAll("details.specification-history[id]").forEach(details => {
+      if (this.section !== this.el.dataset.specificationSection) {
+        this.section = this.el.dataset.specificationSection;
+        this.query = "";
+      }
+      this.el.querySelectorAll("details.specification-history[id], details[data-spec-disclosure][id]").forEach(details => {
         if (this.historyDisclosure?.has(details.id)) details.open = this.historyDisclosure.get(details.id);
+      });
+      const search = this.el.querySelector("[data-spec-search]");
+      if (search) search.value = this.query;
+      this.filterObjects(this.query);
+    },
+    filterObjects(query) {
+      const term = query.trim().toLowerCase();
+      this.el.querySelectorAll("[data-spec-search-text]").forEach(object => {
+        object.hidden = term !== "" && !object.dataset.specSearchText.toLowerCase().includes(term);
       });
     },
     destroyed() { this.abort.abort(); }

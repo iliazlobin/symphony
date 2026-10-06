@@ -5,7 +5,7 @@ defmodule SymphonyElixirWeb.SpecificationEditorTest do
   alias SymphonyElixirWeb.SpecificationEditor, as: Editor
 
   test "edits keep stable identities and update only the owned section" do
-    draft = Document.new("project")
+    draft = legacy("project")
     {:ok, draft} = Editor.change(draft, "brief", "spec-add-item", nil)
     {:ok, draft} = Editor.change(draft, "brief", "spec-add-diagram", nil)
     [item] = draft["sections"]["brief"]["items"]
@@ -28,7 +28,7 @@ defmodule SymphonyElixirWeb.SpecificationEditorTest do
   end
 
   test "stale, foreign and substituted browser fields cannot retarget the draft" do
-    draft = Document.new("project")
+    draft = legacy("project")
     {:ok, draft} = Editor.change(draft, "requirements", "spec-add-item", nil)
     base = params(draft, "requirements")
     [item] = draft["sections"]["requirements"]["items"]
@@ -56,7 +56,7 @@ defmodule SymphonyElixirWeb.SpecificationEditorTest do
   end
 
   test "empty sections and bounded revisions are accepted without forging items" do
-    draft = Document.new("project")
+    draft = legacy("project")
     assert {:ok, ^draft} = Editor.edit(draft, %{"storage_revision" => 0}, params(draft, "brief"), "brief")
     assert Editor.revision(0) == 0
     assert Editor.revision("12") == 12
@@ -64,7 +64,7 @@ defmodule SymphonyElixirWeb.SpecificationEditorTest do
   end
 
   test "decoded LiveView unused-input metadata does not become specification content" do
-    draft = Document.new("project")
+    draft = legacy("project")
     {:ok, draft} = Editor.change(draft, "brief", "spec-add-item", nil)
     {:ok, draft} = Editor.change(draft, "brief", "spec-add-diagram", nil)
     [item] = draft["sections"]["brief"]["items"]
@@ -92,7 +92,7 @@ defmodule SymphonyElixirWeb.SpecificationEditorTest do
   end
 
   test "unused metadata cannot disguise unknown, malformed or incomplete fields" do
-    draft = Document.new("project")
+    draft = legacy("project")
     {:ok, draft} = Editor.change(draft, "brief", "spec-add-item", nil)
     {:ok, draft} = Editor.change(draft, "brief", "spec-add-diagram", nil)
     base = params(draft, "brief")
@@ -128,4 +128,6 @@ defmodule SymphonyElixirWeb.SpecificationEditorTest do
       "diagrams" => if(draft["sections"][section]["diagrams"] == [], do: nil, else: values.(draft["sections"][section]["diagrams"], ~w(title source)))
     }
   end
+
+  defp legacy(project), do: Document.new(project) |> Map.put("version", 1)
 end

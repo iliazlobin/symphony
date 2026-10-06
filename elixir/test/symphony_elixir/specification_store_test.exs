@@ -302,6 +302,24 @@ defmodule SymphonyElixir.Specification.StoreTest do
     assert {:ok, %{"draft" => ^document}} = Store.read(project, :operator, pid)
   end
 
+  test "typed conversion persists beside immutable legacy reviews and survives owner restart", c do
+    owner = start_supervised!({Store, c.opts})
+    assert {:ok, %{"storage_revision" => 1}} = Store.save(@project, 0, c.document, :operator, owner)
+    assert {:ok, %{"storage_revision" => 2, "reviewed" => old}} = Store.review(@project, 1, :operator, owner)
+    {:ok, structured} = Document.upgrade(c.document)
+    assert {:error, :stale_specification_revision} = Store.save(@project, 1, structured, :operator, owner)
+    assert {:ok, %{"storage_revision" => 3, "review_count" => 1}} = Store.save(@project, 2, structured, :operator, owner)
+    assert {:ok, record} = Store.reviewed(@project, old["ref"], :operator, owner)
+    assert record["specification"] == c.document
+    assert Document.content_ref(record["specification"]) == old["ref"]
+    assert {:ok, %{"storage_revision" => 4, "review_count" => 2}} = Store.review(@project, 3, :operator, owner)
+    assert :ok = stop_supervised(Store)
+    restarted = start_supervised!({Store, c.opts})
+    assert {:ok, %{"draft" => ^structured, "storage_revision" => 4, "review_count" => 2}} = Store.read(@project, :operator, restarted)
+    assert {:ok, ^record} = Store.reviewed(@project, old["ref"], :operator, restarted)
+    assert {:error, :unauthorized} = Store.save(@project, 4, structured, :guest, restarted)
+  end
+
   test "journal capacity failure keeps the draft and every immutable version without pruning", c do
     large = put_in(c.document, ["sections", "brief", "items"], Enum.map(1..37, fn n -> %{"id" => "goal#{n}", "kind" => "goal", "title" => "Goal", "body" => String.duplicate("x", 24_000)} end))
     assert Document.valid?(large, @project)
@@ -423,6 +441,7 @@ defmodule SymphonyElixir.Specification.StoreTest do
 
   defp document do
     Document.new(@project)
+    |> Map.put("version", 1)
     |> Map.put("document_id", "Specification1")
     |> put_in(["sections", "brief", "items"], [%{"id" => "goal1", "kind" => "goal", "title" => "Useful discovery", "body" => "Find a relevant local event."}])
   end

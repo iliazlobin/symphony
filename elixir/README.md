@@ -919,19 +919,56 @@ No operation publishes to Notion automatically. **Project design notes** opens t
 Notion record. The Events Concierge example remains illustrative.
 
 **Design** is the separate structured specification: Brief, Requirements, Data,
-Architecture and Decisions. Items have stable IDs, a section-specific kind, title and
-editable details. Named Mermaid diagrams retain their source and show a local preview;
+Architecture and Decisions. Compact objects have stable IDs, a section-specific type,
+summary, design state and optional Must/Should/Could priority. Expand an object to edit
+its typed properties and table rows; search applies only to the open section. Design
+state records a design claim, independently of task admission, evidence and acceptance.
+
+| Object | Structured content |
+| --- | --- |
+| Functional requirement | Actor, behavior and acceptance criteria |
+| Non-functional requirement | Quality category, measurement scope and numeric targets with comparison, unit, percentile and workload/window |
+| Entity | Owning component, invariant and named fields with type, presence, key role and entity reference |
+| Relationship | Source/target objects, cardinality and rule |
+| Component / interface | Role, technology, boundary, responsibilities; protocol, operation, access and contract |
+| Flow | Trigger, ordered component/input/output steps and recovery |
+| Decision / question / validation | Choice, reason and alternatives; answer and resolution; method, expected result and checks |
+
+Object links use stable IDs, with Uses/Realizes/Validates/Informs/Depends-on relations.
+Open a linked object in its section without discarding draft edits. Deleting a referenced
+object is rejected until its references are removed. Sources retain descriptive HTTP(S)
+links; URLs with embedded user information or active schemes are rejected. Supporting notes retain source
+detail outside the main object fields. Named Mermaid diagrams retain their source and show a local preview;
 syntax feedback does not erase the source. **Save specification** saves the draft.
 **Review specification** previews that saved version; **Save reviewed version** retains
 an immutable copy. Open a past version read-only and return to the current draft.
 Idea scenes are never automatically imported or interpreted as an approved specification.
+
+New documents use version 2. Existing version-1 drafts and reviewed versions remain
+readable with their original hashes. **Structure draft** explicitly converts a draft,
+retaining every stable ID and original text in Notes; save after editing its properties.
+**Import structured objects** previews a version-2 JSON document before saving. It must
+match the current project/document identity and retain all existing item IDs, their
+original notes and diagrams. Import is blocked with unsaved edits or stale form context;
+save still compares the durable revision. Reviewed versions are never rewritten.
+Before converting retained drafts, preserve the specification journal in the private
+state backup. A version-1-only binary cannot read a journal containing version-2 drafts;
+rollback requires compatible code or the preserved pre-conversion journal. Keep the
+converted journal separately during recovery so subsequent edits and reviews are not lost.
+[`Specification.Object`](lib/symphony_elixir/specification/object.ex) owns the closed
+per-type schemas: each item has `id`, `kind`, `title`, `body`, `state`, `priority`,
+`attributes`, `rows`, `links`, `sources` and `notes`. Nested rows have stable `id`s;
+reference fields address other items in the same document. Targets are numbers or `null`
+for an unspecified target. Empty references are permitted in drafts. Diagram source is
+retained text rather than executable instructions.
 
 Specification storage is `<control.state_path>.specification/journal.json`, owned by
 `Specification.Store` independently of chat availability. Authentication, configured
 project scope, exclusive ownership and journal digest guard every read/write. Saves and
 reviews also require the caller's expected storage revision. Specifications are bounded
 to 1 MB, 200 items and 30 diagrams per section; titles allow 256 UTF-16 units, item details
-24,000 and Mermaid source 60,000. The journal is bounded to 32 MB; full storage stops changes
+24,000 and Mermaid source 60,000. Typed objects allow 100 rows, links and sources each;
+properties and row text have smaller schema-specific bounds. The journal is bounded to 32 MB; full storage stops changes
 without pruning history. Include this private directory in state backups; local durability
 does not establish cross-machine storage or an independent backup. Conflicting
 saves keep your open edits; compare them before using **Reload saved draft**. An empty

@@ -23,13 +23,13 @@ defmodule SymphonyElixirWeb.SpecificationViewTest do
   end
 
   test "functional and nonfunctional requirements edit stable rows with exact CAS form context" do
-    {:ok, document} = Document.add(Document.new(@project), "requirements", "items")
+    {:ok, document} = Document.add(legacy(@project), "requirements", "items")
     [item] = document["sections"]["requirements"]["items"]
     html = view_html(section: "requirements", draft: document, state: %{"storage_revision" => 7, "draft" => document}, dirty: true)
-    assert Floki.attribute(find(html, "form"), "phx-change") == ["spec-edit"]
-    assert Floki.attribute(find(html, "form"), "phx-submit") == ["spec-save"]
-    assert Floki.attribute(find(html, "input[name=storage_revision]"), "value") == ["7"]
-    assert Floki.attribute(find(html, "input[name=document_id]"), "value") == [document["document_id"]]
+    assert Floki.attribute(find(html, "form.specification-form"), "phx-change") == ["spec-edit"]
+    assert Floki.attribute(find(html, "form.specification-form"), "phx-submit") == ["spec-save"]
+    assert Floki.attribute(find(html, ".specification-form input[name=storage_revision]"), "value") == ["7"]
+    assert Floki.attribute(find(html, ".specification-form input[name=document_id]"), "value") == [document["document_id"]]
     assert Floki.attribute(find(html, "select"), "name") == ["items[#{item["id"]}][kind]"]
     assert Floki.attribute(find(html, "option"), "value") == ~w(functional nonfunctional)
     assert Floki.text(find(html, "[data-spec-status]")) == "Unsaved changes"
@@ -38,7 +38,7 @@ defmodule SymphonyElixirWeb.SpecificationViewTest do
   end
 
   test "Mermaid source is escaped, retained and hooked into one isolated SVG preview" do
-    {:ok, document} = Document.add(Document.new(@project), "data", "diagrams")
+    {:ok, document} = Document.add(legacy(@project), "data", "diagrams")
     source = "erDiagram\n  EVENT ||--o{ SAVED_CHOICE : saved\n<script>bad()</script>"
     document = put_in(document, ["sections", "data", "diagrams", Access.at(0), "source"], source)
     html = view_html(section: "data", draft: document)
@@ -53,13 +53,13 @@ defmodule SymphonyElixirWeb.SpecificationViewTest do
   end
 
   test "every form control has stable identity within its document and a distinct section or history context" do
-    {:ok, document} = Document.add(Document.new(@project), "brief", "items")
+    {:ok, document} = Document.add(legacy(@project), "brief", "items")
     {:ok, document} = Document.add(document, "brief", "diagrams")
     {:ok, document} = Document.add(document, "data", "items")
     html = view_html(draft: document, state: %{"draft" => document, "storage_revision" => 1})
-    controls = find(html, "form input, form select, form textarea")
+    controls = find(html, ".specification-form input, .specification-form select, .specification-form textarea")
     ids = Floki.attribute(controls, "id")
-    [form_id] = Floki.attribute(find(html, "form"), "id")
+    [form_id] = Floki.attribute(find(html, "form.specification-form"), "id")
     assert length(controls) == 9
     assert length(ids) == length(controls)
     assert length(Enum.uniq(ids)) == length(ids)
@@ -67,10 +67,10 @@ defmodule SymphonyElixirWeb.SpecificationViewTest do
 
     changed = put_in(document, ["sections", "brief", "items", Access.at(0), "title"], "A changed title")
     updated = view_html(draft: changed, state: %{"draft" => document, "storage_revision" => 2}, dirty: true)
-    assert Floki.attribute(find(updated, "form"), "id") == [form_id]
-    assert Floki.attribute(find(updated, "form input, form select, form textarea"), "id") == ids
+    assert Floki.attribute(find(updated, "form.specification-form"), "id") == [form_id]
+    assert Floki.attribute(find(updated, ".specification-form input, .specification-form select, .specification-form textarea"), "id") == ids
     assert Floki.attribute(find(updated, "input[name$='[title]']"), "value") == ["A changed title", ""]
-    assert Floki.attribute(find(updated, "input[name=storage_revision]"), "value") == ["2"]
+    assert Floki.attribute(find(updated, ".specification-form input[name=storage_revision]"), "value") == ["2"]
 
     contexts = [
       [draft: document, section: "data"],
@@ -83,9 +83,9 @@ defmodule SymphonyElixirWeb.SpecificationViewTest do
     context_ids =
       Enum.map(contexts, fn attrs ->
         rendered = view_html(attrs)
-        [id] = Floki.attribute(find(rendered, "form"), "id")
+        [id] = Floki.attribute(find(rendered, "form.specification-form"), "id")
         refute id == form_id
-        assert MapSet.disjoint?(MapSet.new(ids), MapSet.new(Floki.attribute(find(rendered, "form input, form select, form textarea"), "id")))
+        assert MapSet.disjoint?(MapSet.new(ids), MapSet.new(Floki.attribute(find(rendered, ".specification-form input, .specification-form select, .specification-form textarea"), "id")))
         id
       end)
 
@@ -93,7 +93,7 @@ defmodule SymphonyElixirWeb.SpecificationViewTest do
   end
 
   test "reviewed history renders read-only without exposing draft replacement or execution controls" do
-    {:ok, document} = Document.add(Document.new(@project), "brief", "items")
+    {:ok, document} = Document.add(legacy(@project), "brief", "items")
     document = put_in(document, ["sections", "brief", "items", Access.at(0), "body"], "Reviewed brief")
     ref = Document.content_ref(document)
     record = %{"ref" => ref, "document_id" => document["document_id"], "reviewed_at" => "2026-10-04T00:00:00Z"}
@@ -123,13 +123,13 @@ defmodule SymphonyElixirWeb.SpecificationViewTest do
     assert Floki.text(find(html, "[data-spec-status]")) == "Specification storage unavailable"
     assert html =~ "Retained &lt;draft&gt;"
     assert Floki.attribute(find(html, "[data-specification-project]"), "aria-label") == ["<script>System</script> specification"]
-    assert Floki.text(find(view_html(state: %{"draft" => Document.new(@project)}), "[data-spec-status]")) == "Saved draft"
+    assert Floki.text(find(view_html(state: %{"draft" => legacy(@project)}), "[data-spec-status]")) == "Saved draft"
     assert find(view_html(idea_url: "/?project=system&view=idea"), "a") != []
     for url <- [nil, "//evil.example/path", "javascript:alert(1)", "/\\evil", "/\nheader"], do: assert(find(view_html(idea_url: url), "a") == [])
   end
 
   test "read-only boards disable specification writes without claiming storage is unavailable" do
-    {:ok, document} = Document.add(Document.new(@project), "brief", "items")
+    {:ok, document} = Document.add(legacy(@project), "brief", "items")
     document = put_in(document, ["sections", "brief", "items", Access.at(0), "body"], "Saved draft")
     html = view_html(state: %{"draft" => document}, read_only: true, review_open: true)
     assert Floki.text(find(html, "[data-spec-status]")) == "Read-only board"
@@ -140,4 +140,5 @@ defmodule SymphonyElixirWeb.SpecificationViewTest do
 
   defp view_html(attrs \\ []), do: render_component(&SpecificationView.content/1, Keyword.merge([project: @project, project_label: "System"], attrs))
   defp find(html, selector), do: html |> Floki.parse_fragment!() |> Floki.find(selector)
+  defp legacy(project), do: Document.new(project) |> Map.put("version", 1)
 end
