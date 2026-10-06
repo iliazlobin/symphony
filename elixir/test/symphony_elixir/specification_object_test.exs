@@ -119,6 +119,8 @@ defmodule SymphonyElixir.Specification.ObjectTest do
     end
 
     assert Object.normalize(item, nil) == nil
+    empty_members = Object.form(Document.item("requirements", "nonfunctional"))
+    assert Object.normalize(item, Map.merge(empty_members, %{"rows" => nil, "links" => nil, "sources" => nil})) == empty_members
     assert {:error, :invalid_specification_form} = Document.edit(document, "requirements", %{"items" => %{}})
     assert {:error, :invalid_specification_form} = Document.edit(document, "requirements", %{"items" => %{item["id"] => nil}})
   end
@@ -130,7 +132,18 @@ defmodule SymphonyElixir.Specification.ObjectTest do
     assert Object.safe_url?("https://example.com/source?revision=1#model")
     assert Object.safe_url?("http://localhost:8778/")
 
-    for url <- [nil, 1, "javascript:alert(1)", "//evil.example", "https://user:password@example.com", "https://example.com/\nlink", "https://example.com/\\link", <<255>>, String.duplicate("x", 4097)] do
+    for url <- [
+          nil,
+          1,
+          "javascript:alert(1)",
+          "//evil.example",
+          "https://user:password@example.com",
+          "https://example.com:invalid/",
+          "https://example.com/\nlink",
+          "https://example.com/\\link",
+          <<255>>,
+          String.duplicate("x", 4097)
+        ] do
       refute Object.safe_url?(url)
       bad = put_in(document, ["sections", "data", "items", Access.at(0), "sources", Access.at(0), "url"], url)
       refute Document.valid?(bad, @project)

@@ -58,6 +58,9 @@ defmodule SymphonyElixirWeb.SpecificationEditorTest do
   test "empty sections and bounded revisions are accepted without forging items" do
     draft = legacy("project")
     assert {:ok, ^draft} = Editor.edit(draft, %{"storage_revision" => 0}, params(draft, "brief"), "brief")
+    typed = Document.new("project")
+    assert {:ok, ^typed} = Editor.edit(typed, %{"storage_revision" => 0}, params(typed, "brief"), "brief")
+    assert {:error, :invalid_specification_edit} = Editor.edit(typed, %{"storage_revision" => 0}, Map.put(params(typed, "brief"), "items", []), "brief")
     assert Editor.revision(0) == 0
     assert Editor.revision("12") == 12
     for invalid <- [nil, -1, "-1", "1bad", [], 1.0], do: assert(is_nil(Editor.revision(invalid)))
