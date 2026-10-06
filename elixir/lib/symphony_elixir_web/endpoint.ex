@@ -14,11 +14,12 @@ defmodule SymphonyElixirWeb.Endpoint do
     same_site: "Lax"
   ]
 
-  socket("/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [:peer_data, :uri, session: {__MODULE__, :session_options, []}]],
+  socket("/live", SymphonyElixirWeb.LiveSocket,
+    websocket: [connect_info: [:peer_data, :uri, :x_headers, session: {__MODULE__, :session_options, []}]],
     longpoll: false
   )
 
+  plug(SymphonyElixirWeb.IAPIdentity, :request)
   plug(SymphonyElixirWeb.BrowserOrigin)
   plug(Plug.RequestId)
   plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])
@@ -32,6 +33,7 @@ defmodule SymphonyElixirWeb.Endpoint do
   plug(Plug.MethodOverride)
   plug(Plug.Head)
   plug(:project_session)
+  plug(SymphonyElixirWeb.IAPIdentity, :session)
   plug(SymphonyElixirWeb.Router)
 
   @doc "Shared HTTP and LiveView cookie options; a workspace owns one browser session."

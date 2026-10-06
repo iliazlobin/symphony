@@ -25,7 +25,7 @@ defmodule SymphonyElixirWeb.BrowserOrigin do
     ip = SymphonyElixirWeb.WorkspacePath.peer_ip(ip)
 
     case BrowserIdentity.settings() do
-      {:ok, %{uri: %{scheme: "https"} = public} = config} ->
+      {:ok, %{provider: "google", uri: %{scheme: "https"} = public} = config} ->
         if uri.host == public.host and (SymphonyElixirWeb.WorkspacePath.enabled?() or BrowserIdentity.trusted_peer?(ip, config)), do: %{uri | scheme: "https", port: public.port}, else: uri
 
       _ ->
@@ -41,7 +41,7 @@ defmodule SymphonyElixirWeb.BrowserOrigin do
   @spec call(Plug.Conn.t(), keyword()) :: Plug.Conn.t()
   def call(conn, _opts) do
     case BrowserIdentity.settings() do
-      {:ok, %{uri: %{scheme: "https"} = uri} = config} ->
+      {:ok, %{provider: "google", uri: %{scheme: "https"} = uri} = config} ->
         if conn.host == uri.host and (SymphonyElixirWeb.WorkspacePath.enabled?() or BrowserIdentity.trusted_peer?(Plug.Conn.get_peer_data(conn).address, config)),
           do: %{conn | scheme: :https, port: uri.port},
           else: conn

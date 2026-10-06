@@ -60,6 +60,51 @@ class ApplicationEntrypointTests(unittest.TestCase):
         self.assertFalse((paths["authentication"] / "auth.json").exists())
         self.assertFalse(paths["journal"].exists())
 
+    def enable_iap(self):
+        self.config["server"]["host"] = "0.0.0.0"
+        self.config["browser_auth"] = {
+            "provider": "iap", "public_origin": "https://symphony.example.com",
+            "audience": "/projects/123456/global/backendServices/987654",
+            "allowed_emails": ["owner@example.com"],
+        }
+
+    def test_remote_iap_keeps_state_and_execution_guards(self):
+        self.enable_iap()
+        _, root, paths = self.validate()
+        entrypoint.prepare_directories(root, paths)
+        self.assertFalse(paths["journal"].exists())
+        self.assertFalse((paths["authentication"] / "auth.json").exists())
+        self.config["codex"]["command"] = entrypoint.CHAT_EXECUTABLE
+        with self.assertRaisesRegex(entrypoint.ConfigurationError, "execution is not integrated"):
+            self.validate()
+
+    def test_remote_listener_rejects_missing_or_invalid_iap_boundary(self):
+        self.enable_iap()
+        invalid = {
+            "provider": ["google", "local_token", None],
+            "public_origin": ["http://symphony.example.com", "https://localhost", "https://symphony.example.com/",
+                              "https://symphony.example.com?token=hidden", "https://other@symphony.example.com",
+                              "https://symphony.example.com:444", "https://symphony.example.com:bad"],
+            "audience": ["/projects/123/global/backendServices/name", "https://example.com", None],
+            "allowed_emails": [[], ["owner@example.com", "OWNER@example.com"], ["invalid"], "owner@example.com"],
+        }
+        for field, values in invalid.items():
+            original = self.config["browser_auth"][field]
+            for value in values:
+                with self.subTest(field=field, value=value), self.assertRaises(entrypoint.ConfigurationError):
+                    self.config["browser_auth"][field] = value
+                    self.validate()
+            self.config["browser_auth"][field] = original
+
+    def test_iap_origin_and_audience_can_come_from_explicit_environment(self):
+        self.enable_iap()
+        self.config["browser_auth"]["public_origin"] = "$PUBLIC_ORIGIN"
+        self.config["browser_auth"]["audience"] = "$IAP_AUDIENCE"
+        self.validate({"PUBLIC_ORIGIN": "https://symphony.example.com",
+                       "IAP_AUDIENCE": "/projects/123456/global/backendServices/987654"})
+        with self.assertRaises(entrypoint.ConfigurationError):
+            self.validate()
+
     def test_pilot_rejects_task_execution_even_if_controls_can_be_resumed(self):
         for key, value in (("codex", {"command": "/opt/symphony/bin/codex"}),
                            ("hooks", {"after_create": "git clone example"}),

@@ -5,7 +5,7 @@ defmodule SymphonyElixirWeb.BrowserAuth do
   alias Plug.Conn
   alias SymphonyElixir.{Config, Orchestrator}
 
-  alias SymphonyElixirWeb.{BrowserIdentity, BrowserSessions}
+  alias SymphonyElixirWeb.{BrowserIdentity, BrowserSessions, IAPIdentity}
 
   @session_key "symphony_operator"
   @max_age_seconds 8 * 60 * 60
@@ -17,7 +17,8 @@ defmodule SymphonyElixirWeb.BrowserAuth do
           required(:peer_ip) => term(),
           required(:tracker_fingerprint) => term(),
           optional(:scheme) => term(),
-          optional(:port) => term()
+          optional(:port) => term(),
+          optional(:iap_identity) => term()
         }
 
   @spec google_enabled?() :: boolean()
@@ -30,7 +31,8 @@ defmodule SymphonyElixirWeb.BrowserAuth do
   def context(session, socket) do
     uri = LiveView.get_connect_info(socket, :uri)
     peer = LiveView.get_connect_info(socket, :peer_data)
-    uri = SymphonyElixirWeb.BrowserOrigin.socket_uri(uri, peer)
+    verified = iap_socket_identity(socket, uri)
+    uri = if verified, do: %{uri | scheme: "https", port: URI.parse(verified.origin).port}, else: SymphonyElixirWeb.BrowserOrigin.socket_uri(uri, peer)
 
     %{
       marker: session[@session_key],
@@ -38,13 +40,26 @@ defmodule SymphonyElixirWeb.BrowserAuth do
       peer_ip: if(is_map(peer), do: SymphonyElixirWeb.WorkspacePath.peer_ip(Map.get(peer, :address))),
       scheme: if(is_map(uri), do: Map.get(uri, :scheme)),
       port: if(is_map(uri), do: Map.get(uri, :port)),
+      iap_identity: verified,
       tracker_fingerprint: Orchestrator.tracker_fingerprint()
     }
   end
 
   @spec authorized?(term()) :: boolean()
+  def authorized?(%{marker: %{"provider" => "iap", "id" => id}, iap_identity: %{} = verified, tracker_fingerprint: scope} = context) do
+    with {:ok, config} <- IAPIdentity.settings(),
+         true <- google_address?(context, config),
+         true <- is_binary(scope) and scope == Orchestrator.tracker_fingerprint(),
+         {:ok, session} <- BrowserSessions.session(id) do
+      IAPIdentity.valid_session?(session, verified, scope)
+    else
+      _ -> false
+    end
+  end
+
   def authorized?(%{marker: %{"provider" => "google", "id" => id}, tracker_fingerprint: scope} = context) do
     with {:ok, config} <- BrowserIdentity.settings(),
+         true <- config.provider == "google",
          true <- google_address?(context, config),
          {:ok, session} <- BrowserSessions.session(id) do
       session.fingerprint == config.fingerprint and (SymphonyElixirWeb.WorkspacePath.enabled?() or session.scope == scope) and
@@ -101,6 +116,7 @@ defmodule SymphonyElixirWeb.BrowserAuth do
       host: conn.host,
       port: conn.port,
       scheme: Atom.to_string(conn.scheme),
+      iap_identity: conn.assigns[:iap_identity],
       peer_ip: SymphonyElixirWeb.WorkspacePath.peer_ip(Conn.get_peer_data(conn).address),
       tracker_fingerprint: Orchestrator.tracker_fingerprint()
     }
@@ -108,7 +124,17 @@ defmodule SymphonyElixirWeb.BrowserAuth do
 
   @spec revoke(term()) :: :ok | {:error, atom()}
   def revoke(%{"provider" => "google", "id" => id}), do: BrowserSessions.revoke(id)
+  def revoke(%{"provider" => "iap", "id" => id}), do: BrowserSessions.revoke(id)
   def revoke(_marker), do: :ok
+
+  defp iap_socket_identity(socket, uri) do
+    if IAPIdentity.enabled?() do
+      case IAPIdentity.verify_headers(LiveView.get_connect_info(socket, :x_headers), uri) do
+        {:ok, identity} -> identity
+        _ -> nil
+      end
+    end
+  end
 
   defp google_address?(context, config) do
     context[:host] == config.uri.host and context[:scheme] == config.uri.scheme and context[:port] == config.uri.port and

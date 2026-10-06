@@ -46,6 +46,7 @@ defmodule SymphonyElixir.Application do
       SymphonyElixir.Specification.Store,
       SymphonyElixir.Assurance.Store,
       SymphonyElixirWeb.BrowserSessions,
+      SymphonyElixirWeb.IAPKeys,
       SymphonyElixirWeb.BoardCache,
       SymphonyElixir.Chat.PRUpdates,
       SymphonyElixir.HttpServer,

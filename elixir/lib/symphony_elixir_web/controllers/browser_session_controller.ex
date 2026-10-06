@@ -4,13 +4,36 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
 
   alias Phoenix.HTML.Safe
   alias Plug.Conn
-  alias SymphonyElixirWeb.{BrowserAuth, BrowserLoginHTML, BrowserOrigin, BrowserSessions, Endpoint, GoogleOIDC}
+  alias SymphonyElixirWeb.{BrowserAuth, BrowserLoginHTML, BrowserOrigin, BrowserSessions, Endpoint, GoogleOIDC, IAPIdentity}
 
   @spec login(Conn.t(), map()) :: Conn.t()
   def login(conn, params) do
+    if IAPIdentity.enabled?(), do: iap_login(conn, params), else: google_login(conn, params)
+  end
+
+  defp google_login(conn, params) do
     case BrowserOrigin.loopback_login_url(conn) do
       nil -> login_page(conn, params)
       url -> conn |> no_store() |> redirect(external: url <> if(params["continue"] == "1", do: "?continue=1", else: ""))
+    end
+  end
+
+  defp iap_login(conn, params) do
+    if BrowserAuth.authorized?(BrowserAuth.conn_context(conn)) do
+      conn |> no_store() |> redirect(to: return_to(Map.put_new(params, "return_to", "/")))
+    else
+      assigns = %{csrf_token: Plug.CSRFProtection.get_csrf_token(), error: nil, continue: false, iap_auth: true}
+      conn |> no_store() |> put_resp_header("referrer-policy", "same-origin") |> html(BrowserLoginHTML.render(assigns) |> Safe.to_iodata() |> IO.iodata_to_binary())
+    end
+  end
+
+  @spec iap(Conn.t(), map()) :: Conn.t()
+  def iap(conn, params) do
+    if IAPIdentity.enabled?() and BrowserAuth.browser_request?(conn) do
+      conn = conn |> disconnect_sessions() |> delete_session("iap_signed_out") |> configure_session(renew: true) |> IAPIdentity.call(:session)
+      if conn.halted, do: conn, else: conn |> no_store() |> redirect(to: return_to(Map.put_new(params, "return_to", "/")))
+    else
+      conn |> no_store() |> send_resp(403, "Sign-in requires the configured browser origin.") |> halt()
     end
   end
 
@@ -45,7 +68,7 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
 
   @spec google(Conn.t(), map()) :: Conn.t()
   def google(conn, params) do
-    if BrowserAuth.browser_request?(conn) and BrowserAuth.google_enabled?() do
+    if BrowserAuth.browser_request?(conn) and BrowserAuth.google_enabled?() and not IAPIdentity.enabled?() do
       google_intent(conn, params)
     else
       rejected_origin(conn)
@@ -220,11 +243,21 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
       |> delete_session("google_flow")
       |> delete_session("google_continue")
       |> put_session("google_signed_out", true)
+      |> put_session("iap_signed_out", IAPIdentity.enabled?())
       |> no_store()
       |> put_flash(:info, "Signed out.")
-      |> redirect(to: if(BrowserAuth.google_enabled?(), do: SymphonyElixirWeb.WorkspacePath.path("/login"), else: SymphonyElixirWeb.WorkspacePath.path("/?panel=settings")))
+      |> logout_redirect()
     else
       conn |> send_resp(403, "Operator controls require a same-origin loopback browser.") |> halt()
+    end
+  end
+
+  defp logout_redirect(conn) do
+    if IAPIdentity.enabled?() do
+      {:ok, config} = IAPIdentity.settings()
+      redirect(conn, external: config.origin <> "/?gcp-iap-mode=CLEAR_LOGIN_COOKIE")
+    else
+      redirect(conn, to: if(BrowserAuth.google_enabled?(), do: SymphonyElixirWeb.WorkspacePath.path("/login"), else: SymphonyElixirWeb.WorkspacePath.path("/?panel=settings")))
     end
   end
 
