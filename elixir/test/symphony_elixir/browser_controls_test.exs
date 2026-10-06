@@ -407,12 +407,14 @@ defmodule SymphonyElixir.BrowserControlsTest do
 
   test "websocket transport rejects foreign origin and accepts exact scheme host and port" do
     conn = local_conn() |> Plug.Conn.put_req_header("origin", "https://evil.example")
-    rejected = Transport.check_origin(conn, Phoenix.LiveView.Socket, Endpoint, check_origin: :conn)
+    rejected = Transport.check_origin(conn, SymphonyElixirWeb.LiveSocket, Endpoint, check_origin: :conn)
     assert rejected.halted
     assert rejected.status == 403
     good = local_conn() |> Plug.Conn.put_req_header("origin", "http://localhost")
-    refute Transport.check_origin(good, Phoenix.LiveView.Socket, Endpoint, check_origin: :conn).halted
-    assert {"/live", Phoenix.LiveView.Socket, opts} = List.keyfind(Endpoint.__sockets__(), "/live", 0)
+    refute Transport.check_origin(good, SymphonyElixirWeb.LiveSocket, Endpoint, check_origin: :conn).halted
+    assert {"/live", SymphonyElixirWeb.LiveSocket, opts} = List.keyfind(Endpoint.__sockets__(), "/live", 0)
+    assert opts[:websocket][:connect_info] == [:peer_data, :uri, :x_headers, session: {Endpoint, :session_options, []}]
+    assert opts[:longpoll] == false
     assert opts[:websocket][:check_origin] == nil
     assert Endpoint.config(:check_origin) == :conn
   end

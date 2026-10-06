@@ -38,6 +38,7 @@ defmodule SymphonyElixirWeb.Router do
 
     get("/login", BrowserSessionController, :login)
     post("/auth/google", BrowserSessionController, :google)
+    post("/auth/iap", BrowserSessionController, :iap)
     get("/auth/google/callback", BrowserSessionController, :callback)
     post("/operator/session", BrowserSessionController, :create)
     post("/operator/session/logout", BrowserSessionController, :delete)

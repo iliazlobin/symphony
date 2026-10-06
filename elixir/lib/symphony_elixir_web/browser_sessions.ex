@@ -35,7 +35,7 @@ defmodule SymphonyElixirWeb.BrowserSessions do
       {:reply, {:error, :capacity}, state}
     else
       id = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
-      ttl = if kind == :flow, do: 600, else: 28_800
+      ttl = session_ttl(kind, value)
       {:reply, {:ok, id}, %{state | entries: Map.put(state.entries, id, {kind, value, now + ttl})}}
     end
   end
@@ -65,6 +65,13 @@ defmodule SymphonyElixirWeb.BrowserSessions do
 
   defp execute({:revoke, id}, state, _now), do: {:reply, :ok, %{state | entries: Map.delete(state.entries, id)}}
   defp execute(_invalid, state, _now), do: {:reply, {:error, :invalid}, state}
+
+  defp session_ttl(:flow, _value), do: 600
+
+  defp session_ttl(:session, %{provider: "iap", identity: %{"exp" => expires}}) when is_integer(expires),
+    do: max(0, min(expires - System.system_time(:second), 660))
+
+  defp session_ttl(:session, _value), do: 28_800
 
   defp call(server, message) do
     if server == __MODULE__ and SymphonyElixirWeb.WorkspacePath.enabled?(),

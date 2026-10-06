@@ -12,7 +12,12 @@ listenerTemplate:
       symphony-ci-role: listener
   spec:
     nodeSelector:
-      cloud.google.com/gke-nodepool: shared-dev
+      node-restriction.kubernetes.io/workload: symphony-services
+    tolerations:
+      - key: workload
+        operator: Equal
+        value: symphony-services
+        effect: NoSchedule
     securityContext:
       runAsNonRoot: true
       runAsUser: 1001

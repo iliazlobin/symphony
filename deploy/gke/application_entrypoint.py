@@ -78,6 +78,42 @@ def contains(parent, child):
     return child == parent or parent in child.parents
 
 
+def validate_browser_binding(config, environment):
+    """A remote listener requires the application's signed IAP identity boundary."""
+    server = mapping(config, "server")
+    if server.get("host") in ("127.0.0.1", "::1"):
+        return
+    browser = mapping(config, "browser_auth")
+    origin = resolve_value(browser.get("public_origin"), environment)
+    audience = resolve_value(browser.get("audience"), environment)
+    emails = browser.get("allowed_emails")
+    if server.get("host") != "0.0.0.0" or browser.get("provider") != "iap":
+        raise ConfigurationError("Remote binding requires explicit IAP browser authentication")
+    if not isinstance(origin, str):
+        raise ConfigurationError("IAP requires an explicit HTTPS public origin")
+    public = urlsplit(origin)
+    try:
+        valid_origin = (
+            public.scheme == "https" and bool(public.hostname)
+            and public.hostname not in ("localhost", "127.0.0.1", "::1")
+            and public.username is None and public.password is None
+            and public.path == "" and not public.query and not public.fragment
+            and public.port in (None, 443) and origin == "https://" + public.hostname
+        )
+    except ValueError:
+        valid_origin = False
+    if not valid_origin:
+        raise ConfigurationError("IAP requires a canonical bare HTTPS public origin")
+    if not isinstance(audience, str) or not re.fullmatch(r"/projects/[0-9]+/global/backendServices/[0-9]+", audience):
+        raise ConfigurationError("IAP requires the exact numeric backend service audience")
+    if (
+        not isinstance(emails, list) or not 1 <= len(emails) <= 20
+        or any(not isinstance(email, str) or not re.fullmatch(r"[^\s@]+@[^\s@]+", email) for email in emails)
+        or len(set(email.lower() for email in emails)) != len(emails)
+    ):
+        raise ConfigurationError("IAP requires a nonempty unique email allowlist")
+
+
 def validate(workflow_path, state_root, environment):
     """Validate without rewriting workflow, journal, authentication or permissions."""
     for name in ("OPENAI_API_KEY", "CODEX_API_KEY"):
@@ -132,8 +168,7 @@ def validate(workflow_path, state_root, environment):
     if str(executable) != CHAT_EXECUTABLE:
         raise ConfigurationError("Management chat must use the packaged native Codex executable")
     server = mapping(config, "server")
-    if server.get("host") not in ("127.0.0.1", "::1"):
-        raise ConfigurationError("Management browser access remains loopback-only until remote identity is implemented")
+    validate_browser_binding(config, environment)
     if type(server.get("port")) is not int or not 1 <= server["port"] <= 65535:
         raise ConfigurationError("Configure an explicit valid server port")
 

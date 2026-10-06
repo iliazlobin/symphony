@@ -1,3 +1,4 @@
 .runtime/
+.local/
 __pycache__/
 *.pyc

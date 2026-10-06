@@ -50,7 +50,10 @@ class PrivateCITests(unittest.TestCase):
         self.assertEqual(self.runner["controllerServiceAccount"], {"namespace": "symphony-ci-system", "name": "symphony-ci-controller"})
         self.assertEqual(self.runner["githubConfigSecret"], "symphony-ci-github-app")
         self.assertEqual(self.runner["githubConfigUrl"], "https://github.com/iliazlobin/symphony")
-        self.assertEqual(self.runner["listenerTemplate"]["spec"]["nodeSelector"], {"cloud.google.com/gke-nodepool": "shared-dev"})
+        for trusted in (self.controller, self.runner["listenerTemplate"]["spec"]):
+            self.assertEqual(trusted["nodeSelector"], {"node-restriction.kubernetes.io/workload": "symphony-services"})
+            self.assertEqual(trusted["tolerations"], [{"key": "workload", "operator": "Equal", "value": "symphony-services", "effect": "NoSchedule"}])
+            self.assertNotIn("runtimeClassName", trusted)
         for namespace in (r for r in self.resources if r["kind"] == "Namespace"):
             self.assertEqual(namespace["metadata"]["labels"]["pod-security.kubernetes.io/enforce"], "restricted")
 
@@ -175,6 +178,25 @@ class PrivateCITests(unittest.TestCase):
         self.assertIn("hashlib.sha256", install)
         self.assertNotIn("--from-literal", install)
         self.assertNotIn("--from-file", install)
+
+    def test_image_version_guards_reject_process_failure_after_matching_output(self):
+        dockerfile = (CI / "Dockerfile").read_text()
+        # Execute the real shell guards with disposable commands that can emit
+        # the expected version before failing; grep alone masks that failure.
+        guard = "node_version=" + dockerfile.split("&& node_version=", 1)[1].split("&& erl -noshell", 1)[0]
+        guard = guard.replace("\\\n", " ").strip().removesuffix("&&").strip()
+        for node_exit, elixir_exit in ((0, 0), (139, 0), (0, 139)):
+            with self.subTest(node_exit=node_exit, elixir_exit=elixir_exit), tempfile.TemporaryDirectory() as root:
+                root = Path(root)
+                for name, version, status in (("node", "v22.14.0", node_exit),
+                                               ("elixir", "Elixir 1.19.5", elixir_exit)):
+                    executable = root / name
+                    executable.write_text(f"#!/bin/sh\nprintf '%s\\n' '{version}'\nexit {status}\n")
+                    executable.chmod(0o700)
+                env = {"PATH": str(root) + os.pathsep + os.defpath, "LANG": "C"}
+                result = subprocess.run(["/bin/sh", "-c", guard], env=env,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode == 0, node_exit == elixir_exit == 0)
 
 
 if __name__ == "__main__":

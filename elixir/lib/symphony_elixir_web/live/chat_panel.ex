@@ -971,6 +971,7 @@ defmodule SymphonyElixirWeb.ChatPanel do
         pr_evidence: pr_evidence(issue && issue[:github_status], length(prs)),
         authorized: BrowserAuth.authorized?(assigns.auth),
         google_auth: BrowserAuth.google_enabled?(),
+        iap_auth: SymphonyElixirWeb.IAPIdentity.enabled?(),
         login_return_to: assigns.return_to || default_return,
         running: running?(assigns.chat),
         executing: executing?(assigns.chat),
@@ -1093,9 +1094,9 @@ defmodule SymphonyElixirWeb.ChatPanel do
       <div :if={!@loading && !@authorized && is_nil(@unavailable)} class="chat-empty chat-login">
         <span class="chat-orbit" aria-hidden="true">∿</span><h1>Your project conversations</h1>
         <p>{if @google_auth, do: "Sign in to read chat history and manage work.", else: "Unlock this browser to read chat history and manage work."}</p>
-        <form :if={@google_auth} action={SymphonyElixirWeb.WorkspacePath.path("/auth/google")} method="post" class="chat-login-form">
+        <form :if={@google_auth} action={SymphonyElixirWeb.WorkspacePath.path(if(@iap_auth, do: "/auth/iap", else: "/auth/google"))} method="post" class="chat-login-form">
           <input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={@login_return_to} />
-          <button class="button button-primary">Sign in with Google</button>
+          <button class="button button-primary">{if @iap_auth, do: "Continue to Symphony", else: "Sign in with Google"}</button>
         </form>
         <form :if={!@google_auth} action={SymphonyElixirWeb.WorkspacePath.path("/operator/session")} method="post" class="chat-login-form">
           <input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={@login_return_to} />

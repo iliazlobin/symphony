@@ -630,6 +630,64 @@ origin validation and eight-hour token-bound sessions. It does not protect an
 externally exposed listener. Switching to Google requires configuration and restart;
 this source change alone does not configure a Google client or change the deployment.
 
+### Google Cloud IAP
+
+The full application can use an IAP-protected HTTPS load balancer with
+`browser_auth.provider: iap`. The [application deployment guide](../deploy/gke/application/README.md)
+owns ingress, custom OAuth, the restricted IAM grant, persistent storage and activation.
+This provider preserves the normal board, chat and Settings; it does not enable cloud
+coding dispatch or replace the separate local machine control token.
+
+```yaml
+browser_auth:
+  provider: iap
+  public_origin: https://symphony.iliazlobin.com
+  audience: $SYMPHONY_IAP_AUDIENCE
+  allowed_emails:
+    - iliazlobin91@gmail.com
+```
+
+The origin must be a canonical bare HTTPS origin, without an explicit default port,
+path or forwarded-header substitution. `public_origin` and `audience` also accept
+explicit `$ENV` references. The audience must be the exact numeric
+`/projects/PROJECT_NUMBER/global/backendServices/BACKEND_SERVICE_ID` of this backend.
+An optional `allowed_subjects` list further narrows the verified IAP subject; it never
+replaces the exact email allowlist. Restart after provider, origin or environment changes.
+
+Every browser HTTP request and WebSocket upgrade verifies the
+[`x-goog-iap-jwt-assertion`](https://docs.cloud.google.com/iap/docs/signed-headers-howto)
+signature using Google's fixed IAP public-key endpoint. Only ES256/P-256 is accepted,
+with the IAP issuer, exact audience, allowed identity and bounded issuance/expiry.
+Unsigned identity headers, forwarded host headers, cookies and LiveView parameters
+cannot establish IAP identity. The verified assertion normalizes the trusted HTTPS
+origin only after the request host matches the configured value and the browser
+Origin matches when supplied.
+
+Cookies retain only an opaque server-owned grant. Its lifetime is no longer than
+the assertion expiry (at most eleven minutes including allowed clock skew), and
+connected LiveViews check identity, project/configuration scope and revocation before
+each callback and every fifteen seconds while idle. IAP authorizes the WebSocket
+handshake, not later frames; an expired connection redirects through sign-in for a
+fresh assertion. IAM revocation is therefore bounded by that remaining assertion
+lifetime, rather than treated as an immediate continuous IAM check.
+The public-key cache honors a bounded response lifetime, throttles refresh attempts
+and refuses expired keys after a fetch failure. Missing or invalid assertions fail closed.
+
+**Sign out** revokes the application grant and uses IAP's
+[`CLEAR_LOGIN_COOKIE`](https://docs.cloud.google.com/iap/docs/query-parameters-and-headers-howto)
+redirect. If Google immediately signs the account in again, the application still
+requires an explicit CSRF-protected **Continue to Symphony** action. Process restart
+clears grants without erasing durable conversations. Use a persistent private
+`SYMPHONY_WORKSPACE_SECRET` of at least 64 bytes for cookie signing; keep it out of
+images, source, worker environments and browser code.
+
+Exact `GET /healthz` is the only public exception and returns a process-health response.
+Loopback `/api/v1/` requests retain the existing actual-peer, loopback-host and bearer-token
+checks. A browser IAP identity never authorizes that machine API. Restrict backend
+reachability to the reviewed load-balancer path; application signature checks complement
+that network boundary. Cloud deployment and allowed-account browser acceptance must
+be verified separately from source tests.
+
 ## Project Layout
 
 - `lib/`: application code and Mix tasks

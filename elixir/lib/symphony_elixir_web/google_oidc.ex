@@ -14,6 +14,7 @@ defmodule SymphonyElixirWeb.GoogleOIDC do
   @spec start(String.t(), :interactive | :continuation) :: {:ok, String.t(), String.t()} | {:error, atom()}
   def start(return_to, mode \\ :interactive) when mode in [:interactive, :continuation] do
     with {:ok, config} <- BrowserIdentity.settings(),
+         true <- config.provider == "google",
          {:ok, response} <- OIDC.authorize_url(strategy(config, mode)),
          {:ok, id} <- BrowserSessions.issue(:flow, %{params: response.session_params, mode: mode, fingerprint: config.fingerprint, scope: Orchestrator.tracker_fingerprint(), return_to: return_to}) do
       {:ok, id, response.url}
@@ -32,6 +33,7 @@ defmodule SymphonyElixirWeb.GoogleOIDC do
 
   defp complete_claimed(flow_id, flow, params) do
     with {:ok, config} <- BrowserIdentity.settings(),
+         true <- config.provider == "google",
          true <- flow.fingerprint == config.fingerprint and (SymphonyElixirWeb.WorkspacePath.enabled?() or flow.scope == Orchestrator.tracker_fingerprint()),
          :ok <- callback_params(flow, params),
          options = Keyword.put(strategy(config), :session_params, flow.params),

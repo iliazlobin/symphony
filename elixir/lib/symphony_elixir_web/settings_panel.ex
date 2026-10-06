@@ -6,12 +6,16 @@ defmodule SymphonyElixirWeb.SettingsPanel do
 
   @spec content(map()) :: Phoenix.LiveView.Rendered.t()
   def content(assigns) do
-    assigns = assigns |> assign(:google_auth, BrowserAuth.google_enabled?()) |> assign(:return_to, assigns[:return_to] || SymphonyElixirWeb.WorkspacePath.path("/?panel=settings"))
+    assigns =
+      assigns
+      |> assign(:google_auth, BrowserAuth.google_enabled?())
+      |> assign(:iap_auth, SymphonyElixirWeb.IAPIdentity.enabled?())
+      |> assign(:return_to, assigns[:return_to] || SymphonyElixirWeb.WorkspacePath.path("/?panel=settings"))
 
     ~H"""
     <div class="settings-scope">
       <strong :for={project <- @board.projects}>{project.label}</strong>
-      <span class="settings-badge">{if @read_only, do: "Read-only preview", else: "Local controller"}</span>
+      <span class="settings-badge">{cond do @read_only -> "Read-only preview"; @iap_auth -> "Cloud controller"; true -> "Local controller" end}</span>
     </div>
     <nav class="settings-tabs" aria-label="Settings sections">
       <button :for={{id, label} <- [{"execution", "Execution"}, {"ai", "AI & chat"}, {"connections", "Connections"}]}
@@ -82,16 +86,16 @@ defmodule SymphonyElixirWeb.SettingsPanel do
         <p class="settings-help">{@source_status}. Reading issues does not verify permission to write them. Refresh does not start workers or call a model.</p>
         <p :for={project <- @board.projects}><a :if={project.url} href={project.url} target="_blank" rel="noopener noreferrer">{project.label} ↗</a></p>
       </div>
-      <div class="settings-section"><h3>{if @google_auth, do: "Google sign-in", else: "Operator session"}</h3>
+      <div class="settings-section"><h3>{cond do @iap_auth -> "Google Cloud access"; @google_auth -> "Google sign-in"; true -> "Operator session" end}</h3>
         <%= cond do %>
           <% @read_only && !(@google_auth && @authorized) -> %><p class="settings-help">Controls are unavailable in this read-only view. Browser preferences can still be saved.</p>
           <% @authorized -> %>
-            <p class="settings-help">{if @google_auth, do: "Signed in to Symphony with Google.", else: "Local controls unlocked."}</p>
+            <p class="settings-help">{cond do @iap_auth -> "Signed in through Google Cloud IAP."; @google_auth -> "Signed in to Symphony with Google."; true -> "Local controls unlocked." end}</p>
             <form action="/operator/session/logout" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} /><button class="button button-quiet">{if @google_auth, do: "Sign out", else: "Lock controls"}</button></form>
           <% @google_auth -> %>
             <p class="settings-help">Sign in with an authorized Google account to manage work.</p>
-            <form action="/auth/google" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={@return_to} />
-              <button class="button button-primary">Sign in with Google</button></form>
+            <form action={if @iap_auth, do: "/auth/iap", else: "/auth/google"} method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={@return_to} />
+              <button class="button button-primary">{if @iap_auth, do: "Continue to Symphony", else: "Sign in with Google"}</button></form>
           <% true -> %>
             <p class="settings-help">Unlock controls on this local host with your existing operator token.</p>
             <form action="/operator/session" method="post"><input type="hidden" name="_csrf_token" value={@csrf_token} /><input type="hidden" name="return_to" value={@return_to} />

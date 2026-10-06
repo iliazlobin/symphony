@@ -9,6 +9,10 @@ defmodule SymphonyElixirWeb.BrowserIdentity do
 
   @spec settings() :: {:ok, map()} | {:error, :auth_unconfigured}
   def settings do
+    if SymphonyElixirWeb.IAPIdentity.enabled?(), do: SymphonyElixirWeb.IAPIdentity.settings(), else: google_settings()
+  end
+
+  defp google_settings do
     raw = Config.browser_auth_settings()
     origin = raw["public_origin"]
     uri = URI.parse(if(is_binary(origin), do: origin, else: ""))
@@ -19,6 +23,7 @@ defmodule SymphonyElixirWeb.BrowserIdentity do
     secret = resolve_secret(raw["client_secret"])
 
     config = %{
+      provider: "google",
       origin: origin,
       uri: uri,
       client_id: client_id,
