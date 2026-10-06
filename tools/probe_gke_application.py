@@ -212,11 +212,11 @@ def record():
 
 
 def design_assets(browser):
-    """Read the normal Design page and its embedded native-editor dependencies."""
-    path = "/?" + urllib.parse.urlencode({"view": "design", "project": PROJECT})
+    """Read the normal Idea page and its embedded native-editor dependencies."""
+    path = "/?" + urllib.parse.urlencode({"view": "idea", "project": PROJECT})
     status, body = browser.request(path)
     editor = Page(body).design_editor
-    require(status == 200 and editor, "Packaged Design editor bootstrap missing")
+    require(status == 200 and editor, "Packaged Idea editor bootstrap missing")
     base = editor.get("data-design-editor-assets", "")
     require(re.fullmatch(r"/design-editor/[0-9a-f]{12}/", base), "Design asset path escaped the package")
     entry = editor.get("data-design-editor-js", "")

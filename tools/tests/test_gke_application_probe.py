@@ -94,6 +94,9 @@ class ApplicationProbeTests(unittest.TestCase):
             def request(self, path):
                 requests.append(path)
                 if path.startswith("/?"):
+                    query = PROBE.urllib.parse.parse_qs(PROBE.urllib.parse.urlsplit(path).query)
+                    if query != {"view": ["idea"], "project": [PROBE.PROJECT]}:
+                        return 200, '<section id="design-view" aria-label="Design specification"></section>'
                     return 200, ('<section data-design-editor-assets="' + base + '" '
                                  'data-design-editor-js="' + base + 'editor-ABC123.js" '
                                  'data-design-editor-css="' + base + 'editor-DEF456.css"></section>')
