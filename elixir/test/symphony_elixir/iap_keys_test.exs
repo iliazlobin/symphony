@@ -11,7 +11,15 @@ defmodule SymphonyElixir.IAPKeysTest do
     {:ok, clock} = Agent.start_link(fn -> -1_000 end)
     server = start_supervised!({IAPKeys, name: nil, clock: fn -> Agent.get(clock, & &1) end})
     Application.put_env(:symphony_elixir, :iap_http_plug, {IAPFixture.Keys, owner: self(), keys: %{"fixture" => public}})
-    on_exit(fn -> if previous, do: Application.put_env(:symphony_elixir, :iap_http_plug, previous), else: Application.delete_env(:symphony_elixir, :iap_http_plug) end)
+
+    on_exit(fn ->
+      if previous do
+        Application.put_env(:symphony_elixir, :iap_http_plug, previous)
+      else
+        Application.delete_env(:symphony_elixir, :iap_http_plug)
+      end
+    end)
+
     %{server: server, clock: clock, public: public}
   end
 
@@ -54,7 +62,8 @@ defmodule SymphonyElixir.IAPKeysTest do
 
   test "redirects, malformed keys and non-P256 key material fail closed", ctx do
     wrong_curve = :public_key.generate_key({:namedCurve, {1, 3, 132, 0, 34}})
-    wrong_curve = :public_key.pem_encode([:public_key.pem_entry_encode(:SubjectPublicKeyInfo, {{:ECPoint, elem(wrong_curve, 4)}, {:namedCurve, {1, 3, 132, 0, 34}}})])
+    public_key = {{:ECPoint, elem(wrong_curve, 4)}, {:namedCurve, {1, 3, 132, 0, 34}}}
+    wrong_curve = :public_key.pem_encode([:public_key.pem_entry_encode(:SubjectPublicKeyInfo, public_key)])
 
     for {status, keys} <- [
           {302, %{"fixture" => ctx.public}},
@@ -65,7 +74,8 @@ defmodule SymphonyElixir.IAPKeysTest do
           {200, %{"fixture" => String.duplicate("x", 4_097)}},
           {200, Map.new(1..21, &{to_string(&1), ctx.public})}
         ] do
-      Application.put_env(:symphony_elixir, :iap_http_plug, {IAPFixture.Keys, owner: self(), keys: keys, status: status})
+      response_options = [owner: self(), keys: keys, status: status]
+      Application.put_env(:symphony_elixir, :iap_http_plug, {IAPFixture.Keys, response_options})
       Agent.update(ctx.clock, &(&1 + 31))
       assert {:error, :identity_unavailable} = IAPKeys.key("fixture", ctx.server)
       assert_received :iap_keys_requested
@@ -74,7 +84,8 @@ defmodule SymphonyElixir.IAPKeysTest do
   end
 
   test "response cache lifetime is bounded even when the provider supplies a larger max-age", ctx do
-    Application.put_env(:symphony_elixir, :iap_http_plug, {IAPFixture.Keys, owner: self(), keys: %{"fixture" => ctx.public}, cache: "public, max-age=999999"})
+    response_options = [owner: self(), keys: %{"fixture" => ctx.public}, cache: "public, max-age=999999"]
+    Application.put_env(:symphony_elixir, :iap_http_plug, {IAPFixture.Keys, response_options})
     assert {:ok, _} = IAPKeys.key("fixture", ctx.server)
     assert_received :iap_keys_requested
     Agent.update(ctx.clock, &(&1 + 3_599))

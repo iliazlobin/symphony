@@ -5,7 +5,7 @@ defmodule SymphonyElixirWeb.IAPKeys do
   @url "https://www.gstatic.com/iap/verify/public_key"
   @refresh_interval 30
   @maximum_age 3_600
-  @p256 {1, 2, 840, 10045, 3, 1, 7}
+  @p256 {1, 2, 840, 10_045, 3, 1, 7}
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
@@ -65,12 +65,16 @@ defmodule SymphonyElixirWeb.IAPKeys do
   end
 
   defp valid_keys?(keys) when is_map(keys) and map_size(keys) in 1..20 do
-    Enum.all?(keys, fn {kid, pem} ->
-      is_binary(kid) and byte_size(kid) in 1..200 and is_binary(pem) and byte_size(pem) <= 4_096 and p256_public_key?(pem)
-    end)
+    Enum.all?(keys, &valid_key?/1)
   end
 
   defp valid_keys?(_), do: false
+
+  defp valid_key?({kid, pem}) when is_binary(kid) and is_binary(pem) do
+    byte_size(kid) in 1..200 and byte_size(pem) <= 4_096 and p256_public_key?(pem)
+  end
+
+  defp valid_key?(_), do: false
 
   defp p256_public_key?(pem) do
     with [{:SubjectPublicKeyInfo, _, :not_encrypted} = entry] <- :public_key.pem_decode(pem),

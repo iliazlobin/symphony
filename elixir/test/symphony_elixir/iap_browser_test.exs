@@ -37,14 +37,28 @@ defmodule SymphonyElixir.IAPBrowserTest do
 
     put_config(config)
     previous_endpoint = Application.get_env(:symphony_elixir, Endpoint, [])
-    updates = Keyword.merge(previous_endpoint, server: false, secret_key_base: String.duplicate("i", 64), check_origin: [@origin], chat_store: ChatStore, iap_test_owner: self())
+
+    endpoint_options = [
+      server: false,
+      secret_key_base: String.duplicate("i", 64),
+      check_origin: [@origin],
+      chat_store: ChatStore,
+      iap_test_owner: self()
+    ]
+
+    updates = Keyword.merge(previous_endpoint, endpoint_options)
     Application.put_env(:symphony_elixir, Endpoint, updates)
     start_supervised!({Endpoint, []})
 
     on_exit(fn ->
       Application.put_env(:symphony_elixir, Endpoint, previous_endpoint)
       restore_env("SYMPHONY_CONTROL_TOKEN", previous_token)
-      if previous_plug, do: Application.put_env(:symphony_elixir, :iap_http_plug, previous_plug), else: Application.delete_env(:symphony_elixir, :iap_http_plug)
+
+      if previous_plug do
+        Application.put_env(:symphony_elixir, :iap_http_plug, previous_plug)
+      else
+        Application.delete_env(:symphony_elixir, :iap_http_plug)
+      end
     end)
 
     %{private: private, token: IAPFixture.token(private), config: config}
@@ -262,8 +276,12 @@ defmodule SymphonyElixir.IAPBrowserTest do
     if token, do: Plug.Conn.put_req_header(conn, "x-goog-iap-jwt-assertion", token), else: conn
   end
 
-  defp browser_recycle(conn),
-    do: recycle(conn, ~w(accept accept-language authorization x-goog-iap-jwt-assertion)) |> Plug.Conn.put_private(:plug_skip_csrf_protection, false) |> Plug.Conn.put_req_header("origin", @origin)
+  defp browser_recycle(conn) do
+    conn
+    |> recycle(~w(accept accept-language authorization x-goog-iap-jwt-assertion))
+    |> Plug.Conn.put_private(:plug_skip_csrf_protection, false)
+    |> Plug.Conn.put_req_header("origin", @origin)
+  end
 
   defp csrf(conn), do: conn.resp_body |> Floki.parse_document!() |> Floki.find("input[name=_csrf_token]") |> Floki.attribute("value") |> hd()
 

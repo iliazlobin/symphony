@@ -4,7 +4,8 @@ defmodule SymphonyElixirWeb.BrowserSessionController do
 
   alias Phoenix.HTML.Safe
   alias Plug.Conn
-  alias SymphonyElixirWeb.{BrowserAuth, BrowserLoginHTML, BrowserOrigin, BrowserSessions, Endpoint, GoogleOIDC, IAPIdentity}
+  alias SymphonyElixirWeb.{BrowserAuth, BrowserLoginHTML, BrowserOrigin, BrowserSessions, Endpoint, GoogleOIDC}
+  alias SymphonyElixirWeb.IAPIdentity
 
   @spec login(Conn.t(), map()) :: Conn.t()
   def login(conn, params) do

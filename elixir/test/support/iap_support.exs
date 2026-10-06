@@ -1,8 +1,12 @@
 defmodule SymphonyElixir.IAPFixture do
+  alias Assent.JWTAdapter.AssentJWT
+  @p256 {1, 2, 840, 10_045, 3, 1, 7}
+
   def key_pair do
-    key = :public_key.generate_key({:namedCurve, {1, 2, 840, 10045, 3, 1, 7}})
+    key = :public_key.generate_key({:namedCurve, @p256})
     private = :public_key.pem_encode([:public_key.pem_entry_encode(:ECPrivateKey, key)])
-    public = :public_key.pem_encode([:public_key.pem_entry_encode(:SubjectPublicKeyInfo, {{:ECPoint, elem(key, 4)}, {:namedCurve, {1, 2, 840, 10045, 3, 1, 7}}})])
+    public_key = {{:ECPoint, elem(key, 4)}, {:namedCurve, @p256}}
+    public = :public_key.pem_encode([:public_key.pem_entry_encode(:SubjectPublicKeyInfo, public_key)])
     {private, public}
   end
 
@@ -20,7 +24,7 @@ defmodule SymphonyElixir.IAPFixture do
   end
 
   def token(private, changes \\ %{}, alg \\ "ES256", kid \\ "fixture") do
-    {:ok, token} = Assent.JWTAdapter.AssentJWT.sign(Map.merge(claims(), changes), alg, private, private_key_id: kid, json_library: Jason)
+    {:ok, token} = AssentJWT.sign(Map.merge(claims(), changes), alg, private, private_key_id: kid, json_library: Jason)
     token
   end
 

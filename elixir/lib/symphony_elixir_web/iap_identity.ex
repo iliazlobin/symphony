@@ -1,5 +1,6 @@
 defmodule SymphonyElixirWeb.IAPIdentity do
   @moduledoc "Explicit IAP browser identity; signed assertions never authorize the machine control API."
+  alias Assent.JWTAdapter.AssentJWT
   alias Plug.Conn
   alias SymphonyElixir.{Config, Orchestrator}
   alias SymphonyElixirWeb.{BrowserAuth, BrowserSessions, IAPKeys}
@@ -21,9 +22,7 @@ defmodule SymphonyElixirWeb.IAPIdentity do
     subjects = raw["allowed_subjects"] || []
 
     if raw["provider"] == "iap" and valid_origin?(uri, origin) and valid_audience?(audience) and
-         valid_strings?(emails, 320) and emails != [] and valid_strings?(subjects, 255) and
-         length(Enum.uniq_by(emails, &String.downcase/1)) == length(emails) and
-         Enum.all?(emails, &Regex.match?(~r/\A[^\s@]+@[^\s@]+\z/, &1)) do
+         valid_emails?(emails) and valid_strings?(subjects, 255) do
       config = %{provider: "iap", origin: origin, uri: uri, audience: audience, emails: Enum.map(emails, &String.downcase/1), subjects: subjects, proxies: []}
       {:ok, Map.put(config, :fingerprint, :crypto.hash(:sha256, :erlang.term_to_binary(config)))}
     else
@@ -54,7 +53,7 @@ defmodule SymphonyElixirWeb.IAPIdentity do
          {:ok, signature} <- Base.url_decode64(signature, padding: false),
          true <- byte_size(signature) == 64,
          {:ok, key} <- IAPKeys.key(kid),
-         {:ok, %{verified?: true, claims: claims}} <- Assent.JWTAdapter.AssentJWT.verify(token, key, json_library: Jason),
+         {:ok, %{verified?: true, claims: claims}} <- AssentJWT.verify(token, key, json_library: Jason),
          true <- fresh_claims?(claims, config) do
       {:ok, %{identity: Map.take(claims, ["iss", "aud", "sub", "email", "iat", "exp"]), fingerprint: config.fingerprint, origin: config.origin}}
     else
@@ -68,16 +67,31 @@ defmodule SymphonyElixirWeb.IAPIdentity do
 
   @spec fresh_claims?(term(), map()) :: boolean()
   def fresh_claims?(%{"iss" => @issuer, "aud" => audience, "sub" => subject, "email" => email, "iat" => issued, "exp" => expires} = claims, config)
-      when is_binary(subject) and byte_size(subject) in 1..255 and is_binary(email) and is_integer(issued) and is_integer(expires) do
+      when is_binary(subject) and byte_size(subject) in 1..255 and is_binary(email) do
     now = System.system_time(:second)
 
-    audience == config.audience and issued <= now + 30 and issued >= now - @maximum_lifetime and
-      expires > now and expires > issued and expires - issued <= @maximum_lifetime and
-      (not Map.has_key?(claims, "nbf") or (is_integer(claims["nbf"]) and claims["nbf"] <= now)) and
-      String.downcase(email) in config.emails and (config.subjects == [] or subject in config.subjects)
+    is_integer(issued) and is_integer(expires) and audience == config.audience and
+      valid_window?(issued, expires, now) and valid_not_before?(claims, now) and
+      allowed_identity?(email, subject, config)
   end
 
   def fresh_claims?(_, _), do: false
+
+  defp valid_window?(issued, expires, now) do
+    issued <= now + 30 and issued >= now - @maximum_lifetime and expires > now and expires > issued and
+      expires - issued <= @maximum_lifetime
+  end
+
+  defp valid_not_before?(claims, now) do
+    case Map.fetch(claims, "nbf") do
+      :error -> true
+      {:ok, not_before} -> is_integer(not_before) and not_before <= now
+    end
+  end
+
+  defp allowed_identity?(email, subject, config) do
+    String.downcase(email) in config.emails and (config.subjects == [] or subject in config.subjects)
+  end
 
   @spec init(atom()) :: atom()
   def init(mode), do: mode
@@ -95,19 +109,28 @@ defmodule SymphonyElixirWeb.IAPIdentity do
   def call(conn, :session) do
     case conn.assigns[:iap_identity] do
       %{identity: _claims} = verified ->
-        conn = Conn.fetch_session(conn)
-
-        if Conn.get_session(conn, "iap_signed_out") == true do
-          conn
-        else
-          case session_marker(conn, verified) do
-            {:ok, marker} -> conn |> Conn.put_session(BrowserAuth.session_key(), marker) |> Conn.put_session("live_socket_id", "operator:" <> marker["id"])
-            _ -> reject(conn)
-          end
-        end
+        authenticate_session(conn, verified)
 
       _ ->
         conn
+    end
+  end
+
+  defp authenticate_session(conn, verified) do
+    conn = Conn.fetch_session(conn)
+
+    if Conn.get_session(conn, "iap_signed_out") == true, do: conn, else: put_session_marker(conn, verified)
+  end
+
+  defp put_session_marker(conn, verified) do
+    case session_marker(conn, verified) do
+      {:ok, marker} ->
+        conn
+        |> Conn.put_session(BrowserAuth.session_key(), marker)
+        |> Conn.put_session("live_socket_id", "operator:" <> marker["id"])
+
+      _ ->
+        reject(conn)
     end
   end
 
@@ -148,15 +171,22 @@ defmodule SymphonyElixirWeb.IAPIdentity do
 
   @spec valid_session?(term(), map(), term()) :: boolean()
   def valid_session?(%{provider: "iap", fingerprint: fingerprint, identity: identity, scope: scope}, verified, scope) when is_binary(scope) do
-    with {:ok, config} <- settings() do
-      fingerprint == config.fingerprint and verified.fingerprint == fingerprint and fresh_claims?(identity, config) and
-        fresh_claims?(verified.identity, config) and identity["sub"] == verified.identity["sub"] and identity["email"] == verified.identity["email"]
-    else
-      _ -> false
+    case settings() do
+      {:ok, config} ->
+        fingerprint == config.fingerprint and verified.fingerprint == fingerprint and
+          fresh_claims?(identity, config) and fresh_claims?(verified.identity, config) and
+          same_identity?(identity, verified.identity)
+
+      _ ->
+        false
     end
   end
 
   def valid_session?(_, _, _), do: false
+
+  defp same_identity?(identity, verified) do
+    identity["sub"] == verified["sub"] and identity["email"] == verified["email"]
+  end
 
   defp valid_origin?(uri, origin) do
     uri.scheme == "https" and is_binary(uri.host) and uri.host not in ["", "localhost", "127.0.0.1", "::1"] and
@@ -164,6 +194,13 @@ defmodule SymphonyElixirWeb.IAPIdentity do
   end
 
   defp valid_audience?(value), do: is_binary(value) and Regex.match?(~r/\A\/projects\/[0-9]+\/global\/backendServices\/[0-9]+\z/, value)
+
+  defp valid_emails?(emails) do
+    valid_strings?(emails, 320) and emails != [] and
+      length(Enum.uniq_by(emails, &String.downcase/1)) == length(emails) and
+      Enum.all?(emails, &Regex.match?(~r/\A[^\s@]+@[^\s@]+\z/, &1))
+  end
+
   defp valid_strings?(items, bytes), do: is_list(items) and length(items) <= 20 and length(Enum.uniq(items)) == length(items) and Enum.all?(items, &(is_binary(&1) and byte_size(&1) in 1..bytes))
   defp resolve("$" <> name), do: if(Regex.match?(~r/\A[A-Za-z_][A-Za-z0-9_]*\z/, name), do: System.get_env(name), else: nil)
   defp resolve(value), do: value
