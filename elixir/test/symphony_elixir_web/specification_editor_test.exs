@@ -66,6 +66,16 @@ defmodule SymphonyElixirWeb.SpecificationEditorTest do
     for invalid <- [nil, -1, "-1", "1bad", [], 1.0], do: assert(is_nil(Editor.revision(invalid)))
   end
 
+  test "typed field actions retain the parent and reject a substituted member identity" do
+    {:ok, draft} = Editor.change(Document.new("project"), "data", "spec-add-item", nil, %{"kind" => "entity"})
+    [item] = draft["sections"]["data"]["items"]
+    options = %{"group" => "rows"}
+    assert {:ok, with_field} = Editor.change(draft, "data", "spec-add-member", item["id"], options)
+    [field] = hd(with_field["sections"]["data"]["items"])["rows"]
+    assert {:error, :invalid_specification_edit} = Editor.change(with_field, "data", "spec-remove-member", item["id"], Map.put(options, "row_id", "foreign"))
+    assert {:ok, ^draft} = Editor.change(with_field, "data", "spec-remove-member", item["id"], Map.put(options, "row_id", field["id"]))
+  end
+
   test "decoded LiveView unused-input metadata does not become specification content" do
     draft = legacy("project")
     {:ok, draft} = Editor.change(draft, "brief", "spec-add-item", nil)

@@ -177,14 +177,13 @@ defmodule SymphonyElixir.Specification.Object do
 
   @spec safe_url?(term()) :: boolean()
   def safe_url?(url) when is_binary(url) do
-    if text?(url, 4096) and not String.contains?(url, ["\\", " ", "\t", "\n", "\r", <<0>>]) do
-      parsed = URI.parse(url)
-      parsed.scheme in ~w(http https) and is_binary(parsed.host) and parsed.host != "" and is_nil(parsed.userinfo)
+    with true <- text?(url, 4096) and not String.contains?(url, ["\\", " ", "\t", "\n", "\r", <<0>>]),
+         {:ok, parsed} <- URI.new(url) do
+      parsed.scheme in ~w(http https) and is_binary(parsed.host) and parsed.host != "" and
+        is_nil(parsed.userinfo) and parsed.port in 1..65_535
     else
-      false
+      _ -> false
     end
-  rescue
-    ArgumentError -> false
   end
 
   def safe_url?(_), do: false

@@ -48,6 +48,8 @@ defmodule SymphonyElixir.Specification.ObjectTest do
     end
 
     assert Object.fields("unknown") == []
+    refute Object.valid?(nil, %{})
+    refute Object.valid?(Map.put(Document.item("data", "entity"), "unexpected", ""), %{})
     assert Object.row_fields("unknown", "rows") == []
     assert Object.row_fields("entity", "unknown") == []
     assert Object.row_label("goal") == "Items"
@@ -131,6 +133,7 @@ defmodule SymphonyElixir.Specification.ObjectTest do
     {:ok, document} = Document.member(document, "data", item["id"], "sources", "add")
     assert Object.safe_url?("https://example.com/source?revision=1#model")
     assert Object.safe_url?("http://localhost:8778/")
+    assert Object.safe_url?("http://[::1]:8778/model")
 
     for url <- [
           nil,
@@ -139,6 +142,8 @@ defmodule SymphonyElixir.Specification.ObjectTest do
           "//evil.example",
           "https://user:password@example.com",
           "https://example.com:invalid/",
+          "https://example.com:65536/",
+          "https://example.com/<invalid>",
           "https://example.com/\nlink",
           "https://example.com/\\link",
           <<255>>,
