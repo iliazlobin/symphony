@@ -147,9 +147,12 @@ defmodule SymphonyElixir.IAPBrowserTest do
       response = get(proxy_conn(ctx.token), "/chat")
       assert html_response(response, 200) =~ "Private IAP project"
       assert_received :private_projects_read
-      conn = response
-        |> put_connect_info(%{uri: URI.parse("http://symphony.example:8080"), x_headers: headers})
+
+      conn =
+        response
+        |> Plug.Conn.put_private(:live_view_connect_info, %{uri: URI.parse("http://symphony.example:8080"), x_headers: headers})
         |> put_connect_params(%{"x-goog-iap-jwt-assertion" => ctx.token})
+
       assert {:error, {:redirect, %{to: "/login"}}} = live(conn)
       refute_received :private_projects_read
     end
@@ -259,6 +262,7 @@ defmodule SymphonyElixir.IAPBrowserTest do
 
   defp browser_recycle(conn),
     do: recycle(conn, ~w(accept accept-language authorization x-goog-iap-jwt-assertion)) |> Plug.Conn.put_private(:plug_skip_csrf_protection, false) |> Plug.Conn.put_req_header("origin", @origin)
+
   defp csrf(conn), do: conn.resp_body |> Floki.parse_document!() |> Floki.find("input[name=_csrf_token]") |> Floki.attribute("value") |> hd()
 
   defp socket_headers(conn, origin) do

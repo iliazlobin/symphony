@@ -55,6 +55,7 @@ defmodule SymphonyElixir.IAPKeysTest do
   test "redirects, malformed keys and non-P256 key material fail closed", ctx do
     wrong_curve = :public_key.generate_key({:namedCurve, {1, 3, 132, 0, 34}})
     wrong_curve = :public_key.pem_encode([:public_key.pem_entry_encode(:SubjectPublicKeyInfo, {{:ECPoint, elem(wrong_curve, 4)}, {:namedCurve, {1, 3, 132, 0, 34}}})])
+
     for {status, keys} <- [
           {302, %{"fixture" => ctx.public}},
           {200, %{}},
