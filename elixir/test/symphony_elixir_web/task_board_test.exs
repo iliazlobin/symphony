@@ -166,10 +166,40 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
     assert task(tasks, "3").lane == "work"
     assert task(tasks, "3").attention == nil
     assert task(tasks, "3").dependency_error =~ "human-accepted Done"
+    assert [%{id: "1", identifier: "GH-1", state: "awaiting_acceptance"}] = task(tasks, "3").dependency_blockers
     assert task(tasks, "4").attention =~ "Depends on:"
 
     tasks = TaskBoard.project([%{backlog | state: "closed"}, waiting], %{}, %{}, settings()).tasks
     assert task(tasks, "3").stage == "ready"
+  end
+
+  test "prerequisite projection removes only scoped accepted targets and leaves scheduling untouched" do
+    waiting = issue("21", description: "Depends on: #18, #19 (technical: approved baseline)")
+    upstream = [issue("18", state: "closed"), issue("19", state: "closed")]
+    control = %{"enabled" => true, "revision" => 7, "issues" => %{"18" => accepted_prerequisite("18")}}
+    board = TaskBoard.project([waiting | upstream], %{}, control, settings())
+    card = task(board.tasks, "21")
+    assert card.stage == "ready"
+    assert card.lane == "work"
+    assert card.attention == nil
+    assert [%{id: "19", kind: "technical", reason: "approved baseline"}] = card.dependency_blockers
+    assert card.dependency_error =~ "human-accepted Done"
+    assert board.control == control
+    assert card.ledger == %{}
+
+    foreign = put_in(control, ["issues", "18", "acceptance", "project_id"], "github:example/other")
+    foreign_card = TaskBoard.project([waiting | upstream], %{}, foreign, settings()).tasks |> task("21")
+    assert Enum.map(foreign_card.dependency_blockers, & &1.id) == ["18", "19"]
+
+    accepted = put_in(control, ["issues", "19"], accepted_prerequisite("19"))
+    settled_board = TaskBoard.project([waiting | upstream], %{}, accepted, settings())
+    settled = task(settled_board.tasks, "21")
+    assert settled.dependency_blockers == []
+    assert settled.dependency_error == nil
+    assert settled.stage == "ready"
+    assert settled.runtime == nil
+    assert settled.ledger == %{}
+    assert settled_board.control == accepted
   end
 
   test "running wins over retry and closure; a review verdict never fabricates completion" do
@@ -580,6 +610,29 @@ defmodule SymphonyElixirWeb.TaskBoardTest do
   end
 
   defp task(tasks, id), do: Enum.find(tasks, &(&1.issue_id == id))
+
+  defp accepted_prerequisite(id) do
+    tracker = settings().tracker
+    verified = %{id: id, state: "closed", updated_at: "2026-10-01T10:00:00Z", terminal: true}
+
+    params = %{
+      "issue_id" => id,
+      "command_id" => "accept-#{id}",
+      "expected_revision" => 0,
+      "expected_candidate_sha" => nil,
+      "expected_updated_at" => verified.updated_at,
+      "expected_tracker_state" => verified.state
+    }
+
+    context = %{
+      tracker_fingerprint: SymphonyElixir.TaskRouting.fingerprint(tracker),
+      project_id: SymphonyElixir.TaskIdentity.project_id(tracker),
+      acceptance_issue: verified
+    }
+
+    {:ok, accepted} = SymphonyElixir.IssueAcceptance.accept(%{}, params, context)
+    accepted
+  end
 
   defp issue(id, attrs \\ []) do
     struct!(

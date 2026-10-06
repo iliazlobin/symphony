@@ -1,0 +1,29 @@
+name: private-ci-smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-runner:
+    runs-on: symphony-ci
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Verify tools and isolation; leave disposable sentinel
+        run: python3 deploy/ci/probe_runner.py --write-sentinel
+
+  clean-replacement:
+    needs: isolated-runner
+    runs-on: symphony-ci
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Verify the next job starts with a clean runner
+        run: python3 deploy/ci/probe_runner.py

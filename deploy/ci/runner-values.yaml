@@ -1,0 +1,119 @@
+githubConfigUrl: https://github.com/iliazlobin/symphony
+githubConfigSecret: symphony-ci-github-app
+runnerScaleSetName: symphony-ci
+minRunners: 0
+maxRunners: 1
+controllerServiceAccount:
+  namespace: symphony-ci-system
+  name: symphony-ci-controller
+listenerTemplate:
+  metadata:
+    labels:
+      symphony-ci-role: listener
+  spec:
+    nodeSelector:
+      cloud.google.com/gke-nodepool: shared-dev
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1001
+      runAsGroup: 1001
+      seccompProfile:
+        type: RuntimeDefault
+    containers:
+      - name: listener
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+# Plain shell and JavaScript actions. Do not enable containerMode.
+template:
+  metadata:
+    labels:
+      symphony-ci-role: runner
+  spec:
+    serviceAccountName: symphony-ci-job
+    automountServiceAccountToken: false
+    runtimeClassName: gvisor
+    restartPolicy: Never
+    activeDeadlineSeconds: 3600
+    terminationGracePeriodSeconds: 30
+    nodeSelector:
+      node-restriction.kubernetes.io/workload: symphony-ci
+    tolerations:
+      - key: workload
+        operator: Equal
+        value: symphony-ci
+        effect: NoSchedule
+      - key: sandbox.gke.io/runtime
+        operator: Equal
+        value: gvisor
+        effect: NoSchedule
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1001
+      runAsGroup: 1001
+      fsGroup: 1001
+      fsGroupChangePolicy: OnRootMismatch
+      seccompProfile:
+        type: RuntimeDefault
+    initContainers:
+      - name: initialize-runner
+        # install.sh requires and supplies one reviewed digest for both containers.
+        image: REQUIRES_REVIEWED_CI_IMAGE_DIGEST
+        # The emptyDir root is owned by kubelet; copy contents without chown.
+        command: ["/bin/sh", "-ec", "cp -R /home/runner/. /runner-home/"]
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+            ephemeral-storage: 6Gi
+          limits:
+            cpu: '1'
+            memory: 512Mi
+            ephemeral-storage: 10Gi
+        volumeMounts:
+          - name: runner-home
+            mountPath: /runner-home
+    containers:
+      - name: runner
+        image: REQUIRES_REVIEWED_CI_IMAGE_DIGEST
+        command: ["/usr/bin/tini", "--", "/home/runner/run.sh"]
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        resources:
+          requests:
+            cpu: '2'
+            memory: 6Gi
+            ephemeral-storage: 6Gi
+          limits:
+            cpu: '3'
+            memory: 10Gi
+            ephemeral-storage: 10Gi
+        volumeMounts:
+          - name: runner-home
+            mountPath: /home/runner
+          - name: temporary
+            mountPath: /tmp
+    volumes:
+      - name: runner-home
+        emptyDir:
+          sizeLimit: 8Gi
+      - name: temporary
+        emptyDir:
+          sizeLimit: 2Gi

@@ -19,6 +19,14 @@ defmodule SymphonyElixir.Specification.Persistence do
   @spec scope_ref(term()) :: String.t()
   def scope_ref(scope), do: Journal.scope_ref(scope)
 
+  @spec empty(String.t(), String.t()) :: map()
+  def empty(project, scope) do
+    %{"version" => 1, "project" => project, "scope" => scope, "storage_revision" => 0, "draft" => nil, "reviewed_ref" => nil, "reviews" => %{}}
+  end
+
+  @spec valid?(term(), String.t(), String.t()) :: boolean()
+  def valid?(journal, project, scope), do: valid_journal?(journal, project, scope)
+
   @spec valid_journal?(term(), String.t(), String.t()) :: boolean()
   def valid_journal?(journal, project, scope) do
     exact?(journal, ~w(version project scope storage_revision draft reviewed_ref reviews)) and

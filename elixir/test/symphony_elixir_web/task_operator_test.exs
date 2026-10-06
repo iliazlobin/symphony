@@ -64,6 +64,22 @@ defmodule SymphonyElixirWeb.TaskOperatorTest do
     assert paused.primary_action.event == "open-settings"
   end
 
+  test "baseline recovery asks for scoped recovery without retrying or renewing attempts" do
+    task = task(%{hold: "workspace_baseline_changed", runtime: %{status: "blocked"}})
+    summary = TaskOperator.summary(task, board(), %{})
+    assert summary.attention?
+    assert summary.blocker.kind == "recovery"
+    assert summary.blocker.label == "Workspace baseline needs recovery"
+    assert summary.primary_action.label == "Discuss recovery"
+    assert summary.primary_action.event == "operator-question"
+    assert summary.blocker.detail =~ "Preserve the retained checkout"
+    refute summary.execution.retry?
+    refute summary.execution.renew_attempts?
+    html = panel(task)
+    refute html =~ "phx-click=\"prepare-command\""
+    refute html =~ "phx-value-renew_attempts"
+  end
+
   test "candidate readiness uses exact native work and observed PR head" do
     task = reviewed_task()
     summary = TaskOperator.summary(task, board(), %{})
@@ -129,7 +145,7 @@ defmodule SymphonyElixirWeb.TaskOperatorTest do
     assert full =~ "id=\"queue-task-button\""
     assert compact =~ "id=\"dock-queue\""
     assert compact =~ "data-compact=\"true\""
-    assert compact =~ "Coding work · other adapters unavailable"
+    assert compact =~ "Adapters"
     refute compact =~ "Stop reply affects chat"
     refute full =~ "<script>"
     assert full =~ "&lt;script&gt;"
@@ -142,6 +158,37 @@ defmodule SymphonyElixirWeb.TaskOperatorTest do
     assert html =~ "Task needs attention"
     refute html =~ "RuntimeError"
     refute html =~ "private-provider-token"
+  end
+
+  test "task indicators disclose guidance without replacing retry and stop confirmation actions" do
+    task = task(%{hold: "interrupted"})
+    document = task |> panel() |> Floki.parse_fragment!()
+    assert Floki.text(Floki.find(document, ".task-operator-heading > strong")) == "Held"
+    assert Floki.text(Floki.find(document, "#fixture-blocker button")) == "Attempt cycle exhausted"
+    assert Floki.attribute(Floki.find(document, "#fixture-blocker"), "data-tone") == ["warning"]
+    assert Floki.find(document, ".task-operator > p") == []
+    assert Floki.find(document, "button[phx-click=prepare-command][phx-value-action=retry][phx-value-renew_attempts=true]") != []
+    assert Floki.find(document, "button[phx-click=prepare-command][phx-value-action=cancel]") == []
+    assert Floki.text(Floki.find(document, "#fixture-retry-help-detail[popover=auto]")) =~ "recorded tokens, runtime, task scope and project gates stay unchanged"
+
+    running = task(%{runtime: %{status: "running"}}) |> panel() |> Floki.parse_fragment!()
+    assert Floki.find(running, "button[phx-click=prepare-command][phx-value-action=cancel]") != []
+    assert Floki.text(Floki.find(running, "#fixture-stop-help-detail[popover=auto]")) =~ "only after cleanup is confirmed"
+
+    restricted = task |> panel(controls_available: false) |> Floki.parse_fragment!()
+    assert Floki.find(restricted, "#fixture-retry-help, #fixture-stop-help") == []
+    assert Floki.find(restricted, "#fixture-blocker[phx-hook=StatusIndicator]") != []
+    chat_document = task |> panel(id: "chat", compact: true) |> Floki.parse_fragment!()
+    ids = Floki.attribute(document, "[id]", "id") ++ Floki.attribute(chat_document, "[id]", "id")
+    assert Enum.uniq(ids) == ids
+  end
+
+  test "prerequisite waiting uses a neutral indication rather than an action warning" do
+    task = task(%{stage: "ready", ledger: ledger(0), dependency_error: "Dependencies require human-accepted Done in this project."})
+    document = task |> panel() |> Floki.parse_fragment!()
+    assert Floki.attribute(Floki.find(document, "#fixture-blocker"), "data-tone") == ["neutral"]
+    refute TaskOperator.summary(task, board(), %{}).attention?
+    assert Floki.text(Floki.find(document, "#fixture-blocker-detail[popover=auto]")) =~ "Prerequisite tasks must be accepted"
   end
 
   defp panel(task, opts \\ []) do

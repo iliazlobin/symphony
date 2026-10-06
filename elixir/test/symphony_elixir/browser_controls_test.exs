@@ -248,6 +248,78 @@ defmodule SymphonyElixir.BrowserControlsTest do
     end
   end
 
+  test "unlock preserves focused graph navigation and Coverage while rejecting foreign return fields", ctx do
+    params = %{
+      "view" => "graph",
+      "project" => "github:example/fixture",
+      "chat_task" => "github:example/fixture:2",
+      "chat_session" => "work:" <> String.duplicate("a", 32),
+      "graph_mode" => "focus",
+      "graph_direction" => "upstream",
+      "graph_hops" => "2",
+      "graph_group_by" => "milestone",
+      "graph_group" => "group:milestone:github:example/fixture:1",
+      "graph_anchor" => "github:example/fixture:2",
+      "graph_page" => "3",
+      "graph_query" => "GH-2 & schema",
+      "graph_search_page" => "1",
+      "graph_gaps_only" => "true"
+    }
+
+    reviewed = Map.merge(params, %{"baseline" => String.duplicate("b", 64), "panel" => "coverage"})
+
+    for destination_params <- [params, reviewed] do
+      destination = "/?" <> URI.encode_query(destination_params)
+      {conn, csrf} = browser_page()
+      signed_in = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => ctx.token, "return_to" => destination})
+      assert redirected_to(signed_in) == destination
+      assert BrowserAuth.authorized?(BrowserAuth.conn_context(signed_in))
+    end
+
+    for forged <- [Map.put(params, "command", "resume"), Map.put(params, "graph_unknown", "secret"), Map.put(params, "graph_query", "bad\r\nquery")] do
+      {conn, csrf} = browser_page()
+      response = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => ctx.token, "return_to" => "/?" <> URI.encode_query(forged)})
+      assert redirected_to(response) == "/?panel=settings"
+    end
+  end
+
+  test "unlock preserves exact reviewed specification sources and rejects unsafe source return parameters", ctx do
+    source = %{
+      "project" => "github:example/fixture",
+      "view" => "design",
+      "spec_ref" => String.duplicate("c", 64),
+      "spec_document" => "fixture-specification",
+      "spec_item" => "search",
+      "spec_task" => "github:example/fixture:2"
+    }
+
+    for params <- [source, Map.put(source, "panel", "settings")] do
+      destination = "/?" <> URI.encode_query(params)
+      {conn, csrf} = browser_page()
+      signed_in = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => ctx.token, "return_to" => destination})
+      assert redirected_to(signed_in) == destination
+      assert BrowserAuth.authorized?(BrowserAuth.conn_context(signed_in))
+    end
+
+    forged = [Map.put(source, "command", "resume"), Map.put(source, "spec_unknown", "value")]
+    forged = forged ++ Enum.map(~w(spec_ref spec_document spec_item spec_task), &Map.put(source, &1, "unsafe\r\nsource"))
+    forged = forged ++ Enum.map(~w(spec_ref spec_document spec_item spec_task), &Map.put(source, &1, String.duplicate("x", 2_001)))
+
+    for params <- forged do
+      {conn, csrf} = browser_page()
+      response = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => ctx.token, "return_to" => "/?" <> URI.encode_query(params)})
+      assert redirected_to(response) == "/?panel=settings"
+    end
+
+    previous = System.get_env("SYMPHONY_WORKSPACE_PROJECT")
+    System.put_env("SYMPHONY_WORKSPACE_PROJECT", "events-concierge")
+    on_exit(fn -> restore_env("SYMPHONY_WORKSPACE_PROJECT", previous) end)
+    destination = "/projects/events-concierge/?" <> URI.encode_query(source)
+    {conn, csrf} = browser_page()
+    signed_in = post(browser_recycle(conn), "/operator/session", %{"_csrf_token" => csrf, "operator_token" => ctx.token, "return_to" => destination})
+    assert redirected_to(signed_in) == destination
+  end
+
   test "authorization rejects missing context, expiry, token rotation and unavailable token", ctx do
     assert BrowserAuth.authorized?(ctx.authorization)
     refute BrowserAuth.authorized?(%{})

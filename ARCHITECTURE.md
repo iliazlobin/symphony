@@ -77,7 +77,14 @@ commands to the native API and owns no scheduling state.
   In progress. Failed attempts remain in Work, and only human acceptance produces Done. Sorting and manual order
   are browser preferences. Card and Settings dialogs preserve the board underneath.
   [`TaskFilters`](elixir/lib/symphony_elixir_web/task_filters.ex) selects the same task IDs
-  for Graph and Gantt; [`WorkflowPlan`](elixir/lib/symphony_elixir_web/workflow_plan.ex)
+  for Graph and Gantt. [`GraphProjection`](elixir/lib/symphony_elixir_web/graph_projection.ex)
+  indexes the loaded graph once per board/filter identity and projects at most 80 nodes
+  and 300 dependency arrows before layout. Milestone/task-kind overviews, directional
+  one/two-hop task neighborhoods, full-index search and paging expose omitted counts
+  without changing prerequisite truth. A retained URL anchor separates the displayed
+  neighborhood/page from ordinary task selection; explicit Focus/search navigation
+  chooses a new anchor. Groups render only their members; Focus reveals external
+  prerequisites. [`WorkflowPlan`](elixir/lib/symphony_elixir_web/workflow_plan.ex)
   projects task dependency context and a UTC calendar. Recorded execution/acceptance dates remain distinct from draft estimates, which never grant scheduling authority. Draft start/duration/scale preferences are stored per project in the browser and validated by the LiveView.
   The URL retains the current view, task, Work session and filters.
   A supervised in-memory cache retains one complete board for up to 90 seconds.
@@ -122,6 +129,23 @@ commands to the native API and owns no scheduling state.
   from the reviewed content, exact creation receipt and current issue scope. Source labels
   alone are declarations. Changed or unavailable data cannot confirm coverage; candidate
   evidence remains bound to work/commit identity and does not verify individual criteria.
+- [`Assurance.Store`](elixir/lib/symphony_elixir/assurance/store.ex) owns Coverage's
+  requirements, criterion/task links, dependency annotations, immutable reviewed graph
+  snapshots, receipts and release declarations in one private project journal.
+  [`GraphSnapshot`](elixir/lib/symphony_elixir/assurance/graph_snapshot.ex) captures
+  whitelisted task/dependency fields; historical navigation and comparisons use those
+  saved records, preserving the live task/chat selection. They do not reconstruct past
+  tracker state. [`AssuranceObservations`](elixir/lib/symphony_elixir_web/assurance_observations.ex)
+  refreshes exact current candidate review and named GitHub Actions receipts from the
+  scoped board cache and native decisions. Changed criteria, task revisions, subjects,
+  links or dependency annotations expose gaps; manual declarations never become receipts.
+  Integrated-source, artifact, deployment and runtime receipt adapters remain absent,
+  so release declarations retain their missing-evidence gaps. Coverage owns no scheduler,
+  human Done transition, publication or deployment authority.
+  Reads/writes require current browser authority and unchanged project/configuration
+  scope; mutations check the expected durable revision. The shared private persistence
+  owner checks its lock and journal digest, writes atomically and stops new writes at
+  32 MB without pruning history. See [Coverage storage and recovery](elixir/README.md#coverage).
 - [`ReadOnlyBoard`](elixir/lib/symphony_elixir_web/read_only_board.ex) supports a
   separate local UI against a configured controller. The
   [`web launcher`](tools/symphony_web.py) starts only the web dependencies and reads
@@ -251,6 +275,12 @@ prove that its container has stopped.
 - Commands carry an idempotency key and expected operator revision. A successful
   response follows an atomic, synced ledger write. Failed persistence blocks
   admission and stops owned workers.
+- A controlled `before_run` hook can report a retained checkout's incompatible
+  baseline through the reserved exit/marker contract. The matching reservation and
+  `workspace_baseline_changed` hold settle atomically; failed persistence fails
+  closed. The hold survives restart and prevents automatic retries. Other hook
+  stages, ordinary errors and worker prose cannot create this typed hold. Checkout
+  recovery and any new attempt cycle remain explicit operator decisions.
 - Issue runtime has an independent OTP deadline, so a slow tracker poll cannot
   leave the coding worker running indefinitely. Token limits apply when usage
   events arrive and can overshoot by the last reporting increment.

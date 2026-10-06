@@ -340,6 +340,43 @@ defmodule SymphonyElixir.ControlLedgerTest do
     assert GenServer.call(pid, :snapshot)["issues"]["7"]["pr_work"][@work]["phase"] == "owner_review"
   end
 
+  test "baseline recovery selects fresh work while preserving the hold and lifetime evidence until explicit retry", ctx do
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    evidence = reviewed_handoff("retained-run") |> Map.drop(~w(work_id expected_head_sha goal_revision))
+    retained = issue(%{"hold" => "workspace_baseline_changed", "handoff" => evidence})
+    seed_issues(pid, %{"7" => retained})
+
+    assert_rejected_without_change(pid, ctx.settings.state_path, command("retry", 0, "7"), :budget_exhausted)
+    create = create_work(0)
+    assert {:ok, %{"revision" => 1}, false} = GenServer.call(pid, {:command, create, @work_context})
+    created = GenServer.call(pid, :snapshot)["issues"]["7"]
+    assert created["hold"] == "workspace_baseline_changed"
+    assert created["attempt_base"] == retained["attempts"]
+    assert created["cycle_attempts"] == 0
+    assert Map.take(created, ~w(attempts tokens runtime_ms)) == Map.take(retained, ~w(attempts tokens runtime_ms))
+    assert created["legacy_handoff"] == evidence
+    assert created["pr_work"][@work]["workspace_key"] != "GH-7"
+    assert created["pr_work"][@work]["base_sha"] == @base
+    assert {:error, :not_admitted} = GenServer.call(pid, {:reserve, "7"})
+    assert {:ok, _, true} = GenServer.call(pid, {:command, create, @work_context})
+    assert GenServer.call(pid, :snapshot)["issues"]["7"] == created
+
+    retry = command("retry", 1, "7")
+    assert {:ok, %{"revision" => 2}, false} = GenServer.call(pid, {:command, retry})
+    released = GenServer.call(pid, :snapshot)["issues"]["7"]
+    assert released["hold"] == nil
+    assert Map.drop(released, ~w(hold)) == Map.drop(created, ~w(hold))
+    assert {:error, :not_admitted} = GenServer.call(pid, {:reserve, "7"})
+
+    stop_supervised!(Owner)
+    pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    assert GenServer.call(pid, :snapshot)["issues"]["7"] == released
+    assert {:ok, %{"revision" => 3}, false} = GenServer.call(pid, {:command, command("resume", 2)})
+    assert {:ok, run, _} = GenServer.call(pid, {:reserve, "7"})
+    assert GenServer.call(pid, :snapshot)["issues"]["7"]["active"]["work_id"] == @work
+    assert :ok = GenServer.call(pid, {:finish, "7", run, "cancelled"})
+  end
+
   test "cancelling a legacy reviewed candidate cannot hide its continuation requirement", ctx do
     pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
     assert {:ok, _, false} = GenServer.call(pid, {:command, command("resume", 0)})
@@ -417,6 +454,35 @@ defmodule SymphonyElixir.ControlLedgerTest do
     assert {:error, :control_state_inside_workspace} = ControlLedger.open(inside, ctx.workspace)
   end
 
+  test "repeated rejected lock contenders survive and preserve exclusive ownership", ctx do
+    owner = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
+    snapshot = GenServer.call(owner, :snapshot)
+    bytes = File.read!(ctx.settings.state_path)
+    contenders = Enum.map(1..8, fn _ -> spawn_monitor(fn -> repeat_lock_contention(ctx.settings, ctx.workspace) end) end)
+
+    for {pid, reference} <- contenders do
+      assert_receive {:DOWN, ^reference, :process, ^pid, :normal}, 10_000
+    end
+
+    assert Process.alive?(owner)
+    assert GenServer.call(owner, :snapshot) == snapshot
+    assert File.read!(ctx.settings.state_path) == bytes
+    stop_supervised!(Owner)
+    assert {:ok, replacement} = ControlLedger.open(ctx.settings, ctx.workspace)
+
+    try do
+      assert ControlLedger.snapshot(replacement) == snapshot
+      assert File.read!(ctx.settings.state_path) == bytes
+    after
+      ControlLedger.close(replacement)
+    end
+  end
+
+  defp repeat_lock_contention(settings, workspace) do
+    assert Process.info(self(), :trap_exit) == {:trap_exit, false}
+    for _ <- 1..16, do: assert({:error, :control_state_locked} = ControlLedger.open(settings, workspace))
+  end
+
   test "invalid commands and retry of a running issue leave the durable revision unchanged", ctx do
     pid = start_supervised!({Owner, {ctx.settings, ctx.workspace}})
 
@@ -486,8 +552,8 @@ defmodule SymphonyElixir.ControlLedgerTest do
     System.put_env("PATH", bin)
     assert {:error, :python3_required_for_control_lock} = ControlLedger.open(ctx.settings, ctx.workspace)
 
-    # A helper that never acknowledges the lock and ignores the close request
-    # must be disconnected within the handshake plus shutdown deadlines.
+    # A helper that never acknowledges the lock must be disconnected
+    # when the handshake deadline passes.
     File.write!(bin <> "/python3", "#!#{python}\nimport sys\nsys.stdin.buffer.read()\n")
     File.chmod!(bin <> "/python3", 0o700)
     started = System.monotonic_time(:millisecond)

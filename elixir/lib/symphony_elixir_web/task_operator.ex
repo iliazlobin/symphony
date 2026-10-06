@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.TaskOperator do
   use Phoenix.Component
 
   alias SymphonyElixir.{AgentProtocol, IssueAcceptance, PRWork, WorkEvidence}
-  alias SymphonyElixirWeb.TaskExecution
+  alias SymphonyElixirWeb.{StatusIndicator, TaskExecution}
 
   @dependency_wait "Dependencies require human-accepted Done in this project."
 
@@ -57,24 +57,35 @@ defmodule SymphonyElixirWeb.TaskOperator do
 
     ~H"""
     <section id={@id} class={["task-operator", @compact && "task-operator-compact"]} aria-label="Task progress and next action" data-attention={to_string(@summary.attention?)} data-compact={to_string(@compact)}>
-      <div class="task-operator-heading"><span class="widget-label">{@summary.stage}</span><strong>{@summary.execution.status}</strong></div>
-      <p class="task-operator-outcome">{@summary.outcome}</p>
-      <p :if={@summary.blocker} class="task-operator-blocker" data-blocker-kind={@summary.blocker.kind}><strong>{@summary.blocker.label}</strong><span>{@summary.blocker.detail}</span></p>
-      <p :if={@summary.capability} class="muted task-operator-capability">{if @compact, do: "Coding work · other adapters unavailable", else: @summary.capability}</p>
+      <div class="task-operator-heading">
+        <span class="widget-label">{@summary.stage}</span><strong>{@summary.execution.status}</strong>
+        <StatusIndicator.indicator id={@id <> "-outcome"} title="Outcome" detail={@summary.outcome} />
+      </div>
+      <div :if={@summary.blocker || @summary.capability} class="task-operator-indicators">
+        <StatusIndicator.indicator :if={@summary.blocker} id={@id <> "-blocker"} title={@summary.blocker.label}
+          label={@summary.blocker.label} detail={@summary.blocker.detail} data-blocker-kind={@summary.blocker.kind}
+          tone={if @summary.blocker.action_required?, do: "warning", else: "neutral"} />
+        <StatusIndicator.indicator :if={@summary.capability} id={@id <> "-capability"} title="Available work adapters"
+          label="Adapters" detail={@summary.capability} />
+      </div>
       <dl :if={@summary.evidence} class="task-operator-evidence">
         <div><dt>Candidate</dt><dd><code title={@summary.evidence.candidate_sha}>{short_sha(@summary.evidence.candidate_sha)}</code><span>{@summary.evidence.current_label}</span></dd></div>
         <div><dt>Independent review</dt><dd>{@summary.evidence.review_label}<code :if={@summary.evidence.reviewed_sha} title={@summary.evidence.reviewed_sha}>{short_sha(@summary.evidence.reviewed_sha)}</code></dd></div>
         <div><dt>Candidate checks</dt><dd>{@summary.evidence.checks_label}</dd></div>
       </dl>
       <div class="task-operator-actions">
-        <button :for={action <- @summary.actions} :if={!action.control? || @controls_available} type="button" id={action_id(@id, action, @compact)}
-          class={if @summary.primary_action && action.id == @summary.primary_action.id, do: "button button-primary", else: "button"}
-          disabled={action.control? && !@controls_available} phx-click={action.event} phx-value-id={@task.id}
-          phx-value-action={action[:action]} phx-value-stage={action[:stage]} phx-value-tab={action[:tab]} phx-value-renew_attempts={action[:renew_attempts]}
-          phx-value-prompt={action[:prompt]}>{action.label}</button>
+        <span :for={action <- @summary.actions} :if={!action.control? || @controls_available} class="task-operator-action">
+          <button type="button" id={action_id(@id, action, @compact)}
+            class={if @summary.primary_action && action.id == @summary.primary_action.id, do: "button button-primary", else: "button"}
+            disabled={action.control? && !@controls_available} phx-click={action.event} phx-value-id={@task.id}
+            phx-value-action={action[:action]} phx-value-stage={action[:stage]} phx-value-tab={action[:tab]} phx-value-renew_attempts={action[:renew_attempts]}
+            phx-value-prompt={action[:prompt]}>{action.label}</button>
+          <StatusIndicator.indicator :if={action.id == "retry-cycle"} id={@id <> "-retry-help"} title="Retry cycle"
+            detail="Retry cycle requires confirmation. It renews exhausted attempts only; recorded tokens, runtime, task scope and project gates stay unchanged." />
+          <StatusIndicator.indicator :if={action.id == "stop-task"} id={@id <> "-stop-help"} title="Stop task"
+            detail="Stop reply affects chat. Stop task requests worker cleanup; the task is stopped only after cleanup is confirmed." />
+        </span>
       </div>
-      <p :if={@summary.execution.renew_attempts?} class="task-operator-help muted">Retry cycle requires confirmation. It renews exhausted attempts only; recorded tokens, runtime, task scope and project gates stay unchanged.</p>
-      <p :if={!@compact && @summary.execution.cancel?} class="task-operator-help muted">Stop reply affects chat. Stop task requests worker cleanup; the task is stopped only after cleanup is confirmed.</p>
     </section>
     """
   end
@@ -178,6 +189,9 @@ defmodule SymphonyElixirWeb.TaskOperator do
 
   defp blocker(_task, %{status: "Worker sign-in required"} = execution),
     do: block("authentication", "Coding worker sign-in required", execution.note, true)
+
+  defp blocker(_task, %{status: "Workspace baseline needs recovery"} = execution),
+    do: block("recovery", execution.status, execution.note, true)
 
   defp blocker(%{stage: "review"} = task, _execution), do: block("review", "Your review is needed", review_guidance(task), true)
 

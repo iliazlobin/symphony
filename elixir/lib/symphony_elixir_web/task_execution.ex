@@ -3,6 +3,8 @@ defmodule SymphonyElixirWeb.TaskExecution do
 
   alias SymphonyElixir.{IssueAcceptance, PRWork, WorkerFailure}
 
+  @dependency_wait "Dependencies require human-accepted Done in this project."
+
   @type metric :: %{label: String.t(), value: String.t(), title: String.t(), used: non_neg_integer() | nil}
   @type summary :: %{
           status: String.t(),
@@ -238,7 +240,7 @@ defmodule SymphonyElixirWeb.TaskExecution do
       not is_nil(get_in(task, [:ledger, "active"])) -> {"Needs reconciliation", "A reserved execution has no current worker status.", false, false}
       task[:hold] in ["input_required", "needs_input", "approval_required"] -> input_state()
       is_binary(task[:hold]) -> held_state(task[:hold], usage, budgets)
-      task[:stage] == "ready" -> ready_state(control, usage, budgets)
+      task[:stage] == "ready" -> ready_state(task, control, usage, budgets)
       true -> {"Not queued", nil, false, false}
     end
   end
@@ -263,9 +265,11 @@ defmodule SymphonyElixirWeb.TaskExecution do
   defp runtime_state(%{status: "running"} = runtime, _task, _usage, _budgets), do: runtime_state(runtime)
 
   defp runtime_state(runtime, task, usage, budgets) do
-    if task[:hold] == "worker_auth_required" and is_nil(get_in(task, [:ledger, "active"])),
-      do: authentication_state(usage, budgets),
-      else: runtime_state(runtime)
+    case {task[:hold], get_in(task, [:ledger, "active"])} do
+      {"worker_auth_required", nil} -> authentication_state(usage, budgets)
+      {"workspace_baseline_changed", nil} -> baseline_recovery_state()
+      _ -> runtime_state(runtime)
+    end
   end
 
   defp runtime_state(%{status: "running"}), do: {"Running", nil, true, false}
@@ -285,11 +289,33 @@ defmodule SymphonyElixirWeb.TaskExecution do
   defp review_state(%{"review" => %{"verdict" => "blocked"}}), do: {"Review blocked", "Review the candidate and resolve its blocker before continuing.", false, false}
   defp review_state(_handoff), do: {"Review pending", "Independent review is not confirmed.", false, false}
 
-  defp ready_state(control, usage, budgets) do
+  defp ready_state(task, control, usage, budgets) do
     case budget_state(usage, budgets) do
       {:exhausted, limit} -> {"Limit reached", "#{limit} limit reached. Existing usage is preserved.", true, false}
+      _ -> admission_state(task, control)
+    end
+  end
+
+  defp admission_state(task, control) do
+    case task[:dependency_error] do
+      @dependency_wait -> {"Waiting for prerequisites", dependency_note(task), true, false}
+      reason when is_binary(reason) and reason != "" -> {"Dependency needs correction", reason, true, false}
       _ -> ready_state(control)
     end
+  end
+
+  defp dependency_note(task) do
+    identifiers =
+      (task[:dependency_blockers] || [])
+      |> Enum.flat_map(fn
+        %{id: id} when is_binary(id) -> if String.match?(id, ~r/\A[1-9][0-9]{0,9}\z/), do: ["GH-#{id}"], else: []
+        _ -> []
+      end)
+      |> Enum.uniq()
+      |> Enum.take(20)
+
+    prerequisites = if identifiers == [], do: "Prerequisite tasks", else: Enum.join(identifiers, ", ")
+    prerequisites <> " must be accepted as Done before this task can start."
   end
 
   defp ready_state(%{"mode" => "running"}), do: {"Queued", "Waiting for admission and an available worker.", true, false}
@@ -298,6 +324,7 @@ defmodule SymphonyElixirWeb.TaskExecution do
   defp ready_state(_control), do: {"Queued", "Controller mode is not reported.", false, false}
 
   defp held_state("worker_auth_required", usage, budgets), do: authentication_state(usage, budgets)
+  defp held_state("workspace_baseline_changed", _usage, _budgets), do: baseline_recovery_state()
 
   defp held_state(hold, usage, budgets) do
     case budget_state(usage, budgets) do
@@ -305,6 +332,10 @@ defmodule SymphonyElixirWeb.TaskExecution do
       :unknown -> {"Held", "Usage or limits are not fully reported; retry availability cannot be confirmed.", false, false}
       :remaining -> {hold_status(hold), "Retry keeps the task's recorded usage and remaining limits.", false, true}
     end
+  end
+
+  defp baseline_recovery_state do
+    {"Workspace baseline needs recovery", "Preserve the retained checkout and recover into a fresh workspace from the approved baseline. Recorded usage and limits are unchanged.", false, false}
   end
 
   defp authentication_state(usage, budgets) do

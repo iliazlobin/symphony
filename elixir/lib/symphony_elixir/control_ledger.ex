@@ -155,13 +155,8 @@ defmodule SymphonyElixir.ControlLedger do
   @spec close(t()) :: :ok
   def close(%{lock: port}) when is_port(port) do
     try do
-      Port.command(port, "q")
-
-      receive do
-        {^port, {:exit_status, _}} -> :ok
-      after
-        1_000 -> Port.close(port)
-      end
+      # A rejected contender may already have closed stdin; do not write to its exiting pipe.
+      Port.close(port)
     rescue
       ArgumentError -> :ok
     end
