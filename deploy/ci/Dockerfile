@@ -17,8 +17,10 @@ RUN tar -xzf /tmp/runner.tar.gz -C /home/runner \
     && mkdir /home/runner/_work \
     && chown -R 1001:1001 /home/runner \
     && test -x /home/runner/run.sh && test -x /bin/kill && test -x /usr/bin/tini \
-    && node --version | grep -Fx v22.14.0 \
-    && elixir --version | grep -F 'Elixir 1.19.5' \
+    && node_version="$(node --version)" \
+    && test "$node_version" = v22.14.0 \
+    && elixir_version="$(elixir --version)" \
+    && printf '%s\n' "$elixir_version" | grep -F 'Elixir 1.19.5' \
     && erl -noshell -eval '"28" = erlang:system_info(otp_release), halt().'
 ARG SOURCE_REVISION
 RUN python3 -c 'import re,sys; assert re.fullmatch("[0-9a-f]{40}",sys.argv[1])' "$SOURCE_REVISION"

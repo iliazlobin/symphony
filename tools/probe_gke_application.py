@@ -28,7 +28,7 @@ import urllib.parse
 ROOT = "/var/lib/symphony"
 LABEL = "com.symphony.application-probe"
 PROJECT = "github:example/integration"
-TITLE = "Disposable packaged application check"
+TITLE = "New chat"
 MESSAGE = "Verify the explicit missing-sign-in state."
 AUTH_ERROR = "Sign in to the dedicated management-chat Codex runtime, then try again."
 LIMIT = 4_194_304
@@ -185,9 +185,12 @@ class LiveSocket:
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             message = self.receive()
+            if message[2] != self.topic:
+                continue
             if message[1] == reference and message[3] == "phx_reply":
                 require(message[4].get("status") == "ok", "LiveView event failed")
                 return message[4].get("response", {})
+            require(message[3] not in ("phx_error", "phx_close"), "LiveView topic ended: " + message[3])
         raise RuntimeError("LiveView event timed out")
 
     def event(self, cid, name, values=None):
@@ -205,10 +208,21 @@ def chat_component(join):
     return matches[0]
 
 
-def record():
+def records():
     files = list(Path(ROOT + "/chat").glob("*.json"))
-    require(len(files) == 1, "Expected exactly one persistent conversation")
-    return json.loads(files[0].read_text())
+    require(1 <= len(files) <= 2, "Unexpected persistent conversation count")
+    saved = [json.loads(path.read_text()) for path in files]
+    require(all(chat["project_id"] == PROJECT and chat.get("conversation_role") in ("legacy", "main")
+                and chat.get("task_id") is None and path.stem == chat["id"]
+                for path, chat in zip(files, saved)), "Unexpected persistent conversation scope")
+    return saved
+
+
+def record(chat_id=None, role="legacy"):
+    selected = [chat for chat in records() if chat["conversation_role"] == role
+                and (chat_id is None or chat["id"] == chat_id)]
+    require(len(selected) == 1, "Expected exactly one persistent " + role + " conversation")
+    return selected[0]
 
 
 def design_assets(browser):
@@ -276,7 +290,6 @@ def inside(phase):
     require("new-chat-button" in json.dumps(live.join), "Real Chat.Store controls were unavailable")
     if phase == "create":
         live.event(cid, "new-chat")
-        live.event(cid, "rename-chat", {"title": TITLE})
         live.event(cid, "send-message", {"message": MESSAGE})
         deadline = time.monotonic() + 25
         while record()["status"] == "running" and time.monotonic() < deadline:
@@ -287,11 +300,27 @@ def inside(phase):
     require(saved["codex_thread_id"] is None and saved["proposals"] == [] and saved.get("usage") is None, "Unexpected model or task action")
     require([m["text"] for m in saved["messages"]] == [MESSAGE, ""], "Persistent messages did not match the no-model check")
     if phase == "recover":
-        require(TITLE in json.dumps(live.join) and AUTH_ERROR in json.dumps(live.join), "Restarted LiveView did not recover conversation content")
+        require(MESSAGE in json.dumps(live.join) and AUTH_ERROR in json.dumps(live.join), "Restarted LiveView did not recover conversation summary/content")
     live.close()
-    embedded = LiveSocket(browser, "/?" + urllib.parse.urlencode({"assistant": "1", "project": PROJECT, "chat": saved["id"]}))
+    require(len(records()) == (1 if phase == "create" else 2), "Unexpected journal count before canonical board selection")
+    previous_main_id = record(role="main")["id"] if phase == "recover" else None
+    embedded = LiveSocket(browser, "/?" + urllib.parse.urlencode({"project": PROJECT}))
     chat_component(embedded.join)
-    require(TITLE in json.dumps(embedded.join) and AUTH_ERROR in json.dumps(embedded.join), "Board chat panel did not share the same persistent conversation")
+    canonical = record(role="main")
+    require(len(records()) == 2 and record(saved["id"]) == saved, "Board selection changed standalone history or created extra conversations")
+    require(canonical["title"] == "Project agent" and canonical["project_id"] == PROJECT
+            and canonical["status"] == "idle" and canonical["messages"] == [] and canonical["proposals"] == []
+            and canonical["codex_thread_id"] is None and canonical.get("usage") is None,
+            "Canonical project conversation was not idle, scoped and provider-free")
+    require(previous_main_id is None or previous_main_id == canonical["id"], "Restart replaced the canonical project conversation")
+    require("project-agent-breadcrumb" in json.dumps(embedded.join) and canonical["id"] in json.dumps(embedded.join),
+            "Board did not render its canonical project-agent conversation")
+    shared = LiveSocket(browser, "/chat?" + urllib.parse.urlencode({"project": PROJECT, "chat": canonical["id"]}))
+    chat_component(shared.join)
+    require(canonical["id"] in json.dumps(shared.join) and canonical["title"] in json.dumps(shared.join)
+            and record(canonical["id"], "main") == canonical and record(saved["id"]) == saved,
+            "Standalone chat did not reopen the unchanged canonical project conversation")
+    shared.close()
     settings = embedded.call("event", {"type": "click", "event": "open-settings", "value": {}})
     require(all(marker in json.dumps(settings) for marker in ("settings-execution", "settings-ai", "settings-connections", "Service available")), "Real Settings panel or Chat.Store health did not load")
     embedded.call("event", {"type": "click", "event": "settings-tab", "value": {"tab": "connections"}})
@@ -299,7 +328,7 @@ def inside(phase):
     journal = json.loads(Path(ROOT + "/control.json").read_text())
     require(journal["mode"] == "paused" and journal["issues"] == {}, "Task ledger changed during chat probe")
     require(not Path(ROOT + "/chat-codex/auth.json").exists(), "Probe unexpectedly created authentication")
-    print(json.dumps({"phase": phase, "chat_id": saved["id"], "normal_app": True, "provider_auth": False, "model_calls": False, "task_admission": False}))
+    print(json.dumps({"phase": phase, "chat_id": saved["id"], "canonical_chat_id": canonical["id"], "normal_app": True, "provider_auth": False, "model_calls": False, "task_admission": False}))
 
 
 def image_reference(value):
@@ -386,6 +415,7 @@ def run(image):
             docker(["rm", name])
             container_intents.remove(name)
         require(results[0]["chat_id"] == results[1]["chat_id"], "Restart changed conversation identity")
+        require(results[0]["canonical_chat_id"] == results[1]["canonical_chat_id"], "Restart changed canonical project conversation identity")
         return {"image": image, "checks": results, "scope": "isolated local HTTP/LiveView protocol; no visual browser or cloud acceptance"}
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         for owned in container_intents:
