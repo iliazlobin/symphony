@@ -293,7 +293,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
         socket
       end
 
-    socket = socket |> open_linked_task() |> sync_chat_selection() |> refresh_chat_activity() |> refresh_specification_coverage()
+    socket =
+      socket
+      |> open_linked_task()
+      |> sync_chat_selection()
+      |> refresh_chat_activity()
+      |> refresh_specification_coverage()
+
     socket |> refresh_assurance(true) |> refresh_graph_index()
   end
 
