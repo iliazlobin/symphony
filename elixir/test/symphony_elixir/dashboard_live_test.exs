@@ -2075,7 +2075,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assigns = :sys.get_state(signed_out.pid).socket.assigns
     assert assigns.specification_history == nil
     assert assigns.specification_source_context == %{project: source["project"], params: Map.take(source, ~w(spec_ref spec_document spec_item spec_task))}
-    assert has_element?(signed_out, "#management-chat-dock input[name=return_to][value='#{destination}']")
+    refute has_element?(signed_out, "#management-chat-dock")
     render_click(signed_out, "open-settings", %{"tab" => "connections"})
     settings_destination = "/?" <> URI.encode_query(Map.put(source, "panel", "settings"))
     assert has_element?(signed_out, "#settings-connections input[name=return_to][value='#{settings_destination}']")
@@ -2127,8 +2127,12 @@ defmodule SymphonyElixir.DashboardLiveTest do
     for task <- ["github:other/project:1", "github:example/fixture:unsafe\n"] do
       render_patch(view, "/?" <> URI.encode_query(Map.put(source, "spec_task", task)))
       assert :sys.get_state(view.pid).socket.assigns.specification_source_context == %{project: source["project"], params: Map.take(source, ~w(spec_ref spec_document spec_item))}
-      expected = "/?" <> URI.encode_query(source)
-      assert has_element?(view, "#management-chat-dock input[name=return_to][value='#{expected}']")
+      refute has_element?(view, "#management-chat-dock")
+      render_click(view, "open-settings", %{"tab" => "connections"})
+      expected = "/?" <> URI.encode_query(Map.put(source, "panel", "settings"))
+      assert has_element?(view, "#settings-connections input[name=return_to][value='#{expected}']")
+      render_click(view, "close-dialog")
+      assert_patch(view, "/?" <> URI.encode_query(source))
     end
 
     render_click(view, "switch-view", %{"view" => "graph"})
