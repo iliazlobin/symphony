@@ -496,9 +496,10 @@ project's token, ledger, chat store, baseline and launch/merge gates unchanged.
 
 **Activate a tested release:** install `tools/requirements.txt`; drain and settle all
 native work, retries, chat responses, queued reports and unknown action outcomes.
-Back up configuration/state, stop the old project launch agents and archive their
-plist files outside `~/Library/LaunchAgents` so they cannot return at login. Then start
-one service:
+Stop the old project launch agents and verify all state owners have unloaded before
+taking the consistent configuration/state backup. Archive their plist files outside
+`~/Library/LaunchAgents` so they cannot return at login. An existing workspace uses
+the [release update procedure](#update-the-local-symphony-release). Then start one service:
 
 ```sh
 python3 tools/symphony_workspace.py --config /absolute/workspace.json check
@@ -536,7 +537,8 @@ backup. An older build cannot read the new field; never restore a stale backup o
 subsequent operator changes. An uncertain persistence result requires inspection before restart.
 
 Use the same service command with `stop` only after settling all work. The command
-refuses active native work or retries; unavailable snapshots require investigation.
+refuses active native work or retries; it does not establish that chat responses,
+queued reports or unknown action outcomes have settled. Unavailable snapshots require investigation.
 A direct OS kill can interrupt work and leaves retained state for reconciliation.
 Do not start standalone project services alongside the workspace. Preserve the previous
 configuration/release for rollback; restore its services only after stopping the workspace.
@@ -659,20 +661,37 @@ changed base merely because their checks passed.
   a feature branch does not deliver that change to `main`.
 - Build and test a pinned `main` commit in a retained release checkout. Run every
   local project controller and its installed publisher from that same commit.
-- For each existing private configuration, drain, wait for workers and chat turns to
-  finish, then pause and stop its installed agents using the current release. Use
-  the explicit `--config` path; verify the agents are unloaded before replacing them.
-- Preserve the previous release and private configuration, workflow, ledger, feedback journal, receipts
-  and chat state for recovery. Point `profile_bin` and the reviewed launch-agent
-  program paths and working directory at the new release. Keep the same origins,
-  credentials, gates and state directories; leave uninstalled publishers disabled.
+- For each existing private configuration, use the current release's control CLI with
+  an explicit `--config` path and fresh revisions to drain, settle native work, retries,
+  chat responses, queued reports and unknown action outcomes, then pause.
+- Stop and check an existing unified service with the current release's
+  `tools/symphony_service.py --workspace-config /absolute/workspace.json stop` and
+  `status`. Per-project `--config` stops only standalone agents; absent legacy labels
+  do not prove the workspace stopped. Verify all owners and listeners have stopped.
+- After unloading all writers, preserve the previous release and take a consistent
+  private backup of workspace/project configuration, workflows, ledgers, feedback
+  journals, publication receipts, retained workspaces and configured external storage.
+  Include `<control.state_path>.specification/` and each complete chat directory,
+  including Idea, Design and Assurance state.
+- Point each project's `profile_bin` at the new release. Archive the unloaded old
+  plist files outside `~/Library/LaunchAgents`; installation rejects a differing
+  existing plist. Preserve the installed service topology, origins, credentials,
+  gates and state directories; leave uninstalled publishers disabled.
 - A controller update does not change a task's source baseline. Preserve `base_sha`
   and `integration_branch` unless separately performing the baseline procedure below.
   Do not run profile initialization over an existing installation.
-- Run the project's `profile.py doctor`, start only its previously installed agents,
-  and verify the release commit, repository, retained tasks/chat and paused API state.
-  Restore a previously running controller only after validation and within the existing
-  launch authorization. Keep projects that were paused paused.
+- Run each project's `profile.py doctor`. For an existing workspace, run workspace
+  `check` and service `install`, `start` and `status` with `--workspace-config`. For a
+  standalone installation, replace and start only its previously installed agent
+  definitions; blanket installation can add a previously uninstalled publisher.
+  Verify the release commit/tree, actual launch paths and binary checksum, retained
+  tasks/specifications/chat, browser reload and paused API state. Restore a previously
+  running controller only after validation and within the existing launch authorization.
+  Keep paused projects paused.
+- A release predating acceptance criteria cannot read specification journals containing
+  criteria. After those records are written, rollback requires compatible code or
+  explicitly reviewed recovery. Stop all owners and preserve the latest state first;
+  never restore a pre-release backup over later operator changes.
 
 ## Change the baseline
 
