@@ -268,8 +268,7 @@ defmodule SymphonyElixir.IAPBrowserTest do
   defp csrf(conn), do: conn.resp_body |> Floki.parse_document!() |> Floki.find("input[name=_csrf_token]") |> Floki.attribute("value") |> hd()
 
   defp socket_headers(conn, origin) do
-    conn
-    |> Plug.Conn.put_req_header("host", conn.host)
+    %{conn | req_headers: [{"host", conn.host} | conn.req_headers]}
     |> Plug.Conn.put_req_header("origin", origin)
     |> Plug.Conn.put_req_header("connection", "upgrade")
     |> Plug.Conn.put_req_header("upgrade", "websocket")
