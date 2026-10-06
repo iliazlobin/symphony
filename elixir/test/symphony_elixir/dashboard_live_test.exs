@@ -2173,6 +2173,64 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   @tag :specification_fixture
+  test "local controller faults invalidate specification coverage before a source refresh", ctx do
+    {view, linked} = linked_specification_view(ctx)
+    faulted = Map.put(linked.control, "fault", "control_persistence")
+    :sys.replace_state(ctx.runtime, &%{&1 | control: faulted})
+    send(view.pid, :observability_updated)
+    assert has_element?(view, "[data-spec-coverage=search]", "Task coverage unavailable")
+    refute has_element?(view, "[data-spec-coverage=search]", "1 criterion linked")
+
+    :sys.replace_state(ctx.runtime, &%{&1 | control: {:error, :unavailable}})
+    send(view.pid, :observability_updated)
+    assert has_element?(view, "[data-spec-coverage=search]", "Task coverage unavailable")
+
+    refresh(view, ctx.runtime, linked)
+    assert has_element?(view, "[data-spec-coverage=search]", "1 criterion linked to a task")
+    refute_received {:settings_command, _}
+  end
+
+  @tag :specification_fixture
+  test "local candidate updates reproject specification coverage using retained receipts", ctx do
+    {view, linked} = linked_specification_view(ctx)
+    task = Enum.find(linked.tasks, &(&1.issue_id == "1"))
+    issues = Enum.map(linked.tracker_issues, fn issue -> if issue.id == "1", do: %{issue | title: task.title, description: task.description}, else: issue end)
+    refresh(view, ctx.runtime, %{linked | tracker_issues: issues})
+    sha = String.duplicate("a", 40)
+    base = String.duplicate("b", 40)
+
+    work = %{
+      "id" => "work",
+      "issue_id" => "1",
+      "head_sha" => sha,
+      "base_sha" => base,
+      "phase" => "owner_review",
+      "handoff" => %{
+        "work_id" => "work",
+        "candidate_sha" => sha,
+        "base_sha" => base,
+        "run_id" => "run",
+        "review" => %{"candidate_sha" => sha, "verdict" => "approve", "findings" => []},
+        "checks" => []
+      }
+    }
+
+    control = linked.control |> Map.put("revision", 1) |> put_in(["issues", "1"], %{"pr_work" => %{"work" => work}})
+    configured = Application.get_env(:symphony_elixir, Endpoint)
+    Endpoint.config_change([{Endpoint, Keyword.put(configured, :intake_fixture_error, true)}], [])
+    :sys.replace_state(ctx.runtime, &%{&1 | control: control})
+    send(view.pid, :observability_updated)
+    assert has_element?(view, "[data-spec-coverage=search]", "Candidate reviewed · criteria unverified")
+
+    changed = control |> Map.put("revision", 2) |> put_in(["issues", "1", "pr_work", "work", "phase"], "running")
+    :sys.replace_state(ctx.runtime, &%{&1 | control: changed})
+    send(view.pid, :observability_updated)
+    assert has_element?(view, "[data-spec-coverage=search]", "Candidate evidence stale")
+    refute has_element?(view, "[data-spec-coverage=search]", "Candidate reviewed")
+    refute_received {:settings_command, _}
+  end
+
+  @tag :specification_fixture
   test "browser unused-input markers preserve successive edits and save only specification fields", ctx do
     view = authorized_board_view()
     project = "github:example/fixture"

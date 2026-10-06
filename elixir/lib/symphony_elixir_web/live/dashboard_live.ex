@@ -1508,7 +1508,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
     selected = socket.assigns.selected
     current = selected && Enum.find(board.tasks, &(&1.id == selected.id))
     :ok = BoardCache.put(socket.assigns.board_scope, board)
-    socket |> assign(:board, board) |> assign(:selected, current) |> refresh_assurance() |> refresh_graph_index()
+
+    socket
+    |> assign(:board, board)
+    |> assign(:selected, current)
+    |> project_specification_coverage()
+    |> refresh_assurance()
+    |> refresh_graph_index()
   end
 
   defp refresh_control(board, scope, payload) do
