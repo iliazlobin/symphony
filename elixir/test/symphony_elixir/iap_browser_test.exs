@@ -126,7 +126,7 @@ defmodule SymphonyElixir.IAPBrowserTest do
     assert get(socket_headers(proxy_conn("forged"), @origin), "/live/websocket?vsn=2.0.0").status == 403
     assert get(socket_headers(proxy_conn(ctx.token), "https://attacker.example"), "/live/websocket?vsn=2.0.0").status == 403
     upgraded = get(socket_headers(proxy_conn(ctx.token), @origin), "/live/websocket?vsn=2.0.0")
-    assert upgraded.state == :upgraded
+    assert upgraded.state == :upgraded, inspect({upgraded.status, upgraded.resp_body})
     assert :error = LiveSocket.connect(%{"x-goog-iap-jwt-assertion" => ctx.token}, %Phoenix.Socket{}, %{uri: URI.parse(@origin), x_headers: []})
     put_config(put_in(ctx.config, [:browser_auth, :provider], "unknown"))
     assert :error = LiveSocket.connect(%{}, %Phoenix.Socket{}, %{})
@@ -145,8 +145,10 @@ defmodule SymphonyElixir.IAPBrowserTest do
   test "a connected mount cannot replace its raw signed header with a valid HTTP cookie or connect params", ctx do
     for headers <- [[], [{"x-goog-iap-jwt-assertion", "forged"}]] do
       response = get(proxy_conn(ctx.token), "/chat")
-      assert html_response(response, 200) =~ "Private IAP project"
-      assert_received :private_projects_read
+      assert html_response(response, 200) =~ "Opening your workspace"
+      assert %{"provider" => "iap", "id" => id} = Plug.Conn.get_session(response, BrowserAuth.session_key())
+      assert {:ok, _record} = BrowserSessions.session(id)
+      refute_received :private_projects_read
 
       conn =
         response
@@ -267,6 +269,7 @@ defmodule SymphonyElixir.IAPBrowserTest do
 
   defp socket_headers(conn, origin) do
     conn
+    |> Plug.Conn.put_req_header("host", conn.host)
     |> Plug.Conn.put_req_header("origin", origin)
     |> Plug.Conn.put_req_header("connection", "upgrade")
     |> Plug.Conn.put_req_header("upgrade", "websocket")

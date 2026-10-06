@@ -2,7 +2,7 @@
 
 This renderer prepares the full Phoenix board and management chat behind HTTPS and
 IAP at `symphony.iliazlobin.com`. It uses the existing `symphony` namespace and
-`shared-dev` pool, with a new retained `symphony-application-state` volume. The Mac
+`symphony-services` pool, with a new retained `symphony-application-state` volume. The Mac
 service and the subscription pilot's `symphony-journal` are separate owners.
 
 The [application package contract](../README.md#required-application-package) owns
@@ -24,9 +24,16 @@ provenance. A rendered file is not deployment acceptance.
   `us-west1-docker.pkg.dev/iz27-platform-dev/symphony/application@sha256:…`, built
   from the exact reviewed source revision with the IAP implementation. Check its
   provenance and OCI revision before rendering activation; syntax cannot prove them.
+- Verify the platform-owned `symphony-services` pool is approved and deployed with
+  protected selector `node-restriction.kubernetes.io/workload: symphony-services`
+  and `workload=symphony-services:NoSchedule` taint. The application and trusted ARC
+  controller/listener use ordinary COS runtime there; untrusted CI and coding Jobs
+  remain in their separately isolated pools. Preserve the fixed `shared-dev` pool.
 - Verify the `shared-retain` StorageClass retains its backing disk and supports
-  `ReadWriteOncePod`. Confirm `shared-dev` can fit requests of 250m CPU/512Mi memory
-  and a 1 CPU/1Gi limit. These are initial bounds, not measured capacity results.
+  `ReadWriteOncePod`. Confirm services capacity fits the app's 250m CPU/512Mi request
+  and 1 CPU/1Gi limit, ARC's 150m CPU/256Mi requests and system Pods. These initial
+  bounds require native capacity and runtime verification; no request is reduced to
+  fit a previously overloaded node.
 - Verify cluster DNS `10.48.0.10` and node-local DNS `169.254.20.10` against the cluster.
   The application policy allows DNS and public IPv4 TCP 443, excluding private and
   metadata ranges. It creates no VPC, node-pool or namespace-wide permission changes.
@@ -140,6 +147,10 @@ remain mandatory on application pages and sockets.
   older complete snapshot over newer operator changes, adopt the pilot PVC or delete
   this PVC as part of ordinary Deployment/Gateway removal. Retain preceding workflow
   ConfigMaps while their images remain rollback candidates.
+- A placement rollback must first establish sufficient capacity. Do not send the
+  application and ARC controls back to `shared-dev` or delete the services pool
+  while writers or controllers remain assigned to it. Retain state and stop writers
+  before any planned drain; never force-detach the volume.
 
 Local source checks cover rendering and entrypoint interoperability:
 

@@ -50,7 +50,10 @@ class PrivateCITests(unittest.TestCase):
         self.assertEqual(self.runner["controllerServiceAccount"], {"namespace": "symphony-ci-system", "name": "symphony-ci-controller"})
         self.assertEqual(self.runner["githubConfigSecret"], "symphony-ci-github-app")
         self.assertEqual(self.runner["githubConfigUrl"], "https://github.com/iliazlobin/symphony")
-        self.assertEqual(self.runner["listenerTemplate"]["spec"]["nodeSelector"], {"cloud.google.com/gke-nodepool": "shared-dev"})
+        for trusted in (self.controller, self.runner["listenerTemplate"]["spec"]):
+            self.assertEqual(trusted["nodeSelector"], {"node-restriction.kubernetes.io/workload": "symphony-services"})
+            self.assertEqual(trusted["tolerations"], [{"key": "workload", "operator": "Equal", "value": "symphony-services", "effect": "NoSchedule"}])
+            self.assertNotIn("runtimeClassName", trusted)
         for namespace in (r for r in self.resources if r["kind"] == "Namespace"):
             self.assertEqual(namespace["metadata"]["labels"]["pod-security.kubernetes.io/enforce"], "restricted")
 

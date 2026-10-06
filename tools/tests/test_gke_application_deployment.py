@@ -158,7 +158,9 @@ class ApplicationDeploymentTests(unittest.TestCase):
         self.assertEqual(deployment["replicas"], 1)
         self.assertEqual(deployment["strategy"], {"type": "Recreate"})
         pod = deployment["template"]["spec"]
-        self.assertEqual(pod["nodeSelector"], {"cloud.google.com/gke-nodepool": "shared-dev"})
+        self.assertEqual(pod["nodeSelector"], {"node-restriction.kubernetes.io/workload": "symphony-services"})
+        self.assertEqual(pod["tolerations"], [{"key": "workload", "operator": "Equal", "value": "symphony-services", "effect": "NoSchedule"}])
+        self.assertNotIn("runtimeClassName", pod)
         self.assertFalse(pod["automountServiceAccountToken"])
         self.assertFalse(pod["enableServiceLinks"])
         self.assertNotIn("serviceAccountName", pod)

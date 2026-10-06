@@ -211,7 +211,8 @@ def workload_resources(hostname, image, source_revision, iap_audience):
                 "symphony.dev/source-revision": source_revision, "symphony.dev/workflow-sha256": checksum,
             }},
             "spec": {
-                "nodeSelector": {"cloud.google.com/gke-nodepool": "shared-dev"},
+                "nodeSelector": {"node-restriction.kubernetes.io/workload": "symphony-services"},
+                "tolerations": [{"key": "workload", "operator": "Equal", "value": "symphony-services", "effect": "NoSchedule"}],
                 "automountServiceAccountToken": False, "enableServiceLinks": False,
                 "securityContext": {"runAsNonRoot": True, "runAsUser": 10001, "runAsGroup": 10001,
                                     "fsGroup": 10001, "fsGroupChangePolicy": "OnRootMismatch",
