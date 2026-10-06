@@ -121,7 +121,7 @@ defmodule SymphonyElixirWeb.SpecificationObjectView do
       <input :if={@field.type in [:url, :number] or (@field.type == :text and @field.limit <= 512)} id={@id} name={@name} value={@value} type={if(@field.type == :number, do: "number", else: if(@field.type == :url, do: "url", else: "text"))} step={if(@field.type == :number, do: "any")} maxlength={Map.get(@field, :limit)} title={if(is_binary(@value), do: @value)} />
       <textarea :if={@field.type == :text and @field.limit > 512} id={@id} name={@name} rows={if(@compact, do: "1", else: "2")} maxlength={@field.limit}>{@value}</textarea>
     </label>
-    <button :if={@target} type="button" class="spec-object-link" phx-click="spec-object" phx-value-project={@project} phx-value-id={@target["id"]} aria-label={"Open " <> @target["title"]}>{@target["title"]} ↗</button>
+    <a :if={@target} href="#" class="spec-object-link" phx-click="spec-object" phx-value-project={@project} phx-value-id={@target["id"]} aria-label={"Open " <> @target["title"]}>{@target["title"]} ↗</a>
     """
   end
 

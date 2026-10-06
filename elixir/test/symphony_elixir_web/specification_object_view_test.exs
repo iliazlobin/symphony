@@ -61,16 +61,22 @@ defmodule SymphonyElixirWeb.SpecificationObjectViewTest do
 
   test "reviewed typed versions and read-only boards keep links but disable every write" do
     {:ok, document} = Document.add(Document.new(@project), "data", "items", "relationship")
+    {:ok, document} = Document.add(document, "data", "items", "entity")
+    [_, entity] = document["sections"]["data"]["items"]
+    document = put_in(document, ["sections", "data", "items", Access.at(0), "attributes", "from"], entity["id"])
     options = attrs(document, "data") ++ [history: true, viewed_ref: Document.content_ref(document)]
     html = render_component(&SpecificationView.content/1, options) |> Floki.parse_document!()
     assert Floki.find(html, ".specification-form fieldset[disabled]") != []
     assert Floki.find(html, ".specification-import") == []
     assert Floki.find(html, "[phx-click=spec-structure]") == []
     assert Floki.find(html, "select[name$='[cardinality]']") != []
+    assert Floki.attribute(Floki.find(html, "a[phx-click=spec-object]"), "phx-value-id") == [entity["id"]]
+    assert Floki.find(html, "button[phx-click=spec-object]") == []
     assert Floki.text(Floki.find(html, "[data-spec-status]")) == "Reviewed version · read-only"
     options = attrs(document, "data") ++ [read_only: true]
     read_only = render_component(&SpecificationView.content/1, options) |> Floki.parse_document!()
     assert Floki.find(read_only, ".specification-import fieldset[disabled]") != []
+    assert Floki.attribute(Floki.find(read_only, "a[phx-click=spec-object]"), "phx-value-id") == [entity["id"]]
   end
 
   defp attrs(document, section), do: [project: @project, draft: document, state: %{"draft" => document, "storage_revision" => 3}, section: section]
