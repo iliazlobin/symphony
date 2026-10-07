@@ -3,7 +3,6 @@
 import copy
 import hashlib
 import importlib.util
-import ipaddress
 import json
 import os
 from pathlib import Path
@@ -11,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 import yaml
 
@@ -23,6 +23,12 @@ spec.loader.exec_module(crds)
 spec = importlib.util.spec_from_file_location("render_controller", CI / "render_controller.py")
 renderer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(renderer)
+spec = importlib.util.spec_from_file_location("ci_preflight", CI / "preflight.py")
+preflight = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(preflight)
+spec = importlib.util.spec_from_file_location("ci_probe", CI / "probe_runner.py")
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
 
 
 def crd_fixture():
@@ -71,38 +77,88 @@ class PrivateCITests(unittest.TestCase):
         self.assertEqual(spec["containers"][0]["resources"]["requests"]["cpu"], "2")
         self.assertEqual(spec["containers"][0]["resources"]["requests"]["memory"], "6Gi")
 
+    def test_capacity_counts_pending_init_overhead_and_ci_namespace_drift(self):
+        nodes = {"items": [{"metadata": {"name": "control", "labels": {
+            "cloud.google.com/gke-nodepool": "platform-ci-control",
+            "node-restriction.kubernetes.io/workload": "platform-ci-control"}},
+            "status": {"allocatable": {"cpu": "1930m", "memory": "3Gi"}}}]}
+        quotas = {"items": [{"metadata": {"namespace": "foundation-ci-system", "name": "bounded-control"}, "spec": {"hard": {"requests.cpu": "300m", "requests.memory": "640Mi", "pods": "3"}}}]}
+        preflight.verify_capacity(nodes, {"items": []}, quotas)
+        pod = {"metadata": {"namespace": "unexpected-control"}, "spec": {
+            "nodeSelector": {"node-restriction.kubernetes.io/workload": "platform-ci-control"},
+            "tolerations": [{"key": "workload", "operator": "Equal", "value": "platform-ci-control"}],
+            "containers": [{"resources": {"requests": {"cpu": "100m", "memory": "128Mi"}}}],
+            "initContainers": [{"resources": {"requests": {"cpu": "1", "memory": "128Mi"}}}],
+            "overhead": {"cpu": "100m"}}, "status": {"phase": "Pending"}}
+        with self.assertRaisesRegex(ValueError, "CPU"):
+            preflight.verify_capacity(nodes, {"items": [pod]}, quotas)
+        pod["spec"]["initContainers"][0]["resources"]["requests"] = {"cpu": "100m", "memory": "2Gi"}
+        with self.assertRaisesRegex(ValueError, "memory"):
+            preflight.verify_capacity(nodes, {"items": [pod]}, quotas)
+        pod["status"]["phase"] = "Succeeded"
+        preflight.verify_capacity(nodes, {"items": [pod]}, quotas)
+        with self.assertRaises(ValueError):
+            preflight.verify_capacity({"items": []}, {"items": []}, quotas)
+        with self.assertRaises(ValueError):
+            preflight.verify_capacity(nodes, {"items": []}, {"items": []})
+        pod["metadata"]["namespace"] = "foundation-ci-system"
+        pod["status"]["phase"] = "Pending"
+        with self.assertRaisesRegex(ValueError, "Pods exceed"):
+            preflight.verify_capacity(nodes, {"items": [pod]}, quotas)
+        quotas["items"][0]["spec"]["hard"]["requests.cpu"] = "500m"
+        with self.assertRaisesRegex(ValueError, "quota"):
+            preflight.verify_capacity(nodes, {"items": []}, quotas)
+
+    def test_probe_reads_kernel_no_new_privileges_even_without_proc_field(self):
+        with patch.object(probe.Path, "read_text", return_value="CapEff:\t0000000000000000\n"), patch.object(probe.ctypes, "CDLL") as library:
+            prctl = Mock(return_value=1)
+            library.return_value.prctl = prctl
+            probe.verify_privileges()
+            prctl.assert_called_once_with(39, 0, 0, 0, 0)
+            for value in (0, -1):
+                prctl.return_value = value
+                with self.assertRaises(ValueError):
+                    probe.verify_privileges()
+        with patch.object(probe.Path, "read_text", return_value="CapEff:\t0000000000000001\n"), patch.object(probe.ctypes, "CDLL") as library:
+            library.return_value.prctl.return_value = 1
+            with self.assertRaises(ValueError):
+                probe.verify_privileges()
+
     def test_control_and_job_namespaces_have_distinct_privileges(self):
         self.assertEqual(self.controller["flags"]["watchSingleNamespace"], "symphony-ci-runners")
         self.assertEqual(self.runner["controllerServiceAccount"], {"namespace": "symphony-ci-system", "name": "symphony-ci-controller"})
         self.assertEqual(self.runner["githubConfigSecret"], "symphony-ci-github-app")
         self.assertEqual(self.runner["githubConfigUrl"], "https://github.com/iliazlobin/symphony")
         self.assertEqual(self.runner["runnerScaleSetName"], "symphony-linux")
-        self.assertEqual(self.runner["listenerTemplate"]["spec"]["nodeSelector"], {"cloud.google.com/gke-nodepool": "shared-dev"})
+        control = {"node-restriction.kubernetes.io/workload": "platform-ci-control"}
+        self.assertEqual(self.runner["listenerTemplate"]["spec"]["nodeSelector"], control)
+        self.assertEqual(self.controller["nodeSelector"], control)
+        self.assertNotIn({"key": "workload", "value": "platform-ci-control", "effect": "NoSchedule", "operator": "Equal"}, self.runner["template"]["spec"]["tolerations"])
         for namespace in (r for r in self.resources if r["kind"] == "Namespace"):
             self.assertEqual(namespace["metadata"]["labels"]["pod-security.kubernetes.io/enforce"], "restricted")
 
-    def test_public_https_never_allows_private_or_metadata_destinations(self):
+    def test_jobs_allow_only_dns_and_scoped_proxy(self):
         policies = [r for r in self.resources if r["kind"] == "NetworkPolicy" and r["metadata"]["namespace"] == "symphony-ci-runners"]
         # Policies are additive; another allow rule could undo the intended boundary.
         self.assertEqual({p["metadata"]["name"] for p in policies},
-                         {"default-deny", "dns-and-public-https"})
+                         {"default-deny", "job-egress"})
         self.assertEqual(len(policies), 2)
         deny = next(p for p in policies if p["metadata"]["name"] == "default-deny")
         self.assertEqual(set(deny["spec"]["policyTypes"]), {"Ingress", "Egress"})
         self.assertFalse(any(p["spec"].get("ingress") for p in policies))
-        allow = next(p for p in policies if p["metadata"]["name"] == "dns-and-public-https")
+        allow = next(p for p in policies if p["metadata"]["name"] == "job-egress")
         self.assertEqual(allow["spec"]["podSelector"], {"matchLabels": {"symphony-ci-role": "runner"}})
-        for destination in ("10.48.0.1", "10.40.0.2", "169.254.169.254", "172.16.0.1", "192.168.1.1", "100.64.0.1"):
-            address = ipaddress.ip_address(destination)
-            for rule in allow["spec"]["egress"]:
-                for port in rule["ports"]:
-                    if port["port"] == 53:
-                        continue
-                    self.assertEqual(port, {"protocol": "TCP", "port": 443})
-                    for peer in rule["to"]:
-                        block = peer["ipBlock"]
-                        permitted = address in ipaddress.ip_network(block["cidr"]) and not any(address in ipaddress.ip_network(excluded) for excluded in block.get("except", []))
-                        self.assertFalse(permitted, destination)
+        for rule in allow["spec"]["egress"]:
+            if all(port["port"] == 53 for port in rule["ports"]):
+                continue
+            self.assertEqual(rule["ports"], [{"protocol": "TCP", "port": 3128}])
+            self.assertEqual(rule["to"], [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "symphony-ci-system"}}, "podSelector": {"matchLabels": {"symphony-ci-role": "proxy"}}}])
+        configuration = next(r for r in self.resources if r["kind"] == "ConfigMap")["data"]
+        squid = configuration["squid.conf"]
+        self.assertLess(squid.index("http_access deny private"), squid.index("http_access allow allowed"))
+        for host in ("repo.hex.pm", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org"):
+            self.assertIn(host, configuration["allowed-domains.txt"].splitlines())
+        self.assertNotIn("example.com", configuration["allowed-domains.txt"])
 
     def test_concurrency_and_storage_are_bounded(self):
         self.assertEqual((self.runner["minRunners"], self.runner["maxRunners"]), (0, 1))
@@ -136,7 +192,7 @@ class PrivateCITests(unittest.TestCase):
                              "github.event.pull_request.user.login != 'dependabot[bot]'")
                 predicate = ("(github.event_name == 'push' && github.ref == 'refs/heads/main') || (" + same_repo + ")"
                              if filename == "make-all.yml" else same_repo)
-                self.assertEqual(job["runs-on"], "${{ (" + predicate + ") && 'symphony-linux' || 'ubuntu-latest' }}")
+                self.assertEqual(job["runs-on"], "${{ (vars.SYMPHONY_GKE_CI == 'enabled' && (" + predicate + ")) && 'symphony-linux' || 'ubuntu-latest' }}")
                 mise = next(s for s in job["steps"] if s.get("uses", "").startswith("jdx/mise-action@"))
                 self.assertEqual(mise["if"], "runner.environment == 'github-hosted'")
                 probe = next(s for s in job["steps"] if s.get("run") == "python3 deploy/ci/probe_runner.py")
@@ -151,7 +207,7 @@ class PrivateCITests(unittest.TestCase):
         self.assertEqual(targets, {"linux_x86_64", "linux_arm64", "macos_x86_64", "macos_arm64"})
 
     def test_install_rejects_weaker_or_unverifiable_fork_approval_before_gke(self):
-        image = "us-west1-docker.pkg.dev/iz27-platform-dev/symphony/ci-runner@sha256:" + "a" * 64
+        image = "us-west1-docker.pkg.dev/iz27-platform-dev/foundation-ci/symphony-ci-runner@sha256:" + "a" * 64
         cases = (("first_time_contributors", 0, False),
                  ("first_time_contributors_new_to_github", 0, False),
                  ("", 0, False), ("all_external_contributors", 1, False),
@@ -280,7 +336,7 @@ class PrivateCITests(unittest.TestCase):
             self.assertEqual(result.stdout, "")
 
     def test_shared_crd_mismatch_stops_install_before_mutations(self):
-        image = "us-west1-docker.pkg.dev/iz27-platform-dev/symphony/ci-runner@sha256:" + "a" * 64
+        image = "us-west1-docker.pkg.dev/iz27-platform-dev/foundation-ci/symphony-ci-runner@sha256:" + "a" * 64
         for mode, matches in ((mode, matches) for mode in ("--prepare", image) for matches in (False, True)):
             with self.subTest(mode=mode, matches=matches), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
@@ -299,7 +355,8 @@ class PrivateCITests(unittest.TestCase):
                 (root / "expected.json").write_text(json.dumps(expected))
                 (root / "live.json").write_text(json.dumps(live))
                 fixtures = {
-                    "gh": "printf 'all_external_contributors\\n'\n",
+                    "gh": "case \"$*\" in *fork-pr-contributor-approval*) printf 'all_external_contributors\\n';; *) printf '{\"id\":1370642365,\"private\":false}';; esac\n",
+                    "gcloud": "case \"$*\" in 'config get-value account') printf 'iliazlobin27@gmail.com';; *) cat \"$CI_TEST_ROOT/cluster.json\";; esac\n",
                     "helm": "case \"$1\" in\n"
                             "pull) for destination do :; done; name=${2##*/}; cp \"$CI_TEST_ROOT/chart.tgz\" \"$destination/$name-0.15.0.tgz\";;\n"
                             "show) printf '# fixture CRDs\\n';;\n"
@@ -309,9 +366,14 @@ class PrivateCITests(unittest.TestCase):
                                "'config current-context') printf 'gke_iz27-platform-dev_us-west1-a_platform-dev';;\n"
                                "'-n default get service kubernetes'*) printf '10.48.0.1';;\n"
                                "'-n kube-system get service kube-dns'*) printf '10.48.0.10';;\n"
+                               "'config view --minify -o json') cat \"$CI_TEST_ROOT/config.json\";;\n"
+                               "'get nodes -o json') cat \"$CI_TEST_ROOT/nodes.json\";;\n"
+                               "'get pods -A -o json') printf '{\"items\":[]}';;\n"
+                               "'get resourcequotas -A -o json') cat \"$CI_TEST_ROOT/quotas.json\";;\n"
                                "'create --dry-run=client --validate=false'*) cat \"$CI_TEST_ROOT/expected.json\";;\n"
                                "'get -f'*) cat \"$CI_TEST_ROOT/live.json\";;\n"
                                "'apply -f'*) printf 'apply\\n' >> \"$CI_TEST_ROOT/mutations\";;\n"
+                               "'-n symphony-ci-system rollout status'*) :;;\n"
                                "'-n symphony-ci-runners get secret symphony-ci-github-app'*) printf 'secret-read\\n' >> \"$CI_TEST_ROOT/secret-queries\"; printf 'symphony-ci-github-app';;\n"
                                "'-n symphony-ci-system get deployments,pods'|'-n symphony-ci-runners get autoscalingrunnersets,pods') :;;\n"
                                "*) exit 92;; esac\n",
@@ -320,7 +382,11 @@ class PrivateCITests(unittest.TestCase):
                     path = root / name
                     path.write_text("#!/bin/sh\nset -eu\n" + content)
                     path.chmod(0o700)
-                env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"], "CI_TEST_ROOT": str(root)}
+                (root / "cluster.json").write_text(json.dumps({"privateClusterConfig": {"enablePrivateNodes": True, "enablePrivateEndpoint": True, "privateEndpoint": "10.40.0.2"}, "nodePools": [{"name": "platform-ci"}, {"name": "platform-ci-control"}]}))
+                (root / "config.json").write_text(json.dumps({"current-context": preflight.CONTEXT, "clusters": [{"cluster": {"server": "https://127.0.0.1:18543", "tls-server-name": "10.40.0.2", "certificate-authority-data": "fixture"}}]}))
+                (root / "nodes.json").write_text(json.dumps({"items": [{"metadata": {"name": "control", "labels": {"cloud.google.com/gke-nodepool": "platform-ci-control", "node-restriction.kubernetes.io/workload": "platform-ci-control"}}, "status": {"allocatable": {"cpu": "1930m", "memory": "3Gi"}}}]}))
+                (root / "quotas.json").write_text(json.dumps({"items": [{"metadata": {"name": "bounded-control", "namespace": "foundation-ci-system"}, "spec": {"hard": {"requests.cpu": "300m", "requests.memory": "640Mi", "pods": "3"}}}]}))
+                env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"], "CI_TEST_ROOT": str(root), "KUBECONFIG": str(root / "config.json")}
                 result = subprocess.run([str(package / "install.sh"), mode], env=env,
                                         capture_output=True, text=True, timeout=10)
                 mutation = root / "mutations"

@@ -9,7 +9,7 @@ RUN test "$TARGETARCH" = amd64 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1001 runner \
     && useradd --uid 1001 --gid 1001 --create-home --shell /bin/bash runner
-ADD --checksum=sha256:70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613 https://github.com/actions/runner/releases/download/v2.337.0/actions-runner-linux-x64-2.337.0.tar.gz /tmp/runner.tar.gz
+ADD --checksum=sha256:af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32 https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-x64-2.338.0.tar.gz /tmp/runner.tar.gz
 ADD --checksum=sha256:69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-x64.tar.xz /tmp/node.tar.xz
 RUN tar -xzf /tmp/runner.tar.gz -C /home/runner \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \

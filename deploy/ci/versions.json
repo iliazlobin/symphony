@@ -11,10 +11,11 @@
     }
   },
   "controller_image": "ghcr.io/actions/gha-runner-scale-set-controller:0.15.0@sha256:162dfb5bfbda9e7e49fbed67d428994c9ced55b41a37a18b75b46dab0aa98d37",
-  "runner_version": "2.337.0",
-  "runner_archive_sha256": "70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613",
+  "runner_version": "2.338.0",
+  "runner_archive_sha256": "af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32",
   "elixir_version": "1.19.5",
   "otp_major": "28",
   "node_version": "22.14.0",
-  "node_archive_sha256": "69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec"
+  "node_archive_sha256": "69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec",
+  "proxy_image": "us-west1-docker.pkg.dev/iz27-platform-dev/foundation-ci/ci-proxy@sha256:f006f77d4815884ff82b7cb242e95ceb1401db86d14e3691814fbc4819c89407"
 }

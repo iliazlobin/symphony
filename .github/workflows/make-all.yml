@@ -7,9 +7,13 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   make-all:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.SYMPHONY_GKE_CI == 'enabled' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]'))) && 'symphony-linux' || 'ubuntu-latest' }}
+    timeout-minutes: 55
     defaults:
       run:
         working-directory: elixir
@@ -17,8 +21,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Verify private runner isolation
+        if: runner.environment == 'self-hosted'
+        working-directory: .
+        run: python3 deploy/ci/probe_runner.py
 
       - name: Set up mise tools
+        if: runner.environment == 'github-hosted'
         uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
         with:
           install: true
@@ -26,6 +38,7 @@ jobs:
           working_directory: elixir
 
       - name: Cache deps and build
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -35,14 +48,26 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-
 
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
       - name: Verify make all
         run: make all
 
-      - name: Verify reproducible Design editor assets
+      - name: Verify reproducible Design editor assets on hosted runner
+        if: runner.environment == 'github-hosted'
         run: |
           mise install node@22.14.0
           mise exec node@22.14.0 -- npm ci --ignore-scripts --no-audit --no-fund --prefix assets
           mise exec node@22.14.0 -- npm run check --prefix assets
+
+      - name: Verify reproducible Design editor assets on private runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund --prefix assets
+          npm run check --prefix assets
 
       - name: Install Python tooling dependencies
         working-directory: .

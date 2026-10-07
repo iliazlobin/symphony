@@ -86,7 +86,7 @@ Use the existing platform private-access runbook and an explicitly verified Kube
 
 ## Infrastructure as code
 
-The [Terraform root](terraform/main.tf) creates the private Artifact Registry repository, repository-scoped node pull grant and protected state bucket. It uses [pinned Terraform/provider versions](terraform/versions.tf). No model credentials enter Terraform. Existing installations copy the [backend template](terraform/backend.tf.example) to ignored `backend.tf`, initialize the existing remote backend and review a saved plan:
+The [Terraform root](terraform/main.tf) owns the private Artifact Registry repository, repository-scoped node pull grant, protected state bucket, and regional `symphony-ci-github-app` Secret Manager metadata for [CI registration](../ci/README.md). CI secret versions and payload delivery remain outside Terraform; no accessor IAM is granted. It uses [pinned Terraform/provider versions](terraform/versions.tf). No model credentials enter Terraform. Existing installations copy the [backend template](terraform/backend.tf.example) to ignored `backend.tf`, initialize the existing remote backend and review a saved plan:
 
 ```sh
 umask 077
@@ -96,7 +96,7 @@ terraform -chdir=deploy/gke/terraform plan -out=reviewed.tfplan
 terraform -chdir=deploy/gke/terraform show reviewed.tfplan
 ```
 
-For a fresh environment only, create the three application resources with local state before configuring the destination backend; preserve a recovery copy and use `terraform init -migrate-state` for this root only. Verify the three resources in remote state and a no-change plan. Never migrate shared-platform state. Runtime applies require scoped authorization; do not overwrite an existing backend configuration.
+For a fresh environment only, create the three application resources with local state before configuring the destination backend; preserve a recovery copy and use `terraform init -migrate-state` for this root only. Verify the owned resources in remote state and a no-change plan. Never migrate shared-platform state. Runtime applies require scoped authorization; do not overwrite an existing backend configuration.
 
 ## Runner and authentication implementation
 
