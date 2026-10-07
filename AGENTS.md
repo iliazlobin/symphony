@@ -20,6 +20,12 @@ profile is the first consumer; application code and GCP infrastructure live sepa
 - Cloud application releases must include the shared Phoenix board/chat implementation
   and its runtime/state requirements in [the package contract](deploy/gke/README.md#required-application-package).
   A local port or the read-only `tools/symphony_web.py` preview is not that package.
+- Follow [private Linux CI](deploy/ci/README.md) for `symphony-linux`. The platform
+  repository owns the shared `platform-ci`/`platform-ci-control` pools and ARC CRDs; this repository owns
+  its isolated registration, image, namespaces and App. Keep required checks hosted
+  until native runner acceptance; enable `SYMPHONY_GKE_CI` only after that acceptance.
+  Public forks require all-external-contributor approval and hosted fallback; never
+  approve an outside workflow targeting GKE or share App credentials across repositories.
 - GitHub owns instructions, workflows, code, issues and PR evidence. Notion explains
   the system and links published revisions. Update canonical files instead of creating
   duplicate trackers or report bundles.

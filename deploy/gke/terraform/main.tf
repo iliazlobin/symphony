@@ -40,6 +40,20 @@ resource "google_storage_bucket" "terraform_state" {
   lifecycle { prevent_destroy = true }
 }
 
+# CI App metadata only. Deliver versions privately outside Terraform; no job
+# identity receives Secret Manager access or the App private key.
+resource "google_secret_manager_secret" "ci_github_app" {
+  project   = local.project
+  secret_id = "symphony-ci-github-app"
+  labels    = merge(local.labels, { purpose = "github-actions-registration" })
+  replication {
+    user_managed {
+      replicas { location = "us-west1" }
+    }
+  }
+  lifecycle { prevent_destroy = true }
+}
+
 output "controller_image_repository" {
   value = "us-west1-docker.pkg.dev/${local.project}/${google_artifact_registry_repository.symphony.repository_id}/controller"
 }

@@ -33,7 +33,6 @@ metadata:
 spec:
   hard:
     pods: '1'
-    # Reserve room for any RuntimeClass overhead; the pod template stays bounded.
     requests.cpu: '3'
     requests.memory: 8Gi
     requests.ephemeral-storage: 6Gi
@@ -44,6 +43,33 @@ spec:
     services.loadbalancers: '0'
     services.nodeports: '0'
 ---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: bounded-control
+  namespace: symphony-ci-system
+spec:
+  hard:
+    pods: '3'
+    requests.cpu: 300m
+    requests.memory: 640Mi
+    limits.cpu: 1500m
+    limits.memory: 1280Mi
+    persistentvolumeclaims: '0'
+    services.loadbalancers: '0'
+    services.nodeports: '0'
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: symphony-ci-system
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -51,119 +77,414 @@ metadata:
   namespace: symphony-ci-runners
 spec:
   podSelector: {}
-  policyTypes: [Ingress, Egress]
+  policyTypes:
+  - Ingress
+  - Egress
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: dns-and-public-https
+  name: job-egress
   namespace: symphony-ci-runners
 spec:
   podSelector:
     matchLabels:
       symphony-ci-role: runner
-  policyTypes: [Egress]
+  policyTypes:
+  - Egress
   egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: node-local-dns
-        - ipBlock:
-            cidr: 10.48.0.10/32
-        - ipBlock:
-            cidr: 169.254.20.10/32
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-            except:
-              - 0.0.0.0/8
-              - 10.0.0.0/8
-              - 100.64.0.0/10
-              - 127.0.0.0/8
-              - 169.254.0.0/16
-              - 172.16.0.0/12
-              - 192.168.0.0/16
-              - 224.0.0.0/4
-              - 240.0.0.0/4
-      ports:
-        - protocol: TCP
-          port: 443
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: node-local-dns
+    - ipBlock:
+        cidr: 10.48.0.10/32
+    - ipBlock:
+        cidr: 169.254.20.10/32
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: symphony-ci-system
+      podSelector:
+        matchLabels:
+          symphony-ci-role: proxy
+    ports:
+    - protocol: TCP
+      port: 3128
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: default-deny
+  name: controller-egress
   namespace: symphony-ci-system
 spec:
-  podSelector: {}
-  policyTypes: [Ingress, Egress]
+  podSelector:
+    matchLabels:
+      symphony-ci-role: controller
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: node-local-dns
+    - ipBlock:
+        cidr: 10.48.0.10/32
+    - ipBlock:
+        cidr: 169.254.20.10/32
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: symphony-ci-system
+      podSelector:
+        matchLabels:
+          symphony-ci-role: proxy
+    ports:
+    - protocol: TCP
+      port: 3128
+  - to:
+    - ipBlock:
+        cidr: 10.48.0.1/32
+    - ipBlock:
+        cidr: 10.40.0.2/32
+    ports:
+    - protocol: TCP
+      port: 443
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: control-egress
+  name: listener-egress
   namespace: symphony-ci-system
 spec:
-  podSelector: {}
-  policyTypes: [Egress]
+  podSelector:
+    matchLabels:
+      symphony-ci-role: listener
+  policyTypes:
+  - Egress
   egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: node-local-dns
-        - ipBlock:
-            cidr: 10.48.0.10/32
-        - ipBlock:
-            cidr: 169.254.20.10/32
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    - to:
-        - ipBlock:
-            cidr: 10.48.0.1/32
-        - ipBlock:
-            cidr: 10.40.0.2/32
-      ports:
-        - protocol: TCP
-          port: 443
-    - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-            except:
-              - 0.0.0.0/8
-              - 10.0.0.0/8
-              - 100.64.0.0/10
-              - 127.0.0.0/8
-              - 169.254.0.0/16
-              - 172.16.0.0/12
-              - 192.168.0.0/16
-              - 224.0.0.0/4
-              - 240.0.0.0/4
-      ports:
-        - protocol: TCP
-          port: 443
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: node-local-dns
+    - ipBlock:
+        cidr: 10.48.0.10/32
+    - ipBlock:
+        cidr: 169.254.20.10/32
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: symphony-ci-system
+      podSelector:
+        matchLabels:
+          symphony-ci-role: proxy
+    ports:
+    - protocol: TCP
+      port: 3128
+  - to:
+    - ipBlock:
+        cidr: 10.48.0.1/32
+    - ipBlock:
+        cidr: 10.40.0.2/32
+    ports:
+    - protocol: TCP
+      port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: proxy-egress
+  namespace: symphony-ci-system
+spec:
+  podSelector:
+    matchLabels:
+      symphony-ci-role: proxy
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: node-local-dns
+    - ipBlock:
+        cidr: 10.48.0.10/32
+    - ipBlock:
+        cidr: 169.254.20.10/32
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 0.0.0.0/8
+        - 10.0.0.0/8
+        - 100.64.0.0/10
+        - 127.0.0.0/8
+        - 169.254.0.0/16
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 224.0.0.0/4
+        - 240.0.0.0/4
+    ports:
+    - protocol: TCP
+      port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: proxy-ingress
+  namespace: symphony-ci-system
+spec:
+  podSelector:
+    matchLabels:
+      symphony-ci-role: proxy
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: symphony-ci-runners
+      podSelector:
+        matchLabels:
+          symphony-ci-role: runner
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: symphony-ci-system
+      podSelector:
+        matchLabels:
+          symphony-ci-role: controller
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: symphony-ci-system
+      podSelector:
+        matchLabels:
+          symphony-ci-role: listener
+    ports:
+    - protocol: TCP
+      port: 3128
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: symphony-ci-proxy
+  namespace: symphony-ci-system
+data:
+  squid.conf: 'http_port 3128
+
+    acl CONNECT method CONNECT
+
+    acl TLS port 443
+
+    acl allowed dstdomain "/etc/squid/allowed-domains.txt"
+
+    acl private dst 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16
+    172.16.0.0/12 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4 ::1/128 fc00::/7 fe80::/10
+
+    http_access deny !CONNECT
+
+    http_access deny !TLS
+
+    http_access deny private
+
+    http_access allow allowed
+
+    http_access deny all
+
+    cache deny all
+
+    pinger_enable off
+
+    cache_mem 8 MB
+
+    access_log none
+
+    cache_log /dev/stderr
+
+    pid_filename /tmp/squid.pid
+
+    coredump_dir /tmp
+
+    shutdown_lifetime 3 seconds
+
+    visible_hostname symphony-ci-proxy
+
+    '
+  allowed-domains.txt: '# GitHub Actions and Symphony''s pinned package registries.
+
+    github.com
+
+    api.github.com
+
+    .actions.githubusercontent.com
+
+    codeload.github.com
+
+    .blob.core.windows.net
+
+    objects.githubusercontent.com
+
+    objects-origin.githubusercontent.com
+
+    github-releases.githubusercontent.com
+
+    github-registry-files.githubusercontent.com
+
+    release-assets.githubusercontent.com
+
+    raw.githubusercontent.com
+
+    repo.hex.pm
+
+    builds.hex.pm
+
+    hex.pm
+
+    registry.npmjs.org
+
+    pypi.org
+
+    files.pythonhosted.org
+
+    '
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: symphony-ci-proxy
+  namespace: symphony-ci-system
+spec:
+  type: ClusterIP
+  selector:
+    symphony-ci-role: proxy
+  ports:
+  - port: 3128
+    targetPort: 3128
+    protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: symphony-ci-proxy
+  namespace: symphony-ci-system
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      symphony-ci-role: proxy
+  template:
+    metadata:
+      labels:
+        symphony-ci-role: proxy
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        node-restriction.kubernetes.io/workload: platform-ci-control
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: proxy
+        image: us-west1-docker.pkg.dev/iz27-platform-dev/foundation-ci/ci-proxy@sha256:f006f77d4815884ff82b7cb242e95ceb1401db86d14e3691814fbc4819c89407
+        ports:
+        - containerPort: 3128
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 100m
+            memory: 192Mi
+          limits:
+            cpu: 500m
+            memory: 384Mi
+        readinessProbe:
+          tcpSocket:
+            port: 3128
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        volumeMounts:
+        - name: configuration
+          mountPath: /etc/squid
+          readOnly: true
+        - name: temporary
+          mountPath: /tmp
+        - name: logs
+          mountPath: /var/log/squid
+      volumes:
+      - name: configuration
+        configMap:
+          name: symphony-ci-proxy
+      - name: temporary
+        emptyDir:
+          sizeLimit: 128Mi
+      - name: logs
+        emptyDir:
+          sizeLimit: 128Mi
+      tolerations:
+      - key: workload
+        operator: Equal
+        value: platform-ci-control
+        effect: NoSchedule

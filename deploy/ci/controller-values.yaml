@@ -8,7 +8,7 @@ serviceAccount:
   create: true
   name: symphony-ci-controller
 nodeSelector:
-  cloud.google.com/gke-nodepool: shared-dev
+  node-restriction.kubernetes.io/workload: platform-ci-control
 podLabels:
   symphony-ci-role: controller
 podSecurityContext:
@@ -21,7 +21,8 @@ securityContext:
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true
   capabilities:
-    drop: [ALL]
+    drop:
+    - ALL
 resources:
   requests:
     cpu: 100m
@@ -38,4 +39,22 @@ flags:
   ephemeralRunnerSetMaxConcurrentReconciles: 1
   ephemeralRunnerMaxConcurrentReconciles: 1
   terminatedRunnerPodGracePeriodSeconds: 0
-  healthProbeBindAddress: ':8081'
+  healthProbeBindAddress: :8081
+tolerations:
+- key: workload
+  operator: Equal
+  value: platform-ci-control
+  effect: NoSchedule
+env:
+- name: http_proxy
+  value: http://symphony-ci-proxy.symphony-ci-system.svc.cluster.local:3128
+- name: https_proxy
+  value: http://symphony-ci-proxy.symphony-ci-system.svc.cluster.local:3128
+- name: HTTP_PROXY
+  value: http://symphony-ci-proxy.symphony-ci-system.svc.cluster.local:3128
+- name: HTTPS_PROXY
+  value: http://symphony-ci-proxy.symphony-ci-system.svc.cluster.local:3128
+- name: no_proxy
+  value: 10.48.0.1,10.40.0.2,.svc,.svc.cluster.local
+- name: NO_PROXY
+  value: 10.48.0.1,10.40.0.2,.svc,.svc.cluster.local

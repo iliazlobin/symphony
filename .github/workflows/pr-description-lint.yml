@@ -9,7 +9,8 @@ permissions:
 
 jobs:
   validate-pr-description:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.SYMPHONY_GKE_CI == 'enabled' && (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]')) && 'symphony-linux' || 'ubuntu-latest' }}
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: elixir
@@ -20,7 +21,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify private runner isolation
+        if: runner.environment == 'self-hosted'
+        working-directory: .
+        run: python3 deploy/ci/probe_runner.py
+
       - name: Set up mise tools
+        if: runner.environment == 'github-hosted'
         uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
         with:
           install: true
@@ -34,5 +41,5 @@ jobs:
           mix local.hex --force
           mix local.rebar --force
           mix deps.get
-          printf '%s' "$PR_BODY_JSON" | jq -r '.' > /tmp/pr_body.md
-          mix pr_body.check --file /tmp/pr_body.md
+          printf '%s' "$PR_BODY_JSON" | jq -r '.' > "$RUNNER_TEMP/pr_body.md"
+          mix pr_body.check --file "$RUNNER_TEMP/pr_body.md"
