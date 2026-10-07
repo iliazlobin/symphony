@@ -35,14 +35,22 @@ test "$(kubectl -n default get service kubernetes -o jsonpath='{.spec.clusterIP}
 test "$(kubectl -n kube-system get service kube-dns -o jsonpath='{.spec.clusterIP}')" = 10.48.0.10
 python3 "$ci_dir/preflight.py"
 umask 077
-ci_charts=$(mktemp -d)
+ci_charts=$(mktemp -d "${TMPDIR:-/tmp}/symphony-ci-install.XXXXXX")
+ci_keep_diagnostics=false
 ci_helm() {
   if ! helm "$@" > "$ci_charts/helm-output" 2> "$ci_charts/helm-errors"; then
-    echo "Helm installation failed; inspect private operator diagnostics." >&2
+    ci_keep_diagnostics=true
+    echo "Helm installation failed; private diagnostics retained at: $ci_charts" >&2
     exit 1
   fi
 }
-trap 'rm -rf "$ci_charts"' EXIT HUP INT TERM
+ci_cleanup() {
+  if [ "$ci_keep_diagnostics" != true ]; then
+    rm -rf "$ci_charts"
+  fi
+}
+trap ci_cleanup EXIT
+trap 'ci_keep_diagnostics=true; exit 130' HUP INT TERM
 ci_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["arc_version"])' "$ci_dir/versions.json")
 for ci_chart in gha-runner-scale-set-controller gha-runner-scale-set; do
   helm pull "oci://ghcr.io/actions/actions-runner-controller-charts/$ci_chart" \
