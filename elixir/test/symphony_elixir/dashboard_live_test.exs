@@ -5,7 +5,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
   import Phoenix.LiveViewTest
   alias Plug.Conn.Query
   alias SymphonyElixir.Assurance.Store
-  alias SymphonyElixir.Specification.Document
+  alias SymphonyElixir.Specification.{Document, TaskLinks}
   alias SymphonyElixirWeb.{BoardCache, BrowserAuth, Endpoint, Presenter, TaskBoard}
   @endpoint Endpoint
 
@@ -275,6 +275,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
     def save(project, revision, document, auth), do: Store.save(project, revision, document, auth, server())
     def review(project, revision, auth), do: Store.review(project, revision, auth, server())
     def reviewed(project, ref, auth), do: Store.reviewed(project, ref, auth, server())
+    def source(project, ref, auth), do: Store.source(project, ref, auth, server())
     defp server, do: Endpoint.config(:specification_fixture)
   end
 
@@ -664,6 +665,39 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   @tag snapshot_fixture: true
+  test "refresh requests during an older read coalesce into one fresh source read", ctx do
+    owner = self()
+    sequence = start_supervised!({Agent, fn -> 0 end}, id: :source_reads)
+    fresh = update_task(ctx.board, "1", &Map.put(&1, :title, "Current task scope"))
+    :ok = BoardCache.put(BoardCache.scope(ctx.runtime), ctx.board)
+
+    configure_board_loaders(fn _, _ ->
+      read = Agent.get_and_update(sequence, &{&1, &1 + 1})
+
+      if read == 0 do
+        send(owner, {:older_read, self()})
+
+        receive do
+          :release -> ctx.board
+        end
+      else
+        send(owner, :fresh_read)
+        fresh
+      end
+    end)
+
+    {:ok, view, _} = live(build_conn(), "/")
+    assert_receive {:older_read, reader}, 1_000
+    render_click(view, "refresh")
+    render_click(view, "refresh")
+    send(reader, :release)
+    render_async(view)
+    assert_receive :fresh_read, 1_000
+    render_async(view)
+    assert has_element?(view, "[data-task-id='github:example/fixture:1']", "Current task scope")
+    assert Agent.get(sequence, & &1) == 2
+  end
+
   test "unavailable or disabled controls suppress stale dispatch guidance", ctx do
     {view, _} = board_view()
     open_task(view, "2")
@@ -1951,6 +1985,249 @@ defmodule SymphonyElixir.DashboardLiveTest do
     assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
     refute_receive {:intake_prepared, _, _}
     refute_receive {:settings_command, _}
+  end
+
+  @tag :specification_fixture
+  test "reviewed requirement criteria prepare a durable task preview and source navigation opens its exact version", ctx do
+    view = authorized_board_view()
+    project = "github:example/fixture"
+    render_click(view, "switch-view", %{"view" => "design"})
+    render_click(view, "spec-section", %{"project" => project, "section" => "requirements"})
+    render_click(view, "spec-add-item", %{"project" => project, "section" => "requirements"})
+    [item] = :sys.get_state(view.pid).socket.assigns.specification_draft["sections"]["requirements"]["items"]
+    render_click(view, "spec-add-criterion", %{"project" => project, "section" => "requirements", "id" => item["id"]})
+    [criterion] = hd(:sys.get_state(view.pid).socket.assigns.specification_draft["sections"]["requirements"]["items"])["criteria"]
+
+    fields = %{
+      "items" => %{
+        item["id"] => %{
+          "title" => "Relevant search",
+          "body" => "Return matching events",
+          "kind" => "functional",
+          "criteria" => %{criterion["id"] => %{"statement" => "Filter by place", "method" => "test"}}
+        }
+      }
+    }
+
+    view |> form(".specification-form", fields) |> render_submit()
+    view |> element("button[phx-click=spec-review]") |> render_click()
+    view |> element("button[phx-click=spec-confirm-review]") |> render_click()
+    saved = saved_specification(view)
+    ref = saved["reviewed"]["ref"]
+    source = saved["draft"]
+    assert has_element?(view, "[phx-click=spec-prepare-task]:not([disabled])")
+    view |> element("button[phx-click=spec-prepare-task]") |> render_click()
+    assert_receive {:intake_prepared, id, args}
+    assert args["body"] =~ "Specification source: #{ref}/#{source["document_id"]}/requirements/#{item["id"]}/#{criterion["id"]}"
+    assert has_element?(view, "#task-intake-panel .intake-preview-body", "Filter by place")
+    refute has_element?(view, "#task-intake-panel .intake-preview-body", "Specification source:")
+    assert has_element?(view, "#task-intake-panel a", "Reviewed specification")
+    assert has_element?(view, "#task-intake-panel button[phx-value-decision=confirm]")
+    assert saved_specification(view) == saved
+    assert :sys.get_state(ctx.intake).records[id]
+    refute_receive {:intake_decided, _, _}
+    refute_receive {:settings_command, _}
+    render_click(view, "close-dialog")
+
+    url = SymphonyElixirWeb.SpecificationActions.source_url(project, args["body"])
+    render_patch(view, url)
+    assert has_element?(view, ".specification-form fieldset[disabled]")
+    assert has_element?(view, "[data-spec-focused=true][data-spec-item-id='#{item["id"]}']")
+    refute has_element?(view, "button[phx-click=spec-prepare-task]")
+    assert :sys.get_state(view.pid).socket.assigns.specification_history["ref"] == ref
+    view |> element("button[phx-click=spec-return-draft]") |> render_click()
+    assert_patch(view, "/?" <> URI.encode_query(%{"project" => project, "view" => "design"}))
+    assert is_nil(:sys.get_state(view.pid).socket.assigns.specification_history)
+    assert is_nil(:sys.get_state(view.pid).socket.assigns.specification_task_url)
+    changed = fields |> put_in(["items", item["id"], "body"], "A changed requirement")
+    view |> form(".specification-form", changed) |> render_change()
+    assert has_element?(view, "[phx-click=spec-prepare-task][disabled]")
+    params = %{"project" => project, "ref" => ref, "item" => item["id"], "storage_revision" => saved["storage_revision"]}
+    render_click(view, "spec-prepare-task", params)
+    assert has_element?(view, "#design-view", "Save and review the requirement")
+    refute_receive {:intake_prepared, _, _}
+    render_patch(view, url)
+    assert has_element?(view, "#design-view", "Your draft has unsaved changes")
+    assert has_element?(view, ".specification-form textarea", "A changed requirement")
+    assert saved_specification(view) == saved
+  end
+
+  @tag :specification_fixture
+  test "a signed-out specification source survives Settings and real sign-in at its exact reviewed requirement", ctx do
+    {owner, _linked} = linked_specification_view(ctx)
+    saved = saved_specification(owner)
+    reviewed = saved["reviewed"]
+
+    source = %{
+      "project" => "github:example/fixture",
+      "view" => "design",
+      "spec_ref" => reviewed["ref"],
+      "spec_document" => saved["draft"]["document_id"],
+      "spec_item" => "search",
+      "spec_task" => "github:example/fixture:1"
+    }
+
+    owner |> form(".specification-form", %{"items" => %{"search" => %{"body" => "A later working requirement."}}}) |> render_submit()
+    assert saved_specification(owner)["draft"]["sections"]["requirements"]["items"] |> hd() |> Map.fetch!("body") == "A later working requirement."
+    destination = "/?" <> URI.encode_query(source)
+    {signed_out, _} = board_view()
+    render_patch(signed_out, destination)
+    assigns = :sys.get_state(signed_out.pid).socket.assigns
+    assert assigns.specification_history == nil
+    assert assigns.specification_source_context == %{project: source["project"], params: Map.take(source, ~w(spec_ref spec_document spec_item spec_task))}
+    refute has_element?(signed_out, "#management-chat-dock")
+    render_click(signed_out, "open-settings", %{"tab" => "connections"})
+    settings_destination = "/?" <> URI.encode_query(Map.put(source, "panel", "settings"))
+    assert has_element?(signed_out, "#settings-connections input[name=return_to][value='#{settings_destination}']")
+    render_click(signed_out, "close-dialog")
+    assert_patch(signed_out, destination)
+
+    conn = %{build_conn() | host: "localhost"} |> Plug.Conn.put_private(:plug_skip_csrf_protection, false) |> get(destination)
+    [csrf] = conn.resp_body |> Floki.parse_document!() |> Floki.find("meta[name=csrf-token]") |> Floki.attribute("content")
+
+    logged_in =
+      conn
+      |> recycle()
+      |> Plug.Conn.put_private(:plug_skip_csrf_protection, false)
+      |> post("/operator/session", %{"_csrf_token" => csrf, "operator_token" => System.get_env("SYMPHONY_CONTROL_TOKEN"), "return_to" => destination})
+
+    assert redirected_to(logged_in) == destination
+    {:ok, resumed, _} = live(recycle(logged_in), destination)
+    render_async(resumed)
+    assigns = :sys.get_state(resumed.pid).socket.assigns
+    assert assigns.specification_history["ref"] == reviewed["ref"]
+    assert assigns.specification_focus == "search"
+    assert assigns.specification_section == "requirements"
+    assert assigns.specification_task_url == SymphonyElixirWeb.SpecificationActions.task_url(source["project"], source["spec_task"])
+    assert has_element?(resumed, ".specification-form fieldset[disabled]")
+    assert has_element?(resumed, "[data-spec-focused=true][data-spec-item-id=search] textarea", "Return matching events")
+    refute has_element?(resumed, ".specification-form textarea", "A later working requirement.")
+    render_click(resumed, "spec-return-draft", %{"project" => source["project"]})
+    assert :sys.get_state(resumed.pid).socket.assigns.specification_source_context == %{}
+    assert has_element?(resumed, ".specification-form textarea", "A later working requirement.")
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:intake_prepared, _, _}
+    refute_received {:settings_command, _}
+  end
+
+  test "malformed and foreign specification sources cannot persist across sign-in navigation", ctx do
+    {view, _html} = board_view()
+    source = %{"project" => "github:example/fixture", "view" => "design", "spec_ref" => String.duplicate("c", 64), "spec_document" => "fixture-specification", "spec_item" => "search"}
+
+    for changes <- [%{"spec_ref" => "bad"}, %{"spec_document" => "bad/document"}, %{"spec_item" => "bad\nitem"}, %{"project" => "github:other/project"}] do
+      params = Map.merge(source, changes)
+      render_patch(view, "/?" <> URI.encode_query(params))
+      assert :sys.get_state(view.pid).socket.assigns.specification_source_context == %{}
+      render_click(view, "open-settings", %{"tab" => "connections"})
+      expected = "/?" <> URI.encode_query(Map.take(params, ~w(project view)) |> Map.put("panel", "settings"))
+      assert has_element?(view, "#settings-connections input[name=return_to][value='#{expected}']")
+      render_click(view, "close-dialog")
+    end
+
+    for task <- ["github:other/project:1", "github:example/fixture:unsafe\n"] do
+      render_patch(view, "/?" <> URI.encode_query(Map.put(source, "spec_task", task)))
+      assert :sys.get_state(view.pid).socket.assigns.specification_source_context == %{project: source["project"], params: Map.take(source, ~w(spec_ref spec_document spec_item))}
+      refute has_element?(view, "#management-chat-dock")
+      render_click(view, "open-settings", %{"tab" => "connections"})
+      expected = "/?" <> URI.encode_query(Map.put(source, "panel", "settings"))
+      assert has_element?(view, "#settings-connections input[name=return_to][value='#{expected}']")
+      render_click(view, "close-dialog")
+      assert_patch(view, "/?" <> URI.encode_query(source))
+    end
+
+    render_click(view, "switch-view", %{"view" => "graph"})
+    assert :sys.get_state(view.pid).socket.assigns.specification_source_context == %{}
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:intake_prepared, _, _}
+    refute_received {:settings_command, _}
+  end
+
+  @tag :specification_fixture
+  test "receipt-backed coverage becomes unknown after an exited board read and recovers", ctx do
+    {view, linked} = linked_specification_view(ctx)
+    configure_board_loaders(fn _, _ -> raise "Board source failed" end)
+    render_click(view, "refresh")
+    render_async(view)
+    assert has_element?(view, "[data-spec-coverage=search]", "Task coverage unavailable")
+    refute has_element?(view, "[data-spec-coverage=search]", "1 criterion linked")
+
+    configure_board_loaders(fn server, _ -> GenServer.call(server, :board) end)
+    refresh(view, ctx.runtime, linked)
+    assert has_element?(view, "[data-spec-coverage=search]", "1 criterion linked to a task")
+  end
+
+  @tag :specification_fixture
+  test "retained scope during a controller failure cannot confirm coverage and recovery compares fresh scope", ctx do
+    {view, linked} = linked_specification_view(ctx)
+    changed = update_task(linked, "1", &Map.put(&1, :description, "A changed task scope"))
+    refresh(view, ctx.runtime, %{changed | runtime_error: "Controller unavailable"})
+    retained = :sys.get_state(view.pid).socket.assigns.board.tasks |> Enum.find(&(&1.issue_id == "1"))
+    assert retained.description != "A changed task scope"
+    assert has_element?(view, "[data-spec-coverage=search]", "Task coverage unavailable")
+    refute has_element?(view, "[data-spec-coverage=search]", "1 criterion linked")
+
+    refresh(view, ctx.runtime, changed)
+    assert has_element?(view, "[data-spec-coverage=search]", "Linked task scope changed")
+    refresh(view, ctx.runtime, linked)
+    assert has_element?(view, "[data-spec-coverage=search]", "1 criterion linked to a task")
+  end
+
+  @tag :specification_fixture
+  test "local controller faults invalidate specification coverage before a source refresh", ctx do
+    {view, linked} = linked_specification_view(ctx)
+    faulted = Map.put(linked.control, "fault", "control_persistence")
+    :sys.replace_state(ctx.runtime, &%{&1 | control: faulted})
+    send(view.pid, :observability_updated)
+    assert has_element?(view, "[data-spec-coverage=search]", "Task coverage unavailable")
+    refute has_element?(view, "[data-spec-coverage=search]", "1 criterion linked")
+
+    :sys.replace_state(ctx.runtime, &%{&1 | control: {:error, :unavailable}})
+    send(view.pid, :observability_updated)
+    assert has_element?(view, "[data-spec-coverage=search]", "Task coverage unavailable")
+
+    refresh(view, ctx.runtime, linked)
+    assert has_element?(view, "[data-spec-coverage=search]", "1 criterion linked to a task")
+    refute_received {:settings_command, _}
+  end
+
+  @tag :specification_fixture
+  test "local candidate updates reproject specification coverage using retained receipts", ctx do
+    {view, linked} = linked_specification_view(ctx)
+    task = Enum.find(linked.tasks, &(&1.issue_id == "1"))
+    issues = Enum.map(linked.tracker_issues, fn issue -> if issue.id == "1", do: %{issue | title: task.title, description: task.description}, else: issue end)
+    refresh(view, ctx.runtime, %{linked | tracker_issues: issues})
+    sha = String.duplicate("a", 40)
+    base = String.duplicate("b", 40)
+
+    work = %{
+      "id" => "work",
+      "issue_id" => "1",
+      "head_sha" => sha,
+      "base_sha" => base,
+      "phase" => "owner_review",
+      "handoff" => %{
+        "work_id" => "work",
+        "candidate_sha" => sha,
+        "base_sha" => base,
+        "run_id" => "run",
+        "review" => %{"candidate_sha" => sha, "verdict" => "approve", "findings" => []},
+        "checks" => []
+      }
+    }
+
+    control = linked.control |> Map.put("revision", 1) |> put_in(["issues", "1"], %{"pr_work" => %{"work" => work}})
+    configured = Application.get_env(:symphony_elixir, Endpoint)
+    Endpoint.config_change([{Endpoint, Keyword.put(configured, :intake_fixture_error, true)}], [])
+    :sys.replace_state(ctx.runtime, &%{&1 | control: control})
+    send(view.pid, :observability_updated)
+    assert has_element?(view, "[data-spec-coverage=search]", "Candidate reviewed · criteria unverified")
+
+    changed = control |> Map.put("revision", 2) |> put_in(["issues", "1", "pr_work", "work", "phase"], "running")
+    :sys.replace_state(ctx.runtime, &%{&1 | control: changed})
+    send(view.pid, :observability_updated)
+    assert has_element?(view, "[data-spec-coverage=search]", "Candidate evidence stale")
+    refute has_element?(view, "[data-spec-coverage=search]", "Candidate reviewed")
+    refute_received {:settings_command, _}
   end
 
   @tag :specification_fixture
@@ -4317,6 +4594,45 @@ defmodule SymphonyElixir.DashboardLiveTest do
     auth = :sys.get_state(view.pid).socket.assigns.auth
     {:ok, saved} = FixtureSpecification.read("github:example/fixture", auth)
     saved
+  end
+
+  defp linked_specification_view(ctx) do
+    view = authorized_board_view()
+    auth = :sys.get_state(view.pid).socket.assigns.auth
+    project = "github:example/fixture"
+    id = String.duplicate("e", 32)
+
+    document =
+      put_in(Document.new(project), ["sections", "requirements", "items"], [
+        %{
+          "id" => "search",
+          "kind" => "functional",
+          "title" => "Relevant search",
+          "body" => "Return matching events",
+          "criteria" => [%{"id" => "place", "statement" => "Filter by place", "method" => "test"}]
+        }
+      ])
+
+    {:ok, _} = FixtureSpecification.save(project, 0, document, auth)
+    {:ok, reviewed} = FixtureSpecification.review(project, 1, auth)
+    {:ok, args} = TaskLinks.action_args(document, reviewed["reviewed"]["ref"], "search")
+
+    proposal = %{
+      "id" => id,
+      "action" => "create_task",
+      "args" => Map.delete(args, "action"),
+      "status" => "completed",
+      "receipt" => %{"widgets" => [%{"type" => "receipt", "proposal_id" => id, "task_id" => project <> ":1"}]}
+    }
+
+    record = %{"id" => id, "project_id" => project, "kind" => "board_action", "proposals" => [proposal]}
+    :sys.replace_state(ctx.intake, &put_in(&1, [:records, id], record))
+    linked = update_task(ctx.board, "1", &Map.merge(&1, %{title: args["title"], description: args["body"] <> "\n\n<!-- symphony-chat:#{id} -->"}))
+    refresh(view, ctx.runtime, linked)
+    render_click(view, "switch-view", %{"view" => "design"})
+    render_click(view, "spec-section", %{"project" => project, "section" => "requirements"})
+    assert has_element?(view, "[data-spec-coverage=search]", "1 criterion linked to a task")
+    {view, linked}
   end
 
   defp specification_params(view, changes \\ %{}) do

@@ -37,6 +37,77 @@ defmodule SymphonyElixirWeb.SpecificationViewTest do
     assert find(html, "button[type=submit][disabled]") == []
   end
 
+  test "criteria and coverage stay compact, source focused and separate from candidate verification" do
+    document =
+      put_in(Document.new(@project), ["sections", "requirements", "items"], [
+        %{
+          "id" => "search",
+          "kind" => "functional",
+          "title" => "Relevant search",
+          "body" => "Filter results",
+          "criteria" => [%{"id" => "relevance", "statement" => "Only matching places", "method" => "test"}]
+        }
+      ])
+
+    ref = Document.content_ref(document)
+    state = %{"storage_revision" => 2, "draft" => document, "reviewed" => %{"ref" => ref}}
+    link = %{task_id: @project <> ":1", title: "GH-1", stage: "ready", status: "linked", candidate: %{"status" => "ready"}}
+    coverage = %{"search" => %{status: "linked", criteria_count: 1, links: [link]}}
+    html = view_html(section: "requirements", draft: document, state: state, coverage: coverage, focus_item: "search", task_url: "/?view=kanban&task=one")
+    assert find(html, "[data-spec-focused=true]") != []
+    assert Floki.text(find(html, "[data-spec-coverage]")) =~ "1 criterion linked"
+    assert Floki.text(find(html, "[data-spec-coverage]")) =~ "criteria unverified"
+    assert find(html, "[phx-click=spec-prepare-task][disabled]") == []
+    assert find(html, ".specification-criterion textarea") != []
+    assert Floki.text(find(html, ".specification-criterion select")) =~ "Analysis"
+    assert find(html, "a[href='/\?view=kanban&task=one']") != []
+
+    [item] = document["sections"]["requirements"]["items"]
+    item = Map.update!(item, "criteria", &(&1 ++ [%{"id" => "latency", "statement" => "p95 < 500ms", "method" => "analysis"}]))
+
+    other = %{
+      "id" => "freshness",
+      "kind" => "nonfunctional",
+      "title" => "Catalog freshness",
+      "body" => "Keep events current",
+      "criteria" => [%{"id" => "refresh", "statement" => "Refresh within an hour", "method" => "test"}]
+    }
+
+    multiple = put_in(document, ["sections", "requirements", "items"], [item, other])
+    rendered = view_html(section: "requirements", draft: multiple)
+
+    assert Floki.attribute(find(rendered, "[phx-click=spec-remove-criterion]"), "aria-label") == [
+             "Remove criterion 1 from Relevant search",
+             "Remove criterion 2 from Relevant search",
+             "Remove criterion 1 from Catalog freshness"
+           ]
+
+    untitled = put_in(multiple, ["sections", "requirements", "items", Access.at(1), "title"], "")
+    rendered = view_html(section: "requirements", draft: untitled)
+    assert Floki.attribute(find(rendered, "[data-spec-item-id=freshness] [phx-click=spec-remove-criterion]"), "aria-label") == ["Remove criterion 1 from requirement freshness"]
+
+    for status <- ~w(missing changed pending unknown incomplete) do
+      coverage = %{"search" => %{status: status, criteria_count: 1, links: []}}
+      rendered = view_html(section: "requirements", draft: document, state: state, coverage: coverage)
+      refute Floki.text(find(rendered, "[data-spec-coverage]")) =~ "criterion linked"
+    end
+
+    for candidate <- [nil, %{"status" => "stale"}, %{"status" => "changes_requested"}], stage <- ~w(running backlog) do
+      coverage = %{"search" => %{status: "linked", criteria_count: 2, links: [%{link | candidate: candidate, stage: stage}]}}
+      rendered = view_html(section: "requirements", draft: document, state: state, coverage: coverage)
+
+      assert Floki.text(find(rendered, "[data-spec-coverage]")) =~ "2 criteria linked"
+    end
+
+    pending = %{link | task_id: nil, stage: nil, status: "pending", candidate: nil} |> Map.put(:preview_id, "preview")
+    coverage = %{"search" => %{status: "pending", criteria_count: 1, links: [pending]}}
+    assert view_html(section: "requirements", draft: document, state: state, coverage: coverage) =~ "Open preview"
+
+    changed = %{link | status: "changed"}
+    coverage = %{"search" => %{status: "changed", criteria_count: 1, links: [changed]}}
+    assert view_html(section: "requirements", draft: document, state: state, coverage: coverage) =~ "Compare task scope"
+  end
+
   test "Mermaid source is escaped, retained and hooked into one isolated SVG preview" do
     {:ok, document} = Document.add(Document.new(@project), "data", "diagrams")
     source = "erDiagram\n  EVENT ||--o{ SAVED_CHOICE : saved\n<script>bad()</script>"

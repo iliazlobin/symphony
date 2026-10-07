@@ -118,11 +118,17 @@ commands to the native API and owns no scheduling state.
 - [`Specification.Store`](elixir/lib/symphony_elixir/specification/store.ex) separately
   owns structured Design drafts and immutable reviewed versions under the control state
   path. [`Document`](elixir/lib/symphony_elixir/specification/document.ex) bounds stable
-  items and Mermaid source; [`Specification.Persistence`](elixir/lib/symphony_elixir/specification/persistence.ex)
+  items, requirement acceptance criteria and Mermaid source; [`Specification.Persistence`](elixir/lib/symphony_elixir/specification/persistence.ex)
   validates its journal over the existing private atomic transport. Specification items
   never derive implicitly from Idea geometry.
   Editing and review check project authority and expected journal revision; specification
   review grants no task acceptance or execution authority.
+  [`SpecificationActions`](elixir/lib/symphony_elixir_web/specification_actions.ex) prepares
+  an unchanged reviewed requirement through the existing durable TaskIntake preview.
+  [`TaskLinks`](elixir/lib/symphony_elixir/specification/task_links.ex) computes task coverage
+  from the reviewed content, exact creation receipt and current issue scope. Source labels
+  alone are declarations. Changed or unavailable data cannot confirm coverage; candidate
+  evidence remains bound to work/commit identity and does not verify individual criteria.
 - [`Assurance.Store`](elixir/lib/symphony_elixir/assurance/store.ex) owns Coverage's
   requirements, criterion/task links, dependency annotations, immutable reviewed graph
   snapshots, receipts and release declarations in one private project journal.

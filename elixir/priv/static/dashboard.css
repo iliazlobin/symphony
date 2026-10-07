@@ -1194,6 +1194,23 @@ h2, h3, strong { font-weight: 500; }
 .specification-review h3 { font-size: 14px; margin: 0 0 8px; }
 .specification-review p { line-height: 1.5; margin: 0 0 12px; }
 .specification-review .button + .button { margin-left: 6px; }
+.specification-item[data-spec-focused=true] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--tint); scroll-margin: 12px; }
+.specification-criteria { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.specification-criteria > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.specification-criteria h4 { margin: 0; font-size: 12px; }
+.specification-criterion { display: flex; align-items: end; gap: 10px; margin-bottom: 10px; }
+.specification-criterion textarea { min-height: 62px; }
+.specification-criterion code { font-size: 10px; margin-left: 4px; }
+.specification-task-coverage { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 11px; margin-top: 12px; }
+.specification-task-coverage > .button { margin-left: auto; }
+.specification-task-coverage ul { flex-basis: 100%; padding: 0; margin: 0; list-style: none; }
+.specification-task-coverage li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 8px; }
+.specification-coverage-status { color: var(--muted); }
+.specification-coverage-note { margin: 12px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+@media (max-width: 700px) {
+ .specification-criterion { flex-wrap: wrap; }
+ .specification-criterion > .specification-title { flex-basis: 100%; }
+}
 @media (max-width: 700px) {
  .specification-editor { padding: 12px; }
  .specification-item, .specification-diagram { padding: 10px; }

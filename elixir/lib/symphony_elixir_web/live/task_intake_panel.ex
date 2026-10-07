@@ -2,8 +2,9 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
   @moduledoc "Simple task creation and durable tracker action recovery."
   use Phoenix.LiveComponent
 
+  alias SymphonyElixir.Specification.TaskLinks
   alias SymphonyElixir.TaskDraft
-  alias SymphonyElixirWeb.{BrowserAuth, DesignActions, Endpoint, Markdown, TaskIntake}
+  alias SymphonyElixirWeb.{BrowserAuth, DesignActions, Endpoint, Markdown, SpecificationActions, TaskIntake}
 
   @fields ~w(title description verification)
 
@@ -261,6 +262,7 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
       assign(assigns,
         proposal: proposal,
         args: proposal["args"] || %{},
+        specification_source_url: SpecificationActions.source_url(assigns.project_id, get_in(proposal, ["args", "body"])),
         design_source_url: DesignActions.source_url(assigns.project_id, get_in(proposal, ["args", "body"])),
         receipt: receipt(proposal),
         authorized: BrowserAuth.authorized?(assigns.auth) and not assigns.read_only,
@@ -286,8 +288,9 @@ defmodule SymphonyElixirWeb.TaskIntakePanel do
         <h4 :if={@args["title"]}>{@args["title"]}</h4>
         <p :if={@proposal["action"] == "queue_task"}>Task: {@args["task_id"]}</p>
         <h4 :if={@proposal["task_title"]}>{@proposal["task_title"]}</h4>
-        <div :if={@proposal["task_description"]} class="markdown-content intake-preview-body">{Markdown.render(DesignActions.display_body(@proposal["task_description"]))}</div>
-        <div :if={@args["body"] && @proposal["status"] == "pending"} class="markdown-content intake-preview-body">{Markdown.render(DesignActions.display_body(@args["body"]))}</div>
+        <div :if={@proposal["task_description"]} class="markdown-content intake-preview-body">{Markdown.render(@proposal["task_description"] |> DesignActions.display_body() |> TaskLinks.display_body())}</div>
+        <div :if={@args["body"] && @proposal["status"] == "pending"} class="markdown-content intake-preview-body">{Markdown.render(@args["body"] |> DesignActions.display_body() |> TaskLinks.display_body())}</div>
+        <.link :if={@specification_source_url && @proposal["status"] == "pending"} class="button button-small" patch={@specification_source_url}>Reviewed specification →</.link>
         <.link :if={@design_source_url && @proposal["status"] == "pending"} class="button button-small" patch={@design_source_url}>Reviewed idea →</.link>
         <div :if={@proposal["action"] == "queue_task" && @proposal["status"] == "pending"} class="queue-preview">
           <p>Move this task to Work. GitHub routing labels synchronize in the background.</p>

@@ -102,6 +102,30 @@ defmodule SymphonyElixir.BrowserSignInUITest do
     end
   end
 
+  test "both sign-in providers preserve the exact reviewed specification source in chat and Settings" do
+    source = %{
+      "project" => "github:example/fixture",
+      "view" => "design",
+      "spec_ref" => String.duplicate("c", 64),
+      "spec_document" => "fixture-specification",
+      "spec_item" => "search",
+      "spec_task" => "github:example/fixture:2"
+    }
+
+    for {provider, action} <- [{"google", "/auth/google"}, {"local_token", "/operator/session"}] do
+      configure(provider)
+      destination = "/projects/events-concierge/?" <> URI.encode_query(source)
+      document = chat_html(true, return_to: destination) |> Floki.parse_document!()
+      assert Floki.attribute(document, "form[action='#{action}'] input[name=return_to]", "value") == [destination]
+      assert Floki.attribute(document, "form[action='#{action}'] input[name=_csrf_token]", "value") == ["fixture-csrf"]
+
+      settings_destination = "/projects/events-concierge/?" <> URI.encode_query(Map.put(source, "panel", "settings"))
+      document = settings_html(return_to: settings_destination) |> Floki.parse_document!()
+      assert Floki.attribute(document, "form[action='#{action}'] input[name=return_to]", "value") == [settings_destination]
+      assert Floki.attribute(document, "form[action='#{action}'] input[name=_csrf_token]", "value") == ["fixture-csrf"]
+    end
+  end
+
   test "the legacy local provider retains its token forms and labels" do
     configure("local_token")
     chat = chat_html(false)

@@ -6,10 +6,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixir.Chat.ViewContext
   alias SymphonyElixir.Config
   alias SymphonyElixir.Specification.Document, as: SpecificationDocument
+  alias SymphonyElixir.Specification.TaskLinks
   alias SymphonyElixir.TaskKind
   alias SymphonyElixir.WorkerFailure
   alias SymphonyElixirWeb.{BoardActions, BrowserAuth, ChatPanel, Endpoint, Markdown, SettingsPanel, TaskIntakePanel}
   alias SymphonyElixirWeb.{BoardCache, ChatNavigation, ObservabilityPubSub, Presenter}
+  alias SymphonyElixirWeb.SpecificationActions
   alias SymphonyElixirWeb.SpecificationEditor
   alias SymphonyElixirWeb.StatusIndicator
   alias SymphonyElixirWeb.{TaskBoard, TaskExecution, TaskFilters, TaskOperator, TaskPresentation, TaskRework}
@@ -28,6 +30,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       socket
       |> assign(:payload, payload)
       |> assign(:payload_revision, 0)
+      |> assign(:board_refresh_pending, false)
       |> assign(:board, board)
       |> assign(:board_scope, scope)
       |> assign(:loading, false)
@@ -49,6 +52,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:lanes, @lanes)
       |> assign(:url_filters, %{})
       |> assign(:design_source_context, %{})
+      |> assign(:specification_source_context, %{})
       |> assign(:specification_state, %{})
       |> assign(:specification_project, nil)
       |> assign(:specification_draft, nil)
@@ -57,6 +61,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:specification_available, false)
       |> assign(:specification_history, nil)
       |> assign(:specification_review_open, false)
+      |> assign(:specification_coverage, %{})
+      |> assign(:specification_records, {:error, :task_links_unavailable})
+      |> assign(:specification_focus, nil)
+      |> assign(:specification_task_url, nil)
       |> assign(:board_view, "kanban")
       |> assign(:graph_options, %{})
       |> assign(:graph_index, nil)
@@ -115,6 +123,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:dialog, dialog)
       |> assign(:url_filters, filters)
       |> assign(:design_source_context, design_source_context(params, filters, project))
+      |> assign(:specification_source_context, specification_source_context(params, filters, project))
       |> assign(:board_view, board_view)
       |> assign(:graph_options, GraphNavigation.read(params))
       |> assign(:linked_task, params["task"])
@@ -129,7 +138,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> sync_chat_selection()
       |> navigation_focus(focus_chat, view_changed, chat_task, board_view)
 
-    socket = maybe_load_specification(socket)
+    socket =
+      socket
+      |> maybe_load_specification()
+      |> open_specification_source(params)
+      |> refresh_specification_coverage()
 
     # Task/view navigation uses the already projected board and activity. The
     # project subscription and periodic refresh supply fresh activity without
@@ -222,7 +235,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
       result = refresh_control(result, scope, runtime)
       :ok = BoardCache.put(scope, result)
-      {:noreply, apply_board(socket, result, payload_revision)}
+      {:noreply, socket |> apply_board(result, payload_revision) |> continue_board_refresh()}
     else
       # A completed read belongs to the configuration that started it, never to
       # a new project, credential, controller or data source.
@@ -233,7 +246,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def handle_async(:board, {:exit, _reason}, socket) do
     if socket.assigns.board_scope == BoardCache.scope(orchestrator()) do
       board = Map.put(socket.assigns.board, :source_error, "Board refresh failed; showing last-known tasks.")
-      {:noreply, socket |> assign(:board, board) |> assign(:loading, false)}
+
+      socket =
+        socket
+        |> assign(:board, board)
+        |> assign(:loading, false)
+        |> refresh_specification_coverage()
+        |> continue_board_refresh()
+
+      {:noreply, socket}
     else
       {:noreply, socket |> assign(:loading, false) |> refresh_board()}
     end
@@ -272,7 +293,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
         socket
       end
 
-    socket = socket |> open_linked_task() |> sync_chat_selection() |> refresh_chat_activity()
+    socket =
+      socket
+      |> open_linked_task()
+      |> sync_chat_selection()
+      |> refresh_chat_activity()
+      |> refresh_specification_coverage()
+
     socket |> refresh_assurance(true) |> refresh_graph_index()
   end
 
@@ -312,7 +339,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       do: {:reply, %{ok: false, error: "invalid_design_request"}, socket}
 
   def handle_event(event, params, socket)
-      when event in ~w(spec-section spec-edit spec-save spec-review spec-confirm-review spec-cancel-review spec-add-item spec-remove-item spec-add-diagram spec-remove-diagram spec-open-version spec-return-draft spec-reload) do
+      when event in ~w(spec-section spec-edit spec-save spec-review spec-confirm-review spec-cancel-review spec-add-item spec-remove-item spec-add-diagram spec-remove-diagram spec-add-criterion spec-remove-criterion spec-prepare-task spec-open-task-preview spec-open-version spec-return-draft spec-reload) do
     if specification_request?(event, params, socket.assigns),
       do: {:noreply, specification_event(event, params, socket)},
       else: {:noreply, assign(socket, :specification_notice, "Open this project’s Design and sign in to edit its specification.")}
@@ -1068,6 +1095,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             state={@specification_state} draft={if @specification_history, do: @specification_history["specification"], else: @specification_draft}
             section={@specification_section} available={@specification_available} read_only={@read_only} dirty={specification_dirty?(assigns)} notice={@specification_notice}
             history={not is_nil(@specification_history)} viewed_ref={@specification_history && @specification_history["ref"]} review_open={@specification_review_open}
+            coverage={@specification_coverage} focus_item={@specification_focus} task_url={@specification_task_url}
             idea_url={view_path(@url_filters, "idea", @chat_task_id, @chat_session_id)} />
         </div>
         <p :if={@notice} class="board-notice" role="status">{@notice}</p>
@@ -1195,7 +1223,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <p>{@dispatch_guidance}</p>
                 <button type="button" class="button button-small" phx-click="open-settings" phx-value-tab="execution">Execution settings</button>
               </div>
-              <div class="task-reference-links"><.link :if={design_source_path(@url_filters, @selected)} class="button button-small" patch={design_source_path(@url_filters, @selected)}>Idea source →</.link><.link class="button button-small agent-chat-link" patch={session_path(@url_filters, @selected.id, nil)}><ChatPanel.agent_label name={@selected.title} role="task" /><span aria-hidden="true">→</span></.link><a :for={link <- task_links(@selected, if(pull_requests(@selected) == [], do: ["issue", "repo", "pr", "checks", "candidate"], else: ["issue", "repo", "candidate"]))} class="button button-small" href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
+              <div class="task-reference-links"><.link :if={specification_source_path(@selected)} class="button button-small" patch={specification_source_path(@selected)}>Specification source →</.link><.link :if={design_source_path(@url_filters, @selected)} class="button button-small" patch={design_source_path(@url_filters, @selected)}>Idea source →</.link><.link class="button button-small agent-chat-link" patch={session_path(@url_filters, @selected.id, nil)}><ChatPanel.agent_label name={@selected.title} role="task" /><span aria-hidden="true">→</span></.link><a :for={link <- task_links(@selected, if(pull_requests(@selected) == [], do: ["issue", "repo", "pr", "checks", "candidate"], else: ["issue", "repo", "candidate"]))} class="button button-small" href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a></div>
               <section :if={pull_requests(@selected) != []} class="dialog-section"><h3>Pull requests <span class="section-count">{length(pull_requests(@selected))}</span></h3><.pull_request :for={pr <- pull_requests(@selected)} pr={pr} compact={false} chat_url={session_path(@url_filters, @selected.id, pr_session_id(@selected, pr))} /></section>
               <section :if={ChatNavigation.work_sessions(@selected) != []} class="dialog-section" aria-label="Work sessions">
                 <h3>Work sessions <span class="section-count">{ChatNavigation.work_counts(@selected).total}</span></h3>
@@ -1207,7 +1235,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <div class="issue-work-meta"><span :if={work.session_retained}>Session retained</span><span :if={work.review}>Review: {String.replace(work.review, "_", " ")}</span><code :if={work.head != ""}>{work.head}</code><time :if={work.updated_at} datetime={work.updated_at} title={updated_at(work.updated_at)}>{compact_updated_at(work.updated_at)}</time></div>
                 </article>
               </section>
-              <section class="dialog-section"><h3>Scope &amp; acceptance</h3><div class="markdown-content">{Markdown.render(SymphonyElixirWeb.DesignActions.display_body(@selected.description))}</div></section>
+              <section class="dialog-section"><h3>Scope &amp; acceptance</h3><div class="markdown-content">{Markdown.render(@selected.description |> SymphonyElixirWeb.DesignActions.display_body() |> TaskLinks.display_body())}</div></section>
               <section :if={current_activity(@selected, @payload) || session_id(@selected)} class="dialog-section"><h3>Codex update</h3><p>{current_activity(@selected, @payload)}</p>
                 <button :if={session_id(@selected)} class="button button-small" data-copy={session_id(@selected)}>Copy ID</button>
               </section>
@@ -1480,7 +1508,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
     selected = socket.assigns.selected
     current = selected && Enum.find(board.tasks, &(&1.id == selected.id))
     :ok = BoardCache.put(socket.assigns.board_scope, board)
-    socket |> assign(:board, board) |> assign(:selected, current) |> refresh_assurance() |> refresh_graph_index()
+
+    socket
+    |> assign(:board, board)
+    |> assign(:selected, current)
+    |> project_specification_coverage()
+    |> refresh_assurance()
+    |> refresh_graph_index()
   end
 
   defp refresh_control(board, scope, payload) do
@@ -1501,7 +1535,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp refresh_control_snapshot(board, unavailable, payload),
     do: TaskBoard.refresh_control(board, unavailable, payload)
 
-  defp refresh_source_board(%{assigns: %{loading: true}} = socket), do: socket
+  defp refresh_source_board(%{assigns: %{loading: true}} = socket), do: assign(socket, :board_refresh_pending, true)
 
   defp refresh_source_board(socket) do
     server = orchestrator()
@@ -1530,8 +1564,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     socket
     |> assign(:loading, true)
+    |> assign(:board_refresh_pending, false)
     |> start_async(:board, fn -> {scope, payload_revision, loader.(server, timeout)} end)
   end
+
+  defp continue_board_refresh(%{assigns: %{board_refresh_pending: true}} = socket), do: refresh_source_board(socket)
+  defp continue_board_refresh(socket), do: socket
 
   # BrowserAccess checks Google identity before either mount. Reuse only a
   # bounded presentation snapshot; writes still revalidate native authority.
@@ -1996,6 +2034,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp design_source_context(_params, _filters, _project), do: %{}
+
+  defp specification_source_context(params, %{"view" => "design"} = filters, project) do
+    with true <- is_binary(project) and (filters["project"] || project) == project,
+         true <- design_reference?(params["spec_ref"]),
+         true <- SpecificationDocument.identifier?(params["spec_document"]),
+         true <- SpecificationDocument.identifier?(params["spec_item"]) do
+      source = Map.take(params, ~w(spec_ref spec_document spec_item))
+      task = params["spec_task"]
+      source = if scoped_design_task?(task, project), do: Map.put(source, "spec_task", task), else: source
+      %{project: project, params: source}
+    else
+      _ -> %{}
+    end
+  end
+
+  defp specification_source_context(_params, _filters, _project), do: %{}
   defp design_reference?(ref) when is_binary(ref), do: Regex.match?(~r/\A[a-f0-9]{64}\z/, ref)
   defp design_reference?(_ref), do: false
   defp design_item?(item) when is_binary(item), do: Regex.match?(~r/\A[A-Za-z][A-Za-z0-9_-]{0,63}\z/, item)
@@ -2036,7 +2090,53 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp design_action("design-reviewed", project, params, auth), do: SymphonyElixirWeb.DesignActions.store().reviewed(project, params["ref"], auth)
   defp design_action("prepare-design-task", project, params, auth), do: SymphonyElixirWeb.DesignActions.prepare(project, params, auth)
 
+  defp specification_source_path(task) do
+    if url = SpecificationActions.source_url(task.project, task.description), do: url <> "&" <> URI.encode_query(%{"spec_task" => task.id})
+  end
+
   defp specification_store, do: Endpoint.config(:specification_store) || SymphonyElixir.Specification.Store
+
+  defp refresh_specification_coverage(%{assigns: %{board_view: "design", chat_project: project}} = socket) when is_binary(project) do
+    document = displayed_specification(socket.assigns)
+    records = if document && document["sections"]["requirements"]["items"] != [], do: SpecificationActions.records(project, socket.assigns.auth), else: {:ok, []}
+    socket |> assign(:specification_records, records) |> project_specification_coverage()
+  end
+
+  defp refresh_specification_coverage(socket), do: socket
+
+  defp project_specification_coverage(socket) do
+    document = displayed_specification(socket.assigns)
+    ref = if document, do: SpecificationDocument.content_ref(document)
+    available = is_nil(socket.assigns.board.source_error) and is_nil(socket.assigns.board.runtime_error)
+    assign(socket, :specification_coverage, TaskLinks.coverage(document, ref, socket.assigns.specification_records, socket.assigns.board.tasks, available))
+  end
+
+  defp displayed_specification(%{specification_history: nil, specification_draft: draft}), do: draft
+  defp displayed_specification(%{specification_history: history}), do: history["specification"]
+
+  defp open_specification_source(socket, %{"spec_ref" => ref, "spec_document" => document, "spec_item" => item} = params) do
+    if socket.assigns.board_view == "design" and not specification_dirty?(socket.assigns) do
+      with true <- is_binary(ref) and String.match?(ref, ~r/\A[a-f0-9]{64}\z/) and SpecificationDocument.identifier?(document) and SpecificationDocument.identifier?(item),
+           {:ok, record} <- specification_store().reviewed(socket.assigns.chat_project, ref, socket.assigns.auth),
+           true <- record["document_id"] == document,
+           node when is_map(node) <- TaskLinks.requirement(record["specification"], item) do
+        task = Enum.find(socket.assigns.board.tasks, &(&1.id == params["spec_task"] and &1.project == socket.assigns.chat_project))
+
+        assign(socket,
+          specification_history: record,
+          specification_focus: item,
+          specification_section: "requirements",
+          specification_task_url: if(task, do: SpecificationActions.task_url(task.project, task.id))
+        )
+      else
+        _ -> assign(socket, :specification_notice, "This specification source is unavailable in the selected project.")
+      end
+    else
+      assign(socket, :specification_notice, "Your draft has unsaved changes. Save it before opening a task’s reviewed source.")
+    end
+  end
+
+  defp open_specification_source(socket, _params), do: assign(socket, specification_focus: nil, specification_task_url: nil)
 
   defp specification_request?(event, params, assigns) do
     is_map(params) and assigns.board_view == "design" and params["project"] == assigns.chat_project and
@@ -2079,10 +2179,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
     |> assign(:specification_available, true)
     |> assign(:specification_notice, nil)
     |> assign(:specification_review_open, false)
+    |> refresh_specification_coverage()
   end
 
   defp clear_specification(socket) do
-    assign(socket, specification_state: %{}, specification_draft: nil, specification_history: nil)
+    assign(socket,
+      specification_state: %{},
+      specification_draft: nil,
+      specification_history: nil,
+      specification_coverage: %{},
+      specification_records: {:error, :task_links_unavailable},
+      specification_focus: nil,
+      specification_task_url: nil
+    )
   end
 
   defp specification_dirty?(%{specification_draft: nil}), do: false
@@ -2100,7 +2209,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp specification_event("spec-reload", _params, socket), do: load_specification(socket)
-  defp specification_event("spec-return-draft", _params, socket), do: assign(socket, specification_history: nil, specification_notice: nil)
+
+  defp specification_event("spec-return-draft", _params, socket),
+    do:
+      socket
+      |> assign(specification_history: nil, specification_focus: nil)
+      |> assign(specification_task_url: nil, specification_notice: nil)
+      |> refresh_specification_coverage()
+      |> push_patch(to: board_path(socket.assigns.url_filters), replace: true)
+
   defp specification_event("spec-cancel-review", _params, socket), do: assign(socket, :specification_review_open, false)
 
   defp specification_event("spec-open-version", %{"ref" => ref}, socket) when is_binary(ref) do
@@ -2110,6 +2227,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         |> assign(:specification_history, record)
         |> assign(:specification_review_open, false)
         |> assign(:specification_notice, nil)
+        |> refresh_specification_coverage()
 
       {:error, reason} ->
         assign(socket, :specification_notice, specification_error(reason))
@@ -2117,7 +2235,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp specification_event(event, params, socket)
-       when event in ~w(spec-edit spec-save spec-review spec-confirm-review spec-add-item spec-remove-item spec-add-diagram spec-remove-diagram) do
+       when event in ~w(spec-edit spec-save spec-review spec-confirm-review spec-add-item spec-remove-item spec-add-diagram spec-remove-diagram spec-add-criterion spec-remove-criterion spec-prepare-task spec-open-task-preview) do
     if socket.assigns.specification_available and is_nil(socket.assigns.specification_history),
       do: specification_write(event, params, socket),
       else: assign(socket, :specification_notice, "Return to the saved draft to make changes.")
@@ -2130,7 +2248,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     case SpecificationEditor.edit(assigns.specification_draft, assigns.specification_state, params, assigns.specification_section) do
       {:ok, draft} ->
-        socket = assign(socket, specification_draft: draft, specification_review_open: false, specification_notice: nil)
+        socket =
+          socket
+          |> assign(specification_draft: draft, specification_review_open: false, specification_notice: nil)
+          |> project_specification_coverage()
+
         if event == "spec-save", do: save_specification(socket), else: socket
 
       {:error, reason} ->
@@ -2142,6 +2264,27 @@ defmodule SymphonyElixirWeb.DashboardLive do
     if not specification_dirty?(socket.assigns) and specification_current_revision?(params, socket),
       do: assign(socket, :specification_review_open, true),
       else: assign(socket, :specification_notice, "Save the draft before reviewing this exact version.")
+  end
+
+  defp specification_write("spec-open-task-preview", params, socket) do
+    case SpecificationActions.get(socket.assigns.chat_project, params["id"], socket.assigns.auth) do
+      {:ok, record} -> open_specification_task_preview(socket, record)
+      {:error, reason} -> assign(socket, :specification_notice, SymphonyElixirWeb.TaskIntake.error_message(reason))
+    end
+  end
+
+  defp specification_write("spec-prepare-task", params, socket) do
+    if not specification_dirty?(socket.assigns) and specification_current_revision?(params, socket) do
+      case SpecificationActions.prepare(socket.assigns.chat_project, params, socket.assigns.auth) do
+        {:ok, record} ->
+          open_specification_task_preview(socket, record)
+
+        {:error, reason} ->
+          assign(socket, :specification_notice, specification_error(reason))
+      end
+    else
+      assign(socket, :specification_notice, "Save and review the requirement before preparing its task.")
+    end
   end
 
   defp specification_write("spec-confirm-review", params, socket) do
@@ -2161,7 +2304,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
     section = socket.assigns.specification_section
 
     result =
-      if params["section"] == section, do: SpecificationEditor.change(socket.assigns.specification_draft, section, event, params["id"]), else: {:error, :invalid_specification_edit}
+      if params["section"] == section do
+        id = if event == "spec-remove-criterion", do: Map.take(params, ~w(item criterion)), else: params["id"]
+        SpecificationEditor.change(socket.assigns.specification_draft, section, event, id)
+      else
+        {:error, :invalid_specification_edit}
+      end
 
     case result do
       {:ok, draft} ->
@@ -2169,6 +2317,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         |> assign(:specification_draft, draft)
         |> assign(:specification_review_open, false)
         |> assign(:specification_notice, nil)
+        |> project_specification_coverage()
 
       {:error, reason} ->
         assign(socket, :specification_notice, specification_error(reason))
@@ -2176,6 +2325,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp specification_current_revision?(params, socket), do: SpecificationEditor.revision(params["storage_revision"]) == socket.assigns.specification_state["storage_revision"]
+
+  defp open_specification_task_preview(socket, record) do
+    socket
+    |> clear_intake_subscription()
+    |> assign(dialog: :new_task, intake_task: nil, notice: nil, intake_key: record["id"], intake_record_id: record["id"])
+  end
 
   defp save_specification(socket) do
     case specification_store().save(socket.assigns.chat_project, socket.assigns.specification_state["storage_revision"], socket.assigns.specification_draft, socket.assigns.auth) do
@@ -2188,6 +2343,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp specification_error(:stale_specification_revision), do: "The saved specification changed elsewhere. Your edits are retained here; compare them before reloading the saved draft."
   defp specification_error(:specification_empty), do: "Add specification content before saving a reviewed version."
   defp specification_error(:invalid_specification_edit), do: "This edit no longer matches the open section. Your draft is retained."
+  defp specification_error(:specification_item_not_reviewed), do: "Save and review this requirement before preparing a task."
+  defp specification_error(:specification_criteria_required), do: "Add a title, details and complete acceptance criteria before preparing a task."
+  defp specification_error(:specification_task_too_large), do: "This requirement exceeds the task preview limits. Split it into smaller requirements; the text has not been truncated."
+  defp specification_error(:specification_task_pending), do: "Finish or reconcile the existing task preview before preparing another."
   defp specification_error(_reason), do: "Specification storage is unavailable. Your open draft is retained; try reloading when storage recovers."
 
   defp reply_plan_selection({:noreply, socket}), do: {:reply, %{selected_task_id: socket.assigns.chat_task_id}, socket}
@@ -2330,7 +2489,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp board_location(socket), do: board_path(board_location_params(socket.assigns))
 
   defp board_location_params(assigns) do
-    params = assigns.url_filters |> Map.merge(retained_design_source(assigns)) |> Map.merge(GraphNavigation.params(assigns.graph_options))
+    params =
+      assigns.url_filters
+      |> Map.merge(retained_design_source(assigns))
+      |> Map.merge(retained_specification_source(assigns))
+      |> Map.merge(GraphNavigation.params(assigns.graph_options))
+
     params = graph_location_params(params, assigns)
     params = if assigns.chat_task_id, do: Map.put(params, "chat_task", assigns.chat_task_id), else: params
     params = if assigns.chat_session_id, do: Map.put(params, "chat_session", assigns.chat_session_id), else: params
@@ -2351,6 +2515,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp retained_design_source(_assigns), do: %{}
+
+  defp retained_specification_source(%{url_filters: %{"view" => "design"} = filters, specification_source_context: %{project: project, params: params}} = assigns) do
+    if selected_project(assigns.board, filters) == project, do: params, else: %{}
+  end
+
+  defp retained_specification_source(_assigns), do: %{}
 
   defp main_chat(socket) do
     socket =

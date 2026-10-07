@@ -2,7 +2,8 @@ defmodule SymphonyElixirWeb.SpecificationView do
   @moduledoc "Structured specification editing with named, source-authoritative Mermaid diagrams."
   use Phoenix.Component
 
-  alias SymphonyElixir.Specification.Document
+  alias SymphonyElixir.Specification.{Document, TaskLinks}
+  alias SymphonyElixirWeb.SpecificationActions
 
   @sections [
     %{id: "brief", title: "Brief", detail: "Problem, people, scope", prompt: "Who needs this, and what should improve?"},
@@ -25,6 +26,9 @@ defmodule SymphonyElixirWeb.SpecificationView do
   attr(:viewed_ref, :string, default: nil)
   attr(:review_open, :boolean, default: false)
   attr(:idea_url, :string, default: nil)
+  attr(:coverage, :map, default: %{})
+  attr(:focus_item, :string, default: nil)
+  attr(:task_url, :string, default: nil)
 
   @spec content(map()) :: Phoenix.LiveView.Rendered.t()
   def content(assigns) do
@@ -46,17 +50,20 @@ defmodule SymphonyElixirWeb.SpecificationView do
         label: assigns.project_label || assigns.project,
         kinds: Document.kinds(section.id),
         editable: assigns.available and not assigns.history and not assigns.read_only,
+        prepare_ref: prepare_ref(assigns, document),
+        methods: Document.methods(),
         idea_url: local_url(assigns.idea_url),
         reviewable: is_map(assigns.state["draft"]) and Document.content?(assigns.state["draft"])
       )
 
     ~H"""
-    <section id={@workspace_id} class="specification-workspace design-workspace" phx-hook="SpecificationWorkspace" data-specification-project={@project} aria-label={"#{@label} specification"}>
+    <section id={@workspace_id} class="specification-workspace design-workspace" phx-hook="SpecificationWorkspace" data-specification-project={@project} data-specification-focus={@focus_item} aria-label={"#{@label} specification"}>
       <header class="design-toolbar">
         <div class="design-title"><h2>Design</h2><span class="design-draft-badge">Specification</span></div>
         <div class="design-toolbar-meta">
           <span role="status" aria-live="polite" data-spec-status>{if(@history, do: "Reviewed version · read-only", else: if(@read_only, do: "Read-only board", else: status(@available, @dirty, @state["draft"], @reviewed)))}</span>
           <.link :if={@idea_url} patch={@idea_url}>Open Idea</.link>
+          <.link :if={@task_url} patch={@task_url}>Back to task →</.link>
           <button :if={not @history} type="button" class="button button-small" phx-click="spec-reload" phx-value-project={@project}>Reload saved draft</button>
           <button :if={not @history} type="button" class="button button-small" phx-click="spec-review" phx-value-project={@project} phx-value-storage_revision={@revision} disabled={not @editable or @dirty or not @reviewable}>Review specification</button>
           <button :if={@history} type="button" class="button button-small" phx-click="spec-return-draft" phx-value-project={@project}>Return to draft</button>
@@ -78,12 +85,30 @@ defmodule SymphonyElixirWeb.SpecificationView do
             <input id={@form_id <> "-section"} type="hidden" name="section" value={@selected.id} /><input id={@form_id <> "-revision"} type="hidden" name="storage_revision" value={@revision} />
             <fieldset disabled={not @editable}>
               <p :if={@content["items"] == [] and @content["diagrams"] == []} class="specification-empty">Start with a short statement. Add a diagram when it helps explain the design.</p>
-              <article :for={item <- @content["items"]} id={@workspace_id <> "-item-" <> item["id"]} class="specification-item" data-spec-item-id={item["id"]}>
+              <article :for={item <- @content["items"]} id={@workspace_id <> "-item-" <> item["id"]} class="specification-item" data-spec-item-id={item["id"]} data-spec-focused={to_string(item["id"] == @focus_item)}>
                 <header><label class="specification-title"><span>Title</span><input id={@form_id <> "-item-" <> item["id"] <> "-title"} type="text" name={"items[#{item["id"]}][title]"} value={item["title"]} maxlength="256" placeholder="Name this part of the specification" /></label>
                   <label><span>Kind</span><select id={@form_id <> "-item-" <> item["id"] <> "-kind"} name={"items[#{item["id"]}][kind]"}><option :for={kind <- @kinds} value={kind} selected={kind == item["kind"]}>{kind_label(kind)}</option></select></label>
                   <button type="button" class="button button-small" phx-click="spec-remove-item" phx-value-project={@project} phx-value-section={@selected.id} phx-value-id={item["id"]} aria-label={"Remove " <> if(item["title"] == "", do: "item", else: item["title"])}>Remove</button>
                 </header>
                 <label><span>Details</span><textarea id={@form_id <> "-item-" <> item["id"] <> "-body"} name={"items[#{item["id"]}][body]"} rows="5" maxlength="24000" placeholder="Describe the behavior, fields, constraints or decision.">{item["body"]}</textarea></label>
+                <section :if={@selected.id == "requirements"} class="specification-criteria" aria-label={"Acceptance criteria for " <> item["title"]}>
+                  <header><h4>Acceptance criteria</h4><button type="button" class="button button-small" phx-click="spec-add-criterion" phx-value-project={@project} phx-value-section="requirements" phx-value-id={item["id"]}>Add criterion</button></header>
+                  <p :if={Map.get(item, "criteria", []) == []} class="muted">Describe what will be checked before this requirement is satisfied.</p>
+                  <div :for={{criterion, index} <- Enum.with_index(Map.get(item, "criteria", []), 1)} class="specification-criterion" data-criterion-id={criterion["id"]}>
+                    <label class="specification-title"><span title={criterion["id"]}>Criterion {index}</span><textarea id={@form_id <> "-criterion-" <> criterion["id"] <> "-statement"} name={"items[#{item["id"]}][criteria][#{criterion["id"]}][statement]"} rows="2" maxlength="4000" placeholder="State an observable outcome or measurable target.">{criterion["statement"]}</textarea></label>
+                    <label><span>Check by</span><select id={@form_id <> "-criterion-" <> criterion["id"] <> "-method"} name={"items[#{item["id"]}][criteria][#{criterion["id"]}][method]"}><option :for={method <- @methods} value={method} selected={method == criterion["method"]}>{String.capitalize(method)}</option></select></label>
+                    <button type="button" class="button button-small" phx-click="spec-remove-criterion" phx-value-project={@project} phx-value-section="requirements" phx-value-item={item["id"]} phx-value-criterion={criterion["id"]} aria-label={"Remove criterion #{index} from #{if String.trim(item["title"]) == "", do: "requirement " <> item["id"], else: item["title"]}"}>Remove</button>
+                  </div>
+                  <div class="specification-task-coverage" data-spec-coverage={item["id"]}>
+                    <span class="specification-coverage-status">{coverage_label(@coverage[item["id"]])}</span>
+                    <button :if={not @history} type="button" class="button button-small" phx-click="spec-prepare-task" phx-value-project={@project} phx-value-storage_revision={@revision} phx-value-ref={@prepare_ref} phx-value-item={item["id"]} disabled={not @editable or is_nil(@prepare_ref) or not TaskLinks.actionable?(item)} title="Prepare a task preview from this saved, reviewed requirement and its criteria">Prepare task →</button>
+                    <ul :if={@coverage[item["id"]]}><li :for={link <- @coverage[item["id"]].links}>
+                      <.link :if={link.task_id} patch={SpecificationActions.task_url(@project, link.task_id)}>{link.title} →</.link><span :if={is_nil(link.task_id)}>{link.title}</span>
+                      <button :if={link[:preview_id] && link.status in ~w(pending unknown) && not @history} type="button" class="button button-small" phx-click="spec-open-task-preview" phx-value-project={@project} phx-value-id={link.preview_id}>Open preview →</button>
+                      <span :if={link.stage} class="muted">{stage_label(link.stage)}</span><span class="muted">{link_label(link)}</span>
+                    </li></ul>
+                  </div>
+                </section>
               </article>
               <article :for={diagram <- @content["diagrams"]} id={@workspace_id <> "-diagram-" <> diagram["id"]} class="specification-diagram">
                 <header><label class="specification-title"><span>Diagram name</span><input id={@form_id <> "-diagram-" <> diagram["id"] <> "-title"} type="text" name={"diagrams[#{diagram["id"]}][title]"} value={diagram["title"]} maxlength="256" placeholder="Name the diagram" /></label>
@@ -99,6 +124,7 @@ defmodule SymphonyElixirWeb.SpecificationView do
               <div class="specification-actions"><button type="button" class="button button-small" phx-click="spec-add-item" phx-value-project={@project} phx-value-section={@selected.id}>Add item</button><button type="button" class="button button-small" phx-click="spec-add-diagram" phx-value-project={@project} phx-value-section={@selected.id}>Add diagram</button><button type="submit" class="button button-primary" disabled={not @dirty}>Save specification</button></div>
             </fieldset>
           </form>
+          <p :if={@selected.id == "requirements"} class="specification-coverage-note">Task links show planned coverage. Candidate review and checks do not yet verify individual criteria. Save and review changes before preparing tasks.</p>
         </section>
       </div>
     </section>
@@ -126,4 +152,25 @@ defmodule SymphonyElixirWeb.SpecificationView do
   defp status(true, false, nil, _), do: "Start a specification"
   defp status(true, false, document, %{"ref" => ref}), do: if(Document.content_ref(document) == ref, do: "Reviewed version", else: "Draft · reviewed version retained")
   defp status(true, false, _, _), do: "Saved draft"
+
+  defp prepare_ref(assigns, document) do
+    ref = get_in(assigns.state, ["reviewed", "ref"])
+    if document && ref && not assigns.dirty && not assigns.history && Document.content_ref(document) == ref, do: ref
+  end
+
+  defp coverage_label(%{status: "linked", criteria_count: count}), do: "#{count} #{if(count == 1, do: "criterion", else: "criteria")} linked to a task"
+  defp coverage_label(%{status: "missing"}), do: "No task linked to this version"
+  defp coverage_label(%{status: "changed"}), do: "Linked task scope changed"
+  defp coverage_label(%{status: "pending"}), do: "Task creation pending"
+  defp coverage_label(%{status: "unknown"}), do: "Task coverage unavailable"
+  defp coverage_label(_), do: "Add criteria, then save and review"
+  defp stage_label("ready"), do: "Work"
+  defp stage_label("running"), do: "In progress"
+  defp stage_label(stage), do: String.capitalize(stage)
+  defp link_label(%{status: "changed"}), do: "Compare task scope with this specification"
+  defp link_label(%{status: "linked", candidate: %{"status" => status}}) when status in ~w(ready reviewed), do: "Candidate reviewed · criteria unverified"
+  defp link_label(%{status: "linked", candidate: %{"status" => "stale"}}), do: "Candidate evidence stale"
+  defp link_label(%{status: "linked", candidate: %{"status" => "changes_requested"}}), do: "Candidate needs changes"
+  defp link_label(%{status: "linked"}), do: "Awaiting candidate evidence"
+  defp link_label(_), do: ""
 end

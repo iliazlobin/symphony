@@ -116,6 +116,25 @@ defmodule SymphonyElixirWeb.SpecificationEditorTest do
     end
   end
 
+  test "criterion forms normalize only known unused markers and cannot substitute identities" do
+    {:ok, draft} = Editor.change(Document.new("project"), "requirements", "spec-add-item", nil)
+    [item] = draft["sections"]["requirements"]["items"]
+    {:ok, draft} = Editor.change(draft, "requirements", "spec-add-criterion", item["id"])
+    [criterion] = hd(draft["sections"]["requirements"]["items"])["criteria"]
+    fields = %{"statement" => "Relevant results within 500ms", "method" => "test", "_unused_statement" => "", "_unused_method" => ""}
+    input = params(draft, "requirements") |> put_in(["items", item["id"], "criteria"], %{criterion["id"] => fields})
+    assert {:ok, edited} = Editor.edit(draft, %{"storage_revision" => 0}, input, "requirements")
+    assert hd(hd(edited["sections"]["requirements"]["items"])["criteria"])["statement"] == fields["statement"]
+    refute Jason.encode!(edited) =~ "_unused_"
+    assert {:ok, _} = Editor.change(edited, "requirements", "spec-remove-criterion", %{"item" => item["id"], "criterion" => criterion["id"]})
+    assert {:error, _} = Editor.change(edited, "data", "spec-add-criterion", item["id"])
+    assert {:error, _} = Editor.change(edited, "requirements", "spec-remove-criterion", nil)
+
+    for bad <- [Map.put(fields, "_unused_id", ""), Map.put(fields, "_unused_statement", "not empty"), Map.delete(fields, "method"), %{}] do
+      assert {:error, _} = Editor.edit(draft, %{"storage_revision" => 0}, put_in(input, ["items", item["id"], "criteria", criterion["id"]], bad), "requirements")
+    end
+  end
+
   defp params(draft, section) do
     values = fn items, keys -> Map.new(items, &{&1["id"], Map.take(&1, keys)}) end
 
