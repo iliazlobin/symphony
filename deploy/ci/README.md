@@ -33,15 +33,23 @@ docker buildx build --platform linux/amd64 --build-arg SOURCE_REVISION="$ci_revi
 
 Apple Silicon emulation may need `ERL_AFLAGS='+JMsingle true'` in a disposable test container only, as [documented by Elixir](https://hexdocs.pm/mix/Mix.Tasks.Release.html#using-images). This is not baked into the native image; local checks do not replace GKE execution.
 
-Put `gh`, `gcloud`, `kubectl`, `helm`, Python and PyYAML on the operator PATH and set the task-local IAP `KUBECONFIG`. Review [versions.json](versions.json), [foundation.yaml](foundation.yaml), [controller-values.yaml](controller-values.yaml) and [runner-values.yaml](runner-values.yaml). Installer modes verify chart checksums and shared CRD health/schema before mutation; neither installs/upgrades CRDs or reads credential payloads. Helm error details stay private because they can include rendered Secrets.
+Put `gh`, `gcloud`, `kubectl`, `helm`, OpenSSL, Python and PyYAML on the operator PATH and set the task-local IAP `KUBECONFIG`. Review [versions.json](versions.json), [foundation.yaml](foundation.yaml), [controller-values.yaml](controller-values.yaml) and [runner-values.yaml](runner-values.yaml). Installer modes verify chart checksums and shared CRD health/schema before mutation; neither installs/upgrades CRDs or reads credential payloads. Helm error details stay private because they can include rendered Secrets.
 
 ```sh
 deploy/ci/install.sh --prepare
-# Deliver the separate repository-only App Secret through the approved private operator channel.
+# The approved private channel supplies the three-field JSON on stdin.
+python3 deploy/ci/app_secret.py store --app-scope-confirmed
+python3 deploy/ci/app_secret.py deliver --version "$ci_secret_version" --app-scope-confirmed
 deploy/ci/install.sh 'us-west1-docker.pkg.dev/iz27-platform-dev/foundation-ci/symphony-ci-runner@sha256:<reviewed-digest>'
 ```
 
 `--prepare` creates Symphony CI namespaces, quotas, policies and proxy, then waits for readiness. Full installation additionally requires App Secret metadata and installs its two ARC releases. Stop on insufficient capacity; never reduce requests or resize shared pools to force admission.
+
+[app_secret.py](app_secret.py) handles **initial delivery only** after the reviewed empty Secret Manager metadata exists. Supply exactly `github_app_id` and `github_app_installation_id` as positive numeric strings, plus `github_app_private_key` as an unencrypted RSA PEM; JSON is bounded to 64KiB and the key to 16KiB. Keep payloads out of arguments, environment, temporary files, shell tracing and public output. The helper verifies the same operator/private TLS/public-repository/fork-approval/capacity guards, restricted Symphony namespaces and metadata replica before reading credentials. It refuses existing Secret Manager versions on storage and an existing Kubernetes Secret on delivery; rotation/recovery needs a separate reviewed operation. Pin the positive version returned by storage; never use `latest`. Store and delivery compare credential readback privately in memory and emit metadata only.
+
+`--app-scope-confirmed` means the operator has read back GitHub settings showing the private **`iz27-symphony-ci`** App, webhooks disabled, and **only `iliazlobin/symphony` selected**. The helper's [App-JWT GETs](https://docs.github.com/en/rest/apps/apps) verify matching App/key/install IDs, exact Administration write/Metadata read permissions, selected scope and Symphony coverage. Those responses do not list every selected repository, so they cannot replace the UI scope check. It creates no installation token. RSA signing uses an anonymous pipe to OpenSSL; neither PEM nor JWT enters files, arguments or environment. Its gcloud processes disable HTTP and file logging without changing operator configuration.
+
+On an uncertain write or failed readback, inspect version/Secret metadata privately before retrying; the helper stops rather than overwriting credentials. Installer success removes transient diagnostics. A failed Helm call retains owner-only `helm-output`/`helm-errors` and reports their directory; signal interruption retains the same `${TMPDIR:-/tmp}/symphony-ci-install.*` directory. Inspect it privately because errors may contain rendered Secrets, then remove that exact directory after diagnosis. Never upload its raw contents.
 
 ## Acceptance and operations
 
