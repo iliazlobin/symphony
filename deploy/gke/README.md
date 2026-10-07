@@ -96,7 +96,7 @@ terraform -chdir=deploy/gke/terraform plan -out=reviewed.tfplan
 terraform -chdir=deploy/gke/terraform show reviewed.tfplan
 ```
 
-For a fresh environment only, create the three application resources with local state before configuring the destination backend; preserve a recovery copy and use `terraform init -migrate-state` for this root only. Verify the owned resources in remote state and a no-change plan. Never migrate shared-platform state. Runtime applies require scoped authorization; do not overwrite an existing backend configuration.
+For a fresh environment only, create the owned resources with local state before configuring the destination backend; preserve a recovery copy and use `terraform init -migrate-state` for this root only. Verify the owned resources in remote state and a no-change plan. Never migrate shared-platform state. Runtime applies require scoped authorization; do not overwrite an existing backend configuration.
 
 ## Runner and authentication implementation
 
