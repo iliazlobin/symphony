@@ -32,11 +32,9 @@ ERROR = "Symphony App delivery stopped; reconcile metadata privately before retr
 
 
 def command(args, payload=None, *, pass_fds=()):
-    env = None
-    if args[0] == "gcloud":
-        # Override inherited debugging without changing the operator configuration.
-        env = {**os.environ, "CLOUDSDK_CORE_DISABLE_FILE_LOGGING": "true",
-               "CLOUDSDK_CORE_LOG_HTTP": "false", "CLOUDSDK_CORE_VERBOSITY": "none"}
+    # kubectl authentication can also spawn gcloud; protect every descendant.
+    env = {**os.environ, "CLOUDSDK_CORE_DISABLE_FILE_LOGGING": "true",
+           "CLOUDSDK_CORE_LOG_HTTP": "false", "CLOUDSDK_CORE_VERBOSITY": "none"}
     result = subprocess.run(args, input=payload, capture_output=True, timeout=90,
                             pass_fds=pass_fds, env=env)
     if result.returncode or len(result.stdout) > 1048576:
@@ -63,9 +61,9 @@ def credentials(raw):
         if not isinstance(data[field], str) or not re.fullmatch(r"[1-9][0-9]{0,19}", data[field]):
             raise ValueError("Require positive numeric identifiers as strings")
     key = data["github_app_private_key"]
-    if (not isinstance(key, str) or len(key.encode()) > 16384 or
-            "\nProc-Type:" in key or "\nDEK-Info:" in key or
-            not key.startswith(("-----BEGIN RSA PRIVATE KEY-----\n", "-----BEGIN PRIVATE KEY-----\n"))):
+    if (not isinstance(key, str) or len(key.encode()) > 16384 or not re.fullmatch(
+            r"-----BEGIN (RSA PRIVATE KEY|PRIVATE KEY)-----\n"
+            r"(?:[A-Za-z0-9+/]+={0,2}\n)+-----END \1-----\n?", key)):
         raise ValueError("Require the bounded RSA PEM private key")
     command(["openssl", "rsa", "-check", "-noout", "-passin", "pass:"], key.encode())
     return data
@@ -144,12 +142,13 @@ def verify_app(data):
 
 
 def verify_operator():
-    policy = preflight.command(["gh", "api", "repos/" + REPOSITORY +
-                                "/actions/permissions/fork-pr-contributor-approval",
-                                "--jq", ".approval_policy"]).strip()
+    policy = command(["gh", "api", "repos/" + REPOSITORY +
+                      "/actions/permissions/fork-pr-contributor-approval",
+                      "--jq", ".approval_policy"]).decode().strip()
     if policy != "all_external_contributors":
         raise ValueError("External workflow approval is required")
-    preflight.main()  # Exact public repo ID, operator, private TLS/IAP, pools and capacity.
+    # Reuse exact guards while protecting their gcloud reads from inherited debugging.
+    preflight.main(run=lambda args: command(args).decode())
     for namespace, service, address in (("default", "kubernetes", "10.48.0.1"),
                                         ("kube-system", "kube-dns", "10.48.0.10")):
         if command(KUBECTL + ["-n", namespace, "get", "service", service,

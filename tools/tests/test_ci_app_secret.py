@@ -53,6 +53,11 @@ class AppSecretTests(unittest.TestCase):
     def test_disposable_rsa_signature_and_ec_refusal_without_private_key_files(self):
         generated = subprocess.run(["openssl", "genrsa", "2048"], capture_output=True, check=True).stdout
         data = {**DATA, "github_app_private_key": generated.decode()}
+        for key in (generated.decode() * 2, generated.decode() + "trailing material",
+                    generated.decode().replace("-----END ", "-----END INVALID ", 1)):
+            with patch.object(secret, "command") as command, self.assertRaises(ValueError):
+                secret.credentials(json.dumps({**DATA, "github_app_private_key": key}).encode())
+            command.assert_not_called()
         with patch.object(secret, "command", wraps=secret.command) as command:
             self.assertEqual(secret.credentials(json.dumps(data).encode()), data)
             token = secret.app_jwt(data)
@@ -109,18 +114,19 @@ class AppSecretTests(unittest.TestCase):
                 operator.assert_not_called()
 
     def test_wrong_fork_policy_or_private_target_prevents_helper_commands(self):
-        with patch.object(secret.preflight, "command", return_value="first_time_contributors"), \
-                patch.object(secret.preflight, "main") as preflight, patch.object(secret, "command") as command:
+        with patch.object(secret, "command", return_value=b"first_time_contributors") as command, \
+                patch.object(secret.preflight, "main") as preflight:
             with self.assertRaises(ValueError):
                 secret.verify_operator()
             preflight.assert_not_called()
-            command.assert_not_called()
-        with patch.object(secret.preflight, "command", return_value="all_external_contributors"), \
+            self.assertEqual(command.call_count, 1)
+        with patch.object(secret, "command", return_value=b"all_external_contributors") as command, \
                 patch.object(secret.preflight, "main", side_effect=ValueError("wrong private target")), \
-                patch.object(secret, "command") as command:
+                patch.object(secret, "credentials") as credentials:
             with self.assertRaises(ValueError):
                 secret.verify_operator()
-            command.assert_not_called()
+            self.assertEqual(command.call_count, 1)
+            credentials.assert_not_called()
 
     def test_existing_version_and_secret_refuse_before_reading_credentials(self):
         with patch.object(secret, "verify_operator"), patch.object(secret, "command", return_value=b"exists"), \
@@ -211,6 +217,60 @@ class AppSecretTests(unittest.TestCase):
         self.assertEqual(env["CLOUDSDK_CORE_LOG_HTTP"], "false")
         self.assertEqual(env["CLOUDSDK_CORE_VERBOSITY"], "none")
         self.assertNotIn("synthetic-private-payload", repr(env))
+
+    def test_all_operator_guards_use_safe_logging_without_changing_environment(self):
+        def run(args, **kwargs):
+            text = " ".join(args)
+            if "fork-pr-contributor-approval" in text:
+                value = "all_external_contributors"
+            elif args[:3] == ["gcloud", "config", "get-value"]:
+                value = "iliazlobin27@gmail.com"
+            elif args[:2] == ["gh", "api"]:
+                value = {"id": 1370642365, "private": False}
+            elif "clusters describe" in text:
+                value = {"privateClusterConfig": {"enablePrivateNodes": True, "enablePrivateEndpoint": True,
+                                                   "privateEndpoint": "10.40.0.2"},
+                         "nodePools": [{"name": "platform-ci"}, {"name": "platform-ci-control"}]}
+            elif "config view" in text:
+                value = {"current-context": secret.preflight.CONTEXT, "clusters": [{"cluster": {
+                    "server": "https://127.0.0.1:4567", "tls-server-name": "10.40.0.2",
+                    "certificate-authority-data": "synthetic-ca-fixture"}}]}
+            elif "get nodes" in text:
+                value = {"items": [{"metadata": {"name": "control", "labels": {
+                    "cloud.google.com/gke-nodepool": "platform-ci-control",
+                    "node-restriction.kubernetes.io/workload": "platform-ci-control"}},
+                    "status": {"allocatable": {"cpu": "1930m", "memory": "8Gi"}}}]}
+            elif "get pods" in text:
+                value = {"items": []}
+            elif "get resourcequotas" in text:
+                value = {"items": [{"metadata": {"name": "bounded-control", "namespace": "foundation-ci-system"},
+                                    "spec": {"hard": {"requests.cpu": "300m", "requests.memory": "640Mi", "pods": "3"}}}]}
+            elif "get service" in text:
+                value = "10.48.0.1" if "kubernetes" in args else "10.48.0.10"
+            elif "get namespace" in text:
+                value = {"metadata": {"name": args[args.index("namespace") + 1],
+                                       "labels": {"pod-security.kubernetes.io/enforce": "restricted"}}}
+            elif "secrets describe" in text:
+                value = {"name": f"projects/{secret.PROJECT_NUMBER}/secrets/{secret.SECRET}",
+                         "replication": {"userManaged": {"replicas": [{"location": "us-west1"}]}}}
+            else:
+                raise AssertionError("Unexpected disposable fixture command")
+            result = value if isinstance(value, str) else json.dumps(value)
+            return Mock(returncode=0, stdout=result if kwargs.get("text") else result.encode(), stderr=b"")
+        inherited = {"CLOUDSDK_CORE_LOG_HTTP": "true", "CLOUDSDK_CORE_VERBOSITY": "debug",
+                     "CLOUDSDK_CORE_DISABLE_FILE_LOGGING": "false", "KUBECONFIG": "/private/task-fixture-kubeconfig"}
+        with patch.dict(os.environ, inherited), patch.object(secret.subprocess, "run", side_effect=run) as commands:
+            secret.verify_operator()
+            self.assertEqual({name: os.environ[name] for name in inherited}, inherited)
+        gcloud = [call for call in commands.call_args_list if call.args[0][0] == "gcloud"]
+        self.assertEqual(len(gcloud), 3)
+        for call in gcloud:
+            self.assertEqual(call.kwargs["env"]["CLOUDSDK_CORE_LOG_HTTP"], "false")
+            self.assertEqual(call.kwargs["env"]["CLOUDSDK_CORE_DISABLE_FILE_LOGGING"], "true")
+        for call in commands.call_args_list:
+            # kubectl's auth plugin may launch gcloud; it needs the same safe inheritance.
+            self.assertEqual(call.kwargs["env"]["CLOUDSDK_CORE_LOG_HTTP"], "false")
+            self.assertEqual(call.kwargs["env"]["CLOUDSDK_CORE_DISABLE_FILE_LOGGING"], "true")
 
 
 class HelmDiagnosticsTests(unittest.TestCase):

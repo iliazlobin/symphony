@@ -104,30 +104,31 @@ def verify_capacity(nodes, pods, quotas):
         raise ValueError("Insufficient control memory including both CI quotas and managed DNS")
 
 
-def main():
-    if command(["gcloud", "config", "get-value", "account"]).strip() != "iliazlobin27@gmail.com":
+def main(run=None):
+    run = run or command
+    if run(["gcloud", "config", "get-value", "account"]).strip() != "iliazlobin27@gmail.com":
         raise ValueError("Unexpected active cloud operator")
     if not os.environ.get("KUBECONFIG"):
         raise ValueError("Set the task-local private KUBECONFIG")
-    repo = json.loads(command(["gh", "api", "repos/iliazlobin/symphony"]))
+    repo = json.loads(run(["gh", "api", "repos/iliazlobin/symphony"]))
     if repo.get("id") != 1370642365 or repo.get("private") is not False:
         raise ValueError("This installation is restricted to the approved public Symphony repository")
-    cluster = json.loads(command(["gcloud", "container", "clusters", "describe", "platform-dev",
+    cluster = json.loads(run(["gcloud", "container", "clusters", "describe", "platform-dev",
                                  "--zone=us-west1-a", "--project=iz27-platform-dev", "--format=json"]))
     privacy = cluster.get("privateClusterConfig", {})
     if not privacy.get("enablePrivateNodes") or not privacy.get("enablePrivateEndpoint") or privacy.get("privateEndpoint") != "10.40.0.2":
         raise ValueError("Unexpected cluster privacy boundary")
     if not {"platform-ci", "platform-ci-control"} <= {p["name"] for p in cluster["nodePools"]}:
         raise ValueError("Reviewed job and control pools must exist")
-    config = json.loads(command(["kubectl", "config", "view", "--minify", "-o", "json"]))
+    config = json.loads(run(["kubectl", "config", "view", "--minify", "-o", "json"]))
     target = config["clusters"][0]["cluster"]
     if config["current-context"] != CONTEXT or target.get("insecure-skip-tls-verify") or not target.get("certificate-authority-data"):
         raise ValueError("Unexpected private TLS context")
     if not re.fullmatch(r"https://127\.0\.0\.1:[0-9]+", target.get("server", "")) or target.get("tls-server-name") != "10.40.0.2":
         raise ValueError("Require the private IAP tunnel and TLS server name")
-    verify_capacity(json.loads(command(["kubectl", "get", "nodes", "-o", "json"])),
-                    json.loads(command(["kubectl", "get", "pods", "-A", "-o", "json"])),
-                    json.loads(command(["kubectl", "get", "resourcequotas", "-A", "-o", "json"])))
+    verify_capacity(json.loads(run(["kubectl", "get", "nodes", "-o", "json"])),
+                    json.loads(run(["kubectl", "get", "pods", "-A", "-o", "json"])),
+                    json.loads(run(["kubectl", "get", "resourcequotas", "-A", "-o", "json"])))
 
 
 if __name__ == "__main__":
