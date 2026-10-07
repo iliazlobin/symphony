@@ -5,7 +5,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
   import Phoenix.LiveViewTest
   alias Plug.Conn.Query
   alias SymphonyElixir.Assurance.Store
-  alias SymphonyElixir.Specification.Document
+  alias SymphonyElixir.Specification.{Document, Object}
   alias SymphonyElixirWeb.{BoardCache, BrowserAuth, Endpoint, Presenter, TaskBoard}
   @endpoint Endpoint
 
@@ -2196,6 +2196,69 @@ defmodule SymphonyElixir.DashboardLiveTest do
   end
 
   @tag :specification_fixture
+  test "typed imports preview before saving, retain legacy source and reject stale context", ctx do
+    view = authorized_board_view()
+    project = "github:example/fixture"
+    auth = :sys.get_state(view.pid).socket.assigns.auth
+    old = Document.new(project) |> Map.put("version", 1)
+    {:ok, old} = Document.add(old, "data", "items")
+    old = put_in(old, ["sections", "data", "items", Access.at(0), "body"], "Original Event model and source.")
+    assert {:ok, %{"storage_revision" => 1}} = FixtureSpecification.save(project, 0, old, auth)
+    render_click(view, "switch-view", %{"view" => "design"})
+    {:ok, typed} = Document.upgrade(old)
+    json = Jason.encode!(typed)
+    params = %{"project" => project, "document_id" => old["document_id"], "storage_revision" => "1", "document" => json}
+    render_submit(view, "spec-import", Map.put(params, "storage_revision", "0"))
+    assert :sys.get_state(view.pid).socket.assigns.specification_draft == old
+    render_submit(view, "spec-import", Map.put(params, "document", "invalid json"))
+    assert :sys.get_state(view.pid).socket.assigns.specification_draft == old
+    render_submit(view, "spec-import", params)
+    assert :sys.get_state(view.pid).socket.assigns.specification_draft == typed
+    assert saved_specification(view)["draft"] == old
+    render_click(view, "spec-section", %{"project" => project, "section" => "data"})
+    assert has_element?(view, ".specification-object .spec-object-notes textarea", "Original Event model and source.")
+    view |> form(".specification-form") |> render_submit()
+    assert saved_specification(view)["draft"] == typed
+    assert saved_specification(view)["review_count"] == 0
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
+  end
+
+  @tag :specification_fixture
+  test "typed member edits and cross-section links retain unsaved draft without execution", ctx do
+    view = authorized_board_view()
+    project = "github:example/fixture"
+    render_click(view, "switch-view", %{"view" => "design"})
+    render_click(view, "spec-section", %{"project" => project, "section" => "data"})
+    render_click(view, "spec-add-item", %{"project" => project, "section" => "data", "kind" => "entity"})
+    [entity] = :sys.get_state(view.pid).socket.assigns.specification_draft["sections"]["data"]["items"]
+    render_click(view, "spec-add-member", %{"project" => project, "section" => "data", "id" => entity["id"], "group" => "rows"})
+    [row] = hd(:sys.get_state(view.pid).socket.assigns.specification_draft["sections"]["data"]["items"])["rows"]
+    values = %{"items" => %{entity["id"] => %{"title" => "Event", "rows" => %{row["id"] => %{"name" => "event_id", "type" => "uuid", "role" => "primary"}}}}}
+    view |> form(".specification-form", values) |> render_change()
+    render_click(view, "spec-section", %{"project" => project, "section" => "architecture"})
+    render_click(view, "spec-add-item", %{"project" => project, "section" => "architecture", "kind" => "component"})
+    [component] = :sys.get_state(view.pid).socket.assigns.specification_draft["sections"]["architecture"]["items"]
+    render_click(view, "spec-add-member", %{"project" => project, "section" => "architecture", "id" => component["id"], "group" => "links"})
+    [link] = hd(:sys.get_state(view.pid).socket.assigns.specification_draft["sections"]["architecture"]["items"])["links"]
+    values = %{"items" => %{component["id"] => %{"title" => "Catalog", "links" => %{link["id"] => %{"target" => entity["id"]}}}}}
+    view |> form(".specification-form", values) |> render_change()
+    assert has_element?(view, "[phx-click=spec-object][phx-value-id='#{entity["id"]}']", "Event")
+    render_click(view, "spec-object", %{"project" => project, "id" => entity["id"]})
+    assert :sys.get_state(view.pid).socket.assigns.specification_section == "data"
+    assert has_element?(view, "input[name$='[name]'][value=event_id]")
+    entity_id = entity["id"]
+    assert_push_event(view, "focus-spec-object", %{id: ^entity_id})
+    render_click(view, "spec-remove-item", %{"project" => project, "section" => "data", "id" => entity["id"]})
+    assert length(:sys.get_state(view.pid).socket.assigns.specification_draft["sections"]["data"]["items"]) == 1
+    view |> form(".specification-form") |> render_submit()
+    assert saved_specification(view)["draft"]["version"] == 2
+    assert saved_specification(view)["review_count"] == 0
+    assert GenServer.call(ctx.runtime, :control_snapshot)["revision"] == 0
+    refute_received {:settings_command, _}
+  end
+
+  @tag :specification_fixture
   test "a failed specification reload preserves unsaved edits and disables writes until storage recovers", ctx do
     view = authorized_board_view()
     project = "github:example/fixture"
@@ -4330,7 +4393,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
       "document_id" => draft["document_id"],
       "section" => section,
       "storage_revision" => Integer.to_string(assigns.specification_state["storage_revision"]),
-      "items" => Map.new(part["items"], fn item -> {item["id"], Map.take(item, ~w(kind title body))} end),
+      "items" => Map.new(part["items"], fn item -> {item["id"], if(draft["version"] == 2, do: Object.form(item), else: Map.take(item, ~w(kind title body)))} end),
       "diagrams" => Map.new(part["diagrams"], fn diagram -> {diagram["id"], Map.take(diagram, ~w(title source))} end)
     }
     |> Map.merge(changes)

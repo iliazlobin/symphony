@@ -3,6 +3,7 @@ defmodule SymphonyElixirWeb.SpecificationView do
   use Phoenix.Component
 
   alias SymphonyElixir.Specification.Document
+  alias SymphonyElixirWeb.SpecificationObjectView
 
   @sections [
     %{id: "brief", title: "Brief", detail: "Problem, people, scope", prompt: "Who needs this, and what should improve?"},
@@ -37,6 +38,8 @@ defmodule SymphonyElixirWeb.SpecificationView do
         sections: @sections,
         selected: section,
         document: document,
+        objects: objects(document),
+        typed: typed?(document),
         content: content,
         workspace_id: workspace_id(assigns.project),
         form_id: form_id(assigns, document, section.id),
@@ -51,12 +54,13 @@ defmodule SymphonyElixirWeb.SpecificationView do
       )
 
     ~H"""
-    <section id={@workspace_id} class="specification-workspace design-workspace" phx-hook="SpecificationWorkspace" data-specification-project={@project} aria-label={"#{@label} specification"}>
+    <section id={@workspace_id} class="specification-workspace design-workspace" phx-hook="SpecificationWorkspace" data-specification-project={@project} data-specification-section={@selected.id} aria-label={"#{@label} specification"}>
       <header class="design-toolbar">
         <div class="design-title"><h2>Design</h2><span class="design-draft-badge">Specification</span></div>
         <div class="design-toolbar-meta">
           <span role="status" aria-live="polite" data-spec-status>{if(@history, do: "Reviewed version · read-only", else: if(@read_only, do: "Read-only board", else: status(@available, @dirty, @state["draft"], @reviewed)))}</span>
           <.link :if={@idea_url} patch={@idea_url}>Open Idea</.link>
+          <button :if={not @typed and not @history} type="button" class="button button-small" phx-click="spec-structure" phx-value-project={@project} phx-value-storage_revision={@revision} disabled={not @editable}>Structure draft</button>
           <button :if={not @history} type="button" class="button button-small" phx-click="spec-reload" phx-value-project={@project}>Reload saved draft</button>
           <button :if={not @history} type="button" class="button button-small" phx-click="spec-review" phx-value-project={@project} phx-value-storage_revision={@revision} disabled={not @editable or @dirty or not @reviewable}>Review specification</button>
           <button :if={@history} type="button" class="button button-small" phx-click="spec-return-draft" phx-value-project={@project}>Return to draft</button>
@@ -68,17 +72,24 @@ defmodule SymphonyElixirWeb.SpecificationView do
       <div class="design-layout specification-layout">
         <nav class="design-outline" role="tablist" aria-label="Specification steps" aria-orientation="vertical">
           <button :for={{section, index} <- Enum.with_index(@sections, 1)} id={@workspace_id <> "-tab-" <> section.id} type="button" role="tab" aria-controls={@workspace_id <> "-panel"} aria-selected={to_string(section.id == @selected.id)} tabindex={if(section.id == @selected.id, do: "0", else: "-1")} phx-click="spec-section" phx-value-project={@project} phx-value-section={section.id}>
-            <span class="design-step-number">{index}</span><span class="design-step-text"><span class="design-outline-title">{section.title}</span><span class="design-outline-detail">{section.detail}</span></span>
+            <span class="design-step-number">{index}</span><span class="design-step-text"><span class="design-outline-title">{section.title}<small :if={@document}>{length(@document["sections"][section.id]["items"])}</small></span><span class="design-outline-detail">{section.detail}</span></span>
           </button>
         </nav>
         <section id={@workspace_id <> "-panel"} class="design-editor specification-editor" role="tabpanel" aria-labelledby={@workspace_id <> "-tab-" <> @selected.id}>
-          <header class="design-panel-heading"><div><h3>{@selected.title}</h3><p>{@selected.prompt}</p></div></header>
+          <header class="design-panel-heading"><div><h3>{@selected.title}</h3><p>{@selected.prompt}</p></div><label :if={@typed and @content["items"] != []} class="spec-object-search"><span class="sr-only">Search design objects</span><input type="search" data-spec-search placeholder="Find in this section…" /></label></header>
+          <details :if={not @history} id={@workspace_id <> "-import"} class="specification-import" data-spec-disclosure><summary>Import structured objects</summary>
+            <form id={@form_id <> "-import"} phx-submit="spec-import">
+              <input id={@form_id <> "-import-project"} type="hidden" name="project" value={@project} /><input id={@form_id <> "-import-document"} type="hidden" name="document_id" value={@document && @document["document_id"]} /><input id={@form_id <> "-import-revision"} type="hidden" name="storage_revision" value={@revision} />
+              <fieldset disabled={not @editable or @dirty}><label><span>Typed specification JSON</span><textarea id={@form_id <> "-import-json"} name="document" rows="4" maxlength="1000000" placeholder="Version 2 document with this draft’s identity and original notes." /></label><button type="submit" class="button button-small">Preview imported objects</button></fieldset>
+            </form>
+          </details>
           <form id={@form_id} phx-change="spec-edit" phx-submit="spec-save" class="specification-form">
             <input id={@form_id <> "-project"} type="hidden" name="project" value={@project} /><input id={@form_id <> "-document"} type="hidden" name="document_id" value={@document && @document["document_id"]} />
             <input id={@form_id <> "-section"} type="hidden" name="section" value={@selected.id} /><input id={@form_id <> "-revision"} type="hidden" name="storage_revision" value={@revision} />
             <fieldset disabled={not @editable}>
               <p :if={@content["items"] == [] and @content["diagrams"] == []} class="specification-empty">Start with a short statement. Add a diagram when it helps explain the design.</p>
-              <article :for={item <- @content["items"]} id={@workspace_id <> "-item-" <> item["id"]} class="specification-item" data-spec-item-id={item["id"]}>
+              <SpecificationObjectView.card :for={{item, index} <- Enum.with_index(@content["items"])} :if={@typed} item={item} objects={@objects} project={@project} section={@selected.id} form_id={@form_id} workspace_id={@workspace_id} open={index == 0} />
+              <article :for={item <- @content["items"]} :if={not @typed} id={@workspace_id <> "-item-" <> item["id"]} class="specification-item" data-spec-item-id={item["id"]}>
                 <header><label class="specification-title"><span>Title</span><input id={@form_id <> "-item-" <> item["id"] <> "-title"} type="text" name={"items[#{item["id"]}][title]"} value={item["title"]} maxlength="256" placeholder="Name this part of the specification" /></label>
                   <label><span>Kind</span><select id={@form_id <> "-item-" <> item["id"] <> "-kind"} name={"items[#{item["id"]}][kind]"}><option :for={kind <- @kinds} value={kind} selected={kind == item["kind"]}>{kind_label(kind)}</option></select></label>
                   <button type="button" class="button button-small" phx-click="spec-remove-item" phx-value-project={@project} phx-value-section={@selected.id} phx-value-id={item["id"]} aria-label={"Remove " <> if(item["title"] == "", do: "item", else: item["title"])}>Remove</button>
@@ -96,7 +107,11 @@ defmodule SymphonyElixirWeb.SpecificationView do
                   <p data-spec-feedback role="status" aria-live="polite">Opening diagram preview…</p>
                 </div>
               </article>
-              <div class="specification-actions"><button type="button" class="button button-small" phx-click="spec-add-item" phx-value-project={@project} phx-value-section={@selected.id}>Add item</button><button type="button" class="button button-small" phx-click="spec-add-diagram" phx-value-project={@project} phx-value-section={@selected.id}>Add diagram</button><button type="submit" class="button button-primary" disabled={not @dirty}>Save specification</button></div>
+              <div class="specification-actions">
+                <details :if={@typed} class="spec-add-object"><summary class="button button-small">+ Add object</summary><div><button :for={kind <- @kinds} type="button" class="button button-small" phx-click="spec-add-item" phx-value-project={@project} phx-value-section={@selected.id} phx-value-kind={kind}>{kind_label(kind)}</button></div></details>
+                <button :if={not @typed} type="button" class="button button-small" phx-click="spec-add-item" phx-value-project={@project} phx-value-section={@selected.id}>Add item</button>
+                <button type="button" class="button button-small" phx-click="spec-add-diagram" phx-value-project={@project} phx-value-section={@selected.id}>Add diagram</button><button type="submit" class="button button-primary" disabled={not @dirty}>Save specification</button>
+              </div>
             </fieldset>
           </form>
         </section>
@@ -104,6 +119,11 @@ defmodule SymphonyElixirWeb.SpecificationView do
     </section>
     """
   end
+
+  defp objects(nil), do: []
+  defp objects(document), do: Document.objects(document)
+  defp typed?(nil), do: true
+  defp typed?(document), do: document["version"] == 2
 
   defp workspace_id(project), do: "specification-" <> (:crypto.hash(:sha256, project) |> Base.encode16(case: :lower) |> String.slice(0, 12))
 

@@ -4,10 +4,10 @@ defmodule SymphonyElixir.Specification.DocumentTest do
   @project "github:example/system"
 
   test "new documents and inserted items have stable independent identities and no reviewed content" do
-    document = Document.new(@project)
+    document = legacy(@project)
     assert Document.valid?(document, @project)
     refute Document.content?(document)
-    refute Document.new(@project)["document_id"] == document["document_id"]
+    refute legacy(@project)["document_id"] == document["document_id"]
     assert Document.sections() == ~w(brief requirements data architecture decisions)
     assert Document.kinds("unknown") == [] and Document.item("unknown") == nil
 
@@ -27,7 +27,7 @@ defmodule SymphonyElixir.Specification.DocumentTest do
   end
 
   test "editing preserves identities and other sections while rejecting unknown, partial or invalid rows" do
-    {:ok, document} = Document.add(Document.new(@project), "requirements", "items")
+    {:ok, document} = Document.add(legacy(@project), "requirements", "items")
     {:ok, document} = Document.add(document, "requirements", "diagrams")
     [item] = document["sections"]["requirements"]["items"]
     [diagram] = document["sections"]["requirements"]["diagrams"]
@@ -65,7 +65,7 @@ defmodule SymphonyElixir.Specification.DocumentTest do
   end
 
   test "strict bounded structure rejects duplicate identities, foreign fields, invalid kinds and excessive text" do
-    document = Document.new(@project)
+    document = legacy(@project)
     item = %{"id" => "goal1", "kind" => "goal", "title" => "Goal", "body" => "Useful output"}
     document = put_in(document, ["sections", "brief", "items"], [item])
     diagram = %{"id" => "diagram1", "title" => "Flow", "source" => "flowchart TD\n  A --> B"}
@@ -101,11 +101,13 @@ defmodule SymphonyElixir.Specification.DocumentTest do
   end
 
   test "content references ignore map ordering but include source, stable identity and semantic order" do
-    document = Document.new(@project)
+    document = legacy(@project)
     reordered = Map.new(Enum.reverse(Map.to_list(document)))
     assert Document.content_ref(document) == Document.content_ref(reordered)
     {:ok, with_diagram} = Document.add(document, "architecture", "diagrams")
     refute Document.content_ref(document) == Document.content_ref(with_diagram)
     refute Document.content_ref(document) == Document.content_ref(Map.put(document, "document_id", "Another"))
   end
+
+  defp legacy(project), do: Document.new(project) |> Map.put("version", 1)
 end

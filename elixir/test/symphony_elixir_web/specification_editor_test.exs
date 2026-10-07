@@ -5,7 +5,7 @@ defmodule SymphonyElixirWeb.SpecificationEditorTest do
   alias SymphonyElixirWeb.SpecificationEditor, as: Editor
 
   test "edits keep stable identities and update only the owned section" do
-    draft = Document.new("project")
+    draft = legacy("project")
     {:ok, draft} = Editor.change(draft, "brief", "spec-add-item", nil)
     {:ok, draft} = Editor.change(draft, "brief", "spec-add-diagram", nil)
     [item] = draft["sections"]["brief"]["items"]
@@ -28,7 +28,7 @@ defmodule SymphonyElixirWeb.SpecificationEditorTest do
   end
 
   test "stale, foreign and substituted browser fields cannot retarget the draft" do
-    draft = Document.new("project")
+    draft = legacy("project")
     {:ok, draft} = Editor.change(draft, "requirements", "spec-add-item", nil)
     base = params(draft, "requirements")
     [item] = draft["sections"]["requirements"]["items"]
@@ -56,15 +56,28 @@ defmodule SymphonyElixirWeb.SpecificationEditorTest do
   end
 
   test "empty sections and bounded revisions are accepted without forging items" do
-    draft = Document.new("project")
+    draft = legacy("project")
     assert {:ok, ^draft} = Editor.edit(draft, %{"storage_revision" => 0}, params(draft, "brief"), "brief")
+    typed = Document.new("project")
+    assert {:ok, ^typed} = Editor.edit(typed, %{"storage_revision" => 0}, params(typed, "brief"), "brief")
+    assert {:error, :invalid_specification_edit} = Editor.edit(typed, %{"storage_revision" => 0}, Map.put(params(typed, "brief"), "items", []), "brief")
     assert Editor.revision(0) == 0
     assert Editor.revision("12") == 12
     for invalid <- [nil, -1, "-1", "1bad", [], 1.0], do: assert(is_nil(Editor.revision(invalid)))
   end
 
+  test "typed field actions retain the parent and reject a substituted member identity" do
+    {:ok, draft} = Editor.change(Document.new("project"), "data", "spec-add-item", nil, %{"kind" => "entity"})
+    [item] = draft["sections"]["data"]["items"]
+    options = %{"group" => "rows"}
+    assert {:ok, with_field} = Editor.change(draft, "data", "spec-add-member", item["id"], options)
+    [field] = hd(with_field["sections"]["data"]["items"])["rows"]
+    assert {:error, :invalid_specification_edit} = Editor.change(with_field, "data", "spec-remove-member", item["id"], Map.put(options, "row_id", "foreign"))
+    assert {:ok, ^draft} = Editor.change(with_field, "data", "spec-remove-member", item["id"], Map.put(options, "row_id", field["id"]))
+  end
+
   test "decoded LiveView unused-input metadata does not become specification content" do
-    draft = Document.new("project")
+    draft = legacy("project")
     {:ok, draft} = Editor.change(draft, "brief", "spec-add-item", nil)
     {:ok, draft} = Editor.change(draft, "brief", "spec-add-diagram", nil)
     [item] = draft["sections"]["brief"]["items"]
@@ -92,7 +105,7 @@ defmodule SymphonyElixirWeb.SpecificationEditorTest do
   end
 
   test "unused metadata cannot disguise unknown, malformed or incomplete fields" do
-    draft = Document.new("project")
+    draft = legacy("project")
     {:ok, draft} = Editor.change(draft, "brief", "spec-add-item", nil)
     {:ok, draft} = Editor.change(draft, "brief", "spec-add-diagram", nil)
     base = params(draft, "brief")
@@ -128,4 +141,6 @@ defmodule SymphonyElixirWeb.SpecificationEditorTest do
       "diagrams" => if(draft["sections"][section]["diagrams"] == [], do: nil, else: values.(draft["sections"][section]["diagrams"], ~w(title source)))
     }
   end
+
+  defp legacy(project), do: Document.new(project) |> Map.put("version", 1)
 end

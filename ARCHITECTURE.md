@@ -119,7 +119,10 @@ commands to the native API and owns no scheduling state.
   owns structured Design drafts and immutable reviewed versions under the control state
   path. [`Document`](elixir/lib/symphony_elixir/specification/document.ex) bounds stable
   items and Mermaid source; [`Specification.Persistence`](elixir/lib/symphony_elixir/specification/persistence.ex)
-  validates its journal over the existing private atomic transport. Specification items
+  validates its journal over the existing private atomic transport.
+  [`Object`](elixir/lib/symphony_elixir/specification/object.ex) owns the version-2 typed
+  properties, rows and stable object references. Draft conversion preserves original
+  notes; legacy reviewed documents keep their hashes. Specification items
   never derive implicitly from Idea geometry.
   Editing and review check project authority and expected journal revision; specification
   review grants no task acceptance or execution authority.

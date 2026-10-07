@@ -312,7 +312,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       do: {:reply, %{ok: false, error: "invalid_design_request"}, socket}
 
   def handle_event(event, params, socket)
-      when event in ~w(spec-section spec-edit spec-save spec-review spec-confirm-review spec-cancel-review spec-add-item spec-remove-item spec-add-diagram spec-remove-diagram spec-open-version spec-return-draft spec-reload) do
+      when event in ~w(spec-section spec-object spec-structure spec-import spec-edit spec-save spec-review spec-confirm-review spec-cancel-review spec-add-item spec-remove-item spec-add-diagram spec-remove-diagram spec-add-member spec-remove-member spec-open-version spec-return-draft spec-reload) do
     if specification_request?(event, params, socket.assigns),
       do: {:noreply, specification_event(event, params, socket)},
       else: {:noreply, assign(socket, :specification_notice, "Open this project’s Design and sign in to edit its specification.")}
@@ -2040,7 +2040,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp specification_request?(event, params, assigns) do
     is_map(params) and assigns.board_view == "design" and params["project"] == assigns.chat_project and
-      BrowserAuth.authorized?(assigns.auth) and (not specification_read_only?(assigns) or event in ~w(spec-section spec-open-version spec-return-draft spec-reload spec-cancel-review))
+      BrowserAuth.authorized?(assigns.auth) and (not specification_read_only?(assigns) or event in ~w(spec-section spec-object spec-open-version spec-return-draft spec-reload spec-cancel-review))
   end
 
   defp specification_read_only?(assigns), do: read_only?(assigns.board) or historical_graph?(assigns)
@@ -2103,6 +2103,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp specification_event("spec-return-draft", _params, socket), do: assign(socket, specification_history: nil, specification_notice: nil)
   defp specification_event("spec-cancel-review", _params, socket), do: assign(socket, :specification_review_open, false)
 
+  defp specification_event("spec-object", %{"id" => id}, socket) do
+    document = specification_open_document(socket.assigns)
+    object = if document, do: Enum.find(SpecificationDocument.objects(document), &(&1["id"] == id))
+
+    if object do
+      socket |> assign(specification_section: object["section"], specification_review_open: false) |> push_event("focus-spec-object", %{id: id})
+    else
+      assign(socket, :specification_notice, "That object is not in the open specification.")
+    end
+  end
+
   defp specification_event("spec-open-version", %{"ref" => ref}, socket) when is_binary(ref) do
     case specification_store().reviewed(socket.assigns.chat_project, ref, socket.assigns.auth) do
       {:ok, record} ->
@@ -2117,13 +2128,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp specification_event(event, params, socket)
-       when event in ~w(spec-edit spec-save spec-review spec-confirm-review spec-add-item spec-remove-item spec-add-diagram spec-remove-diagram) do
+       when event in ~w(spec-structure spec-import spec-edit spec-save spec-review spec-confirm-review spec-add-item spec-remove-item spec-add-diagram spec-remove-diagram spec-add-member spec-remove-member) do
     if socket.assigns.specification_available and is_nil(socket.assigns.specification_history),
       do: specification_write(event, params, socket),
       else: assign(socket, :specification_notice, "Return to the saved draft to make changes.")
   end
 
   defp specification_event(_event, _params, socket), do: assign(socket, :specification_notice, "The specification action is incomplete.")
+
+  defp specification_open_document(%{specification_history: nil} = assigns), do: assigns.specification_draft
+  defp specification_open_document(assigns), do: assigns.specification_history["specification"]
 
   defp specification_write(event, params, socket) when event in ["spec-edit", "spec-save"] do
     assigns = socket.assigns
@@ -2144,6 +2158,38 @@ defmodule SymphonyElixirWeb.DashboardLive do
       else: assign(socket, :specification_notice, "Save the draft before reviewing this exact version.")
   end
 
+  defp specification_write("spec-structure", params, socket) do
+    if specification_current_revision?(params, socket) do
+      case SpecificationDocument.upgrade(socket.assigns.specification_draft) do
+        {:ok, draft} ->
+          assign(socket, specification_draft: draft, specification_review_open: false, specification_notice: "Typed draft ready. Original details are retained in each item’s notes. Save when ready.")
+
+        {:error, reason} ->
+          assign(socket, :specification_notice, specification_error(reason))
+      end
+    else
+      assign(socket, :specification_notice, "This conversion no longer matches the open draft.")
+    end
+  end
+
+  defp specification_write("spec-import", params, socket) do
+    draft = socket.assigns.specification_draft
+
+    current = not specification_dirty?(socket.assigns) and specification_current_revision?(params, socket)
+
+    if current and params["document_id"] == draft["document_id"] do
+      case SpecificationDocument.import_objects(draft, params["document"]) do
+        {:ok, imported} ->
+          assign(socket, specification_draft: imported, specification_review_open: false, specification_notice: "Objects imported into the draft. Check the sections and save when ready.")
+
+        {:error, reason} ->
+          assign(socket, :specification_notice, specification_error(reason))
+      end
+    else
+      assign(socket, :specification_notice, "Save your current edits before importing into this exact draft.")
+    end
+  end
+
   defp specification_write("spec-confirm-review", params, socket) do
     ready = not specification_dirty?(socket.assigns) and specification_current_revision?(params, socket)
 
@@ -2161,7 +2207,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     section = socket.assigns.specification_section
 
     result =
-      if params["section"] == section, do: SpecificationEditor.change(socket.assigns.specification_draft, section, event, params["id"]), else: {:error, :invalid_specification_edit}
+      if params["section"] == section, do: SpecificationEditor.change(socket.assigns.specification_draft, section, event, params["id"], params), else: {:error, :invalid_specification_edit}
 
     case result do
       {:ok, draft} ->
@@ -2187,7 +2233,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp specification_error(:unauthorized), do: "Sign in through Settings to open this project’s specification."
   defp specification_error(:stale_specification_revision), do: "The saved specification changed elsewhere. Your edits are retained here; compare them before reloading the saved draft."
   defp specification_error(:specification_empty), do: "Add specification content before saving a reviewed version."
-  defp specification_error(:invalid_specification_edit), do: "This edit no longer matches the open section. Your draft is retained."
+  defp specification_error(:invalid_specification_import), do: "Import must match this project and draft, with valid object links and the original notes and diagrams retained."
+
+  defp specification_error(:invalid_specification_edit),
+    do: "This edit no longer matches the open section or object. Check fields and links; remove references before deleting an object. Your draft is retained."
+
   defp specification_error(_reason), do: "Specification storage is unavailable. Your open draft is retained; try reloading when storage recovers."
 
   defp reply_plan_selection({:noreply, socket}), do: {:reply, %{selected_task_id: socket.assigns.chat_task_id}, socket}
